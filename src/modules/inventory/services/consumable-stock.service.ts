@@ -53,30 +53,37 @@ export class ConsumableStockService {
 
   async salidaATecnico(dto: SalidaATecnicoDto, userId: string): Promise<StockItemEntity> {
     try {
-      return await this.dataSource.transaction(async (manager) => {
-        const product = await this.validateBulkProduct(manager, dto.productId);
-        const previousStock = product.stockCurrent;
-
-        await adjustWarehouseStock(manager, product.id, -dto.quantity);
-        const stockItem = await this.incrementTechnicianStock(manager, dto.productId, dto.employeeId, dto.quantity);
-
-        await this.saveMovement(manager, {
-          productId: product.id,
-          movementType: 'OUT_TO_TECHNICIAN',
-          quantity: dto.quantity,
-          previousStock,
-          newStock: previousStock - dto.quantity,
-          userId,
-          employeeId: dto.employeeId,
-          ticketId: dto.ticketId,
-          notes: dto.notes,
-        });
-
-        return stockItem;
-      });
+      return await this.dataSource.transaction((manager) => this.salidaATecnicoWithManager(manager, dto, userId));
     } catch (error) {
       throw this.translateConcurrencyError(error);
     }
+  }
+
+  /**
+   * Variante que recibe un `manager` externo, para que otro flujo (ej. confirmar un
+   * Despacho por Lotes) pueda ejecutar esta salida como parte de SU PROPIA transacción
+   * atómica, en vez de abrir una transacción independiente.
+   */
+  async salidaATecnicoWithManager(manager: EntityManager, dto: SalidaATecnicoDto, userId: string): Promise<StockItemEntity> {
+    const product = await this.validateBulkProduct(manager, dto.productId);
+    const previousStock = product.stockCurrent;
+
+    await adjustWarehouseStock(manager, product.id, -dto.quantity);
+    const stockItem = await this.incrementTechnicianStock(manager, dto.productId, dto.employeeId, dto.quantity);
+
+    await this.saveMovement(manager, {
+      productId: product.id,
+      movementType: 'OUT_TO_TECHNICIAN',
+      quantity: dto.quantity,
+      previousStock,
+      newStock: previousStock - dto.quantity,
+      userId,
+      employeeId: dto.employeeId,
+      ticketId: dto.ticketId,
+      notes: dto.notes,
+    });
+
+    return stockItem;
   }
 
   async consumoEnInstalacion(dto: ConsumoInstalacionDto, userId: string): Promise<StockItemEntity> {
@@ -101,26 +108,33 @@ export class ConsumableStockService {
   }
 
   async devolverAlmacen(dto: DevolucionAlmacenConsumableDto, userId: string): Promise<StockItemEntity> {
-    return this.dataSource.transaction(async (manager) => {
-      const product = await this.validateBulkProduct(manager, dto.productId);
-      const previousStock = product.stockCurrent;
+    return this.dataSource.transaction((manager) => this.devolverAlmacenWithManager(manager, dto, userId));
+  }
 
-      const stockItem = await this.incrementTechnicianStock(manager, dto.productId, dto.employeeId, -dto.quantity);
-      await adjustWarehouseStock(manager, product.id, dto.quantity);
+  /** Variante con `manager` externo — ver nota en `salidaATecnicoWithManager`. */
+  async devolverAlmacenWithManager(
+    manager: EntityManager,
+    dto: DevolucionAlmacenConsumableDto,
+    userId: string,
+  ): Promise<StockItemEntity> {
+    const product = await this.validateBulkProduct(manager, dto.productId);
+    const previousStock = product.stockCurrent;
 
-      await this.saveMovement(manager, {
-        productId: product.id,
-        movementType: 'IN_RETURN_FROM_TECHNICIAN',
-        quantity: dto.quantity,
-        previousStock,
-        newStock: previousStock + dto.quantity,
-        userId,
-        employeeId: dto.employeeId,
-        notes: dto.notes,
-      });
+    const stockItem = await this.incrementTechnicianStock(manager, dto.productId, dto.employeeId, -dto.quantity);
+    await adjustWarehouseStock(manager, product.id, dto.quantity);
 
-      return stockItem;
+    await this.saveMovement(manager, {
+      productId: product.id,
+      movementType: 'IN_RETURN_FROM_TECHNICIAN',
+      quantity: dto.quantity,
+      previousStock,
+      newStock: previousStock + dto.quantity,
+      userId,
+      employeeId: dto.employeeId,
+      notes: dto.notes,
     });
+
+    return stockItem;
   }
 
   async ajustar(dto: AjusteConsumableDto, userId: string): Promise<{ productStock: number; stockItem?: StockItemEntity }> {

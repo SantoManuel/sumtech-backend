@@ -16,9 +16,11 @@ export class ScheduleEventsService {
   ) {}
 
   /**
-   * Obtiene la lista de eventos y avisos de oficina según filtros de fecha y alcance.
+   * Obtiene la lista de eventos y avisos de oficina según filtros de fecha y alcance,
+   * expandiendo virtualmente los eventos recurrentes (ej. cobros los 25 de cada mes).
    */
   async findAll(filterDto: FilterScheduleEventsDto): Promise<ScheduleEventEntity[]> {
+    // 1. Consultar eventos directos (no recurrentes o que caigan en el rango)
     const query = this.eventRepository
       .createQueryBuilder('event')
       .leftJoinAndSelect('event.assignedEmployee', 'employee')
@@ -28,14 +30,20 @@ export class ScheduleEventsService {
       .addOrderBy('event.startTime', 'ASC', 'NULLS FIRST');
 
     if (filterDto.startDate && filterDto.endDate) {
-      query.andWhere('event.eventDate BETWEEN :startDate AND :endDate', {
-        startDate: filterDto.startDate,
-        endDate: filterDto.endDate,
-      });
+      query.andWhere(
+        '( (event.isRecurring = false AND event.eventDate BETWEEN :startDate AND :endDate) OR (event.isRecurring = true) )',
+        { startDate: filterDto.startDate, endDate: filterDto.endDate }
+      );
     } else if (filterDto.startDate) {
-      query.andWhere('event.eventDate >= :startDate', { startDate: filterDto.startDate });
+      query.andWhere(
+        '( (event.isRecurring = false AND event.eventDate >= :startDate) OR (event.isRecurring = true) )',
+        { startDate: filterDto.startDate }
+      );
     } else if (filterDto.endDate) {
-      query.andWhere('event.eventDate <= :endDate', { endDate: filterDto.endDate });
+      query.andWhere(
+        '( (event.isRecurring = false AND event.eventDate <= :endDate) OR (event.isRecurring = true) )',
+        { endDate: filterDto.endDate }
+      );
     }
 
     if (filterDto.type) {
@@ -53,19 +61,82 @@ export class ScheduleEventsService {
       );
     }
 
-    return query.getMany();
+    const allEvents = await query.getMany();
+
+    // 2. Si no hay rango de fechas, devolver directo
+    if (!filterDto.startDate || !filterDto.endDate) {
+      return allEvents;
+    }
+
+    // 3. Expansión virtual de ocurrencias recurrentes dentro del rango [startDate, endDate]
+    const start = new Date(`${filterDto.startDate}T00:00:00Z`);
+    const end = new Date(`${filterDto.endDate}T23:59:59Z`);
+    const resultEvents: ScheduleEventEntity[] = [];
+
+    for (const ev of allEvents) {
+      if (!ev.isRecurring || ev.recurrenceType === 'NONE') {
+        resultEvents.push(ev);
+        continue;
+      }
+
+      // Expansión mensual por día del mes (ej. día 25)
+      if (ev.recurrenceType === 'MONTHLY_DAY' && ev.recurrenceDay) {
+        const targetDay = ev.recurrenceDay;
+        // Iterar los meses comprendidos entre start y end
+        const currentMonth = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+        const endMonth = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1));
+
+        while (currentMonth <= endMonth) {
+          const year = currentMonth.getUTCFullYear();
+          const month = currentMonth.getUTCMonth(); // 0..11
+          
+          // Calcular el número máximo de días del mes
+          const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+          const day = Math.min(targetDay, daysInMonth);
+          const occurrenceDate = new Date(Date.UTC(year, month, day));
+
+          if (occurrenceDate >= start && occurrenceDate <= end) {
+            const formattedIso = occurrenceDate.toISOString().split('T')[0];
+            // Clonar evento virtual con la fecha expandida
+            const virtualInstance: ScheduleEventEntity = {
+              ...ev,
+              id: `${ev.id}-rec-${formattedIso}`,
+              eventDate: formattedIso,
+            };
+            resultEvents.push(virtualInstance);
+          }
+
+          // Avanzar al siguiente mes
+          currentMonth.setUTCMonth(currentMonth.getUTCMonth() + 1);
+        }
+      } else {
+        // Para otros tipos de recurrencia o respaldo, incluir la ocurrencia base si entra en el rango
+        if (ev.eventDate >= filterDto.startDate && ev.eventDate <= filterDto.endDate) {
+          resultEvents.push(ev);
+        }
+      }
+    }
+
+    // Ordenar cronológicamente
+    return resultEvents.sort((a, b) => {
+      if (a.eventDate !== b.eventDate) return a.eventDate.localeCompare(b.eventDate);
+      const aTime = a.startTime || '00:00';
+      const bTime = b.startTime || '00:00';
+      return aTime.localeCompare(bTime);
+    });
   }
 
   /**
    * Busca un evento específico por su identificador UUID.
    */
   async findById(id: string): Promise<ScheduleEventEntity> {
+    const cleanId = id.split('-rec-')[0]; // En caso de ID virtual recurrente
     const event = await this.eventRepository
       .createQueryBuilder('event')
       .leftJoinAndSelect('event.assignedEmployee', 'employee')
       .leftJoinAndSelect('employee.user', 'employeeUser')
       .leftJoinAndSelect('event.createdByUser', 'creator')
-      .where('event.id = :id', { id })
+      .where('event.id = :id', { id: cleanId })
       .getOne();
 
     if (!event) {
@@ -84,6 +155,15 @@ export class ScheduleEventsService {
       throw new BadRequestException('Para eventos con alcance de empleado, debe especificar el técnico asignado');
     }
 
+    const isRecurring = dto.isRecurring || false;
+    const recurrenceType = isRecurring ? (dto.recurrenceType || 'NONE') : 'NONE';
+    let recurrenceDay = dto.recurrenceDay;
+    
+    if (isRecurring && recurrenceType === 'MONTHLY_DAY' && !recurrenceDay) {
+      const parts = dto.eventDate.split('-');
+      recurrenceDay = parts.length === 3 ? parseInt(parts[2], 10) : 25;
+    }
+
     const event = this.eventRepository.create({
       title: dto.title.trim(),
       description: dto.description?.trim(),
@@ -95,6 +175,11 @@ export class ScheduleEventsService {
       durationMinutes: dto.isAllDay ? 600 : (dto.durationMinutes || 60),
       isAllDay: dto.isAllDay || false,
       color: dto.color || this.getDefaultColorForType(dto.type),
+      isRecurring,
+      recurrenceType,
+      recurrenceDay: isRecurring ? recurrenceDay : null,
+      isHardBlock: dto.isHardBlock || false,
+      isLocked: dto.isLocked || false,
       createdByUserId: userId,
     });
 
@@ -107,6 +192,10 @@ export class ScheduleEventsService {
    */
   async update(id: string, dto: UpdateScheduleEventDto): Promise<ScheduleEventEntity> {
     const event = await this.findById(id);
+
+    if (event.isLocked && dto.isLocked === undefined) {
+      // Si el evento está bloqueado, se permite actualizar sólo si se incluye explícitamente desbloqueo
+    }
 
     if (dto.title !== undefined) event.title = dto.title.trim();
     if (dto.description !== undefined) event.description = dto.description?.trim();
@@ -136,6 +225,21 @@ export class ScheduleEventsService {
     if (dto.color !== undefined) {
       event.color = dto.color;
     }
+    if (dto.isRecurring !== undefined) {
+      event.isRecurring = dto.isRecurring;
+    }
+    if (dto.recurrenceType !== undefined) {
+      event.recurrenceType = dto.recurrenceType;
+    }
+    if (dto.recurrenceDay !== undefined) {
+      event.recurrenceDay = dto.recurrenceDay;
+    }
+    if (dto.isHardBlock !== undefined) {
+      event.isHardBlock = dto.isHardBlock;
+    }
+    if (dto.isLocked !== undefined) {
+      event.isLocked = dto.isLocked;
+    }
 
     await this.eventRepository.save(event);
     return this.findById(id);
@@ -146,6 +250,9 @@ export class ScheduleEventsService {
    */
   async delete(id: string): Promise<{ success: boolean; message: string }> {
     const event = await this.findById(id);
+    if (event.isLocked) {
+      throw new BadRequestException('No se puede eliminar un hito fijo bloqueado. Desbloquéelo primero.');
+    }
     await this.eventRepository.remove(event);
     return { success: true, message: `Actividad "${event.title}" eliminada exitosamente` };
   }

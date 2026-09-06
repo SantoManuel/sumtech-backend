@@ -9,6 +9,7 @@ import { EmployeeEntity } from '../../employees/entities/employee.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { Role } from '../../../common/enums/role.enum';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
+import { ArticleType } from '../enums/category.enums';
 import {
   AssignTechnicianDto,
   InstallAtClientDto,
@@ -60,7 +61,7 @@ export class EquipmentMovementService {
   ) {}
 
   async ingresarEquipo(
-    input: { productId: string; serialNumber: string; macAddress: string; warehouseId?: string },
+    input: { productId: string; serialNumber: string; macAddress?: string; warehouseId?: string },
     userId: string,
   ): Promise<SerialNumberEntity> {
     return this.dataSource.transaction(async (manager) => {
@@ -78,15 +79,15 @@ export class EquipmentMovementService {
         );
       }
 
-      const [existingSerial, existingMac] = await Promise.all([
-        serialRepo.findOneBy({ serialNumber: input.serialNumber }),
-        serialRepo.findOneBy({ macAddress: input.macAddress }),
-      ]);
+      const existingSerial = await serialRepo.findOneBy({ serialNumber: input.serialNumber });
       if (existingSerial) {
         throw new BadRequestException(`El serial ${input.serialNumber} ya existe en el sistema`);
       }
-      if (existingMac) {
-        throw new BadRequestException(`La dirección MAC ${input.macAddress} ya está registrada`);
+      if (input.macAddress) {
+        const existingMac = await serialRepo.findOneBy({ macAddress: input.macAddress });
+        if (existingMac) {
+          throw new BadRequestException(`La dirección MAC ${input.macAddress} ya está registrada`);
+        }
       }
 
       const warehouse = await resolveWarehouse(warehouseRepo, input.warehouseId);
@@ -121,38 +122,50 @@ export class EquipmentMovementService {
   }
 
   async asignarATecnico(equipmentItemId: string, dto: AssignTechnicianDto, userId: string): Promise<SerialNumberEntity> {
-    return this.dataSource.transaction(async (manager) => {
-      const equipment = await this.lockEquipment(manager, equipmentItemId);
+    return this.dataSource.transaction((manager) => this.asignarATecnicoWithManager(manager, equipmentItemId, dto, userId));
+  }
 
-      if (equipment.locationType !== EquipmentLocationType.WAREHOUSE) {
-        throw new BadRequestException(
-          `Solo se puede asignar a un técnico un equipo que esté en almacén (estado actual: ${equipment.locationType})`,
-        );
-      }
-      if (!USABLE_CONDITIONS.includes(equipment.condition)) {
-        throw new BadRequestException(
-          `El equipo no está en condición apta para asignar (condición actual: ${equipment.condition})`,
-        );
-      }
+  /**
+   * Variante que recibe un `manager` externo, para que otro flujo (ej. confirmar un
+   * Despacho por Lotes) pueda ejecutar esta transición como parte de SU PROPIA
+   * transacción atómica, en vez de abrir una transacción independiente.
+   */
+  async asignarATecnicoWithManager(
+    manager: EntityManager,
+    equipmentItemId: string,
+    dto: AssignTechnicianDto,
+    userId: string,
+  ): Promise<SerialNumberEntity> {
+    const equipment = await this.lockEquipment(manager, equipmentItemId);
 
-      const employee = await this.validateTechnician(manager, dto.employeeId);
-
-      const saved = await this.persistTransition(
-        manager,
-        equipment,
-        {
-          movementType: EquipmentMovementType.ASIGNAR_A_TECNICO,
-          toLocationType: EquipmentLocationType.TECHNICIAN,
-          toEmployeeId: employee.id,
-          conditionAfter: equipment.condition,
-          notes: dto.notes,
-        },
-        userId,
+    if (equipment.locationType !== EquipmentLocationType.WAREHOUSE) {
+      throw new BadRequestException(
+        `Solo se puede asignar a un técnico un equipo que esté en almacén (estado actual: ${equipment.locationType})`,
       );
+    }
+    if (!USABLE_CONDITIONS.includes(equipment.condition)) {
+      throw new BadRequestException(
+        `El equipo no está en condición apta para asignar (condición actual: ${equipment.condition})`,
+      );
+    }
 
-      await adjustWarehouseStock(manager, saved.productId, -1);
-      return saved;
-    });
+    const employee = await this.validateTechnician(manager, dto.employeeId);
+
+    const saved = await this.persistTransition(
+      manager,
+      equipment,
+      {
+        movementType: EquipmentMovementType.ASIGNAR_A_TECNICO,
+        toLocationType: EquipmentLocationType.TECHNICIAN,
+        toEmployeeId: employee.id,
+        conditionAfter: equipment.condition,
+        notes: dto.notes,
+      },
+      userId,
+    );
+
+    await adjustWarehouseStock(manager, saved.productId, -1);
+    return saved;
   }
 
   async instalarEnCliente(
@@ -170,6 +183,17 @@ export class EquipmentMovementService {
       }
       if (!USABLE_CONDITIONS.includes(equipment.condition)) {
         throw new BadRequestException(`No se puede instalar un equipo en condición ${equipment.condition}`);
+      }
+
+      // Regla crítica: una herramienta de trabajo (TOOL_ASSET) nunca se instala en un
+      // cliente. Se consulta el producto+categoría aparte del `lockEquipment` de arriba
+      // porque TypeORM no combina bien `lock` con relaciones anidadas.
+      const productWithCategory = await manager.getRepository(ProductEntity).findOne({
+        where: { id: equipment.productId },
+        relations: ['category'],
+      });
+      if (productWithCategory?.category?.articleType === ArticleType.TOOL_ASSET) {
+        throw new BadRequestException('Una herramienta de trabajo no puede instalarse en un cliente');
       }
 
       const contract = await manager.getRepository(ContractEntity).findOne({ where: { id: dto.contractId } });
@@ -191,6 +215,7 @@ export class EquipmentMovementService {
           toClientId: contract.clientId,
           toContractId: contract.id,
           conditionAfter: equipment.condition,
+          ticketId: dto.ticketId,
           notes: dto.notes,
         },
         userId,
@@ -226,34 +251,44 @@ export class EquipmentMovementService {
   }
 
   async devolverAlmacen(equipmentItemId: string, userId: string, warehouseId?: string): Promise<SerialNumberEntity> {
-    return this.dataSource.transaction(async (manager) => {
-      const equipment = await this.lockEquipment(manager, equipmentItemId);
+    return this.dataSource.transaction((manager) =>
+      this.devolverAlmacenWithManager(manager, equipmentItemId, userId, warehouseId),
+    );
+  }
 
-      if (equipment.locationType !== EquipmentLocationType.TECHNICIAN) {
-        throw new BadRequestException(
-          `Solo se puede devolver a almacén un equipo que esté en poder de un técnico (estado actual: ${equipment.locationType})`,
-        );
-      }
+  /** Variante con `manager` externo — ver nota en `asignarATecnicoWithManager`. */
+  async devolverAlmacenWithManager(
+    manager: EntityManager,
+    equipmentItemId: string,
+    userId: string,
+    warehouseId?: string,
+  ): Promise<SerialNumberEntity> {
+    const equipment = await this.lockEquipment(manager, equipmentItemId);
 
-      const warehouse = await resolveWarehouse(manager.getRepository(WarehouseEntity), warehouseId);
-
-      const saved = await this.persistTransition(
-        manager,
-        equipment,
-        {
-          movementType: EquipmentMovementType.DEVOLVER_A_ALMACEN,
-          toLocationType: EquipmentLocationType.WAREHOUSE,
-          toWarehouseId: warehouse.id,
-          conditionAfter: equipment.condition,
-        },
-        userId,
+    if (equipment.locationType !== EquipmentLocationType.TECHNICIAN) {
+      throw new BadRequestException(
+        `Solo se puede devolver a almacén un equipo que esté en poder de un técnico (estado actual: ${equipment.locationType})`,
       );
+    }
 
-      if (USABLE_CONDITIONS.includes(saved.condition)) {
-        await adjustWarehouseStock(manager, saved.productId, 1);
-      }
-      return saved;
-    });
+    const warehouse = await resolveWarehouse(manager.getRepository(WarehouseEntity), warehouseId);
+
+    const saved = await this.persistTransition(
+      manager,
+      equipment,
+      {
+        movementType: EquipmentMovementType.DEVOLVER_A_ALMACEN,
+        toLocationType: EquipmentLocationType.WAREHOUSE,
+        toWarehouseId: warehouse.id,
+        conditionAfter: equipment.condition,
+      },
+      userId,
+    );
+
+    if (USABLE_CONDITIONS.includes(saved.condition)) {
+      await adjustWarehouseStock(manager, saved.productId, 1);
+    }
+    return saved;
   }
 
   async transferirATecnico(
@@ -512,6 +547,7 @@ export class EquipmentMovementService {
     const query = this.serialRepository
       .createQueryBuilder('s')
       .leftJoinAndSelect('s.product', 'product')
+      .leftJoinAndSelect('product.category', 'category')
       .leftJoinAndSelect('s.client', 'client')
       .leftJoinAndSelect('s.currentEmployee', 'employee')
       .leftJoinAndSelect('employee.user', 'employeeUser')
@@ -523,8 +559,10 @@ export class EquipmentMovementService {
     if (filter.locationType) query.andWhere('s.locationType = :locationType', { locationType: filter.locationType });
     if (filter.condition) query.andWhere('s.condition = :condition', { condition: filter.condition });
     if (filter.employeeId) query.andWhere('s.currentEmployeeId = :employeeId', { employeeId: filter.employeeId });
+    if (filter.warehouseId) query.andWhere('s.currentWarehouseId = :warehouseId', { warehouseId: filter.warehouseId });
     if (filter.clientId) query.andWhere('s.clientId = :clientId', { clientId: filter.clientId });
     if (filter.status) query.andWhere('s.status = :status', { status: filter.status });
+    if (filter.articleType) query.andWhere('category.articleType = :articleType', { articleType: filter.articleType });
     if (filter.search) {
       query.andWhere('(s.serialNumber ILIKE :search OR s.macAddress ILIKE :search)', {
         search: `%${filter.search}%`,
@@ -546,12 +584,32 @@ export class EquipmentMovementService {
     return equipment;
   }
 
+  /** Equipos de cliente (excluye herramientas) actualmente en poder del técnico. */
   async getTechnicianEquipment(employeeId: string): Promise<SerialNumberEntity[]> {
-    return this.serialRepository.find({
-      where: { currentEmployeeId: employeeId, locationType: EquipmentLocationType.TECHNICIAN },
-      relations: ['product'],
-      order: { serialNumber: 'ASC' },
-    });
+    return this.serialRepository
+      .createQueryBuilder('s')
+      .leftJoinAndSelect('s.product', 'product')
+      .leftJoinAndSelect('product.category', 'category')
+      .where('s.currentEmployeeId = :employeeId', { employeeId })
+      .andWhere('s.locationType = :locationType', { locationType: EquipmentLocationType.TECHNICIAN })
+      .andWhere('(category.articleType IS NULL OR category.articleType != :toolType)', {
+        toolType: ArticleType.TOOL_ASSET,
+      })
+      .orderBy('s.serialNumber', 'ASC')
+      .getMany();
+  }
+
+  /** Herramientas de trabajo (TOOL_ASSET) actualmente en poder del técnico. */
+  async getTechnicianTools(employeeId: string): Promise<SerialNumberEntity[]> {
+    return this.serialRepository
+      .createQueryBuilder('s')
+      .leftJoinAndSelect('s.product', 'product')
+      .leftJoinAndSelect('product.category', 'category')
+      .where('s.currentEmployeeId = :employeeId', { employeeId })
+      .andWhere('s.locationType = :locationType', { locationType: EquipmentLocationType.TECHNICIAN })
+      .andWhere('category.articleType = :toolType', { toolType: ArticleType.TOOL_ASSET })
+      .orderBy('s.serialNumber', 'ASC')
+      .getMany();
   }
 
   private async lockEquipment(manager: EntityManager, equipmentItemId: string): Promise<SerialNumberEntity> {
@@ -565,7 +623,8 @@ export class EquipmentMovementService {
     return equipment;
   }
 
-  private async validateTechnician(manager: EntityManager, employeeId: string): Promise<EmployeeEntity> {
+  /** Público: también lo reutiliza DispatchService al validar el técnico de un despacho. */
+  async validateTechnician(manager: EntityManager, employeeId: string): Promise<EmployeeEntity> {
     const employee = await manager.getRepository(EmployeeEntity).findOne({
       where: { id: employeeId },
       relations: ['user', 'user.roles'],

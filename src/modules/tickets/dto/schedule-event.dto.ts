@@ -58,6 +58,30 @@ export class CreateScheduleEventDto {
   @IsOptional()
   @IsString()
   color?: string;
+
+  @IsOptional()
+  @IsBoolean({ message: 'isRecurring debe ser un booleano' })
+  isRecurring?: boolean;
+
+  @IsOptional()
+  @IsEnum(['NONE', 'WEEKLY', 'MONTHLY_DAY', 'YEARLY'], {
+    message: 'Tipo de recurrencia inválido (NONE, WEEKLY, MONTHLY_DAY, YEARLY)',
+  })
+  recurrenceType?: 'NONE' | 'WEEKLY' | 'MONTHLY_DAY' | 'YEARLY';
+
+  @IsOptional()
+  @IsInt({ message: 'El día de recurrencia debe ser un número entero (1-31)' })
+  @Min(1, { message: 'El día de recurrencia mínimo es 1' })
+  @Max(31, { message: 'El día de recurrencia máximo es 31' })
+  recurrenceDay?: number;
+
+  @IsOptional()
+  @IsBoolean({ message: 'isHardBlock debe ser un booleano' })
+  isHardBlock?: boolean;
+
+  @IsOptional()
+  @IsBoolean({ message: 'isLocked debe ser un booleano' })
+  isLocked?: boolean;
 }
 
 export class UpdateScheduleEventDto {
@@ -102,6 +126,28 @@ export class UpdateScheduleEventDto {
   @IsOptional()
   @IsString()
   color?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isRecurring?: boolean;
+
+  @IsOptional()
+  @IsEnum(['NONE', 'WEEKLY', 'MONTHLY_DAY', 'YEARLY'])
+  recurrenceType?: 'NONE' | 'WEEKLY' | 'MONTHLY_DAY' | 'YEARLY';
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(31)
+  recurrenceDay?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isHardBlock?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isLocked?: boolean;
 }
 
 export class FilterScheduleEventsDto {

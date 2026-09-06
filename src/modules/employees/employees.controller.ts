@@ -18,6 +18,18 @@ export class EmployeesController {
     return this.employeesService.findAll(filterDto, filterDto.role);
   }
 
+  /**
+   * Directorio liviano (id, cargo, usuario) sin datos sensibles como salario —
+   * lo consume el tablero de tickets/Gantt para mostrar nombre/cuadrilla de
+   * cualquier empleado, incluyendo técnicos que no pueden ver /employees.
+   * Debe declararse antes de ':id' para no ser interceptada por esa ruta.
+   */
+  @Get('directory')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM, Role.CAJERO)
+  async findDirectory() {
+    return this.employeesService.findDirectory();
+  }
+
   @Get(':id')
   @Roles(Role.ADMIN, Role.GERENTE)
   async findById(@Param('id') id: string) {

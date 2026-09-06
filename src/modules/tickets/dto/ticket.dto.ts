@@ -88,5 +88,20 @@ export class FilterTicketDto extends PaginationDto {
   @IsOptional()
   @IsString()
   employeeId?: string;
+
+  @IsOptional()
+  @IsString()
+  clientId?: string;
+
+  @IsOptional()
+  @IsString()
+  startDate?: string;
+
+  @IsOptional()
+  @IsString()
+  endDate?: string;
+
+  @IsOptional()
+  includeActiveBacklog?: boolean | string;
 }
 

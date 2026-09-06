@@ -9,6 +9,7 @@ import { ClientEntity } from '../../modules/clients/entities/client.entity';
 import { AddressEntity } from '../../modules/clients/entities/address.entity';
 import { ContractEntity } from '../../modules/clients/entities/contract.entity';
 import { ProductEntity } from '../../modules/inventory/entities/product.entity';
+import { CategoryEntity } from '../../modules/inventory/entities/category.entity';
 import { SerialNumberEntity } from '../../modules/inventory/entities/serial-number.entity';
 import { StockMovementEntity } from '../../modules/inventory/entities/stock-movement.entity';
 import { WarehouseEntity } from '../../modules/inventory/entities/warehouse.entity';
@@ -268,18 +269,20 @@ export async function runInitialSeed() {
   // ----------------------------------------------------------------------------
   // 9. PRODUCTOS DE INVENTARIO (5 Registros en inv.products)
   // ----------------------------------------------------------------------------
+  const categoryRepo = AppDataSource.getRepository(CategoryEntity);
   const productsData = [
-    { sku: 'HW-ONU-AC1200', name: 'Router ONT Huawei Dual Band GPON Wi-Fi 6', category: 'ROUTER_ONU' as const, brand: 'Huawei', model: 'OptiXstar HG8145X6', costPrice: 2400, salePrice: 3500, stockCurrent: 45, stockMinimum: 10, requiresSerial: true },
-    { sku: 'HW-ONU-ZTE-F670L', name: 'Router ONT ZTE GPON Dual Band Wi-Fi 5', category: 'ROUTER_ONU' as const, brand: 'ZTE', model: 'ZXHN F670L', costPrice: 1900, salePrice: 2950, stockCurrent: 38, stockMinimum: 10, requiresSerial: true },
-    { sku: 'STB-4K-ANDR', name: 'Decodificador Set-Top Box 4K Android TV', category: 'SET_TOP_BOX' as const, brand: 'ZTE', model: 'ZXV10 B866V2K', costPrice: 1800, salePrice: 2600, stockCurrent: 30, stockMinimum: 8, requiresSerial: true },
-    { sku: 'CAB-DROP-1KM', name: 'Bobina Cable Drop Fibra Óptica 1 Hilo (1,000m)', category: 'FIBER_CABLE' as const, brand: 'FiberHome', model: 'GJXFH-1B6', costPrice: 4500, salePrice: 6200, stockCurrent: 18, stockMinimum: 5, requiresSerial: false },
-    { sku: 'CON-SCAPC-100', name: 'Conectores Rápidos SC/APC (Caja 100 uds)', category: 'CONNECTOR' as const, brand: 'Corning', model: 'SC-APC-FAST', costPrice: 1200, salePrice: 1900, stockCurrent: 25, stockMinimum: 8, requiresSerial: false },
+    { sku: 'HW-ONU-AC1200', name: 'Router ONT Huawei Dual Band GPON Wi-Fi 6', categoryCode: 'ROUTER_ONU', brand: 'Huawei', model: 'OptiXstar HG8145X6', costPrice: 2400, salePrice: 3500, stockCurrent: 45, stockMinimum: 10, requiresSerial: true },
+    { sku: 'HW-ONU-ZTE-F670L', name: 'Router ONT ZTE GPON Dual Band Wi-Fi 5', categoryCode: 'ROUTER_ONU', brand: 'ZTE', model: 'ZXHN F670L', costPrice: 1900, salePrice: 2950, stockCurrent: 38, stockMinimum: 10, requiresSerial: true },
+    { sku: 'STB-4K-ANDR', name: 'Decodificador Set-Top Box 4K Android TV', categoryCode: 'SET_TOP_BOX', brand: 'ZTE', model: 'ZXV10 B866V2K', costPrice: 1800, salePrice: 2600, stockCurrent: 30, stockMinimum: 8, requiresSerial: true },
+    { sku: 'CAB-DROP-1KM', name: 'Bobina Cable Drop Fibra Óptica 1 Hilo (1,000m)', categoryCode: 'FIBER_CABLE', brand: 'FiberHome', model: 'GJXFH-1B6', costPrice: 4500, salePrice: 6200, stockCurrent: 18, stockMinimum: 5, requiresSerial: false },
+    { sku: 'CON-SCAPC-100', name: 'Conectores Rápidos SC/APC (Caja 100 uds)', categoryCode: 'CONNECTOR', brand: 'Corning', model: 'SC-APC-FAST', costPrice: 1200, salePrice: 1900, stockCurrent: 25, stockMinimum: 8, requiresSerial: false },
   ];
   const savedProducts: ProductEntity[] = [];
-  for (const p of productsData) {
+  for (const { categoryCode, ...p } of productsData) {
     let product = await productRepo.findOneBy({ sku: p.sku });
     if (!product) {
-      product = await productRepo.save(productRepo.create(p));
+      const category = await categoryRepo.findOneBy({ code: categoryCode });
+      product = await productRepo.save(productRepo.create({ ...p, categoryId: category?.id }));
     }
     savedProducts.push(product);
   }
@@ -312,6 +315,26 @@ export async function runInitialSeed() {
     },
     {
       productId: savedProducts[2].id, serialNumber: 'ZTE2026STB02', macAddress: 'C8:5B:76:12:33:02',
+      status: 'AVAILABLE' as const, locationType: EquipmentLocationType.WAREHOUSE, condition: EquipmentCondition.NEW,
+      currentWarehouseId: mainWarehouse.id,
+    },
+    {
+      productId: savedProducts[0].id, serialNumber: 'HWTC-WH-00101', macAddress: 'A4:93:3F:88:10:01',
+      status: 'AVAILABLE' as const, locationType: EquipmentLocationType.WAREHOUSE, condition: EquipmentCondition.NEW,
+      currentWarehouseId: mainWarehouse.id,
+    },
+    {
+      productId: savedProducts[0].id, serialNumber: 'HWTC-WH-00102', macAddress: 'A4:93:3F:88:10:02',
+      status: 'AVAILABLE' as const, locationType: EquipmentLocationType.WAREHOUSE, condition: EquipmentCondition.NEW,
+      currentWarehouseId: mainWarehouse.id,
+    },
+    {
+      productId: savedProducts[1].id, serialNumber: 'ZTE-WH-00201', macAddress: 'C8:5B:76:99:20:01',
+      status: 'AVAILABLE' as const, locationType: EquipmentLocationType.WAREHOUSE, condition: EquipmentCondition.NEW,
+      currentWarehouseId: mainWarehouse.id,
+    },
+    {
+      productId: savedProducts[2].id, serialNumber: 'STB-WH-00301', macAddress: 'C8:5B:76:77:30:01',
       status: 'AVAILABLE' as const, locationType: EquipmentLocationType.WAREHOUSE, condition: EquipmentCondition.NEW,
       currentWarehouseId: mainWarehouse.id,
     },

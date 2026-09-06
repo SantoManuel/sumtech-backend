@@ -119,6 +119,30 @@ describe('EquipmentMovementService', () => {
       expect(saveMock).toHaveBeenCalled();
     });
 
+    it('permite ingresar una herramienta sin dirección MAC (TOOL_ASSET)', async () => {
+      const product = { id: 'p-tool', name: 'Fusionadora', requiresSerial: true };
+      const warehouse = { id: 'w1', isActive: true, createdAt: new Date() };
+      const saveMock = jest.fn((e) => Promise.resolve({ id: 'eq-tool-1', ...e }));
+
+      const manager = buildManagerMock({
+        productRepo: { findOneBy: jest.fn().mockResolvedValue(product) },
+        serialRepo: {
+          findOneBy: jest.fn().mockResolvedValue(null),
+          create: jest.fn((e) => e),
+          save: saveMock,
+        },
+        warehouseRepo: { findOneBy: jest.fn(), findOne: jest.fn().mockResolvedValue(warehouse) },
+        movementRepo: { create: jest.fn((e) => e), save: jest.fn().mockResolvedValue({}) },
+        product: { stockCurrent: 2 },
+      });
+      withTransaction(manager);
+
+      const result = await service.ingresarEquipo({ productId: 'p-tool', serialNumber: 'HERR-00042' }, 'user-1');
+
+      expect(result.macAddress).toBeUndefined();
+      expect(saveMock).toHaveBeenCalled();
+    });
+
     it('rechaza el ingreso si el producto no requiere serial', async () => {
       const manager = buildManagerMock({
         productRepo: { findOneBy: jest.fn().mockResolvedValue({ id: 'p1', name: 'Cable', requiresSerial: false }) },
@@ -270,9 +294,12 @@ describe('EquipmentMovementService', () => {
   });
 
   describe('instalarEnCliente', () => {
+    const customerEquipmentProduct = { id: 'p1', category: { articleType: 'CUSTOMER_EQUIPMENT' } };
+
     it('instala el equipo cuando el contrato admite instalación', async () => {
       const equipment: any = {
         id: 'eq-1',
+        productId: 'p1',
         locationType: EquipmentLocationType.TECHNICIAN,
         condition: EquipmentCondition.GOOD,
         currentEmployeeId: 'tech-1',
@@ -280,6 +307,7 @@ describe('EquipmentMovementService', () => {
       const contract = { id: 'c1', clientId: 'client-1', status: 'PENDING_INSTALL', contractNumber: 'CTR-1' };
       const manager = buildManagerMock({
         serialRepo: { findOne: jest.fn().mockResolvedValue(equipment), save: jest.fn((e) => Promise.resolve(e)) },
+        productRepo: { findOne: jest.fn().mockResolvedValue(customerEquipmentProduct) },
         contractRepo: { findOne: jest.fn().mockResolvedValue(contract) },
         movementRepo: { create: jest.fn((e) => e), save: jest.fn().mockResolvedValue({}) },
       });
@@ -306,14 +334,35 @@ describe('EquipmentMovementService', () => {
       );
     });
 
+    it('rechaza instalar una herramienta de trabajo (TOOL_ASSET) en un cliente', async () => {
+      const equipment: any = {
+        id: 'eq-1',
+        productId: 'p-tool',
+        locationType: EquipmentLocationType.TECHNICIAN,
+        condition: EquipmentCondition.GOOD,
+      };
+      const toolProduct = { id: 'p-tool', category: { articleType: 'TOOL_ASSET' } };
+      const manager = buildManagerMock({
+        serialRepo: { findOne: jest.fn().mockResolvedValue(equipment) },
+        productRepo: { findOne: jest.fn().mockResolvedValue(toolProduct) },
+      });
+      withTransaction(manager);
+
+      await expect(service.instalarEnCliente('eq-1', { contractId: 'c1' }, 'user-1')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
     it('rechaza si el contrato no existe', async () => {
       const equipment: any = {
         id: 'eq-1',
+        productId: 'p1',
         locationType: EquipmentLocationType.TECHNICIAN,
         condition: EquipmentCondition.GOOD,
       };
       const manager = buildManagerMock({
         serialRepo: { findOne: jest.fn().mockResolvedValue(equipment) },
+        productRepo: { findOne: jest.fn().mockResolvedValue(customerEquipmentProduct) },
         contractRepo: { findOne: jest.fn().mockResolvedValue(null) },
       });
       withTransaction(manager);
@@ -326,12 +375,14 @@ describe('EquipmentMovementService', () => {
     it('rechaza si el contrato está terminado', async () => {
       const equipment: any = {
         id: 'eq-1',
+        productId: 'p1',
         locationType: EquipmentLocationType.TECHNICIAN,
         condition: EquipmentCondition.GOOD,
       };
       const contract = { id: 'c1', clientId: 'client-1', status: 'TERMINATED', contractNumber: 'CTR-1' };
       const manager = buildManagerMock({
         serialRepo: { findOne: jest.fn().mockResolvedValue(equipment) },
+        productRepo: { findOne: jest.fn().mockResolvedValue(customerEquipmentProduct) },
         contractRepo: { findOne: jest.fn().mockResolvedValue(contract) },
       });
       withTransaction(manager);

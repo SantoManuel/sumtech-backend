@@ -435,7 +435,7 @@ export class InvoicingService {
   // 3. Reporte de Inventario & Valorización de Hardware
   async getInventoryValuationReport() {
     const products = await this.productRepository.find({
-      relations: ['serials'],
+      relations: ['serials', 'category'],
       order: { name: 'ASC' },
     });
 
@@ -470,7 +470,7 @@ export class InvoicingService {
         id: p.id,
         sku: p.sku,
         name: p.name,
-        category: p.category,
+        category: p.category?.name,
         brand: p.brand,
         model: p.model,
         costPrice: cost,

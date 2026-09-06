@@ -34,6 +34,20 @@ export class EmployeesService {
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
+  /** Ver comentario en el controller: directorio sin datos sensibles (sin salario). */
+  async findDirectory(): Promise<{ id: string; jobTitle: string; user?: { username: string } }[]> {
+    const employees = await this.employeeRepository.find({
+      where: { isActive: true },
+      relations: ['user'],
+      order: { jobTitle: 'ASC' },
+    });
+    return employees.map((e) => ({
+      id: e.id,
+      jobTitle: e.jobTitle,
+      user: e.user ? { username: e.user.username } : undefined,
+    }));
+  }
+
   async findById(id: string): Promise<EmployeeEntity> {
     const employee = await this.employeeRepository.findOne({
       where: { id },

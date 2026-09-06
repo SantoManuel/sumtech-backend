@@ -21,8 +21,9 @@ export class SerialNumberEntity {
   @Column({ name: 'serial_number', type: 'varchar', length: 100, unique: true })
   serialNumber: string;
 
-  @Column({ name: 'mac_address', type: 'varchar', length: 30, unique: true })
-  macAddress: string;
+  /** Nulo para herramientas de trabajo (TOOL_ASSET): no tienen dirección MAC como un CPE. */
+  @Column({ name: 'mac_address', type: 'varchar', length: 30, unique: true, nullable: true })
+  macAddress?: string | null;
 
   /**
    * Estado heredado (un solo enum). Se recalcula automáticamente a partir de

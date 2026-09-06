@@ -97,7 +97,7 @@ export class PortalService {
     // 1. Equipos en custodia asignados al cliente
     const equipments = await this.serialRepository.find({
       where: { clientId: client.id, status: 'ASSIGNED_TO_CLIENT' },
-      relations: ['product'],
+      relations: ['product', 'product.category'],
     });
 
     // 2. Facturación y saldo pendiente
@@ -167,7 +167,7 @@ export class PortalService {
         serialNumber: e.serialNumber,
         macAddress: e.macAddress,
         productName: e.product?.name,
-        category: e.product?.category,
+        category: e.product?.category?.name,
         brand: e.product?.brand,
         model: e.product?.model,
       })),

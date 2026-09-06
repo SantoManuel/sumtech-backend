@@ -38,6 +38,10 @@ describe('ScheduleEventsService', () => {
     durationMinutes: 600,
     isAllDay: true,
     color: 'amber',
+    isRecurring: false,
+    recurrenceType: 'NONE',
+    isHardBlock: false,
+    isLocked: false,
     createdByUserId: 'u0000000-0000-0000-0000-000000000001',
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -77,7 +81,7 @@ describe('ScheduleEventsService', () => {
 
       expect(mockRepository.createQueryBuilder).toHaveBeenCalledWith('event');
       expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith(
-        'event.eventDate BETWEEN :startDate AND :endDate',
+        '( (event.isRecurring = false AND event.eventDate BETWEEN :startDate AND :endDate) OR (event.isRecurring = true) )',
         { startDate: '2026-08-25', endDate: '2026-08-31' }
       );
       expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith(

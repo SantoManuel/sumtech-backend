@@ -11,6 +11,10 @@ export class IngresoConsumableDto {
   quantity: number;
 
   @IsOptional()
+  @IsUUID('4')
+  warehouseId?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(150)
   supplierName?: string;

@@ -5,11 +5,16 @@ import { ProductEntity } from './entities/product.entity';
 import { SerialNumberEntity } from './entities/serial-number.entity';
 import { StockMovementEntity } from './entities/stock-movement.entity';
 import { WarehouseEntity } from './entities/warehouse.entity';
+import { CategoryEntity } from './entities/category.entity';
+import { SupplierEntity } from './entities/supplier.entity';
 import { EmployeeEntity } from '../employees/entities/employee.entity';
-import { CreateProductDto } from './dto/create-product.dto';
+import { CreateProductDto, UpdateProductDto } from './dto/create-product.dto';
 import { AssignSerialDto } from './dto/assign-serial.dto';
-import { CreateWarehouseDto } from './dto/create-warehouse.dto';
+import { CreateWarehouseDto, UpdateWarehouseDto } from './dto/create-warehouse.dto';
+import { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
 import { RecordMovementDto } from './dto/record-movement.dto';
+import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
+import { FilterProductDto } from './dto/filter-inventory.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { EquipmentMovementService } from './services/equipment-movement.service';
 import { adjustWarehouseStock } from './services/warehouse-stock.util';
@@ -27,19 +32,36 @@ export class InventoryService {
     private readonly movementRepository: Repository<StockMovementEntity>,
     @InjectRepository(WarehouseEntity)
     private readonly warehouseRepository: Repository<WarehouseEntity>,
+    @InjectRepository(CategoryEntity)
+    private readonly categoryRepository: Repository<CategoryEntity>,
+    @InjectRepository(SupplierEntity)
+    private readonly supplierRepository: Repository<SupplierEntity>,
     @InjectRepository(EmployeeEntity)
     private readonly employeeRepository: Repository<EmployeeEntity>,
   ) {}
 
-  async findAllProducts(paginationDto: PaginationDto, category?: string) {
-    const page = paginationDto.page || 1;
-    const limit = paginationDto.limit || 10;
+  async findAllProducts(filterDto: FilterProductDto) {
+    const page = filterDto.page || 1;
+    const limit = filterDto.limit || 10;
     const skip = (page - 1) * limit;
 
-    const query = this.productRepository.createQueryBuilder('p').skip(skip).take(limit);
+    const query = this.productRepository
+      .createQueryBuilder('p')
+      .leftJoinAndSelect('p.category', 'category')
+      .leftJoinAndSelect('p.supplier', 'supplier')
+      .leftJoinAndSelect('p.defaultWarehouse', 'defaultWarehouse')
+      .skip(skip)
+      .take(limit);
 
-    if (category) {
-      query.where('p.category = :category', { category });
+    if (filterDto.categoryId) {
+      query.andWhere('p.categoryId = :categoryId', { categoryId: filterDto.categoryId });
+    }
+
+    if (filterDto.search) {
+      query.andWhere(
+        '(p.name ILIKE :search OR p.sku ILIKE :search OR p.brand ILIKE :search OR p.model ILIKE :search)',
+        { search: `%${filterDto.search}%` },
+      );
     }
 
     const [data, total] = await query.orderBy('p.name', 'ASC').getManyAndCount();
@@ -57,7 +79,7 @@ export class InventoryService {
   async findProductById(id: string): Promise<ProductEntity> {
     const prod = await this.productRepository.findOne({
       where: { id },
-      relations: ['serials'],
+      relations: ['serials', 'category', 'supplier', 'defaultWarehouse'],
     });
     if (!prod) {
       throw new NotFoundException(`Producto con ID ${id} no encontrado`);
@@ -66,7 +88,26 @@ export class InventoryService {
   }
 
   async createProduct(dto: CreateProductDto): Promise<ProductEntity> {
+    const existing = await this.productRepository.findOneBy({ sku: dto.sku });
+    if (existing) {
+      throw new BadRequestException(`Ya existe un producto con el SKU "${dto.sku}"`);
+    }
     const product = this.productRepository.create(dto);
+    return this.productRepository.save(product);
+  }
+
+  async updateProduct(id: string, dto: UpdateProductDto): Promise<ProductEntity> {
+    const product = await this.productRepository.findOneBy({ id });
+    if (!product) {
+      throw new NotFoundException(`Producto con ID ${id} no encontrado`);
+    }
+    if (dto.sku && dto.sku !== product.sku) {
+      const existing = await this.productRepository.findOneBy({ sku: dto.sku });
+      if (existing && existing.id !== id) {
+        throw new BadRequestException(`Ya existe un producto con el SKU "${dto.sku}"`);
+      }
+    }
+    Object.assign(product, dto);
     return this.productRepository.save(product);
   }
 
@@ -156,8 +197,9 @@ export class InventoryService {
       );
     }
     const serialSet = new Set(dto.serials.map((s) => s.serialNumber));
-    const macSet = new Set(dto.serials.map((s) => s.macAddress));
-    if (serialSet.size !== dto.serials.length || macSet.size !== dto.serials.length) {
+    const providedMacs = dto.serials.map((s) => s.macAddress).filter((mac): mac is string => !!mac);
+    const macSet = new Set(providedMacs);
+    if (serialSet.size !== dto.serials.length || macSet.size !== providedMacs.length) {
       throw new BadRequestException('Se enviaron seriales o direcciones MAC duplicadas en la misma solicitud');
     }
 
@@ -165,7 +207,12 @@ export class InventoryService {
     for (const item of dto.serials) {
       equipmentCreated.push(
         await this.equipmentMovementService.ingresarEquipo(
-          { productId: product.id, serialNumber: item.serialNumber, macAddress: item.macAddress },
+          {
+            productId: product.id,
+            serialNumber: item.serialNumber,
+            macAddress: item.macAddress,
+            warehouseId: dto.warehouseId,
+          },
           userId,
         ),
       );
@@ -231,7 +278,21 @@ export class InventoryService {
   }
 
   async findWarehouses(): Promise<WarehouseEntity[]> {
-    return this.warehouseRepository.find({ order: { name: 'ASC' } });
+    return this.warehouseRepository.find({
+      relations: ['country', 'province', 'municipality', 'sector'],
+      order: { name: 'ASC' },
+    });
+  }
+
+  async findWarehouseById(id: string): Promise<WarehouseEntity> {
+    const warehouse = await this.warehouseRepository.findOne({
+      where: { id },
+      relations: ['country', 'province', 'municipality', 'sector'],
+    });
+    if (!warehouse) {
+      throw new NotFoundException(`Almacén con ID ${id} no encontrado`);
+    }
+    return warehouse;
   }
 
   async createWarehouse(dto: CreateWarehouseDto): Promise<WarehouseEntity> {
@@ -239,6 +300,149 @@ export class InventoryService {
     if (existing) {
       throw new BadRequestException(`Ya existe un almacén con el nombre "${dto.name}"`);
     }
-    return this.warehouseRepository.save(this.warehouseRepository.create(dto));
+    if (dto.code) {
+      const existingCode = await this.warehouseRepository.findOneBy({ code: dto.code });
+      if (existingCode) {
+        throw new BadRequestException(`Ya existe un almacén con el código "${dto.code}"`);
+      }
+    }
+    const warehouse = this.warehouseRepository.create(dto);
+    const saved = await this.warehouseRepository.save(warehouse);
+    return this.findWarehouseById(saved.id);
+  }
+
+  async updateWarehouse(id: string, dto: UpdateWarehouseDto): Promise<WarehouseEntity> {
+    const warehouse = await this.warehouseRepository.findOneBy({ id });
+    if (!warehouse) {
+      throw new NotFoundException(`Almacén con ID ${id} no encontrado`);
+    }
+
+    if (dto.name && dto.name !== warehouse.name) {
+      const existing = await this.warehouseRepository.findOneBy({ name: dto.name });
+      if (existing && existing.id !== id) {
+        throw new BadRequestException(`Ya existe un almacén con el nombre "${dto.name}"`);
+      }
+    }
+
+    if (dto.code && dto.code !== warehouse.code) {
+      const existingCode = await this.warehouseRepository.findOneBy({ code: dto.code });
+      if (existingCode && existingCode.id !== id) {
+        throw new BadRequestException(`Ya existe un almacén con el código "${dto.code}"`);
+      }
+    }
+
+    Object.assign(warehouse, dto);
+    await this.warehouseRepository.save(warehouse);
+    return this.findWarehouseById(id);
+  }
+
+  // ---------- Categorías ----------
+
+  async findAllCategories(): Promise<CategoryEntity[]> {
+    return this.categoryRepository.find({ order: { name: 'ASC' } });
+  }
+
+  async findCategoryById(id: string): Promise<CategoryEntity> {
+    const category = await this.categoryRepository.findOneBy({ id });
+    if (!category) {
+      throw new NotFoundException(`Categoría ${id} no encontrada`);
+    }
+    return category;
+  }
+
+  async createCategory(dto: CreateCategoryDto): Promise<CategoryEntity> {
+    const existing = await this.categoryRepository.findOneBy({ code: dto.code });
+    if (existing) {
+      throw new BadRequestException(`Ya existe una categoría con el código "${dto.code}"`);
+    }
+    return this.categoryRepository.save(this.categoryRepository.create(dto));
+  }
+
+  async updateCategory(id: string, dto: UpdateCategoryDto): Promise<CategoryEntity> {
+    const category = await this.findCategoryById(id);
+    Object.assign(category, dto);
+    return this.categoryRepository.save(category);
+  }
+
+  // ---------- Búsqueda unificada (escaneo rápido) ----------
+
+  /**
+   * Resuelve un código escaneado (serial, MAC o SKU) a un equipo o producto, en
+   * ese orden. Pensado para alimentar el flujo de escaneo del Despacho por Lotes:
+   * un equipo se agrega directo a la línea, un producto a granel pide cantidad.
+   */
+  async lookupByCode(
+    code: string,
+  ): Promise<{ type: 'EQUIPMENT'; equipment: SerialNumberEntity } | { type: 'PRODUCT'; product: ProductEntity }> {
+    const trimmed = code?.trim();
+    if (!trimmed) {
+      throw new BadRequestException('Debe indicar un código para buscar');
+    }
+
+    const equipment = await this.serialRepository.findOne({
+      where: [{ serialNumber: trimmed }, { macAddress: trimmed }],
+      relations: ['product', 'product.category', 'product.supplier', 'product.defaultWarehouse'],
+    });
+    if (equipment) {
+      return { type: 'EQUIPMENT', equipment };
+    }
+
+    const product = await this.productRepository.findOne({
+      where: [{ sku: trimmed }, { barcode: trimmed }, { manufacturerCode: trimmed }],
+      relations: ['category', 'supplier', 'defaultWarehouse'],
+    });
+    if (product) {
+      return { type: 'PRODUCT', product };
+    }
+
+    throw new NotFoundException(`No se encontró ningún equipo ni producto con el código "${trimmed}"`);
+  }
+
+  // ---------- Proveedores ----------
+
+  async findSuppliers(search?: string, isActive?: boolean): Promise<SupplierEntity[]> {
+    const query = this.supplierRepository.createQueryBuilder('s').orderBy('s.businessName', 'ASC');
+    if (isActive !== undefined) {
+      query.andWhere('s.isActive = :isActive', { isActive });
+    }
+    if (search) {
+      query.andWhere(
+        '(s.businessName ILIKE :search OR s.tradeName ILIKE :search OR s.rnc ILIKE :search OR s.contactPerson ILIKE :search)',
+        { search: `%${search}%` },
+      );
+    }
+    return query.getMany();
+  }
+
+  async findSupplierById(id: string): Promise<SupplierEntity> {
+    const supplier = await this.supplierRepository.findOneBy({ id });
+    if (!supplier) {
+      throw new NotFoundException(`Proveedor con ID ${id} no encontrado`);
+    }
+    return supplier;
+  }
+
+  async createSupplier(dto: CreateSupplierDto): Promise<SupplierEntity> {
+    const existing = await this.supplierRepository.findOneBy({ rnc: dto.rnc });
+    if (existing) {
+      throw new BadRequestException(`Ya existe un proveedor registrado con el RNC "${dto.rnc}"`);
+    }
+    const supplier = this.supplierRepository.create(dto);
+    return this.supplierRepository.save(supplier);
+  }
+
+  async updateSupplier(id: string, dto: UpdateSupplierDto): Promise<SupplierEntity> {
+    const supplier = await this.supplierRepository.findOneBy({ id });
+    if (!supplier) {
+      throw new NotFoundException(`Proveedor con ID ${id} no encontrado`);
+    }
+    if (dto.rnc && dto.rnc !== supplier.rnc) {
+      const existing = await this.supplierRepository.findOneBy({ rnc: dto.rnc });
+      if (existing && existing.id !== id) {
+        throw new BadRequestException(`Ya existe un proveedor registrado con el RNC "${dto.rnc}"`);
+      }
+    }
+    Object.assign(supplier, dto);
+    return this.supplierRepository.save(supplier);
   }
 }

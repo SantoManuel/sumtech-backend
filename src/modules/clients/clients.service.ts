@@ -177,4 +177,9 @@ export class ClientsService {
 
     return this.contractRepository.save(contract);
   }
+
+  async findContractsByClientId(clientId: string): Promise<ContractEntity[]> {
+    const client = await this.findById(clientId);
+    return client.contracts || [];
+  }
 }

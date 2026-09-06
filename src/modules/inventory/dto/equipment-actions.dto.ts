@@ -18,6 +18,10 @@ export class InstallAtClientDto {
   contractId: string;
 
   @IsOptional()
+  @IsUUID('4')
+  ticketId?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(255)
   notes?: string;

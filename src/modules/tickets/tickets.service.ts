@@ -6,7 +6,8 @@ import { TicketEntity } from './entities/ticket.entity';
 import { TicketHistoryEntity } from './entities/ticket-history.entity';
 import { TicketRepairEntity } from './entities/ticket-repair.entity';
 import { SlaPolicyEntity } from './entities/sla-policy.entity';
-import { CreateTicketDto, UpdateTicketStatusDto, SwapHardwareDto, ScheduleTicketDto } from './dto/ticket.dto';
+import { CreateTicketDto, UpdateTicketStatusDto, SwapHardwareDto, ScheduleTicketDto, FilterTicketDto } from './dto/ticket.dto';
+import { PivotScheduleDto } from './dto/pivot-schedule.dto';
 import { EquipmentMovementService } from '../inventory/services/equipment-movement.service';
 import { EquipmentLocationType, EquipmentCondition } from '../inventory/enums/equipment.enums';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -28,9 +29,9 @@ export class TicketsService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  async findAll(paginationDto: PaginationDto, status?: string, type?: string, employeeId?: string) {
-    const page = paginationDto.page || 1;
-    const limit = paginationDto.limit || 15;
+  async findAll(filterDto: FilterTicketDto) {
+    const page = filterDto.page || 1;
+    const limit = filterDto.limit || 100;
     const skip = (page - 1) * limit;
 
     const query = this.ticketRepository
@@ -41,16 +42,54 @@ export class TicketsService {
       .leftJoinAndSelect('contract.address', 'address')
       .leftJoinAndSelect('ticket.assignedEmployee', 'employee')
       .leftJoinAndSelect('employee.user', 'user')
-      .skip(skip)
-      .take(limit)
       .orderBy('ticket.createdAt', 'DESC');
 
-    if (status) query.andWhere('ticket.status = :status', { status });
-    if (type) query.andWhere('ticket.type = :type', { type });
-    if (employeeId) query.andWhere('ticket.assignedEmployeeId = :employeeId', { employeeId });
+    if (filterDto.type && filterDto.type !== 'ALL') {
+      query.andWhere('ticket.type = :type', { type: filterDto.type });
+    }
+    if (filterDto.employeeId) {
+      query.andWhere('ticket.assignedEmployeeId = :employeeId', { employeeId: filterDto.employeeId });
+    }
+    if (filterDto.clientId) {
+      query.andWhere('ticket.clientId = :clientId', { clientId: filterDto.clientId });
+    }
+
+    const includeActive = filterDto.includeActiveBacklog === true || filterDto.includeActiveBacklog === 'true';
+
+    if (filterDto.status) {
+      query.andWhere('ticket.status = :status', { status: filterDto.status });
+      if (filterDto.startDate) {
+        query.andWhere('ticket.createdAt >= :startDate', { startDate: new Date(filterDto.startDate) });
+      }
+      if (filterDto.endDate) {
+        query.andWhere('ticket.createdAt <= :endDate', { endDate: new Date(filterDto.endDate) });
+      }
+    } else if (filterDto.startDate || filterDto.endDate) {
+      const start = filterDto.startDate ? new Date(filterDto.startDate) : new Date('2000-01-01');
+      const end = filterDto.endDate ? new Date(filterDto.endDate) : new Date('2100-01-01');
+
+      if (includeActive) {
+        // Traer TODO lo pendiente/en curso + resueltos dentro de la ventana de fechas
+        query.andWhere(
+          '(ticket.status IN (:...activeStatuses) OR (ticket.status IN (:...closedStatuses) AND COALESCE(ticket.resolvedAt, ticket.createdAt) BETWEEN :start AND :end))',
+          {
+            activeStatuses: ['OPEN', 'IN_PROGRESS', 'ON_HOLD'],
+            closedStatuses: ['RESOLVED', 'CLOSED'],
+            start,
+            end,
+          },
+        );
+      } else {
+        query.andWhere('ticket.createdAt BETWEEN :start AND :end', { start, end });
+      }
+    }
+
+    if (filterDto.limit) {
+      query.skip(skip).take(limit);
+    }
 
     const [data, total] = await query.getManyAndCount();
-    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return { data, total, page, limit: filterDto.limit || total, totalPages: filterDto.limit ? Math.ceil(total / limit) : 1 };
   }
 
   async findById(id: string): Promise<TicketEntity> {
@@ -254,6 +293,60 @@ export class TicketsService {
     );
 
     return this.findById(ticketId);
+  }
+
+  /**
+   * Pivota (reprograma en bloque) órdenes técnicas desde una fecha origen hacia una fecha destino,
+   * facilitando la liberación de cuadrillas en fechas de hitos fijos (ej. día 25 de cobro masivo).
+   */
+  async pivotSchedule(dto: PivotScheduleDto, userId: string): Promise<{ count: number; movedTickets: TicketEntity[] }> {
+    const query = this.ticketRepository
+      .createQueryBuilder('ticket')
+      .leftJoinAndSelect('ticket.assignedEmployee', 'employee')
+      .leftJoinAndSelect('employee.user', 'user');
+
+    if (dto.ticketIds && dto.ticketIds.length > 0) {
+      query.where('ticket.id IN (:...ticketIds)', { ticketIds: dto.ticketIds });
+    } else {
+      query.where("ticket.scheduledStart::date = :sourceDate", { sourceDate: dto.sourceDate });
+    }
+
+    if (dto.technicianIds && dto.technicianIds.length > 0) {
+      query.andWhere('ticket.assignedEmployeeId IN (:...technicianIds)', { technicianIds: dto.technicianIds });
+    }
+
+    const ticketsToPivot = await query.getMany();
+
+    if (ticketsToPivot.length === 0) {
+      return { count: 0, movedTickets: [] };
+    }
+
+    const movedTickets: TicketEntity[] = [];
+    const [tYear, tMonth, tDay] = dto.targetDate.split('-').map(Number);
+
+    for (const ticket of ticketsToPivot) {
+      const originalDate = ticket.scheduledStart ? new Date(ticket.scheduledStart) : new Date();
+      const hours = originalDate.getHours() || 8;
+      const minutes = originalDate.getMinutes() || 0;
+
+      const newScheduledStart = new Date(tYear, tMonth - 1, tDay, hours, minutes, 0);
+      ticket.scheduledStart = newScheduledStart;
+
+      const saved = await this.ticketRepository.save(ticket);
+      movedTickets.push(saved);
+
+      await this.historyRepository.save(
+        this.historyRepository.create({
+          ticketId: saved.id,
+          previousStatus: saved.status,
+          newStatus: saved.status,
+          changedByUserId: userId,
+          note: `GANTT PIVOT: Orden reprogramada de ${dto.sourceDate} hacia ${dto.targetDate}. ${dto.reason ? 'Motivo: ' + dto.reason : ''}`.trim(),
+        }),
+      );
+    }
+
+    return { count: movedTickets.length, movedTickets };
   }
 }
 

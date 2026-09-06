@@ -43,6 +43,12 @@ export class ClientsController {
     return this.clientsService.update(id, updateClientDto);
   }
 
+  @Get(':id/contracts')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO, Role.AGENTE_CRM)
+  async getContracts(@Param('id') id: string) {
+    return this.clientsService.findContractsByClientId(id);
+  }
+
   @Post(':id/contracts')
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
   async addContract(

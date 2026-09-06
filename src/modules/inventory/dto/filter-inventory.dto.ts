@@ -1,11 +1,12 @@
 import { IsOptional, IsString, IsUUID, IsEnum } from 'class-validator';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { EquipmentCondition, EquipmentLocationType } from '../enums/equipment.enums';
+import { ArticleType } from '../enums/category.enums';
 
 export class FilterProductDto extends PaginationDto {
   @IsOptional()
-  @IsString()
-  category?: string;
+  @IsUUID('4')
+  categoryId?: string;
 }
 
 export class FilterSerialDto extends PaginationDto {
@@ -32,4 +33,12 @@ export class FilterSerialDto extends PaginationDto {
   @IsOptional()
   @IsUUID('4')
   clientId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  warehouseId?: string;
+
+  @IsOptional()
+  @IsEnum(ArticleType)
+  articleType?: ArticleType;
 }

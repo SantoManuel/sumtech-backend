@@ -17,9 +17,10 @@ export class SerialInputDto {
   @IsString()
   serialNumber: string;
 
-  @IsNotEmpty()
+  /** Opcional: las herramientas de trabajo (TOOL_ASSET) no tienen dirección MAC. */
+  @IsOptional()
   @IsString()
-  macAddress: string;
+  macAddress?: string;
 }
 
 /**
@@ -33,6 +34,10 @@ export class RecordMovementDto {
   @IsNotEmpty()
   @IsUUID('4')
   productId: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  warehouseId?: string;
 
   @IsEnum(['IN_PURCHASE', 'OUT_SALE', 'OUT_INSTALLATION', 'IN_REPAIR_RETURN', 'ADJUSTMENT'])
   movementType: 'IN_PURCHASE' | 'OUT_SALE' | 'OUT_INSTALLATION' | 'IN_REPAIR_RETURN' | 'ADJUSTMENT';

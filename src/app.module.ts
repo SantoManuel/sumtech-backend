@@ -18,6 +18,7 @@ import { PublicModule } from './modules/public/public.module';
 import { CoordinationModule } from './modules/coordination/coordination.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PortalModule } from './modules/portal/portal.module';
+import { GeographyModule } from './modules/geography/geography.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { PortalModule } from './modules/portal/portal.module';
     CoordinationModule,
     DashboardModule,
     PortalModule,
+    GeographyModule,
   ],
 })
 export class AppModule {}

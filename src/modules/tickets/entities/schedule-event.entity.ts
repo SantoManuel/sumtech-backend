@@ -60,6 +60,26 @@ export class ScheduleEventEntity {
   @Column({ type: 'varchar', length: 30, default: 'blue', nullable: true })
   color?: string;
 
+  @Column({ name: 'is_recurring', type: 'boolean', default: false })
+  isRecurring: boolean;
+
+  @Column({ 
+    name: 'recurrence_type', 
+    type: 'varchar', 
+    length: 30, 
+    default: 'NONE' 
+  })
+  recurrenceType: 'NONE' | 'WEEKLY' | 'MONTHLY_DAY' | 'YEARLY';
+
+  @Column({ name: 'recurrence_day', type: 'int', nullable: true })
+  recurrenceDay?: number | null;
+
+  @Column({ name: 'is_hard_block', type: 'boolean', default: false })
+  isHardBlock: boolean;
+
+  @Column({ name: 'is_locked', type: 'boolean', default: false })
+  isLocked: boolean;
+
   @Column({ name: 'created_by_user_id', type: 'uuid' })
   createdByUserId: string;
 

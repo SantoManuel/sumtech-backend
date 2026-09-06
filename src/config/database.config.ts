@@ -17,6 +17,10 @@ import { StockMovementEntity } from '../modules/inventory/entities/stock-movemen
 import { WarehouseEntity } from '../modules/inventory/entities/warehouse.entity';
 import { EquipmentMovementEntity } from '../modules/inventory/entities/equipment-movement.entity';
 import { StockItemEntity } from '../modules/inventory/entities/stock-item.entity';
+import { CategoryEntity } from '../modules/inventory/entities/category.entity';
+import { SupplierEntity } from '../modules/inventory/entities/supplier.entity';
+import { DispatchEntity } from '../modules/inventory/entities/dispatch.entity';
+import { DispatchLineEntity } from '../modules/inventory/entities/dispatch-line.entity';
 import { CashRegisterEntity } from '../modules/pos/entities/cash-register.entity';
 import { SaleEntity } from '../modules/pos/entities/sale.entity';
 import { SaleDetailEntity } from '../modules/pos/entities/sale-detail.entity';
@@ -32,8 +36,17 @@ import { InteractionEntity } from '../modules/crm/entities/interaction.entity';
 import { DepositProofEntity } from '../modules/portal/entities/deposit-proof.entity';
 import { PlanChangeRequestEntity } from '../modules/portal/entities/plan-change-request.entity';
 import { ClientNotificationEntity } from '../modules/portal/entities/client-notification.entity';
+import { CountryEntity } from '../modules/geography/entities/country.entity';
+import { ProvinceEntity } from '../modules/geography/entities/province.entity';
+import { MunicipalityEntity } from '../modules/geography/entities/municipality.entity';
+import { SectorEntity } from '../modules/geography/entities/sector.entity';
 
 export const entities = [
+  // geo
+  CountryEntity,
+  ProvinceEntity,
+  MunicipalityEntity,
+  SectorEntity,
   // sec
   UserEntity,
   RoleEntity,
@@ -53,6 +66,10 @@ export const entities = [
   WarehouseEntity,
   EquipmentMovementEntity,
   StockItemEntity,
+  CategoryEntity,
+  SupplierEntity,
+  DispatchEntity,
+  DispatchLineEntity,
   // pos
   CashRegisterEntity,
   SaleEntity,

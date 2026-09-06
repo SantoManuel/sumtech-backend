@@ -5,6 +5,10 @@ import { PaginationDto } from '../../../common/dto/pagination.dto';
 export class FilterClientDto extends PaginationDto {
   @IsOptional()
   @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsString()
   clientType?: string;
 
   @IsOptional()
