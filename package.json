@@ -16,6 +16,8 @@
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/config/database.config.ts",
     "migrate": "ts-node src/database/apply-migrations.ts",
     "seed": "ts-node src/database/seeds/initial-seed.ts",
+    "import:legacy-network": "ts-node src/database/scripts/import-legacy-network-access.ts",
+    "shadow-check:routeros": "ts-node src/database/scripts/run-routeros-shadow-check.ts",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",

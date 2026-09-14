@@ -45,6 +45,10 @@ import { CountryEntity } from '../modules/geography/entities/country.entity';
 import { ProvinceEntity } from '../modules/geography/entities/province.entity';
 import { MunicipalityEntity } from '../modules/geography/entities/municipality.entity';
 import { SectorEntity } from '../modules/geography/entities/sector.entity';
+import { ZoneEntity } from '../modules/network/entities/zone.entity';
+import { NetworkNodeEntity } from '../modules/network/entities/network-node.entity';
+import { NetworkAccessEntity } from '../modules/network/entities/network-access.entity';
+import { ProvisioningAuditLogEntity } from '../modules/network/entities/provisioning-audit-log.entity';
 
 export const entities = [
   // geo
@@ -52,6 +56,11 @@ export const entities = [
   ProvinceEntity,
   MunicipalityEntity,
   SectorEntity,
+  // net
+  ZoneEntity,
+  NetworkNodeEntity,
+  NetworkAccessEntity,
+  ProvisioningAuditLogEntity,
   // sec
   UserEntity,
   RoleEntity,

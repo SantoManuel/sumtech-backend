@@ -320,6 +320,45 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       expect(planRepo.findOneBy).toHaveBeenCalledWith({ id: 'plan-1' });
     });
 
+    it('emite CONTRACT_PLAN_CHANGED con el plan viejo y el nuevo cuando el plan efectivamente cambia', async () => {
+      contractRepo.findOne.mockResolvedValue({
+        id: 'contract-1',
+        clientId: 'client-1',
+        contractNumber: 'CTR-0001',
+        planId: 'plan-old',
+        billingDay: 15,
+      });
+
+      await service.updateContract('client-1', 'contract-1', { planId: 'plan-1' });
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        SystemEvents.CONTRACT_PLAN_CHANGED,
+        expect.objectContaining({
+          contractId: 'contract-1',
+          clientId: 'client-1',
+          contractNumber: 'CTR-0001',
+          oldPlanId: 'plan-old',
+          newPlanId: 'plan-1',
+        }),
+      );
+    });
+
+    it('NO emite CONTRACT_PLAN_CHANGED si no se envía planId', async () => {
+      contractRepo.findOne.mockResolvedValue({ id: 'contract-1', clientId: 'client-1', planId: 'plan-old', billingDay: 15 });
+
+      await service.updateContract('client-1', 'contract-1', { billingDay: 20 });
+
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(SystemEvents.CONTRACT_PLAN_CHANGED, expect.anything());
+    });
+
+    it('NO emite CONTRACT_PLAN_CHANGED si el planId enviado es el mismo que ya tenía', async () => {
+      contractRepo.findOne.mockResolvedValue({ id: 'contract-1', clientId: 'client-1', planId: 'plan-1', billingDay: 15 });
+
+      await service.updateContract('client-1', 'contract-1', { planId: 'plan-1' });
+
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(SystemEvents.CONTRACT_PLAN_CHANGED, expect.anything());
+    });
+
     it('lanza NotFoundException si se intenta mover el contrato a un plan inexistente', async () => {
       contractRepo.findOne.mockResolvedValue({ id: 'contract-1', clientId: 'client-1', planId: 'plan-old', billingDay: 15 });
       planRepo.findOneBy.mockResolvedValue(null);
@@ -348,7 +387,11 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       expect(result.status).toBe('SUSPENDED');
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         SystemEvents.CONTRACT_SUSPENDED,
-        expect.objectContaining({ contractId: 'contract-1', clientId: 'client-1' }),
+        expect.objectContaining({
+          contractId: 'contract-1',
+          clientId: 'client-1',
+          reason: 'Suspensión manual por administrador.',
+        }),
       );
     });
 
@@ -366,7 +409,11 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       expect(result.status).toBe('ACTIVE');
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         SystemEvents.CONTRACT_REACTIVATED,
-        expect.objectContaining({ contractId: 'contract-1', clientId: 'client-1' }),
+        expect.objectContaining({
+          contractId: 'contract-1',
+          clientId: 'client-1',
+          reason: 'Reactivación manual por administrador.',
+        }),
       );
     });
 
@@ -389,7 +436,12 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
         expect(result.endDate).toBeTruthy();
         expect(eventEmitter.emit).toHaveBeenCalledWith(
           SystemEvents.CONTRACT_TERMINATED,
-          expect.objectContaining({ contractId: 'contract-1', clientId: 'client-1', contractNumber: 'CTR-0001' }),
+          expect.objectContaining({
+            contractId: 'contract-1',
+            clientId: 'client-1',
+            contractNumber: 'CTR-0001',
+            reason: 'Terminación manual por administrador.',
+          }),
         );
       },
     );

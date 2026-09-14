@@ -133,7 +133,12 @@ describe('MorosidadService', () => {
       expect(contractRepo.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'SUSPENDED' }));
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         SystemEvents.CONTRACT_SUSPENDED,
-        expect.objectContaining({ contractId: 'contract-1', contractNumber: 'CTR-0001', daysOverdue: 6 }),
+        expect.objectContaining({
+          contractId: 'contract-1',
+          contractNumber: 'CTR-0001',
+          daysOverdue: 6,
+          reason: 'Suspensión automática por morosidad: 6 día(s) de atraso.',
+        }),
       );
     });
 
@@ -249,7 +254,11 @@ describe('MorosidadService', () => {
       expect(contractRepo.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'ACTIVE' }));
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         SystemEvents.CONTRACT_REACTIVATED,
-        expect.objectContaining({ contractId: 'contract-1', clientId: 'client-1' }),
+        expect.objectContaining({
+          contractId: 'contract-1',
+          clientId: 'client-1',
+          reason: 'Reactivación automática: facturas vencidas liquidadas.',
+        }),
       );
     });
   });

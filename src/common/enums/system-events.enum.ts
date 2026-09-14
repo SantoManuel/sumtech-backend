@@ -23,6 +23,14 @@
  *   termina definitivamente, vía ClientsService.terminateContract).
  * - CONTRACT_CREATED: 'contract.created' (Disparado al firmar un contrato nuevo
  *   vía ClientsService.addContract — dispara la orden de instalación automática).
+ * - CONTRACT_PLAN_CHANGED: 'contract.plan_changed' (Disparado por
+ *   ClientsService.updateContract cuando el planId de un contrato cambia —
+ *   dispara la sincronización del perfil de velocidad de red, ver
+ *   NetworkContractPlanChangedListener).
+ * - PLAN_SPEED_CHANGED: 'plan.speed_changed' (Disparado por PlansService.update
+ *   cuando el speedMbps de un plan YA existente cambia — re-sincroniza el
+ *   perfil de velocidad de red de todos los contratos activos/suspendidos que
+ *   ya estaban en ese plan, ver NetworkPlanSpeedChangedListener).
  */
 export enum SystemEvents {
   SALE_CONFIRMED = 'sale.confirmed',
@@ -36,4 +44,6 @@ export enum SystemEvents {
   CONTRACT_REACTIVATED = 'contract.reactivated',
   CONTRACT_TERMINATED = 'contract.terminated',
   CONTRACT_CREATED = 'contract.created',
+  CONTRACT_PLAN_CHANGED = 'contract.plan_changed',
+  PLAN_SPEED_CHANGED = 'plan.speed_changed',
 }

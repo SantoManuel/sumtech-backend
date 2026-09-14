@@ -1,13 +1,16 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotFoundException } from '@nestjs/common';
 import { PlansService } from './plans.service';
 import { PlanEntity } from './entities/plan.entity';
+import { SystemEvents } from '../../common/enums/system-events.enum';
 
 describe('PlansService', () => {
   let service: PlansService;
   let planRepo: any;
   let queryBuilder: any;
+  let eventEmitter: any;
 
   const makePlan = (overrides: Partial<PlanEntity> = {}): PlanEntity =>
     ({
@@ -41,8 +44,14 @@ describe('PlansService', () => {
       save: jest.fn((entity: any) => Promise.resolve({ id: entity.id || 'plan-generated', ...entity })),
     };
 
+    eventEmitter = { emit: jest.fn() };
+
     const module: TestingModule = await Test.createTestingModule({
-      providers: [PlansService, { provide: getRepositoryToken(PlanEntity), useValue: planRepo }],
+      providers: [
+        PlansService,
+        { provide: getRepositoryToken(PlanEntity), useValue: planRepo },
+        { provide: EventEmitter2, useValue: eventEmitter },
+      ],
     }).compile();
 
     service = module.get<PlansService>(PlansService);
@@ -171,6 +180,33 @@ describe('PlansService', () => {
       expect(result.cdtRate).toBe(0.03);
       expect(result.itbisRate).toBe(0.16);
       expect(result.name).toBe('Fibra 100');
+    });
+
+    it('emite PLAN_SPEED_CHANGED cuando speedMbps cambia', async () => {
+      planRepo.findOneBy.mockResolvedValue(makePlan({ speedMbps: 20 }));
+
+      await service.update('plan-1', { speedMbps: 25 } as any);
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        SystemEvents.PLAN_SPEED_CHANGED,
+        expect.objectContaining({ planId: 'plan-1', oldSpeedMbps: 20, newSpeedMbps: 25 }),
+      );
+    });
+
+    it('no emite PLAN_SPEED_CHANGED si no se envía speedMbps', async () => {
+      planRepo.findOneBy.mockResolvedValue(makePlan({ speedMbps: 20 }));
+
+      await service.update('plan-1', { name: 'Renombrado' } as any);
+
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('no emite PLAN_SPEED_CHANGED si speedMbps se envía pero es igual al actual', async () => {
+      planRepo.findOneBy.mockResolvedValue(makePlan({ speedMbps: 20 }));
+
+      await service.update('plan-1', { speedMbps: 20 } as any);
+
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
   });
 

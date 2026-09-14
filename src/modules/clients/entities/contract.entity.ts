@@ -1,8 +1,9 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany, JoinColumn, CreateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany, OneToOne, JoinColumn, CreateDateColumn } from 'typeorm';
 import { ClientEntity } from './client.entity';
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { AddressEntity } from './address.entity';
 import { InvoiceEntity } from '../../invoicing/entities/invoice.entity';
+import { NetworkAccessEntity } from '../../network/entities/network-access.entity';
 
 @Entity({ schema: 'com', name: 'contracts' })
 export class ContractEntity {
@@ -54,4 +55,10 @@ export class ContractEntity {
 
   @OneToMany(() => InvoiceEntity, (invoice) => invoice.contract)
   invoices?: InvoiceEntity[];
+
+  // Identidad de red (Usuario/IP/Estado del sistema WISP anterior) — vive en
+  // el módulo network, ver NetworkAccessEntity. 1–1: cada contrato tiene a lo
+  // sumo un acceso de red.
+  @OneToOne(() => NetworkAccessEntity, (access) => access.contract)
+  networkAccess?: NetworkAccessEntity;
 }

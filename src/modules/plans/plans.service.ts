@@ -1,16 +1,20 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlanEntity } from './entities/plan.entity';
 import { CreatePlanDto } from './dto/create-plan.dto';
 import { UpdatePlanDto } from './dto/update-plan.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
+import { SystemEvents } from '../../common/enums/system-events.enum';
+import { PlanSpeedChangedEvent } from './events/plan-speed-changed.event';
 
 @Injectable()
 export class PlansService {
   constructor(
     @InjectRepository(PlanEntity)
     private readonly planRepository: Repository<PlanEntity>,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async findAll(paginationDto?: PaginationDto, activeOnly = false) {
@@ -58,8 +62,22 @@ export class PlansService {
 
   async update(id: string, dto: UpdatePlanDto): Promise<PlanEntity> {
     const plan = await this.findById(id);
+    const previousSpeedMbps = Number(plan.speedMbps);
     Object.assign(plan, dto);
-    return this.planRepository.save(plan);
+    const saved = await this.planRepository.save(plan);
+
+    if (dto.speedMbps !== undefined && Number(dto.speedMbps) !== previousSpeedMbps) {
+      const event: PlanSpeedChangedEvent = {
+        planId: saved.id,
+        planName: saved.name,
+        oldSpeedMbps: previousSpeedMbps,
+        newSpeedMbps: Number(dto.speedMbps),
+        occurredOn: new Date(),
+      };
+      this.eventEmitter.emit(SystemEvents.PLAN_SPEED_CHANGED, event);
+    }
+
+    return saved;
   }
 
   async deactivate(id: string): Promise<PlanEntity> {

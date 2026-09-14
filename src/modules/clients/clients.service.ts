@@ -16,6 +16,7 @@ import { ContractSuspendedEvent } from '../billing/events/contract-suspended.eve
 import { ContractReactivatedEvent } from '../billing/events/contract-reactivated.event';
 import { ContractTerminatedEvent } from '../billing/events/contract-terminated.event';
 import { ContractCreatedEvent } from '../billing/events/contract-created.event';
+import { ContractPlanChangedEvent } from '../billing/events/contract-plan-changed.event';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
@@ -65,6 +66,7 @@ export class ClientsService {
       .leftJoinAndSelect('client.addresses', 'addresses')
       .leftJoinAndSelect('client.contracts', 'contracts')
       .leftJoinAndSelect('contracts.plan', 'plan')
+      .leftJoinAndSelect('contracts.networkAccess', 'networkAccess')
       .leftJoinAndSelect('client.user', 'user')
       .skip(skip)
       .take(limit)
@@ -89,6 +91,9 @@ export class ClientsService {
         'contracts',
         'contracts.plan',
         'contracts.address',
+        'contracts.networkAccess',
+        'contracts.networkAccess.node',
+        'contracts.networkAccess.node.zone',
         'sales',
         'sales.invoice',
         'user',
@@ -317,8 +322,16 @@ export class ClientsService {
     return contract;
   }
 
+  /**
+   * Emite CONTRACT_PLAN_CHANGED cuando el planId efectivamente cambia (no al
+   * volver a mandar el mismo plan) para que NetworkContractPlanChangedListener
+   * sincronice el perfil de velocidad de red (ver Fase 07 del plan de
+   * integración) sin que este servicio necesite saber que RouterOS existe.
+   */
   async updateContract(clientId: string, contractId: string, dto: UpdateContractDto): Promise<ContractEntity> {
     const contract = await this.findContractOrFail(clientId, contractId);
+    const previousPlanId = contract.planId;
+
     if (dto.planId) {
       await this.findActivePlanOrFail(dto.planId);
       contract.planId = dto.planId;
@@ -329,7 +342,22 @@ export class ClientsService {
     if (dto.billingDay) {
       contract.billingDay = dto.billingDay;
     }
-    return this.contractRepository.save(contract);
+
+    const saved = await this.contractRepository.save(contract);
+
+    if (dto.planId && dto.planId !== previousPlanId) {
+      const event: ContractPlanChangedEvent = {
+        contractId: saved.id,
+        clientId: saved.clientId,
+        contractNumber: saved.contractNumber,
+        oldPlanId: previousPlanId,
+        newPlanId: dto.planId,
+        occurredOn: new Date(),
+      };
+      this.eventEmitter.emit(SystemEvents.CONTRACT_PLAN_CHANGED, event);
+    }
+
+    return saved;
   }
 
   async suspendContract(clientId: string, contractId: string): Promise<ContractEntity> {
@@ -347,6 +375,7 @@ export class ClientsService {
       clientId: saved.clientId,
       contractNumber: saved.contractNumber,
       daysOverdue: 0,
+      reason: 'Suspensión manual por administrador.',
       occurredOn: new Date(),
     };
     this.eventEmitter.emit(SystemEvents.CONTRACT_SUSPENDED, event);
@@ -368,6 +397,7 @@ export class ClientsService {
       contractId: saved.id,
       clientId: saved.clientId,
       contractNumber: saved.contractNumber,
+      reason: 'Reactivación manual por administrador.',
       occurredOn: new Date(),
     };
     this.eventEmitter.emit(SystemEvents.CONTRACT_REACTIVATED, event);
@@ -388,6 +418,7 @@ export class ClientsService {
       contractId: saved.id,
       clientId: saved.clientId,
       contractNumber: saved.contractNumber,
+      reason: 'Terminación manual por administrador.',
       occurredOn: new Date(),
     };
     this.eventEmitter.emit(SystemEvents.CONTRACT_TERMINATED, event);

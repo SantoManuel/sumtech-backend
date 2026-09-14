@@ -171,6 +171,7 @@ export class MorosidadService {
       contractId: contract.id,
       clientId: contract.clientId,
       contractNumber: contract.contractNumber,
+      reason: 'Reactivación automática: facturas vencidas liquidadas.',
       occurredOn: new Date(),
     };
     this.eventEmitter.emit(SystemEvents.CONTRACT_REACTIVATED, event);
@@ -247,6 +248,7 @@ export class MorosidadService {
       clientId: contract.clientId,
       contractNumber: contract.contractNumber,
       daysOverdue,
+      reason: `Suspensión automática por morosidad: ${daysOverdue} día(s) de atraso.`,
       occurredOn: new Date(),
     };
     this.eventEmitter.emit(SystemEvents.CONTRACT_SUSPENDED, event);

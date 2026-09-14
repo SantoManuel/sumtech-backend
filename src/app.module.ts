@@ -23,6 +23,7 @@ import { PortalModule } from './modules/portal/portal.module';
 import { GeographyModule } from './modules/geography/geography.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { DailyClosuresModule } from './modules/daily-closures/daily-closures.module';
+import { NetworkModule } from './modules/network/network.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { DailyClosuresModule } from './modules/daily-closures/daily-closures.mod
     GeographyModule,
     BillingModule,
     DailyClosuresModule,
+    NetworkModule,
   ],
 })
 export class AppModule {}

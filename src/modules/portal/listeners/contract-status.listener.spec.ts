@@ -36,6 +36,7 @@ describe('ContractStatusListener', () => {
       clientId: 'client-1',
       contractNumber: 'CTR-0001',
       daysOverdue: 6,
+      reason: 'Suspensión automática por morosidad: 6 día(s) de atraso.',
       occurredOn: new Date(),
     };
 
@@ -54,6 +55,7 @@ describe('ContractStatusListener', () => {
       contractId: 'contract-1',
       clientId: 'client-1',
       contractNumber: 'CTR-0001',
+      reason: 'Reactivación automática: facturas vencidas liquidadas.',
       occurredOn: new Date(),
     };
 
@@ -69,6 +71,7 @@ describe('ContractStatusListener', () => {
       contractId: 'contract-1',
       clientId: 'client-1',
       contractNumber: 'CTR-0001',
+      reason: 'Terminación manual por administrador.',
       occurredOn: new Date(),
     };
 
@@ -88,6 +91,7 @@ describe('ContractStatusListener', () => {
       clientId: 'client-1',
       contractNumber: 'CTR-0001',
       daysOverdue: 6,
+      reason: 'Suspensión automática por morosidad: 6 día(s) de atraso.',
       occurredOn: new Date(),
     };
 
