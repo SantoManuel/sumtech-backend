@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
 import { PosService } from './pos.service';
 import { CheckoutDto } from './dto/checkout.dto';
+import { CollectInvoicesDto } from './dto/collect-invoices.dto';
 import { OpenCashRegisterDto, CloseCashRegisterDto } from './dto/cash-register.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -17,6 +18,15 @@ export class PosController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
   async checkout(@CurrentUser('sub') userId: string, @Body() checkoutDto: CheckoutDto) {
     return this.posService.checkout(userId, checkoutDto);
+  }
+
+  @Post('collect-invoices')
+  // TECNICO habilitado para el "Cobro Exprés" en campo — cobra facturas
+  // PENDING_PAYMENT ya generadas (nunca crea cargos nuevos), sin caja abierta
+  // (collectInvoices() ya tolera cashRegisterId ausente).
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO)
+  async collectInvoices(@CurrentUser('sub') userId: string, @Body() dto: CollectInvoicesDto) {
+    return this.posService.collectInvoices(userId, dto);
   }
 
   @Get('sales/:id')

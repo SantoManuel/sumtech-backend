@@ -1,7 +1,8 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany, JoinColumn, CreateDateColumn } from 'typeorm';
 import { ClientEntity } from './client.entity';
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { AddressEntity } from './address.entity';
+import { InvoiceEntity } from '../../invoicing/entities/invoice.entity';
 
 @Entity({ schema: 'com', name: 'contracts' })
 export class ContractEntity {
@@ -50,4 +51,7 @@ export class ContractEntity {
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamp with time zone' })
   createdAt: Date;
+
+  @OneToMany(() => InvoiceEntity, (invoice) => invoice.contract)
+  invoices?: InvoiceEntity[];
 }

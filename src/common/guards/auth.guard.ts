@@ -8,6 +8,7 @@ import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { getJwtSecret } from '../utils/required-env.util';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -36,8 +37,7 @@ export class AuthGuard implements CanActivate {
 
     const token = authHeader.split(' ')[1];
     try {
-      const secret = this.configService.get<string>('JWT_SECRET') || 'default_jwt_secret_sumtech_2026';
-      const payload = this.jwtService.verify(token, { secret });
+      const payload = this.jwtService.verify(token, { secret: getJwtSecret(this.configService) });
       request.user = payload;
       return true;
     } catch {

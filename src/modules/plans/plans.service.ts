@@ -21,7 +21,11 @@ export class PlansService {
     const query = this.planRepository.createQueryBuilder('plan').skip(skip).take(limit);
 
     if (activeOnly) {
-      query.where('plan.isActive = :active', { active: true });
+      query.andWhere('plan.isActive = :active', { active: true });
+    }
+
+    if (paginationDto?.search) {
+      query.andWhere('plan.name ILIKE :search', { search: `%${paginationDto.search}%` });
     }
 
     const [data, total] = await query.orderBy('plan.monthlyPrice', 'ASC').getManyAndCount();
@@ -55,6 +59,24 @@ export class PlansService {
   async update(id: string, dto: UpdatePlanDto): Promise<PlanEntity> {
     const plan = await this.findById(id);
     Object.assign(plan, dto);
+    return this.planRepository.save(plan);
+  }
+
+  async deactivate(id: string): Promise<PlanEntity> {
+    const plan = await this.findById(id);
+    if (!plan.isActive) {
+      return plan;
+    }
+    plan.isActive = false;
+    return this.planRepository.save(plan);
+  }
+
+  async reactivate(id: string): Promise<PlanEntity> {
+    const plan = await this.findById(id);
+    if (plan.isActive) {
+      return plan;
+    }
+    plan.isActive = true;
     return this.planRepository.save(plan);
   }
 }

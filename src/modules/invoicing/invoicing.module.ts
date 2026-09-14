@@ -14,6 +14,7 @@ import { ContractEntity } from '../clients/entities/contract.entity';
 import { PlanEntity } from '../plans/entities/plan.entity';
 import { DgiiModule } from './dgii/dgii.module';
 import { UsersModule } from '../users/users.module';
+import { PrintingModule } from '../printing/printing.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { UsersModule } from '../users/users.module';
     ]),
     DgiiModule,
     UsersModule,
+    PrintingModule,
     JwtModule.register({}),
   ],
   controllers: [InvoicingController],

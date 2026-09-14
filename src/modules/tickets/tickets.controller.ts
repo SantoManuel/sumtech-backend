@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { TicketsService } from './tickets.service';
-import { CreateTicketDto, UpdateTicketStatusDto, SwapHardwareDto, FilterTicketDto, ScheduleTicketDto } from './dto/ticket.dto';
+import { CreateTicketDto, UpdateTicketStatusDto, SwapHardwareDto, FilterTicketDto, ScheduleTicketDto, CountTicketDto } from './dto/ticket.dto';
 import { PivotScheduleDto } from './dto/pivot-schedule.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -26,6 +26,12 @@ export class TicketsController {
     @Body() pivotDto: PivotScheduleDto,
   ) {
     return this.ticketsService.pivotSchedule(pivotDto, userId);
+  }
+
+  @Get('count')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.CAJERO, Role.AGENTE_CRM)
+  async count(@Query() countDto: CountTicketDto): Promise<{ total: number }> {
+    return this.ticketsService.count(countDto);
   }
 
   @Get(':id')

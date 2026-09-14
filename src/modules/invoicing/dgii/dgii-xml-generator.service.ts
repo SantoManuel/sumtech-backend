@@ -11,6 +11,20 @@ export interface EcfItemInput {
   montoItem: number;
   itbisRate?: number;
   itbisMonto?: number;
+  // Código UnidadMedidaType (XSD), campo opcional (minOccurs="0"). No existe un
+  // código dedicado a "servicio" en el catálogo DGII — solo se envía para bienes
+  // físicos (ej. 43 = UND/Unidad); se omite para servicios en vez de forzar un
+  // código que no representa correctamente un intangible.
+  unidadMedida?: number;
+  // Códigos CodificacionTipoImpuestosType (XSD) que aplican a este ítem (máx. 2),
+  // ej. ['002'] = Contribución al Desarrollo de las Telecomunicaciones (CDT), Ley 153-98 Art. 45.
+  tiposImpuestoAdicional?: string[];
+}
+
+export interface EcfImpuestoAdicionalInput {
+  tipoImpuesto: string; // CodificacionTipoImpuestosType, ej. '002' = CDT
+  tasa: number; // Porcentaje (ej. 2 para 2%, no 0.02)
+  monto: number;
 }
 
 export interface EcfGenerationInput {
@@ -31,9 +45,15 @@ export interface EcfGenerationInput {
   fechaNcfModificado?: string;
   codigoModificacion?: '1' | '2' | '3' | '4' | '5';
   razonModificacion?: string;
+  // '0' = Nota de Crédito emitida <=30 días calendario después de la factura
+  // original; '1' = emitida después de 30 días (XSD IndicadorNotaCreditoType).
+  indicadorNotaCredito?: '0' | '1';
 
   // Líneas de detalle
   items: EcfItemInput[];
+
+  // Impuestos adicionales a nivel de comprobante (ej. CDT telecomunicaciones)
+  impuestosAdicionales?: EcfImpuestoAdicionalInput[];
 }
 
 export interface AcecfGenerationInput {
@@ -60,6 +80,32 @@ export interface ArecfGenerationInput {
   estadoRespuesta: 0 | 1; // 0 = Aceptado / Recibido, 1 = Rechazado
   codigoMotivoNoRecibido?: number;
   fechaEmision?: Date;
+}
+
+// Código UnidadMedidaType (XSD) para "UND - Unidad". El catálogo DGII no tiene
+// un código dedicado a "servicio" — se usa solo para ítems tipo Bien (hardware).
+export const UNIDAD_MEDIDA_UND = 43;
+
+/**
+ * Normaliza el tipo de comprobante ('E31'/'B01'/etc.) al código numérico de
+ * TipoeCF que exige el XSD (ej. 'E31'/'B01' -> '31'). Compartido entre el
+ * generador de XML y InvoicingService para no duplicar el mapeo.
+ */
+export function ecfTipoDoc(ncfType: string): string {
+  let tipoDoc = ncfType.startsWith('E') ? ncfType.substring(1) : ncfType;
+  if (tipoDoc === 'B01') tipoDoc = '31';
+  if (tipoDoc === 'B02') tipoDoc = '32';
+  return tipoDoc;
+}
+
+/**
+ * FechaVencimientoSecuencia solo aplica a comprobantes con crédito fiscal
+ * (no a Consumo E32 ni Nota de Crédito E34, conforme al XSD y a las muestras
+ * oficiales de Representación Impresa de la DGII).
+ */
+export function usesNcfExpiryDate(ncfType: string): boolean {
+  const tipoDoc = ecfTipoDoc(ncfType);
+  return tipoDoc !== '32' && tipoDoc !== '34';
 }
 
 @Injectable()
@@ -122,9 +168,7 @@ export class DgiiXmlGeneratorService {
    * Genera el documento XML e-CF estándar v1.0 conforme a los esquemas oficiales XSD de la DGII
    */
   generateEcfXml(input: EcfGenerationInput, config: DgiiConfig = DEFAULT_DGII_CONFIG): string {
-    let tipoDoc = input.ncfType.startsWith('E') ? input.ncfType.substring(1) : input.ncfType;
-    if (tipoDoc === 'B01') tipoDoc = '31';
-    if (tipoDoc === 'B02') tipoDoc = '32';
+    const tipoDoc = ecfTipoDoc(input.ncfType);
 
     const fechaEmisionStr = this.formatDateDgii(input.fechaEmision || new Date());
     const fechaHoraFirmaStr = this.formatDateTimeDgii();
@@ -152,7 +196,16 @@ export class DgiiXmlGeneratorService {
     const totalITBIS1 = Number((montoGravadoI1 * 0.18).toFixed(2));
     const totalITBIS2 = Number((montoGravadoI2 * 0.16).toFixed(2));
     const totalITBIS = Number((totalITBIS1 + totalITBIS2).toFixed(2));
-    const montoTotal = Number((montoGravadoTotal + montoExento + totalITBIS).toFixed(2));
+
+    // Impuestos adicionales (ej. CDT — código DGII '002', Ley 153-98 Art. 45)
+    const impuestosAdicionales = input.impuestosAdicionales || [];
+    const montoImpuestoAdicionalTotal = Number(
+      impuestosAdicionales.reduce((sum, t) => sum + t.monto, 0).toFixed(2),
+    );
+
+    const montoTotal = Number(
+      (montoGravadoTotal + montoExento + totalITBIS + montoImpuestoAdicionalTotal).toFixed(2),
+    );
 
     // 2. Construcción de Secciones XML
     // Contenedor IdDoc
@@ -161,13 +214,13 @@ export class DgiiXmlGeneratorService {
         `<TipoeCF>${tipoDoc}</TipoeCF>` +
         `<eNCF>${this.escapeXml(input.eNcf)}</eNCF>`;
 
-    if (tipoDoc !== '32' && tipoDoc !== '34') {
+    if (usesNcfExpiryDate(input.ncfType)) {
       const fechaVenc = input.fechaVencimientoSecuencia || '31-12-2026';
       idDocXml += `<FechaVencimientoSecuencia>${fechaVenc}</FechaVencimientoSecuencia>`;
     }
 
     if (tipoDoc === '34') {
-      idDocXml += `<IndicadorNotaCredito>1</IndicadorNotaCredito>`;
+      idDocXml += `<IndicadorNotaCredito>${input.indicadorNotaCredito ?? '1'}</IndicadorNotaCredito>`;
     }
 
     if (montoGravadoTotal > 0) {
@@ -257,6 +310,20 @@ export class DgiiXmlGeneratorService {
       }
     }
 
+    if (montoImpuestoAdicionalTotal > 0) {
+      totalesXml += `<MontoImpuestoAdicional>${this.formatDecimal(montoImpuestoAdicionalTotal)}</MontoImpuestoAdicional>`;
+      totalesXml += `<ImpuestosAdicionales>`;
+      impuestosAdicionales.forEach((tax) => {
+        totalesXml +=
+          `<ImpuestoAdicional>` +
+            `<TipoImpuesto>${this.escapeXml(tax.tipoImpuesto)}</TipoImpuesto>` +
+            `<TasaImpuestoAdicional>${this.formatDecimal(tax.tasa)}</TasaImpuestoAdicional>` +
+            `<OtrosImpuestosAdicionales>${this.formatDecimal(tax.monto)}</OtrosImpuestosAdicionales>` +
+          `</ImpuestoAdicional>`;
+      });
+      totalesXml += `</ImpuestosAdicionales>`;
+    }
+
     totalesXml += `<MontoTotal>${this.formatDecimal(montoTotal)}</MontoTotal></Totales>`;
 
     // Contenedor DetallesItems
@@ -265,14 +332,27 @@ export class DgiiXmlGeneratorService {
       const lineNum = item.numeroLinea || (index + 1);
       const lineTotal = item.montoItem || (item.cantidad * item.precioUnitario);
 
-      itemsXml += 
+      let tablaImpuestoAdicionalXml = '';
+      if (item.tiposImpuestoAdicional && item.tiposImpuestoAdicional.length > 0) {
+        tablaImpuestoAdicionalXml =
+          `<TablaImpuestoAdicional>` +
+          item.tiposImpuestoAdicional
+            .slice(0, 2)
+            .map((tipo) => `<ImpuestoAdicional><TipoImpuesto>${this.escapeXml(tipo)}</TipoImpuesto></ImpuestoAdicional>`)
+            .join('') +
+          `</TablaImpuestoAdicional>`;
+      }
+
+      itemsXml +=
         `<Item>` +
           `<NumeroLinea>${lineNum}</NumeroLinea>` +
           `<IndicadorFacturacion>${item.indicadorFacturacion || '1'}</IndicadorFacturacion>` +
           `<NombreItem>${this.escapeXml(item.nombreItem)}</NombreItem>` +
           `<IndicadorBienoServicio>${item.indicadorBienoServicio || '2'}</IndicadorBienoServicio>` +
           `<CantidadItem>${this.formatDecimal(item.cantidad)}</CantidadItem>` +
+          (item.unidadMedida ? `<UnidadMedida>${item.unidadMedida}</UnidadMedida>` : '') +
           `<PrecioUnitarioItem>${this.formatDecimal(item.precioUnitario)}</PrecioUnitarioItem>` +
+          tablaImpuestoAdicionalXml +
           `<MontoItem>${this.formatDecimal(lineTotal)}</MontoItem>` +
         `</Item>`;
     });

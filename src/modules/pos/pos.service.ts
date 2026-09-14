@@ -1,16 +1,19 @@
-import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ConflictException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { SaleEntity } from './entities/sale.entity';
 import { SaleDetailEntity } from './entities/sale-detail.entity';
 import { CashRegisterEntity } from './entities/cash-register.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { ClientEntity } from '../clients/entities/client.entity';
+import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { CheckoutDto } from './dto/checkout.dto';
+import { CollectInvoicesDto } from './dto/collect-invoices.dto';
 import { OpenCashRegisterDto, CloseCashRegisterDto } from './dto/cash-register.dto';
 import { InventoryService } from '../inventory/inventory.service';
 import { InvoicingService } from '../invoicing/invoicing.service';
+import { MorosidadService } from '../billing/morosidad.service';
 import { SaleConfirmedEvent } from './events/sale-confirmed.event';
 import { SystemEvents } from '../../common/enums/system-events.enum';
 
@@ -23,6 +26,7 @@ export class PosService {
     private readonly eventEmitter: EventEmitter2,
     private readonly inventoryService: InventoryService,
     private readonly invoicingService: InvoicingService,
+    private readonly morosidadService: MorosidadService,
     @InjectRepository(SaleEntity)
     private readonly saleRepository: Repository<SaleEntity>,
     @InjectRepository(CashRegisterEntity)
@@ -31,6 +35,8 @@ export class PosService {
     private readonly contractRepository: Repository<ContractEntity>,
     @InjectRepository(ClientEntity)
     private readonly clientRepository: Repository<ClientEntity>,
+    @InjectRepository(InvoiceEntity)
+    private readonly invoiceRepository: Repository<InvoiceEntity>,
   ) {}
 
   /**
@@ -158,7 +164,7 @@ export class PosService {
         planIds: dto.items
           .filter((i) => (i.itemType === 'PLAN_ACTIVATION' || i.itemType === 'PLAN_SUBSCRIPTION') && i.itemId)
           .map((i) => i.itemId!),
-        ncfNumber: invoice.ncfNumber,
+        ncfNumber: invoice.ncfNumber!,
         grandTotal: savedSale.grandTotal,
         occurredOn: new Date(),
       };
@@ -174,6 +180,120 @@ export class PosService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  /**
+   * Cobra una o más facturas recurrentes PENDING_PAYMENT del mismo cliente en una
+   * sola transacción de caja (todo o nada): crea una Venta+Detalle por cada
+   * factura (preservando la relación 1:1 Venta-Factura) y delega en
+   * InvoicingService.settleInvoice() la asignación del NCF y el timbrado DGII,
+   * que solo ocurre en este momento del cobro. A diferencia de checkout() (venta
+   * ad-hoc), aquí NO se emite SALE_CONFIRMED: ese evento registra la venta como
+   * interacción comercial en el CRM (ver CrmSaleListener), lo cual no aplica al
+   * pago mensual recurrente de un servicio ya instalado, sino solo a ventas
+   * ad-hoc nuevas.
+   */
+  async collectInvoices(userId: string, dto: CollectInvoicesDto): Promise<SaleEntity[]> {
+    const invoices = await this.invoiceRepository.find({ where: { id: In(dto.invoiceIds) } });
+
+    if (invoices.length !== dto.invoiceIds.length) {
+      throw new NotFoundException('Una o más facturas indicadas no existen');
+    }
+
+    const distinctClientIds = new Set(invoices.map((i) => i.clientId));
+    if (distinctClientIds.size > 1) {
+      throw new BadRequestException('Todas las facturas a cobrar deben pertenecer al mismo cliente');
+    }
+
+    const notPending = invoices.filter((i) => i.status !== 'PENDING_PAYMENT');
+    if (notPending.length > 0) {
+      throw new ConflictException(
+        `Las siguientes facturas ya no están pendientes de pago: ${notPending.map((i) => i.id).join(', ')}`,
+      );
+    }
+
+    let registerId = dto.cashRegisterId;
+    if (!registerId) {
+      const activeReg = await this.getActiveRegister(userId);
+      if (activeReg) {
+        registerId = activeReg.id;
+      }
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    const settledSaleIds: string[] = [];
+    const affectedContractIds = new Set<string>();
+
+    try {
+      for (const invoice of invoices) {
+        const detail = queryRunner.manager.getRepository(SaleDetailEntity).create({
+          itemType: 'PLAN_SUBSCRIPTION',
+          concept: invoice.concept || 'Cargo recurrente de servicio',
+          quantity: 1,
+          unitPrice: Number(invoice.subtotal || 0),
+          itbisAmount: Number(invoice.itbisTotal || 0),
+          subtotal: Number(invoice.subtotal || 0),
+        });
+
+        const sale = queryRunner.manager.getRepository(SaleEntity).create({
+          cashRegisterId: registerId,
+          clientId: invoice.clientId,
+          contractId: invoice.contractId,
+          userId,
+          billingPeriod: this.formatBillingPeriodLabel(invoice.billingPeriodStart),
+          dueDate: invoice.dueDate,
+          subtotal: Number(invoice.subtotal || 0),
+          discountAmount: 0,
+          itbisTotal: Number(invoice.itbisTotal || 0),
+          grandTotal: Number(invoice.grandTotal || 0),
+          paymentMethod: dto.paymentMethod,
+          status: 'PAID',
+          notes: dto.notes,
+          details: [detail],
+        });
+
+        const savedSale = await queryRunner.manager.getRepository(SaleEntity).save(sale);
+
+        await this.invoicingService.settleInvoice(invoice.id, savedSale, dto.ncfType, queryRunner);
+
+        settledSaleIds.push(savedSale.id);
+        if (invoice.contractId) {
+          affectedContractIds.add(invoice.contractId);
+        }
+      }
+
+      await queryRunner.commitTransaction();
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`Error cobrando facturas pendientes: ${error.message}`, error.stack);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+
+    for (const contractId of affectedContractIds) {
+      try {
+        await this.morosidadService.reactivateIfSettled(contractId);
+      } catch (error) {
+        this.logger.error(
+          `Error reactivando el contrato ${contractId} tras el cobro: ${error.message}`,
+          error.stack,
+        );
+      }
+    }
+
+    return Promise.all(settledSaleIds.map((id) => this.findSaleById(id)));
+  }
+
+  private formatBillingPeriodLabel(billingPeriodStart?: string): string | undefined {
+    if (!billingPeriodStart) {
+      return undefined;
+    }
+    const [year, month] = billingPeriodStart.split('-').map(Number);
+    return new Date(year, month - 1, 1).toLocaleDateString('es-DO', { month: 'long', year: 'numeric' });
   }
 
   async findSaleById(id: string): Promise<SaleEntity> {

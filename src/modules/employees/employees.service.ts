@@ -1,16 +1,20 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { EmployeeEntity } from './entities/employee.entity';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
+import { CreateUserDto } from '../users/dto/create-user.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class EmployeesService {
   constructor(
     @InjectRepository(EmployeeEntity)
     private readonly employeeRepository: Repository<EmployeeEntity>,
+    private readonly usersService: UsersService,
+    private readonly dataSource: DataSource,
   ) {}
 
   async findAll(paginationDto: PaginationDto, roleFilter?: string) {
@@ -60,13 +64,79 @@ export class EmployeesService {
   }
 
   async create(dto: CreateEmployeeDto): Promise<EmployeeEntity> {
+    if (dto.userId && dto.newUser) {
+      throw new BadRequestException('Especifica un usuario existente (userId) o los datos de uno nuevo (newUser), no ambos');
+    }
+
     const existing = await this.employeeRepository.findOne({ where: { cedula: dto.cedula } });
     if (existing) {
       throw new ConflictException('Ya existe un empleado registrado con esta cédula');
     }
 
-    const employee = this.employeeRepository.create(dto);
-    return this.employeeRepository.save(employee);
+    // Sin newUser: alta simple (con userId de un usuario ya existente, o sin
+    // ninguno — colaborador sin acceso al sistema). No hace falta transacción.
+    if (!dto.newUser) {
+      const { newUser, ...employeeData } = dto;
+      const employee = this.employeeRepository.create(employeeData);
+      return this.employeeRepository.save(employee);
+    }
+
+    // Con newUser: crear el usuario y el perfil de empleado en una sola
+    // transacción — si el perfil falla validarse, el usuario recién creado
+    // también se revierte (nunca queda una cuenta huérfana sin empleado).
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const newUser = await this.usersService.create(dto.newUser, queryRunner.manager);
+
+      const { newUser: _omit, ...employeeData } = dto;
+      const employee = queryRunner.manager.getRepository(EmployeeEntity).create({
+        ...employeeData,
+        userId: newUser.id,
+      });
+      const savedEmployee = await queryRunner.manager.getRepository(EmployeeEntity).save(employee);
+
+      await queryRunner.commitTransaction();
+      return this.findById(savedEmployee.id);
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * Otorga acceso al sistema a un empleado que hoy no tiene usuario (ej. pasó
+   * de conserjería a un puesto operativo). Misma atomicidad que create(): si
+   * falla vincular el usuario al empleado, no queda una cuenta huérfana.
+   */
+  async grantAccess(employeeId: string, dto: CreateUserDto): Promise<EmployeeEntity> {
+    const employee = await this.findById(employeeId);
+    if (employee.userId) {
+      throw new ConflictException('Este empleado ya tiene acceso al sistema');
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const newUser = await this.usersService.create(dto, queryRunner.manager);
+
+      employee.userId = newUser.id;
+      await queryRunner.manager.getRepository(EmployeeEntity).save(employee);
+
+      await queryRunner.commitTransaction();
+      return this.findById(employeeId);
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async update(id: string, dto: UpdateEmployeeDto): Promise<EmployeeEntity> {

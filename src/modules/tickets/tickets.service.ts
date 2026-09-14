@@ -6,7 +6,9 @@ import { TicketEntity } from './entities/ticket.entity';
 import { TicketHistoryEntity } from './entities/ticket-history.entity';
 import { TicketRepairEntity } from './entities/ticket-repair.entity';
 import { SlaPolicyEntity } from './entities/sla-policy.entity';
-import { CreateTicketDto, UpdateTicketStatusDto, SwapHardwareDto, ScheduleTicketDto, FilterTicketDto } from './dto/ticket.dto';
+import { AddressEntity } from '../clients/entities/address.entity';
+import { ContractEntity } from '../clients/entities/contract.entity';
+import { CreateTicketDto, UpdateTicketStatusDto, SwapHardwareDto, ScheduleTicketDto, FilterTicketDto, CountTicketDto } from './dto/ticket.dto';
 import { PivotScheduleDto } from './dto/pivot-schedule.dto';
 import { EquipmentMovementService } from '../inventory/services/equipment-movement.service';
 import { EquipmentLocationType, EquipmentCondition } from '../inventory/enums/equipment.enums';
@@ -25,6 +27,10 @@ export class TicketsService {
     private readonly repairRepository: Repository<TicketRepairEntity>,
     @InjectRepository(SlaPolicyEntity)
     private readonly slaRepository: Repository<SlaPolicyEntity>,
+    @InjectRepository(AddressEntity)
+    private readonly addressRepository: Repository<AddressEntity>,
+    @InjectRepository(ContractEntity)
+    private readonly contractRepository: Repository<ContractEntity>,
     private readonly equipmentMovementService: EquipmentMovementService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
@@ -56,7 +62,21 @@ export class TicketsService {
 
     const includeActive = filterDto.includeActiveBacklog === true || filterDto.includeActiveBacklog === 'true';
 
-    if (filterDto.status) {
+    // `statuses` (coma-separados) tiene prioridad sobre `status` (valor singular)
+    const statusList = filterDto.statuses
+      ? filterDto.statuses.split(',').map((s) => s.trim()).filter(Boolean)
+      : null;
+
+    if (statusList && statusList.length > 0) {
+      // Filtrado multi-estado server-side — usado por las tabs del portal técnico
+      query.andWhere('ticket.status IN (:...statusList)', { statusList });
+      if (filterDto.startDate) {
+        query.andWhere('ticket.createdAt >= :startDate', { startDate: new Date(filterDto.startDate) });
+      }
+      if (filterDto.endDate) {
+        query.andWhere('ticket.createdAt <= :endDate', { endDate: new Date(filterDto.endDate) });
+      }
+    } else if (filterDto.status) {
       query.andWhere('ticket.status = :status', { status: filterDto.status });
       if (filterDto.startDate) {
         query.andWhere('ticket.createdAt >= :startDate', { startDate: new Date(filterDto.startDate) });
@@ -92,6 +112,40 @@ export class TicketsService {
     return { data, total, page, limit: filterDto.limit || total, totalPages: filterDto.limit ? Math.ceil(total / limit) : 1 };
   }
 
+  /**
+   * Devuelve únicamente el total de tickets que coinciden con los filtros.
+   * Endpoint ligero usado por las KPI cards del dashboard del técnico.
+   */
+  async count(dto: CountTicketDto): Promise<{ total: number }> {
+    const query = this.ticketRepository
+      .createQueryBuilder('ticket')
+      .select('COUNT(ticket.id)', 'total');
+
+    if (dto.employeeId) {
+      query.andWhere('ticket.assignedEmployeeId = :employeeId', { employeeId: dto.employeeId });
+    }
+    if (dto.clientId) {
+      query.andWhere('ticket.clientId = :clientId', { clientId: dto.clientId });
+    }
+
+    const statusList = dto.statuses
+      ? dto.statuses.split(',').map((s) => s.trim()).filter(Boolean)
+      : null;
+    if (statusList && statusList.length > 0) {
+      query.andWhere('ticket.status IN (:...statusList)', { statusList });
+    }
+
+    if (dto.startDate) {
+      query.andWhere('ticket.createdAt >= :startDate', { startDate: new Date(dto.startDate) });
+    }
+    if (dto.endDate) {
+      query.andWhere('ticket.createdAt <= :endDate', { endDate: new Date(dto.endDate) });
+    }
+
+    const result = await query.getRawOne<{ total: string }>();
+    return { total: parseInt(result?.total ?? '0', 10) };
+  }
+
   async findById(id: string): Promise<TicketEntity> {
     const ticket = await this.ticketRepository.findOne({
       where: { id },
@@ -118,6 +172,13 @@ export class TicketsService {
   }
 
   async create(dto: CreateTicketDto): Promise<TicketEntity> {
+    if (dto.contractId) {
+      const contract = await this.contractRepository.findOneBy({ id: dto.contractId });
+      if (!contract || contract.clientId !== dto.clientId) {
+        throw new BadRequestException('El contrato indicado no pertenece al cliente seleccionado');
+      }
+    }
+
     const ticketNumber = `TCK-${Date.now().toString().slice(-6)}`;
     const sla = await this.slaRepository.findOneBy({ priority: dto.priority });
 
@@ -176,6 +237,26 @@ export class TicketsService {
   async updateStatus(ticketId: string, userId: string, dto: UpdateTicketStatusDto): Promise<TicketEntity> {
     const ticket = await this.findById(ticketId);
     const previousStatus = ticket.status;
+
+    // Geolocalización obligatoria al resolver una instalación: garantiza que
+    // AddressEntity.gpsLatitude/gpsLongitude queden con la ubicación real del
+    // cliente en el momento de la visita (nunca se escribían desde ningún
+    // endpoint real antes de esto). No aplica a reparación/mantenimiento.
+    if (dto.status === 'RESOLVED' && ticket.type === 'INSTALLATION') {
+      if (dto.latitude === undefined || dto.longitude === undefined) {
+        throw new BadRequestException(
+          'Se requiere la ubicación GPS del cliente para marcar como resuelta una instalación',
+        );
+      }
+      if (!ticket.contract?.address) {
+        throw new BadRequestException(
+          'El ticket no tiene una dirección de contrato asociada para guardar la ubicación',
+        );
+      }
+      ticket.contract.address.gpsLatitude = dto.latitude;
+      ticket.contract.address.gpsLongitude = dto.longitude;
+      await this.addressRepository.save(ticket.contract.address);
+    }
 
     ticket.status = dto.status;
     if (dto.status === 'RESOLVED' && !ticket.resolvedAt) {
@@ -267,13 +348,24 @@ export class TicketsService {
     return this.repairRepository.save(repair);
   }
 
-  async createInstallationFromSale(clientId: string, ncfNumber: string): Promise<TicketEntity> {
+  /**
+   * Único punto de generación automática de un ticket de instalación (el
+   * antiguo disparo desde SALE_CONFIRMED del POS se eliminó deliberadamente:
+   * generaba un segundo ticket duplicado cuando, al firmar el contrato, el
+   * mismo cajero facturaba de inmediato el hardware/instalación en el POS).
+   * Enlaza `contractId` — necesario para que el ticket quede visible/filtrable
+   * por contrato y para que, si algún día un contrato vuelve a nacer
+   * PENDING_INSTALL, coordination.service.ts pueda activarlo al resolverse
+   * (hoy es un despacho puramente operativo, ya que el contrato nace ACTIVE).
+   */
+  async createInstallationFromContract(clientId: string, contractId: string, contractNumber: string): Promise<TicketEntity> {
     return this.create({
       clientId,
+      contractId,
       type: 'INSTALLATION',
       priority: 'HIGH',
-      title: `Instalación de Servicio por Venta (${ncfNumber})`,
-      description: `Orden generada automáticamente tras la confirmación de la venta con comprobante fiscal ${ncfNumber}. Despachar técnico para instalación de fibra óptica y equipos.`,
+      title: `Instalación de Servicio — Contrato ${contractNumber}`,
+      description: `Orden generada automáticamente al firmarse el contrato ${contractNumber}. Despachar técnico para instalación de fibra óptica y equipos.`,
     });
   }
 

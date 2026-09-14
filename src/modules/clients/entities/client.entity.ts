@@ -3,6 +3,7 @@ import { AddressEntity } from './address.entity';
 import { ContractEntity } from './contract.entity';
 import { SaleEntity } from '../../pos/entities/sale.entity';
 import { UserEntity } from '../../users/entities/user.entity';
+import { InvoiceEntity } from '../../invoicing/entities/invoice.entity';
 
 @Entity({ schema: 'com', name: 'clients' })
 export class ClientEntity {
@@ -48,6 +49,9 @@ export class ClientEntity {
 
   @OneToMany(() => SaleEntity, (sale) => sale.client)
   sales?: SaleEntity[];
+
+  @OneToMany(() => InvoiceEntity, (invoice) => invoice.client)
+  invoices?: InvoiceEntity[];
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamp with time zone' })
   createdAt: Date;

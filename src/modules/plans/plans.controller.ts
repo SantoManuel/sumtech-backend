@@ -2,7 +2,7 @@ import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@ne
 import { PlansService } from './plans.service';
 import { CreatePlanDto } from './dto/create-plan.dto';
 import { UpdatePlanDto } from './dto/update-plan.dto';
-import { PaginationDto } from '../../common/dto/pagination.dto';
+import { ListPlansDto } from './dto/list-plans.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
@@ -16,8 +16,8 @@ export class PlansController {
 
   @Public()
   @Get()
-  async findAll(@Query() paginationDto: PaginationDto) {
-    return this.plansService.findAll(paginationDto);
+  async findAll(@Query() listPlansDto: ListPlansDto) {
+    return this.plansService.findAll(listPlansDto, !listPlansDto.includeInactive);
   }
 
   @Public()
@@ -42,5 +42,17 @@ export class PlansController {
   @Roles(Role.ADMIN, Role.GERENTE)
   async update(@Param('id') id: string, @Body() updatePlanDto: UpdatePlanDto) {
     return this.plansService.update(id, updatePlanDto);
+  }
+
+  @Patch(':id/deactivate')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async deactivate(@Param('id') id: string) {
+    return this.plansService.deactivate(id);
+  }
+
+  @Patch(':id/reactivate')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async reactivate(@Param('id') id: string) {
+    return this.plansService.reactivate(id);
   }
 }

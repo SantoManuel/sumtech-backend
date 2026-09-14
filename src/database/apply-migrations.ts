@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import { AppDataSource } from '../config/database.config';
 import * as fs from 'fs';
 import * as path from 'path';

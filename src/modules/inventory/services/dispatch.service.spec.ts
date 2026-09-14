@@ -284,20 +284,25 @@ describe('DispatchService', () => {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([
-          {
-            id: 'd1',
-            status: DispatchStatus.DISPATCHED,
-            lines: [{ id: 'l1', lineType: DispatchLineType.EQUIPMENT }],
-          },
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([
+          [
+            {
+              id: 'd1',
+              status: DispatchStatus.DISPATCHED,
+              lines: [{ id: 'l1', lineType: DispatchLineType.EQUIPMENT }],
+            },
+          ],
+          1,
         ]),
       };
       (dispatchRepository.createQueryBuilder as jest.Mock) = jest.fn().mockReturnValue(mockQueryBuilder);
 
-      const result = await service.findAll({});
+      const result: any = await service.findAll({});
 
-      expect(result).toHaveLength(1);
-      expect(result[0].lines).toHaveLength(1);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0].lines).toHaveLength(1);
       expect(mockQueryBuilder.leftJoinAndSelect).toHaveBeenCalledWith('d.lines', 'lines');
       expect(mockQueryBuilder.leftJoinAndSelect).toHaveBeenCalledWith('lines.product', 'lineProduct');
       expect(mockQueryBuilder.leftJoinAndSelect).toHaveBeenCalledWith('lines.equipmentItem', 'lineEquipmentItem');

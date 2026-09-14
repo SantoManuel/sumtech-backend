@@ -1,5 +1,6 @@
 import { IsNotEmpty, IsString, IsOptional, IsEmail, IsEnum, IsUUID } from 'class-validator';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
+import { LEAD_SOURCE_VALUES, LeadSource } from '../enums/lead.enums';
 
 export class CreateLeadDto {
   @IsNotEmpty()
@@ -19,8 +20,8 @@ export class CreateLeadDto {
   planId?: string;
 
   @IsOptional()
-  @IsEnum(['WEB_LANDING', 'CALL_INBOUND', 'WHATSAPP', 'FLYER'])
-  source?: 'WEB_LANDING' | 'CALL_INBOUND' | 'WHATSAPP' | 'FLYER';
+  @IsEnum(LEAD_SOURCE_VALUES)
+  source?: LeadSource;
 
   @IsOptional()
   @IsString()

@@ -6,6 +6,7 @@ import { DataSource, DataSourceOptions } from 'typeorm';
 import { UserEntity } from '../modules/users/entities/user.entity';
 import { RoleEntity } from '../modules/users/entities/role.entity';
 import { AuditLogEntity } from '../modules/users/entities/audit-log.entity';
+import { RefreshTokenEntity } from '../modules/auth/entities/refresh-token.entity';
 import { EmployeeEntity } from '../modules/employees/entities/employee.entity';
 import { PlanEntity } from '../modules/plans/entities/plan.entity';
 import { ClientEntity } from '../modules/clients/entities/client.entity';
@@ -26,10 +27,14 @@ import { SaleEntity } from '../modules/pos/entities/sale.entity';
 import { SaleDetailEntity } from '../modules/pos/entities/sale-detail.entity';
 import { InvoiceEntity } from '../modules/invoicing/entities/invoice.entity';
 import { EcfSequenceEntity } from '../modules/invoicing/entities/ecf-sequence.entity';
+import { DgiiReceivedInvoice } from '../modules/invoicing/entities/dgii-received-invoice.entity';
+import { BillingSettingsEntity } from '../modules/billing/entities/billing-settings.entity';
 import { SlaPolicyEntity } from '../modules/tickets/entities/sla-policy.entity';
 import { TicketEntity } from '../modules/tickets/entities/ticket.entity';
 import { TicketHistoryEntity } from '../modules/tickets/entities/ticket-history.entity';
 import { TicketRepairEntity } from '../modules/tickets/entities/ticket-repair.entity';
+import { DailyClosureEntity } from '../modules/daily-closures/entities/daily-closure.entity';
+import { DailyClosureExpenseEntity } from '../modules/daily-closures/entities/daily-closure-expense.entity';
 import { ScheduleEventEntity } from '../modules/tickets/entities/schedule-event.entity';
 import { LeadEntity } from '../modules/crm/entities/lead.entity';
 import { InteractionEntity } from '../modules/crm/entities/interaction.entity';
@@ -51,6 +56,7 @@ export const entities = [
   UserEntity,
   RoleEntity,
   AuditLogEntity,
+  RefreshTokenEntity,
   EmployeeEntity,
   // com
   PlanEntity,
@@ -59,6 +65,7 @@ export const entities = [
   ContractEntity,
   PlanChangeRequestEntity,
   ClientNotificationEntity,
+  BillingSettingsEntity,
   // inv
   ProductEntity,
   SerialNumberEntity,
@@ -76,6 +83,7 @@ export const entities = [
   SaleDetailEntity,
   InvoiceEntity,
   EcfSequenceEntity,
+  DgiiReceivedInvoice,
   DepositProofEntity,
   // tickets
   SlaPolicyEntity,
@@ -83,6 +91,8 @@ export const entities = [
   TicketHistoryEntity,
   TicketRepairEntity,
   ScheduleEventEntity,
+  DailyClosureEntity,
+  DailyClosureExpenseEntity,
   // crm
   LeadEntity,
   InteractionEntity,

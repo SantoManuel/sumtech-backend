@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn } from 'typeorm';
 import { PlanEntity } from '../../plans/entities/plan.entity';
+import { LEAD_SOURCE_VALUES, LEAD_STATUS_VALUES, LeadSource, LeadStatus } from '../enums/lead.enums';
 
 @Entity({ schema: 'crm', name: 'leads' })
 export class LeadEntity {
@@ -22,19 +23,19 @@ export class LeadEntity {
   @JoinColumn({ name: 'plan_id' })
   plan?: PlanEntity;
 
-  @Column({ 
-    type: 'enum', 
-    enum: ['WEB_LANDING', 'CALL_INBOUND', 'WHATSAPP', 'FLYER'], 
-    default: 'WEB_LANDING' 
+  @Column({
+    type: 'enum',
+    enum: LEAD_SOURCE_VALUES,
+    default: 'WEB_LANDING',
   })
-  source: 'WEB_LANDING' | 'CALL_INBOUND' | 'WHATSAPP' | 'FLYER';
+  source: LeadSource;
 
-  @Column({ 
-    type: 'enum', 
-    enum: ['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'DISCARDED'], 
-    default: 'NEW' 
+  @Column({
+    type: 'enum',
+    enum: LEAD_STATUS_VALUES,
+    default: 'NEW',
   })
-  status: 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'CONVERTED' | 'DISCARDED';
+  status: LeadStatus;
 
   @Column({ type: 'text', nullable: true })
   notes?: string;

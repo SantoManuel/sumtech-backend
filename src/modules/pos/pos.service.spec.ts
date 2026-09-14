@@ -7,8 +7,10 @@ import { SaleEntity } from './entities/sale.entity';
 import { CashRegisterEntity } from './entities/cash-register.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { ClientEntity } from '../clients/entities/client.entity';
+import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { InventoryService } from '../inventory/inventory.service';
 import { InvoicingService } from '../invoicing/invoicing.service';
+import { MorosidadService } from '../billing/morosidad.service';
 
 describe('PosService', () => {
   let service: PosService;
@@ -16,8 +18,10 @@ describe('PosService', () => {
   let saleRepo: any;
   let cashRegisterRepo: any;
   let contractRepo: any;
+  let invoiceRepo: any;
   let inventoryService: any;
   let invoicingService: any;
+  let morosidadService: any;
   let dataSource: any;
   let queryRunner: any;
 
@@ -79,6 +83,17 @@ describe('PosService', () => {
         securityCode: 'A1B2C3',
         dgiiStatus: 'ACCEPTED',
       }),
+      settleInvoice: jest.fn().mockImplementation((invoiceId: string, sale: any) =>
+        Promise.resolve({ id: invoiceId, saleId: sale.id, status: 'ISSUED', ncfNumber: 'E3200000001' }),
+      ),
+    };
+
+    morosidadService = {
+      reactivateIfSettled: jest.fn().mockResolvedValue(false),
+    };
+
+    invoiceRepo = {
+      find: jest.fn().mockResolvedValue([]),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -88,10 +103,12 @@ describe('PosService', () => {
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: InventoryService, useValue: inventoryService },
         { provide: InvoicingService, useValue: invoicingService },
+        { provide: MorosidadService, useValue: morosidadService },
         { provide: getRepositoryToken(SaleEntity), useValue: saleRepo },
         { provide: getRepositoryToken(CashRegisterEntity), useValue: cashRegisterRepo },
         { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
         { provide: getRepositoryToken(ClientEntity), useValue: clientRepo },
+        { provide: getRepositoryToken(InvoiceEntity), useValue: invoiceRepo },
       ],
     }).compile();
 
@@ -141,5 +158,133 @@ describe('PosService', () => {
 
     expect(shift).toBeDefined();
     expect(cashRegisterRepo.save).toHaveBeenCalled();
+  });
+
+  describe('collectInvoices', () => {
+    const makePendingInvoice = (overrides: Record<string, any> = {}) => ({
+      id: 'inv-1',
+      clientId: 'client-1',
+      contractId: 'contract-1',
+      status: 'PENDING_PAYMENT',
+      subtotal: 2195,
+      itbisTotal: 395.1,
+      grandTotal: 2634,
+      dueDate: '2026-09-15',
+      billingPeriodStart: '2026-09-01',
+      concept: 'Combo Dúo - Septiembre 2026',
+      ...overrides,
+    });
+
+    it('lanza NotFoundException si alguna factura indicada no existe', async () => {
+      invoiceRepo.find.mockResolvedValue([makePendingInvoice()]);
+
+      await expect(
+        service.collectInvoices('user-1', {
+          invoiceIds: ['inv-1', 'inv-2'],
+          paymentMethod: 'CASH',
+          ncfType: 'E32',
+        } as any),
+      ).rejects.toThrow('Una o más facturas indicadas no existen');
+    });
+
+    it('lanza BadRequestException si las facturas pertenecen a distintos clientes', async () => {
+      invoiceRepo.find.mockResolvedValue([
+        makePendingInvoice({ id: 'inv-1', clientId: 'client-1' }),
+        makePendingInvoice({ id: 'inv-2', clientId: 'client-2' }),
+      ]);
+
+      await expect(
+        service.collectInvoices('user-1', {
+          invoiceIds: ['inv-1', 'inv-2'],
+          paymentMethod: 'CASH',
+          ncfType: 'E32',
+        } as any),
+      ).rejects.toThrow('Todas las facturas a cobrar deben pertenecer al mismo cliente');
+    });
+
+    it('lanza ConflictException si alguna factura ya no está PENDING_PAYMENT', async () => {
+      invoiceRepo.find.mockResolvedValue([makePendingInvoice({ status: 'ISSUED' })]);
+
+      await expect(
+        service.collectInvoices('user-1', {
+          invoiceIds: ['inv-1'],
+          paymentMethod: 'CASH',
+          ncfType: 'E32',
+        } as any),
+      ).rejects.toThrow('ya no están pendientes de pago');
+    });
+
+    it('cobra las facturas pendientes, liquida cada una vía settleInvoice y reactiva contratos afectados', async () => {
+      invoiceRepo.find.mockResolvedValue([makePendingInvoice()]);
+
+      const result = await service.collectInvoices('user-1', {
+        cashRegisterId: 'cr-1',
+        invoiceIds: ['inv-1'],
+        paymentMethod: 'CASH',
+        ncfType: 'E32',
+      } as any);
+
+      expect(result).toHaveLength(1);
+      expect(queryRunner.startTransaction).toHaveBeenCalled();
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+      expect(invoicingService.settleInvoice).toHaveBeenCalledWith(
+        'inv-1',
+        expect.objectContaining({ clientId: 'client-1', contractId: 'contract-1' }),
+        'E32',
+        queryRunner,
+      );
+      expect(morosidadService.reactivateIfSettled).toHaveBeenCalledWith('contract-1');
+    });
+
+    it('no emite SALE_CONFIRMED (evitaría crear un ticket de instalación espurio en cada cobro mensual)', async () => {
+      invoiceRepo.find.mockResolvedValue([makePendingInvoice()]);
+      const emitSpy = jest.fn();
+      (service as any).eventEmitter = { emit: emitSpy };
+
+      await service.collectInvoices('user-1', {
+        cashRegisterId: 'cr-1',
+        invoiceIds: ['inv-1'],
+        paymentMethod: 'CASH',
+        ncfType: 'E32',
+      } as any);
+
+      expect(emitSpy).not.toHaveBeenCalled();
+    });
+
+    it('hace rollback y no reactiva ningún contrato si settleInvoice falla', async () => {
+      invoiceRepo.find.mockResolvedValue([makePendingInvoice()]);
+      invoicingService.settleInvoice.mockRejectedValueOnce(new Error('DGII no disponible'));
+
+      await expect(
+        service.collectInvoices('user-1', {
+          cashRegisterId: 'cr-1',
+          invoiceIds: ['inv-1'],
+          paymentMethod: 'CASH',
+          ncfType: 'E32',
+        } as any),
+      ).rejects.toThrow('DGII no disponible');
+
+      expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
+      expect(morosidadService.reactivateIfSettled).not.toHaveBeenCalled();
+    });
+
+    it('cobra varias facturas de contratos distintos en una sola transacción y reactiva cada contrato afectado', async () => {
+      invoiceRepo.find.mockResolvedValue([
+        makePendingInvoice({ id: 'inv-1', contractId: 'contract-1' }),
+        makePendingInvoice({ id: 'inv-2', contractId: 'contract-2' }),
+      ]);
+
+      const result = await service.collectInvoices('user-1', {
+        cashRegisterId: 'cr-1',
+        invoiceIds: ['inv-1', 'inv-2'],
+        paymentMethod: 'CASH',
+        ncfType: 'E32',
+      } as any);
+
+      expect(result).toHaveLength(2);
+      expect(invoicingService.settleInvoice).toHaveBeenCalledTimes(2);
+      expect(morosidadService.reactivateIfSettled).toHaveBeenCalledWith('contract-1');
+      expect(morosidadService.reactivateIfSettled).toHaveBeenCalledWith('contract-2');
+    });
   });
 });

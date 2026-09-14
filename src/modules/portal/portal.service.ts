@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ClientEntity } from '../clients/entities/client.entity';
@@ -12,15 +12,21 @@ import { InteractionEntity } from '../crm/entities/interaction.entity';
 import { DepositProofEntity } from './entities/deposit-proof.entity';
 import { PlanChangeRequestEntity } from './entities/plan-change-request.entity';
 import { ClientNotificationEntity } from './entities/client-notification.entity';
-import { 
-  UploadDepositProofDto, 
-  CreatePlanChangeRequestDto, 
-  PortalChatMessageDto, 
-  ConvertChatToTicketDto 
+import { PosService } from '../pos/pos.service';
+import { MinioStorageService } from '../storage/minio-storage.service';
+import { AiChatbotClientService, AiChatbotResponse } from '../ai-chatbot/ai-chatbot-client.service';
+import {
+  UploadDepositProofDto,
+  CreatePlanChangeRequestDto,
+  PortalChatMessageDto,
+  ConvertChatToTicketDto,
+  FilterPortalTicketDto
 } from './dto/portal.dto';
 
 @Injectable()
 export class PortalService {
+  private readonly logger = new Logger(PortalService.name);
+
   constructor(
     @InjectRepository(ClientEntity)
     private readonly clientRepository: Repository<ClientEntity>,
@@ -44,7 +50,13 @@ export class PortalService {
     private readonly planChangeRepository: Repository<PlanChangeRequestEntity>,
     @InjectRepository(ClientNotificationEntity)
     private readonly notificationRepository: Repository<ClientNotificationEntity>,
+    private readonly posService: PosService,
+    private readonly storageService: MinioStorageService,
+    private readonly aiChatbotClient: AiChatbotClientService,
   ) {}
+
+  private static readonly ALLOWED_RECEIPT_MIME_TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
+  private static readonly MAX_RECEIPT_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 
   private async getClientByUserId(userId: string): Promise<ClientEntity> {
     const client = await this.clientRepository.findOne({
@@ -178,6 +190,32 @@ export class PortalService {
     };
   }
 
+  // Listado paginado de tickets del cliente autenticado (historial completo,
+  // a diferencia de `recentTickets` de getDashboardSummary que está capado a 5).
+  async getTickets(userId: string, filterDto: FilterPortalTicketDto) {
+    const client = await this.getClientByUserId(userId);
+    const page = filterDto.page || 1;
+    const limit = filterDto.limit || 10;
+    const skip = (page - 1) * limit;
+
+    const query = this.ticketRepository
+      .createQueryBuilder('ticket')
+      .where('ticket.clientId = :clientId', { clientId: client.id })
+      .orderBy('ticket.createdAt', 'DESC')
+      .skip(skip)
+      .take(limit);
+
+    if (filterDto.contractId) {
+      query.andWhere('ticket.contractId = :contractId', { contractId: filterDto.contractId });
+    }
+    if (filterDto.status) {
+      query.andWhere('ticket.status = :status', { status: filterDto.status });
+    }
+
+    const [data, total] = await query.getManyAndCount();
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
   // RF-38: Historial de Pagos y Facturas
   async getInvoices(userId: string) {
     const client = await this.getClientByUserId(userId);
@@ -205,9 +243,36 @@ export class PortalService {
     }));
   }
 
-  // RF-38: Subida de Comprobante de Depósito
-  async submitDepositProof(userId: string, dto: UploadDepositProofDto) {
+  /**
+   * Valida el archivo del comprobante: obligatorio, tipo (JPG/PNG/PDF) y
+   * tamaño máximo 5MB. El límite de tamaño del FileInterceptor en el
+   * controller ya corta archivos absurdamente grandes antes de llegar aquí;
+   * esta validación cubre el mensaje de negocio claro en español y el chequeo
+   * de tipo, que multer no hace por sí solo.
+   */
+  private assertValidReceiptFile(file?: Express.Multer.File): asserts file is Express.Multer.File {
+    if (!file || !file.buffer || file.size === 0) {
+      throw new BadRequestException('Debes adjuntar el comprobante de tu transferencia o depósito (imagen o PDF).');
+    }
+    if (!PortalService.ALLOWED_RECEIPT_MIME_TYPES.includes(file.mimetype)) {
+      throw new BadRequestException('El comprobante debe ser una imagen (JPG, PNG) o un PDF.');
+    }
+    if (file.size > PortalService.MAX_RECEIPT_FILE_SIZE_BYTES) {
+      throw new BadRequestException('El comprobante no puede superar los 5MB.');
+    }
+  }
+
+  // RF-38: Subida de Comprobante de Depósito (archivo obligatorio, almacenado en MinIO)
+  async submitDepositProof(userId: string, dto: UploadDepositProofDto, receiptFile?: Express.Multer.File) {
     const client = await this.getClientByUserId(userId);
+    this.assertValidReceiptFile(receiptFile);
+
+    const receiptFileKey = await this.storageService.uploadBuffer(
+      receiptFile.buffer,
+      receiptFile.originalname,
+      `deposit-proofs/${client.id}`,
+      receiptFile.mimetype,
+    );
 
     const proof = this.depositProofRepository.create({
       clientId: client.id,
@@ -216,7 +281,8 @@ export class PortalService {
       referenceNumber: dto.referenceNumber,
       amount: dto.amount,
       depositDate: dto.depositDate,
-      receiptUrl: dto.receiptUrl || 'https://images.unsplash.com/photo-1554224155-6726b3ff858f?auto=format&fit=crop&q=80&w=600',
+      receiptFileKey,
+      receiptMimeType: receiptFile.mimetype,
       reviewNotes: dto.notes,
       status: 'PENDING_REVIEW',
     });
@@ -237,12 +303,168 @@ export class PortalService {
     return savedProof;
   }
 
+  // Conciliación de depósitos bancarios (canal de cobro adicional, staff ADMIN/GERENTE/CAJERO)
+  async approveDepositProof(depositProofId: string, reviewerUserId: string): Promise<DepositProofEntity> {
+    const proof = await this.depositProofRepository.findOne({ where: { id: depositProofId } });
+    if (!proof) {
+      throw new NotFoundException(`Comprobante de depósito con ID ${depositProofId} no encontrado`);
+    }
+    if (proof.status !== 'PENDING_REVIEW') {
+      throw new BadRequestException(`El comprobante ${depositProofId} ya fue revisado (estado: ${proof.status})`);
+    }
+
+    proof.status = 'APPROVED';
+    proof.reviewedByUserId = reviewerUserId;
+    await this.depositProofRepository.save(proof);
+
+    // Aplicación automática solo si el monto coincide EXACTO con la factura
+    // PENDING_PAYMENT más antigua del cliente (respeta "solo pago completo",
+    // sin aplicar dinero a ciegas cuando el monto no calza con ninguna factura).
+    const oldestPending = await this.invoiceRepository.findOne({
+      where: { clientId: proof.clientId, status: 'PENDING_PAYMENT' },
+      order: { dueDate: 'ASC' },
+    });
+
+    if (oldestPending && Number(oldestPending.grandTotal) === Number(proof.amount)) {
+      await this.applyDepositProofToInvoice(proof.id, oldestPending.id, reviewerUserId);
+    } else {
+      await this.notificationRepository.save(
+        this.notificationRepository.create({
+          clientId: proof.clientId,
+          title: 'Comprobante de Depósito Aprobado',
+          message: `Tu comprobante por RD$ ${Number(proof.amount).toLocaleString('es-DO')} fue aprobado. Nuestro equipo aplicará el pago a tu(s) factura(s) en breve.`,
+          type: 'PAYMENT_CONFIRMED',
+          link: '/portal/facturas',
+        }),
+      );
+    }
+
+    return this.depositProofRepository.findOneOrFail({ where: { id: depositProofId } });
+  }
+
+  async rejectDepositProof(
+    depositProofId: string,
+    reviewerUserId: string,
+    reason?: string,
+  ): Promise<DepositProofEntity> {
+    const proof = await this.depositProofRepository.findOne({ where: { id: depositProofId } });
+    if (!proof) {
+      throw new NotFoundException(`Comprobante de depósito con ID ${depositProofId} no encontrado`);
+    }
+    if (proof.status !== 'PENDING_REVIEW') {
+      throw new BadRequestException(`El comprobante ${depositProofId} ya fue revisado (estado: ${proof.status})`);
+    }
+
+    proof.status = 'REJECTED';
+    proof.reviewedByUserId = reviewerUserId;
+    if (reason) {
+      proof.reviewNotes = reason;
+    }
+    const saved = await this.depositProofRepository.save(proof);
+
+    await this.notificationRepository.save(
+      this.notificationRepository.create({
+        clientId: proof.clientId,
+        title: 'Comprobante de Depósito Rechazado',
+        message: `Tu comprobante por RD$ ${Number(proof.amount).toLocaleString('es-DO')} fue rechazado${reason ? `: ${reason}` : '.'} Verifica los datos e intenta de nuevo o contacta a soporte.`,
+        type: 'PAYMENT_CONFIRMED',
+        link: '/portal/pagos',
+      }),
+    );
+
+    return saved;
+  }
+
+  /**
+   * Aplica un comprobante ya APPROVED a una factura PENDING_PAYMENT específica del
+   * mismo cliente, liquidándola vía PosService.collectInvoices (paymentMethod
+   * BANK_TRANSFER, sin caja registradora) — reutiliza el mismo camino de timbrado
+   * y reactivación de contrato que el cobro presencial en POS. Relación 1:1
+   * (DepositProofEntity.invoiceId es una sola FK): un comprobante que deba cubrir
+   * varias facturas requiere aplicarse una por una manualmente.
+   */
+  async applyDepositProofToInvoice(
+    depositProofId: string,
+    invoiceId: string,
+    reviewerUserId: string,
+  ): Promise<InvoiceEntity> {
+    const proof = await this.depositProofRepository.findOne({ where: { id: depositProofId } });
+    if (!proof) {
+      throw new NotFoundException(`Comprobante de depósito con ID ${depositProofId} no encontrado`);
+    }
+    if (proof.status !== 'APPROVED') {
+      throw new BadRequestException('El comprobante debe estar APPROVED antes de aplicarse a una factura');
+    }
+
+    const invoice = await this.invoiceRepository.findOne({ where: { id: invoiceId } });
+    if (!invoice) {
+      throw new NotFoundException(`Factura con ID ${invoiceId} no encontrada`);
+    }
+    if (invoice.clientId !== proof.clientId) {
+      throw new BadRequestException('La factura no pertenece al mismo cliente del comprobante');
+    }
+    if (invoice.status !== 'PENDING_PAYMENT') {
+      throw new BadRequestException(`La factura ${invoiceId} no está pendiente de pago`);
+    }
+
+    const client = await this.clientRepository.findOne({ where: { id: proof.clientId } });
+    const ncfType = client?.docType === 'RNC' ? 'E31' : 'E32';
+
+    const [settledSale] = await this.posService.collectInvoices(reviewerUserId, {
+      invoiceIds: [invoiceId],
+      paymentMethod: 'BANK_TRANSFER',
+      ncfType,
+      notes: `Aplicado desde comprobante de depósito ${proof.id} (${proof.bankName} / ${proof.referenceNumber})`,
+    });
+
+    proof.invoiceId = invoiceId;
+    await this.depositProofRepository.save(proof);
+
+    if (!settledSale.invoice) {
+      throw new NotFoundException(`No se pudo recuperar la factura liquidada para la venta ${settledSale.id}`);
+    }
+    return settledSale.invoice;
+  }
+
+  /**
+   * Genera la URL firmada (corta duración) para ver el archivo del
+   * comprobante. Los registros legado sin receiptFileKey (enviados antes de
+   * exigir archivo) caen de vuelta al receiptUrl de texto libre que tengan.
+   */
+  private async resolveReceiptUrl(proof: DepositProofEntity): Promise<string | null> {
+    if (proof.receiptFileKey) {
+      return this.storageService.getPresignedUrl(proof.receiptFileKey);
+    }
+    return proof.receiptUrl || null;
+  }
+
+  /**
+   * Cola de revisión para staff (ADMIN/GERENTE/CAJERO): todos los comprobantes
+   * de depósito, opcionalmente filtrados por estado. Distinto de getDepositProofs
+   * (autoservicio del cliente, escrito desde el JWT), ya que el staff necesita
+   * ver los de TODOS los clientes, no solo los propios.
+   */
+  async getAllDepositProofs(status?: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED') {
+    const where = status ? { status } : {};
+    const proofs = await this.depositProofRepository.find({
+      where,
+      relations: ['client'],
+      order: { createdAt: 'DESC' },
+    });
+    return Promise.all(
+      proofs.map(async (proof) => ({ ...proof, receiptUrl: await this.resolveReceiptUrl(proof) })),
+    );
+  }
+
   async getDepositProofs(userId: string) {
     const client = await this.getClientByUserId(userId);
-    return this.depositProofRepository.find({
+    const proofs = await this.depositProofRepository.find({
       where: { clientId: client.id },
       order: { createdAt: 'DESC' },
     });
+    return Promise.all(
+      proofs.map(async (proof) => ({ ...proof, receiptUrl: await this.resolveReceiptUrl(proof) })),
+    );
   }
 
   // RF-40: Planes Disponibles y Cálculo de Prorrateo
@@ -351,33 +573,122 @@ export class PortalService {
     return { success: true };
   }
 
-  // RF-39: Chatbot Interactivo y Detección de Averías
+  async markAllNotificationsRead(userId: string) {
+    const client = await this.getClientByUserId(userId);
+    const result = await this.notificationRepository.update(
+      { clientId: client.id, isRead: false },
+      { isRead: true },
+    );
+    return { success: true, updated: result.affected || 0 };
+  }
+
+  async deleteNotification(userId: string, notificationId: string) {
+    const client = await this.getClientByUserId(userId);
+    const result = await this.notificationRepository.delete({
+      id: notificationId,
+      clientId: client.id,
+    });
+    if (!result.affected) {
+      throw new NotFoundException(`Notificación con ID ${notificationId} no encontrada`);
+    }
+    return { success: true };
+  }
+
+  /**
+   * La base local (`sumtech_erp`) quedó creada en encoding WIN1252 en vez de
+   * UTF8 (incidente 2026-09-10: el chat fallaba con 500 al persistir texto
+   * con emoji — QueryFailedError, "no equivalent in encoding WIN1252"). Se
+   * está recodificando la base a UTF8, pero se deja este saneo como defensa
+   * adicional para cualquier entorno que reintroduzca el mismo desajuste de
+   * encoding — solo afecta el texto que se guarda en el historial CRM/ticket,
+   * nunca la respuesta que ve el cliente en el chat.
+   */
+  private stripNonLatin1(text: string): string {
+    return text.replace(/[^\t\n\r\x20-\xFF]/g, '');
+  }
+
+  private readonly technicalKeywords = [
+    'no tengo internet', 'sin internet', 'sin servicio', 'averia', 'avería',
+    'señal mala', 'lenta', 'lento', 'desconectado', 'luz roja', 'los', 'pon',
+    'caido', 'caída', 'intermitente', 'fibra rota',
+  ];
+  private readonly billingKeywords = ['factura', 'pago', 'balance', 'recibo', 'transferencia', 'banco', 'pagar', 'cuanto debo', 'corte'];
+  private readonly planKeywords = ['cambiar plan', 'aumentar velocidad', 'upgrade', 'mas megas', 'mas canales', 'mejorar plan'];
+
+  private async logChatInteraction(client: ClientEntity, userId: string, userMessage: string, botResponse: string) {
+    await this.interactionRepository.save(
+      this.interactionRepository.create({
+        clientId: client.id,
+        userId,
+        channel: 'SYSTEM_EVENT',
+        subject: this.stripNonLatin1(`Consulta Chat Portal: ${userMessage.slice(0, 50)}`),
+        notes: this.stripNonLatin1(`Cliente envió: "${userMessage}". Chatbot respondió: "${botResponse.slice(0, 150)}..."`),
+      }),
+    );
+  }
+
+  /**
+   * `Chatbot_sumtech` no calcula estos dos campos (son específicos del flujo
+   * de ticketing del ERP) — se derivan acá a partir de su clasificación.
+   */
+  private shouldOfferTicket(ai: AiChatbotResponse, originalMessageLower: string): boolean {
+    if (ai.escalated) return true;
+    if (ai.intent === 'soporte_tecnico_internet') return true;
+    return this.technicalKeywords.some((kw) => originalMessageLower.includes(kw));
+  }
+
+  private suggestPriorityFromIntent(ai: AiChatbotResponse, originalMessageLower: string): 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' {
+    if (ai.escalated) return 'HIGH';
+    if (originalMessageLower.includes('luz roja') || originalMessageLower.includes('sin servicio')) return 'HIGH';
+    return 'MEDIUM';
+  }
+
+  // RF-39: Chatbot Interactivo y Detección de Averías — respuesta generada por
+  // Chatbot_sumtech (RAG + Gemini/Ollama, proyecto separado), con degradación
+  // automática al sistema de keywords si el servicio de IA no responde.
   async processChatMessage(userId: string, dto: PortalChatMessageDto) {
     const client = await this.getClientByUserId(userId);
     const messageLower = dto.message.toLowerCase();
 
-    // 1. Detección de Averías e Incidencias Técnicas
-    const technicalKeywords = [
-      'no tengo internet', 'sin internet', 'sin servicio', 'averia', 'avería', 
-      'señal mala', 'lenta', 'lento', 'desconectado', 'luz roja', 'los', 'pon', 
-      'caido', 'caída', 'intermitente', 'fibra rota'
-    ];
-    const isTechnicalIssue = technicalKeywords.some((kw) => messageLower.includes(kw));
+    // El RAG de Chatbot_sumtech es contenido genérico de empresa — a propósito
+    // no conoce (ni debe inventar) el balance/fecha de corte real de una
+    // cuenta puntual. Si el mensaje es de facturación, se le inyecta el dato
+    // real del cliente como contexto en vez de dejar que el LLM lo adivine.
+    let messageForAi = dto.message;
+    if (this.billingKeywords.some((kw) => messageLower.includes(kw))) {
+      const summary = await this.getDashboardSummary(userId, dto.contractId);
+      messageForAi += `\n\n[Contexto de cuenta del cliente — usa este dato real, no inventes otro: balance pendiente RD$ ${summary.balanceDue.toLocaleString()}, próximo corte ${summary.activeContract?.nextBillingDate || 'no disponible'}]`;
+    }
 
-    // 2. Detección de Facturación y Pagos
-    const billingKeywords = ['factura', 'pago', 'balance', 'recibo', 'transferencia', 'banco', 'pagar', 'cuanto debo', 'corte'];
-    const isBillingQuery = billingKeywords.some((kw) => messageLower.includes(kw));
+    try {
+      const ai = await this.aiChatbotClient.sendMessage(client.id, messageForAi, client.name);
+      await this.logChatInteraction(client, userId, dto.message, ai.response);
 
-    // 3. Detección de Planes y Aumento de Velocidad
-    const planKeywords = ['cambiar plan', 'aumentar velocidad', 'upgrade', 'mas megas', 'mas canales', 'mejorar plan'];
-    const isPlanQuery = planKeywords.some((kw) => messageLower.includes(kw));
+      return {
+        sender: 'bot',
+        message: ai.response,
+        timestamp: new Date().toISOString(),
+        canConvertTicket: this.shouldOfferTicket(ai, messageLower),
+        suggestedPriority: this.suggestPriorityFromIntent(ai, messageLower),
+      };
+    } catch (err) {
+      this.logger.warn(`Chatbot_sumtech no disponible, usando fallback de keywords: ${(err as Error).message}`);
+      return this.processChatMessageFallback(client, userId, dto, messageLower);
+    }
+  }
+
+  /** Sistema de respuestas por plantilla — se usa solo si Chatbot_sumtech no responde. */
+  private async processChatMessageFallback(client: ClientEntity, userId: string, dto: PortalChatMessageDto, messageLower: string) {
+    const isTechnicalIssue = this.technicalKeywords.some((kw) => messageLower.includes(kw));
+    const isBillingQuery = this.billingKeywords.some((kw) => messageLower.includes(kw));
+    const isPlanQuery = this.planKeywords.some((kw) => messageLower.includes(kw));
 
     let botResponse = '';
     let canConvertTicket = false;
     let suggestedPriority: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' = 'MEDIUM';
 
     if (isTechnicalIssue) {
-      botResponse = `Hola ${client.name.split(' ')[0]}, lamentamos mucho los inconvenientes con tu servicio. 
+      botResponse = `Hola ${client.name.split(' ')[0]}, lamentamos mucho los inconvenientes con tu servicio.
 
 🔧 **Diagnóstico Rápido:**
 1. Verifica que el cable de fibra óptica (amarillo) esté firmemente conectado a tu Router ONU.
@@ -389,7 +700,7 @@ Si tras reiniciar el problema persiste, presiona el botón **"Convertir en Recla
       suggestedPriority = messageLower.includes('luz roja') || messageLower.includes('sin servicio') ? 'HIGH' : 'MEDIUM';
     } else if (isBillingQuery) {
       const summary = await this.getDashboardSummary(userId, dto.contractId);
-      botResponse = `Hola ${client.name.split(' ')[0]}. Tu balance pendiente actual es de **RD$ ${summary.balanceDue.toLocaleString()}**. 
+      botResponse = `Hola ${client.name.split(' ')[0]}. Tu balance pendiente actual es de **RD$ ${summary.balanceDue.toLocaleString()}**.
 
 Tu fecha de próximo corte es el **${summary.activeContract?.nextBillingDate || 'día 15'}**. Puedes subir tu recibo de transferencia o depósito bancario desde la pestaña **Pagos** para validarlo al instante.`;
     } else if (isPlanQuery) {
@@ -398,16 +709,7 @@ Tu fecha de próximo corte es el **${summary.activeContract?.nextBillingDate || 
       botResponse = `Hola ${client.name.split(' ')[0]}, gracias por comunicarte con el Asistente Digital de Sumtech. ¿En qué te podemos colaborar hoy? Puedes consultarme sobre el estado de tu internet, facturación, reportar una avería o solicitar un cambio de plan.`;
     }
 
-    // Registrar interacción en CRM (RF-21 / RF-39)
-    await this.interactionRepository.save(
-      this.interactionRepository.create({
-        clientId: client.id,
-        userId,
-        channel: 'SYSTEM_EVENT',
-        subject: `Consulta Chat Portal: ${dto.message.slice(0, 50)}`,
-        notes: `Cliente envió: "${dto.message}". Chatbot respondió: "${botResponse.slice(0, 150)}..."`,
-      }),
-    );
+    await this.logChatInteraction(client, userId, dto.message, botResponse);
 
     return {
       sender: 'bot',
@@ -445,8 +747,11 @@ Tu fecha de próximo corte es el **${summary.activeContract?.nextBillingDate || 
     dueDate.setHours(dueDate.getHours() + (dto.priority === 'HIGH' ? 8 : 24));
 
     const ticket = this.ticketRepository.create({
+      ticketNumber: `TCK-${Date.now().toString().slice(-6)}`,
       title: `Reclamación Avería - ${contract.address?.sector || 'Cliente Portal'}`,
-      description: `[RECLAMACIÓN DESDE PORTAL WEB] ${dto.description}\nZona: ${contract.address?.municipality || 'Principal'} - Sector: ${contract.address?.sector || 'S/N'}${dto.chatSummary ? `\nHistorial: ${dto.chatSummary}` : ''}`,
+      description: this.stripNonLatin1(
+        `[RECLAMACIÓN DESDE PORTAL WEB] ${dto.description}\nZona: ${contract.address?.municipality || 'Principal'} - Sector: ${contract.address?.sector || 'S/N'}${dto.chatSummary ? `\nHistorial: ${dto.chatSummary}` : ''}`,
+      ),
       clientId: client.id,
       contractId: contract.id,
       assignedEmployeeId: assignedTechnician?.id,

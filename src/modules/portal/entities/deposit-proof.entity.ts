@@ -33,8 +33,17 @@ export class DepositProofEntity {
   @Column({ name: 'deposit_date', type: 'date' })
   depositDate: string;
 
+  /** @deprecated Legado — comprobantes enviados como link antes de exigir archivo. Ya no se escribe en envíos nuevos. */
   @Column({ name: 'receipt_url', type: 'text', nullable: true })
   receiptUrl?: string;
+
+  /** Object key en MinIO del archivo (imagen o PDF) subido como comprobante. Se lee siempre vía URL firmada, nunca como ruta pública. */
+  @Column({ name: 'receipt_file_key', type: 'varchar', length: 500, nullable: true })
+  receiptFileKey?: string;
+
+  /** Mimetype validado al subir (image/jpeg, image/png o application/pdf) — permite previsualizar sin re-consultar MinIO. */
+  @Column({ name: 'receipt_mime_type', type: 'varchar', length: 100, nullable: true })
+  receiptMimeType?: string;
 
   @Column({
     type: 'enum',

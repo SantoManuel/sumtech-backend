@@ -2,6 +2,7 @@ import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@ne
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto, FilterEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
+import { CreateUserDto } from '../users/dto/create-user.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { AuthGuard } from '../../common/guards/auth.guard';
@@ -46,5 +47,11 @@ export class EmployeesController {
   @Roles(Role.ADMIN)
   async update(@Param('id') id: string, @Body() updateEmployeeDto: UpdateEmployeeDto) {
     return this.employeesService.update(id, updateEmployeeDto);
+  }
+
+  @Patch(':id/grant-access')
+  @Roles(Role.ADMIN)
+  async grantAccess(@Param('id') id: string, @Body() createUserDto: CreateUserDto) {
+    return this.employeesService.grantAccess(id, createUserDto);
   }
 }

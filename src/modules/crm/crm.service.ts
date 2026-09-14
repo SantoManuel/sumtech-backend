@@ -5,6 +5,7 @@ import { LeadEntity } from './entities/lead.entity';
 import { InteractionEntity } from './entities/interaction.entity';
 import { CreateLeadDto, CreateInteractionDto } from './dto/crm.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
+import { LeadStatus } from './enums/lead.enums';
 
 @Injectable()
 export class CrmService {
@@ -42,7 +43,7 @@ export class CrmService {
     return this.leadRepository.save(lead);
   }
 
-  async updateLeadStatus(id: string, status: 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'CONVERTED' | 'DISCARDED'): Promise<LeadEntity> {
+  async updateLeadStatus(id: string, status: LeadStatus): Promise<LeadEntity> {
     const lead = await this.leadRepository.findOneBy({ id });
     if (!lead) {
       throw new NotFoundException(`Lead con ID ${id} no encontrado`);

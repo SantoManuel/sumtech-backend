@@ -24,6 +24,9 @@ export class PlanEntity {
   @Column({ name: 'itbis_rate', type: 'decimal', precision: 4, scale: 2, default: 0.18 })
   itbisRate: number;
 
+  @Column({ name: 'cdt_rate', type: 'decimal', precision: 4, scale: 2, default: 0.02 })
+  cdtRate: number;
+
   @Column({ type: 'text', nullable: true })
   description?: string;
 

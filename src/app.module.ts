@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerModule } from '@nestjs/throttler';
 
 import { databaseConfig } from './config/database.config';
 import { AuthModule } from './modules/auth/auth.module';
@@ -19,6 +21,8 @@ import { CoordinationModule } from './modules/coordination/coordination.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PortalModule } from './modules/portal/portal.module';
 import { GeographyModule } from './modules/geography/geography.module';
+import { BillingModule } from './modules/billing/billing.module';
+import { DailyClosuresModule } from './modules/daily-closures/daily-closures.module';
 
 @Module({
   imports: [
@@ -40,6 +44,14 @@ import { GeographyModule } from './modules/geography/geography.module';
     // Bus de Eventos Asíncronos
     EventEmitterModule.forRoot(),
 
+    // Tareas Programadas (Cron) — motor de facturación recurrente y morosidad
+    ScheduleModule.forRoot(),
+
+    // Rate limiting — se aplica explícitamente solo en /public/chat/* (ver
+    // PublicController), no como guard global: el resto de la API no tenía
+    // ninguna protección de este tipo y no es objetivo de este cambio tocarla.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
+
     // Módulos de Dominio del Monolito Modular
     AuthModule,
     UsersModule,
@@ -56,6 +68,8 @@ import { GeographyModule } from './modules/geography/geography.module';
     DashboardModule,
     PortalModule,
     GeographyModule,
+    BillingModule,
+    DailyClosuresModule,
   ],
 })
 export class AppModule {}

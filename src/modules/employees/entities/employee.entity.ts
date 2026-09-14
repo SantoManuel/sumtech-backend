@@ -14,12 +14,15 @@ export class EmployeeEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ name: 'user_id', type: 'uuid', unique: true })
-  userId: string;
+  // Opcional — hay colaboradores sin acceso al sistema (ej. conserjería). Si
+  // el usuario vinculado se elimina, el perfil de RRHH se conserva (user_id
+  // pasa a NULL, no se borra la fila) — ver migración 034.
+  @Column({ name: 'user_id', type: 'uuid', unique: true, nullable: true })
+  userId?: string;
 
-  @OneToOne(() => UserEntity, (user) => user.employee, { onDelete: 'CASCADE' })
+  @OneToOne(() => UserEntity, (user) => user.employee, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'user_id' })
-  user: UserEntity;
+  user?: UserEntity;
 
   @Column({ type: 'varchar', length: 20, unique: true })
   cedula: string;

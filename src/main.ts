@@ -1,16 +1,23 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
+import { assertRequiredEnvVars } from './common/utils/required-env.util';
 
 async function bootstrap() {
   const logger = new Logger('SumtechBootstrap');
   const app = await NestFactory.create(AppModule);
 
+  // Falla rápido si faltan secretos críticos, en vez de arrancar con
+  // fallbacks hardcodeados inseguros (ver required-env.util.ts)
+  assertRequiredEnvVars(app.get(ConfigService), ['JWT_SECRET', 'JWT_REFRESH_SECRET']);
+
   const allowedOrigins = process.env.CORS_ORIGINS?.split(',') || [
     'http://localhost:3000',
   ];
 
-
+  app.use(cookieParser());
 
   // Habilitar CORS
   app.enableCors({

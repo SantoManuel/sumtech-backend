@@ -1,10 +1,19 @@
-import { IsNotEmpty, IsUUID, IsPositive, IsDateString, IsOptional, IsUrl, IsString } from 'class-validator';
+import { IsNotEmpty, IsUUID, IsPositive, IsDateString, IsOptional, IsUrl, IsString, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
+import { CreateUserDto } from '../../users/dto/create-user.dto';
 
 export class CreateEmployeeDto {
-  @IsNotEmpty()
+  // A lo sumo uno de estos dos — nunca ambos. Ninguno de los dos significa
+  // "colaborador sin acceso al sistema" (ej. conserjería).
+  @IsOptional()
   @IsUUID('4')
-  userId: string;
+  userId?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CreateUserDto)
+  newUser?: CreateUserDto;
 
   @IsNotEmpty()
   cedula: string;

@@ -10,9 +10,11 @@ import { SlaPolicyEntity } from './entities/sla-policy.entity';
 import { ScheduleEventEntity } from './entities/schedule-event.entity';
 import { ScheduleEventsService } from './schedule-events.service';
 import { ScheduleEventsController } from './schedule-events.controller';
-import { SaleConfirmedListener } from './listeners/sale-confirmed.listener';
+import { ContractCreatedListener } from './listeners/contract-created.listener';
 import { InventoryModule } from '../inventory/inventory.module';
 import { UsersModule } from '../users/users.module';
+import { AddressEntity } from '../clients/entities/address.entity';
+import { ContractEntity } from '../clients/entities/contract.entity';
 
 @Module({
   imports: [
@@ -22,13 +24,15 @@ import { UsersModule } from '../users/users.module';
       TicketRepairEntity,
       SlaPolicyEntity,
       ScheduleEventEntity,
+      AddressEntity,
+      ContractEntity,
     ]),
     InventoryModule,
     UsersModule,
     JwtModule.register({}),
   ],
   controllers: [TicketsController, ScheduleEventsController],
-  providers: [TicketsService, ScheduleEventsService, SaleConfirmedListener],
+  providers: [TicketsService, ScheduleEventsService, ContractCreatedListener],
   exports: [TicketsService, ScheduleEventsService],
 })
 export class TicketsModule {}

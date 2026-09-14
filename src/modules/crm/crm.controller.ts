@@ -6,6 +6,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { LeadStatus } from './enums/lead.enums';
 
 @Controller('crm')
 @UseGuards(AuthGuard, RolesGuard)
@@ -28,7 +29,7 @@ export class CrmController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.AGENTE_CRM)
   async updateLeadStatus(
     @Param('id') id: string,
-    @Body('status') status: 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'CONVERTED' | 'DISCARDED',
+    @Body('status') status: LeadStatus,
   ) {
     return this.crmService.updateLeadStatus(id, status);
   }

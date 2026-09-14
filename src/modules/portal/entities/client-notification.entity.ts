@@ -21,10 +21,29 @@ export class ClientNotificationEntity {
 
   @Column({
     type: 'enum',
-    enum: ['PAYMENT_REMINDER', 'PAYMENT_CONFIRMED', 'TICKET_UPDATE', 'MAINTENANCE', 'PROMOTION'],
+    enum: [
+      'PAYMENT_REMINDER',
+      'PAYMENT_CONFIRMED',
+      'TICKET_UPDATE',
+      'MAINTENANCE',
+      'PROMOTION',
+      'INVOICE_GENERATED',
+      'SERVICE_SUSPENDED',
+      'SERVICE_REACTIVATED',
+      'SERVICE_TERMINATED',
+    ],
     default: 'PAYMENT_REMINDER',
   })
-  type: 'PAYMENT_REMINDER' | 'PAYMENT_CONFIRMED' | 'TICKET_UPDATE' | 'MAINTENANCE' | 'PROMOTION';
+  type:
+    | 'PAYMENT_REMINDER'
+    | 'PAYMENT_CONFIRMED'
+    | 'TICKET_UPDATE'
+    | 'MAINTENANCE'
+    | 'PROMOTION'
+    | 'INVOICE_GENERATED'
+    | 'SERVICE_SUSPENDED'
+    | 'SERVICE_REACTIVATED'
+    | 'SERVICE_TERMINATED';
 
   @Column({ name: 'is_read', type: 'boolean', default: false })
   isRead: boolean;

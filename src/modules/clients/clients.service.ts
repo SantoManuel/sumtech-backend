@@ -1,16 +1,28 @@
 import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, FindOptionsWhere } from 'typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as bcrypt from 'bcrypt';
 import { ClientEntity } from './entities/client.entity';
 import { AddressEntity } from './entities/address.entity';
 import { ContractEntity } from './entities/contract.entity';
 import { UserEntity } from '../users/entities/user.entity';
 import { RoleEntity } from '../users/entities/role.entity';
+import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
+import { PlanEntity } from '../plans/entities/plan.entity';
 import { Role } from '../../common/enums/role.enum';
+import { SystemEvents } from '../../common/enums/system-events.enum';
+import { ContractSuspendedEvent } from '../billing/events/contract-suspended.event';
+import { ContractReactivatedEvent } from '../billing/events/contract-reactivated.event';
+import { ContractTerminatedEvent } from '../billing/events/contract-terminated.event';
+import { ContractCreatedEvent } from '../billing/events/contract-created.event';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
+import { UpdateContractDto } from './dto/update-contract.dto';
+import { FindContractsDto } from './dto/find-contracts.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
+import { PdfGeneratorService } from '../printing/pdf-generator.service';
+import { DgiiClientService } from '../invoicing/dgii/dgii-client.service';
 
 function generateRandomPassword(length: number = 6): string {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -34,6 +46,13 @@ export class ClientsService {
     private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(RoleEntity)
     private readonly roleRepository: Repository<RoleEntity>,
+    @InjectRepository(InvoiceEntity)
+    private readonly invoiceRepository: Repository<InvoiceEntity>,
+    @InjectRepository(PlanEntity)
+    private readonly planRepository: Repository<PlanEntity>,
+    private readonly eventEmitter: EventEmitter2,
+    private readonly pdfGenerator: PdfGeneratorService,
+    private readonly dgiiClient: DgiiClientService,
   ) {}
 
   async findAll(paginationDto: PaginationDto, search?: string) {
@@ -155,14 +174,83 @@ export class ClientsService {
     return result;
   }
 
-  async update(id: string, dto: UpdateClientDto): Promise<ClientEntity> {
-    const client = await this.findById(id);
-    Object.assign(client, dto);
-    return this.clientRepository.save(client);
+  /**
+   * Regenera la contraseña de la cuenta digital del cliente (portal de
+   * autoservicio) — el hash original no es recuperable, así que esta es la
+   * única forma de que el ERP le entregue una contraseña nueva a un cliente
+   * que la perdió. Se devuelve en texto plano una sola vez, igual que en el
+   * alta inicial (RF-35).
+   */
+  async resetDigitalPassword(clientId: string): Promise<{ initialDigitalPassword: string }> {
+    const client = await this.findById(clientId);
+    if (!client.userId) {
+      throw new ConflictException('Este cliente no tiene una cuenta digital asociada');
+    }
+
+    const newPlainPassword = generateRandomPassword(6);
+    const passwordHash = await bcrypt.hash(newPlainPassword, 10);
+    await this.userRepository.update(client.userId, { passwordHash });
+
+    return { initialDigitalPassword: newPlainPassword };
   }
 
-  async addContract(clientId: string, planId: string, addressId: string): Promise<ContractEntity> {
+  /**
+   * Activa/desactiva el acceso del cliente al portal de autoservicio sin
+   * afectar el registro comercial (contratos/facturas siguen intactos).
+   */
+  async setDigitalAccess(clientId: string, isActive: boolean): Promise<ClientEntity> {
     const client = await this.findById(clientId);
+    if (!client.userId) {
+      throw new ConflictException('Este cliente no tiene una cuenta digital asociada');
+    }
+
+    await this.userRepository.update(client.userId, { isActive });
+    return this.findById(clientId);
+  }
+
+  async update(id: string, dto: UpdateClientDto): Promise<ClientEntity> {
+    const client = await this.findById(id);
+
+    if (dto.docNumber && dto.docNumber !== client.docNumber) {
+      const existing = await this.clientRepository.findOne({ where: { docNumber: dto.docNumber } });
+      if (existing && existing.id !== id) {
+        throw new ConflictException(`Ya existe un cliente con el documento ${dto.docNumber}`);
+      }
+    }
+
+    Object.assign(client, dto);
+    const saved = await this.clientRepository.save(client);
+
+    if (dto.email && saved.userId) {
+      await this.userRepository.update(saved.userId, { email: dto.email.toLowerCase() });
+    }
+
+    return saved;
+  }
+
+  private async findActivePlanOrFail(planId: string): Promise<PlanEntity> {
+    const plan = await this.planRepository.findOneBy({ id: planId });
+    if (!plan) {
+      throw new NotFoundException(`Plan con ID ${planId} no encontrado`);
+    }
+    if (!plan.isActive) {
+      throw new ConflictException(`El plan "${plan.name}" no está activo y no puede asignarse a un contrato`);
+    }
+    return plan;
+  }
+
+  /**
+   * El contrato nace ACTIVE (no PENDING_INSTALL): la empresa moviliza recursos
+   * (despacho de técnico, reserva de equipo) desde el momento de la firma, así
+   * que la facturación recurrente arranca desde ahí también, sin esperar a que
+   * se complete la instalación física (decisión de negocio confirmada 2026-09-08).
+   * Emite CONTRACT_CREATED para que TicketsService genere automáticamente la
+   * orden de instalación (ver ContractCreatedListener) — antes esto no ocurría
+   * nunca, ni siquiera cuando el contrato nacía PENDING_INSTALL.
+   */
+  async addContract(clientId: string, planId: string, addressId: string, billingDay?: number): Promise<ContractEntity> {
+    const client = await this.findById(clientId);
+    await this.findActivePlanOrFail(planId);
     const contractNumber = `CTR-${Date.now().toString().slice(-6)}`;
 
     const contract = this.contractRepository.create({
@@ -171,15 +259,207 @@ export class ClientsService {
       planId,
       addressId,
       startDate: new Date().toISOString().split('T')[0],
-      billingDay: 15,
-      status: 'PENDING_INSTALL',
+      billingDay: billingDay && billingDay >= 1 && billingDay <= 31 ? billingDay : 15,
+      status: 'ACTIVE',
     });
 
-    return this.contractRepository.save(contract);
+    const saved = await this.contractRepository.save(contract);
+
+    const event: ContractCreatedEvent = {
+      contractId: saved.id,
+      clientId: saved.clientId,
+      contractNumber: saved.contractNumber,
+      occurredOn: new Date(),
+    };
+    this.eventEmitter.emit(SystemEvents.CONTRACT_CREATED, event);
+
+    return saved;
   }
 
   async findContractsByClientId(clientId: string): Promise<ContractEntity[]> {
     const client = await this.findById(clientId);
     return client.contracts || [];
+  }
+
+  async findAllContracts(dto: FindContractsDto) {
+    const page = dto.page || 1;
+    const limit = dto.limit || 15;
+    const skip = (page - 1) * limit;
+
+    const query = this.contractRepository
+      .createQueryBuilder('contract')
+      .leftJoinAndSelect('contract.client', 'client')
+      .leftJoinAndSelect('contract.plan', 'plan')
+      .leftJoinAndSelect('contract.address', 'address')
+      .orderBy('contract.createdAt', 'DESC')
+      .skip(skip)
+      .take(limit);
+
+    if (dto.status) {
+      query.andWhere('contract.status = :status', { status: dto.status });
+    }
+    if (dto.search) {
+      query.andWhere(
+        '(client.name ILIKE :search OR client.docNumber ILIKE :search OR contract.contractNumber ILIKE :search)',
+        { search: `%${dto.search}%` },
+      );
+    }
+
+    const [data, total] = await query.getManyAndCount();
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  private async findContractOrFail(clientId: string, contractId: string): Promise<ContractEntity> {
+    const contract = await this.contractRepository.findOne({ where: { id: contractId, clientId } });
+    if (!contract) {
+      throw new NotFoundException(`Contrato ${contractId} no encontrado para el cliente ${clientId}`);
+    }
+    return contract;
+  }
+
+  async updateContract(clientId: string, contractId: string, dto: UpdateContractDto): Promise<ContractEntity> {
+    const contract = await this.findContractOrFail(clientId, contractId);
+    if (dto.planId) {
+      await this.findActivePlanOrFail(dto.planId);
+      contract.planId = dto.planId;
+    }
+    if (dto.addressId) {
+      contract.addressId = dto.addressId;
+    }
+    if (dto.billingDay) {
+      contract.billingDay = dto.billingDay;
+    }
+    return this.contractRepository.save(contract);
+  }
+
+  async suspendContract(clientId: string, contractId: string): Promise<ContractEntity> {
+    const contract = await this.findContractOrFail(clientId, contractId);
+    if (contract.status !== 'ACTIVE') {
+      throw new ConflictException(
+        `Solo se pueden suspender contratos ACTIVE (estado actual: ${contract.status})`,
+      );
+    }
+    contract.status = 'SUSPENDED';
+    const saved = await this.contractRepository.save(contract);
+
+    const event: ContractSuspendedEvent = {
+      contractId: saved.id,
+      clientId: saved.clientId,
+      contractNumber: saved.contractNumber,
+      daysOverdue: 0,
+      occurredOn: new Date(),
+    };
+    this.eventEmitter.emit(SystemEvents.CONTRACT_SUSPENDED, event);
+
+    return saved;
+  }
+
+  async reactivateContract(clientId: string, contractId: string): Promise<ContractEntity> {
+    const contract = await this.findContractOrFail(clientId, contractId);
+    if (contract.status !== 'SUSPENDED') {
+      throw new ConflictException(
+        `Solo se pueden reactivar contratos SUSPENDED (estado actual: ${contract.status})`,
+      );
+    }
+    contract.status = 'ACTIVE';
+    const saved = await this.contractRepository.save(contract);
+
+    const event: ContractReactivatedEvent = {
+      contractId: saved.id,
+      clientId: saved.clientId,
+      contractNumber: saved.contractNumber,
+      occurredOn: new Date(),
+    };
+    this.eventEmitter.emit(SystemEvents.CONTRACT_REACTIVATED, event);
+
+    return saved;
+  }
+
+  async terminateContract(clientId: string, contractId: string): Promise<ContractEntity> {
+    const contract = await this.findContractOrFail(clientId, contractId);
+    if (contract.status === 'TERMINATED') {
+      throw new ConflictException(`El contrato ${contract.contractNumber} ya está terminado`);
+    }
+    contract.status = 'TERMINATED';
+    contract.endDate = new Date().toISOString().split('T')[0];
+    const saved = await this.contractRepository.save(contract);
+
+    const event: ContractTerminatedEvent = {
+      contractId: saved.id,
+      clientId: saved.clientId,
+      contractNumber: saved.contractNumber,
+      occurredOn: new Date(),
+    };
+    this.eventEmitter.emit(SystemEvents.CONTRACT_TERMINATED, event);
+
+    return saved;
+  }
+
+  /**
+   * PDF de contrato de servicios (constancia + cláusulas placeholder, ver
+   * PrintingModule) para entregar o enviar al cliente al momento de la firma.
+   */
+  async generateContractPdf(clientId: string, contractId: string): Promise<Buffer> {
+    const contract = await this.contractRepository.findOne({
+      where: { id: contractId, clientId },
+      relations: ['client', 'plan', 'address'],
+    });
+    if (!contract) {
+      throw new NotFoundException(`Contrato ${contractId} no encontrado para el cliente ${clientId}`);
+    }
+
+    const config = this.dgiiClient.getConfig();
+
+    return this.pdfGenerator.generateContractPdf({
+      company: {
+        rnc: config.rncEmisor,
+        razonSocial: config.razonSocialEmisor,
+        nombreComercial: config.nombreComercial,
+        direccion: config.direccionEmisor,
+        telefono: config.telefonoEmisor,
+        correo: config.correoEmisor,
+      },
+      contract: {
+        contractNumber: contract.contractNumber,
+        status: contract.status,
+        startDate: contract.startDate,
+        endDate: contract.endDate,
+        billingDay: contract.billingDay,
+      },
+      client: {
+        name: contract.client.name,
+        docType: contract.client.docType,
+        docNumber: contract.client.docNumber,
+        email: contract.client.email,
+        phone: contract.client.phone,
+      },
+      plan: {
+        name: contract.plan.name,
+        serviceType: contract.plan.serviceType,
+        speedMbps: contract.plan.speedMbps,
+        tvChannelsCount: contract.plan.tvChannelsCount,
+        monthlyPrice: Number(contract.plan.monthlyPrice),
+      },
+      address: {
+        street: contract.address.street,
+        buildingNumber: contract.address.buildingNumber,
+        sector: contract.address.sector,
+        municipality: contract.address.municipality,
+        city: contract.address.city,
+      },
+    });
+  }
+
+  async getClientInvoices(clientId: string, status?: string): Promise<InvoiceEntity[]> {
+    await this.findById(clientId);
+    const where: FindOptionsWhere<InvoiceEntity> = { clientId };
+    if (status) {
+      where.status = status as InvoiceEntity['status'];
+    }
+    return this.invoiceRepository.find({
+      where,
+      relations: ['contract', 'contract.plan'],
+      order: { issuedAt: 'DESC' },
+    });
   }
 }
