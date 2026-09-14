@@ -51,6 +51,10 @@ export class GenieAcsDeviceEntity {
   @Column({ name: 'last_reboot_at', type: 'timestamp with time zone', nullable: true })
   lastRebootAt?: Date | null;
 
+  /** Usado para limitar la frecuencia de autogestión de WiFi (ver GenieAcsWifiService) — nunca se toca desde la resolución/telemetría. */
+  @Column({ name: 'last_wifi_change_at', type: 'timestamp with time zone', nullable: true })
+  lastWifiChangeAt?: Date | null;
+
   @Column({ name: 'last_sync_at', type: 'timestamp with time zone', nullable: true })
   lastSyncAt?: Date | null;
 

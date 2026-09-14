@@ -16,6 +16,8 @@ import { ClientNotificationEntity } from './entities/client-notification.entity'
 import { PosService } from '../pos/pos.service';
 import { MinioStorageService } from '../storage/minio-storage.service';
 import { AiChatbotClientService } from '../ai-chatbot/ai-chatbot-client.service';
+import { UsersService } from '../users/users.service';
+import { GenieAcsWifiService } from '../genieacs/genieacs-wifi.service';
 
 describe('PortalService - conciliación de depósitos', () => {
   let service: PortalService;
@@ -76,6 +78,8 @@ describe('PortalService - conciliación de depósitos', () => {
         { provide: getRepositoryToken(ClientNotificationEntity), useValue: notificationRepo },
         { provide: PosService, useValue: posService },
         { provide: MinioStorageService, useValue: storageService },
+        { provide: UsersService, useValue: { verifyPassword: jest.fn() } },
+        { provide: GenieAcsWifiService, useValue: { getWifiStatus: jest.fn(), changeWifiCredentials: jest.fn() } },
       ],
     }).compile();
 
@@ -462,6 +466,8 @@ describe('PortalService - getTickets', () => {
         { provide: getRepositoryToken(ClientNotificationEntity), useValue: emptyRepo() },
         { provide: PosService, useValue: { collectInvoices: jest.fn() } },
         { provide: MinioStorageService, useValue: { uploadBuffer: jest.fn(), getPresignedUrl: jest.fn() } },
+        { provide: UsersService, useValue: { verifyPassword: jest.fn() } },
+        { provide: GenieAcsWifiService, useValue: { getWifiStatus: jest.fn(), changeWifiCredentials: jest.fn() } },
       ],
     }).compile();
 
@@ -525,5 +531,116 @@ describe('PortalService - getTickets', () => {
 
     expect(queryBuilderMock.skip).toHaveBeenCalledWith(0);
     expect(queryBuilderMock.take).toHaveBeenCalledWith(10);
+  });
+});
+
+describe('PortalService - autogestión de WiFi (Fase 02)', () => {
+  let service: PortalService;
+  let clientRepo: any;
+  let contractRepo: any;
+  let usersService: any;
+  let genieAcsWifiService: any;
+
+  const emptyRepo = () => ({ find: jest.fn(), findOne: jest.fn(), findOneBy: jest.fn(), save: jest.fn(), create: jest.fn((x: any) => x) });
+
+  beforeEach(async () => {
+    clientRepo = { findOne: jest.fn() };
+    contractRepo = { findOneBy: jest.fn() };
+    usersService = { verifyPassword: jest.fn() };
+    genieAcsWifiService = { getWifiStatus: jest.fn(), changeWifiCredentials: jest.fn() };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PortalService,
+        { provide: AiChatbotClientService, useValue: { sendMessage: jest.fn() } },
+        { provide: getRepositoryToken(ClientEntity), useValue: clientRepo },
+        { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
+        { provide: getRepositoryToken(PlanEntity), useValue: emptyRepo() },
+        { provide: getRepositoryToken(InvoiceEntity), useValue: emptyRepo() },
+        { provide: getRepositoryToken(SerialNumberEntity), useValue: emptyRepo() },
+        { provide: getRepositoryToken(TicketEntity), useValue: emptyRepo() },
+        { provide: getRepositoryToken(EmployeeEntity), useValue: emptyRepo() },
+        { provide: getRepositoryToken(InteractionEntity), useValue: emptyRepo() },
+        { provide: getRepositoryToken(DepositProofEntity), useValue: emptyRepo() },
+        { provide: getRepositoryToken(PlanChangeRequestEntity), useValue: emptyRepo() },
+        { provide: getRepositoryToken(ClientNotificationEntity), useValue: emptyRepo() },
+        { provide: PosService, useValue: { collectInvoices: jest.fn() } },
+        { provide: MinioStorageService, useValue: { uploadBuffer: jest.fn(), getPresignedUrl: jest.fn() } },
+        { provide: UsersService, useValue: usersService },
+        { provide: GenieAcsWifiService, useValue: genieAcsWifiService },
+      ],
+    }).compile();
+
+    service = module.get<PortalService>(PortalService);
+  });
+
+  const mockOwnedClient = () => {
+    clientRepo.findOne.mockResolvedValue({ id: 'client-1', userId: 'user-account-1', contracts: [] });
+    contractRepo.findOneBy.mockResolvedValue({ id: 'contract-1', clientId: 'client-1' });
+  };
+
+  describe('getWifiStatus', () => {
+    it('lanza NotFoundException si el contrato no pertenece al cliente autenticado', async () => {
+      clientRepo.findOne.mockResolvedValue({ id: 'client-1', userId: 'user-account-1', contracts: [] });
+      contractRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(service.getWifiStatus('user-1', 'contract-ajeno')).rejects.toThrow(NotFoundException);
+      expect(genieAcsWifiService.getWifiStatus).not.toHaveBeenCalled();
+    });
+
+    it('delega en GenieAcsWifiService cuando el contrato sí pertenece al cliente', async () => {
+      mockOwnedClient();
+      genieAcsWifiService.getWifiStatus.mockResolvedValue({ linked: true, ssid: 'MiRed' });
+
+      const result = await service.getWifiStatus('user-1', 'contract-1');
+
+      expect(result).toEqual({ linked: true, ssid: 'MiRed' });
+      expect(genieAcsWifiService.getWifiStatus).toHaveBeenCalledWith('contract-1');
+    });
+  });
+
+  describe('changeWifiCredentials', () => {
+    const dto = { contractId: 'contract-1', currentAccountPassword: 'MiClaveDePortal123', ssid: 'MiCasaWifi', newPassword: 'ClaveSuperSegura123' };
+
+    it('lanza NotFoundException si el contrato no pertenece al cliente autenticado', async () => {
+      clientRepo.findOne.mockResolvedValue({ id: 'client-1', userId: 'user-account-1', contracts: [] });
+      contractRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(service.changeWifiCredentials('user-1', dto as any)).rejects.toThrow(NotFoundException);
+      expect(usersService.verifyPassword).not.toHaveBeenCalled();
+    });
+
+    it('lanza ForbiddenException si la contraseña de la cuenta no coincide (sin tocar GenieACS)', async () => {
+      mockOwnedClient();
+      usersService.verifyPassword.mockResolvedValue(false);
+
+      await expect(service.changeWifiCredentials('user-1', dto as any)).rejects.toThrow('La contraseña actual no es correcta.');
+      expect(genieAcsWifiService.changeWifiCredentials).not.toHaveBeenCalled();
+    });
+
+    it('aplica el cambio cuando la contraseña es correcta y el contrato pertenece al cliente', async () => {
+      mockOwnedClient();
+      usersService.verifyPassword.mockResolvedValue(true);
+      genieAcsWifiService.changeWifiCredentials.mockResolvedValue({ ssid: 'MiCasaWifi', ssid5g: undefined });
+
+      const result = await service.changeWifiCredentials('user-1', dto as any);
+
+      expect(result.success).toBe(true);
+      expect(result.ssid).toBe('MiCasaWifi');
+      expect(genieAcsWifiService.changeWifiCredentials).toHaveBeenCalledWith('contract-1', {
+        ssid: 'MiCasaWifi',
+        ssid5g: undefined,
+        password: 'ClaveSuperSegura123',
+      });
+    });
+
+    it('lanza ForbiddenException si el cliente no tiene cuenta digital asociada', async () => {
+      clientRepo.findOne.mockResolvedValue({ id: 'client-1', userId: null, contracts: [] });
+      contractRepo.findOneBy.mockResolvedValue({ id: 'contract-1', clientId: 'client-1' });
+
+      await expect(service.changeWifiCredentials('user-1', dto as any)).rejects.toThrow(
+        'Este cliente no tiene una cuenta digital asociada.',
+      );
+    });
   });
 });

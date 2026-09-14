@@ -15,6 +15,9 @@ import { ClientNotificationEntity } from './entities/client-notification.entity'
 import { PosService } from '../pos/pos.service';
 import { MinioStorageService } from '../storage/minio-storage.service';
 import { AiChatbotClientService, AiChatbotResponse } from '../ai-chatbot/ai-chatbot-client.service';
+import { UsersService } from '../users/users.service';
+import { GenieAcsWifiService } from '../genieacs/genieacs-wifi.service';
+import { ChangeWifiCredentialsDto } from '../genieacs/dto/change-wifi-credentials.dto';
 import {
   UploadDepositProofDto,
   CreatePlanChangeRequestDto,
@@ -53,6 +56,8 @@ export class PortalService {
     private readonly posService: PosService,
     private readonly storageService: MinioStorageService,
     private readonly aiChatbotClient: AiChatbotClientService,
+    private readonly usersService: UsersService,
+    private readonly genieAcsWifiService: GenieAcsWifiService,
   ) {}
 
   private static readonly ALLOWED_RECEIPT_MIME_TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
@@ -790,5 +795,51 @@ Tu fecha de próximo corte es el **${summary.activeContract?.nextBillingDate || 
       ticket: savedTicket,
       message: `Tu reclamación formal ha sido creada y asignada a la cuadrilla técnica de tu zona.`,
     };
+  }
+
+  /** Estado actual (SSID cacheado) de la red WiFi de un contrato del cliente autenticado. */
+  async getWifiStatus(userId: string, contractId: string) {
+    const client = await this.getClientByUserId(userId);
+    await this.assertContractOwnership(client.id, contractId);
+    return this.genieAcsWifiService.getWifiStatus(contractId);
+  }
+
+  /**
+   * Autogestión de WiFi (Fase 02): reautentica con la contraseña de la
+   * cuenta del portal antes de tocar nada — cambiar el WiFi desconecta todos
+   * los dispositivos del hogar del cliente, no es una acción trivial.
+   */
+  async changeWifiCredentials(userId: string, dto: ChangeWifiCredentialsDto) {
+    const client = await this.getClientByUserId(userId);
+    await this.assertContractOwnership(client.id, dto.contractId);
+
+    if (!client.userId) {
+      throw new ForbiddenException('Este cliente no tiene una cuenta digital asociada.');
+    }
+    const passwordOk = await this.usersService.verifyPassword(client.userId, dto.currentAccountPassword);
+    if (!passwordOk) {
+      throw new ForbiddenException('La contraseña actual no es correcta.');
+    }
+
+    const device = await this.genieAcsWifiService.changeWifiCredentials(dto.contractId, {
+      ssid: dto.ssid,
+      ssid5g: dto.ssid5g,
+      password: dto.newPassword,
+    });
+
+    return {
+      success: true,
+      ssid: device.ssid,
+      ssid5g: device.ssid5g,
+      message: 'Tu WiFi se está actualizando — tu equipo se reiniciará y perderás la conexión unos segundos.',
+    };
+  }
+
+  /** Lanza NotFoundException si el contrato no existe o no pertenece a este cliente — mismo patrón usado en el resto del portal. */
+  private async assertContractOwnership(clientId: string, contractId: string): Promise<void> {
+    const contract = await this.contractRepository.findOneBy({ id: contractId, clientId });
+    if (!contract) {
+      throw new NotFoundException('Contrato no encontrado.');
+    }
   }
 }

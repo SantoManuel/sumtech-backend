@@ -18,6 +18,7 @@ import { ClientNotificationEntity } from './entities/client-notification.entity'
 import { UsersModule } from '../users/users.module';
 import { PosModule } from '../pos/pos.module';
 import { StorageModule } from '../storage/storage.module';
+import { GenieAcsModule } from '../genieacs/genieacs.module';
 import { InvoiceGeneratedListener } from './listeners/invoice-generated.listener';
 import { ContractStatusListener } from './listeners/contract-status.listener';
 import { PaymentReminderListener } from './listeners/payment-reminder.listener';
@@ -40,6 +41,7 @@ import { PaymentReminderListener } from './listeners/payment-reminder.listener';
     UsersModule,
     PosModule,
     StorageModule,
+    GenieAcsModule,
     JwtModule.register({}),
     AiChatbotClientModule,
   ],

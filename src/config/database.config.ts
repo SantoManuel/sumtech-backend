@@ -46,6 +46,7 @@ import { ProvinceEntity } from '../modules/geography/entities/province.entity';
 import { MunicipalityEntity } from '../modules/geography/entities/municipality.entity';
 import { SectorEntity } from '../modules/geography/entities/sector.entity';
 import { GenieAcsDeviceEntity } from '../modules/genieacs/entities/genieacs-device.entity';
+import { GenieAcsAuditLogEntity } from '../modules/genieacs/entities/genieacs-audit-log.entity';
 
 export const entities = [
   // geo
@@ -99,6 +100,7 @@ export const entities = [
   InteractionEntity,
   // net
   GenieAcsDeviceEntity,
+  GenieAcsAuditLogEntity,
 ];
 
 export const databaseConfig = registerAs(

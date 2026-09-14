@@ -170,6 +170,25 @@ export class UsersService {
     return { message: 'Contraseña actualizada con éxito' };
   }
 
+  /**
+   * Reautenticación puntual para acciones sensibles fuera del login (ej.
+   * cambiar el WiFi de casa desde el portal del cliente) — devuelve false
+   * tanto si el usuario no existe como si la contraseña no coincide, nunca
+   * lanza, para que el llamador decida el mensaje/código HTTP.
+   */
+  async verifyPassword(userId: string, plainPassword: string): Promise<boolean> {
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .where('user.id = :id', { id: userId })
+      .getOne();
+
+    if (!user) {
+      return false;
+    }
+    return bcrypt.compare(plainPassword, user.passwordHash);
+  }
+
   async softDelete(id: string): Promise<{ message: string }> {
     const user = await this.findById(id);
     user.isActive = false;

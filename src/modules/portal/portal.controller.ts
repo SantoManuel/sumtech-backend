@@ -9,6 +9,7 @@ import {
   FilterPortalTicketDto
 } from './dto/portal.dto';
 import { RejectDepositProofDto } from './dto/reject-deposit-proof.dto';
+import { ChangeWifiCredentialsDto } from '../genieacs/dto/change-wifi-credentials.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
@@ -154,5 +155,17 @@ export class PortalController {
     @Body() dto: ConvertChatToTicketDto,
   ) {
     return this.portalService.convertChatToTicket(userId, dto);
+  }
+
+  @Get('wifi')
+  @Roles(Role.CLIENTE, Role.ADMIN, Role.GERENTE)
+  async getWifiStatus(@CurrentUser('sub') userId: string, @Query('contractId') contractId: string) {
+    return this.portalService.getWifiStatus(userId, contractId);
+  }
+
+  @Patch('wifi')
+  @Roles(Role.CLIENTE, Role.ADMIN, Role.GERENTE)
+  async changeWifiCredentials(@CurrentUser('sub') userId: string, @Body() dto: ChangeWifiCredentialsDto) {
+    return this.portalService.changeWifiCredentials(userId, dto);
   }
 }
