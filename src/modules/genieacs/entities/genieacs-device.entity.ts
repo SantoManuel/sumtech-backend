@@ -45,6 +45,10 @@ export class GenieAcsDeviceEntity {
   @Column({ name: 'last_inform_at', type: 'timestamp with time zone', nullable: true })
   lastInformAt?: Date | null;
 
+  /** Derivado siempre de lastInformAt (ver genieacs-online-status.util.ts) — nunca se pone en false manualmente. */
+  @Column({ name: 'online_status', type: 'enum', enum: ['ONLINE', 'OFFLINE', 'UNKNOWN'], default: 'UNKNOWN' })
+  onlineStatus: 'ONLINE' | 'OFFLINE' | 'UNKNOWN';
+
   @Column({ name: 'optical_rx_power_dbm', type: 'numeric', precision: 6, scale: 2, nullable: true })
   opticalRxPowerDbm?: number | null;
 
