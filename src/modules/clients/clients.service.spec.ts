@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException, ConflictException } from '@nestjs/common';
+import { NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ClientsService } from './clients.service';
 import { ClientEntity } from './entities/client.entity';
@@ -14,6 +14,9 @@ import { SystemEvents } from '../../common/enums/system-events.enum';
 import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { DgiiClientService } from '../invoicing/dgii/dgii-client.service';
 import { ContractSignaturesService } from '../contract-signatures/contract-signatures.service';
+import { SectorEntity } from '../geography/entities/sector.entity';
+import { AddressGpsRequestEntity } from './entities/address-gps-request.entity';
+import { AiChatbotClientService } from '../ai-chatbot/ai-chatbot-client.service';
 
 describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
   let service: ClientsService;
@@ -28,6 +31,9 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
 
   let userRepo: any;
   let roleRepo: any;
+  let sectorRepo: any;
+  let gpsRequestRepo: any;
+  let aiChatbotClient: any;
 
   beforeEach(async () => {
     const clientQueryBuilder: any = {
@@ -95,6 +101,17 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
     contractSignatures = {
       getLatestBufferForPdf: jest.fn().mockResolvedValue(null),
     };
+    sectorRepo = {
+      findOne: jest.fn(),
+    };
+    gpsRequestRepo = {
+      create: jest.fn((dto: any) => dto),
+      save: jest.fn((entity: any) => Promise.resolve({ id: 'gps-request-1', ...entity })),
+    };
+    aiChatbotClient = {
+      sendWhatsAppMessage: jest.fn().mockResolvedValue(true),
+      getConversationByPhone: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -106,6 +123,9 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
         { provide: getRepositoryToken(RoleEntity), useValue: roleRepo },
         { provide: getRepositoryToken(InvoiceEntity), useValue: invoiceRepo },
         { provide: getRepositoryToken(PlanEntity), useValue: planRepo },
+        { provide: getRepositoryToken(SectorEntity), useValue: sectorRepo },
+        { provide: getRepositoryToken(AddressGpsRequestEntity), useValue: gpsRequestRepo },
+        { provide: AiChatbotClientService, useValue: aiChatbotClient },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: PdfGeneratorService, useValue: pdfGenerator },
         { provide: DgiiClientService, useValue: dgiiClient },
@@ -145,6 +165,108 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       clientRepo.findOne.mockResolvedValueOnce({ id: 'existing-client', docNumber: baseDto.docNumber });
 
       await expect(service.create(baseDto as any)).rejects.toThrow(ConflictException);
+    });
+
+    it('resuelve sectorId contra el módulo de geografía y sincroniza sector/municipality/city en texto', async () => {
+      clientRepo.findOne.mockResolvedValueOnce(null);
+      sectorRepo.findOne.mockResolvedValueOnce({
+        id: 'sector-1',
+        name: 'Piantini',
+        municipalityId: 'muni-1',
+        municipality: {
+          id: 'muni-1',
+          name: 'Santo Domingo de Guzmán',
+          provinceId: 'prov-1',
+          province: { id: 'prov-1', name: 'Distrito Nacional', countryId: 'country-1' },
+        },
+      });
+
+      const dto = { ...baseDto, address: { street: 'Calle 1', sectorId: 'sector-1' } };
+      const result = await service.create(dto as any);
+
+      expect(sectorRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'sector-1' },
+        relations: ['municipality', 'municipality.province', 'municipality.province.country'],
+      });
+      const savedAddress = (result as any).addresses[0];
+      expect(savedAddress.sector).toBe('Piantini');
+      expect(savedAddress.municipality).toBe('Santo Domingo de Guzmán');
+      expect(savedAddress.city).toBe('Distrito Nacional');
+      expect(savedAddress.countryId).toBe('country-1');
+      expect(savedAddress.provinceId).toBe('prov-1');
+      expect(savedAddress.municipalityId).toBe('muni-1');
+    });
+
+    it('lanza NotFoundException si el sectorId no existe en el módulo de geografía', async () => {
+      clientRepo.findOne.mockResolvedValueOnce(null);
+      sectorRepo.findOne.mockResolvedValueOnce(null);
+
+      const dto = { ...baseDto, address: { street: 'Calle 1', sectorId: 'sector-inexistente' } };
+
+      await expect(service.create(dto as any)).rejects.toThrow(NotFoundException);
+    });
+
+    it('lanza BadRequestException si no se envía sectorId ni sector/municipality/city como texto', async () => {
+      clientRepo.findOne.mockResolvedValueOnce(null);
+
+      const dto = { ...baseDto, address: { street: 'Calle 1' } };
+
+      await expect(service.create(dto as any)).rejects.toThrow(BadRequestException);
+    });
+
+    it('acepta sector/municipality/city como texto libre sin llamar al módulo de geografía (compatibilidad hacia atrás)', async () => {
+      clientRepo.findOne.mockResolvedValueOnce(null);
+
+      const result = await service.create(baseDto as any);
+
+      expect(sectorRepo.findOne).not.toHaveBeenCalled();
+      const savedAddress = (result as any).addresses[0];
+      expect(savedAddress.sector).toBe('Centro');
+    });
+  });
+
+  describe('requestGpsLocation', () => {
+    it('genera un token de 64 caracteres, lo guarda con expiración de 24h y devuelve el enlace', async () => {
+      clientRepo.findOne.mockResolvedValueOnce({
+        id: 'client-1',
+        name: 'Ana Pérez',
+        phone: '8095551111',
+        addresses: [{ id: 'address-1' }],
+      });
+
+      const result = await service.requestGpsLocation('client-1', 'address-1', 'user-1');
+
+      expect(result.token).toHaveLength(64);
+      expect(result.link).toContain(result.token);
+      expect(result.link).toContain('/ubicacion/');
+      expect(result.whatsappSent).toBe(true);
+      expect(gpsRequestRepo.save).toHaveBeenCalled();
+      expect(aiChatbotClient.sendWhatsAppMessage).toHaveBeenCalledWith(
+        '8095551111',
+        expect.stringContaining(result.link),
+      );
+    });
+
+    it('lanza NotFoundException si la dirección no pertenece al cliente', async () => {
+      clientRepo.findOne.mockResolvedValueOnce({ id: 'client-1', addresses: [{ id: 'otra-direccion' }] });
+
+      await expect(service.requestGpsLocation('client-1', 'address-inexistente')).rejects.toThrow(NotFoundException);
+    });
+
+    it('whatsappSent es false si el envío de WhatsApp falla, pero igual devuelve el enlace generado', async () => {
+      clientRepo.findOne.mockResolvedValueOnce({
+        id: 'client-1',
+        name: 'Ana Pérez',
+        phone: '8095551111',
+        addresses: [{ id: 'address-1' }],
+      });
+      aiChatbotClient.sendWhatsAppMessage.mockResolvedValueOnce(false);
+
+      const result = await service.requestGpsLocation('client-1', 'address-1');
+
+      expect(result.whatsappSent).toBe(false);
+      expect(result.link).toBeDefined();
+      expect(gpsRequestRepo.save).toHaveBeenCalled();
     });
   });
 
@@ -504,5 +626,46 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
         }),
       );
     });
+
+    it('utiliza la información fiscal de CompanyService cuando está disponible', async () => {
+      contractRepo.findOne.mockResolvedValue({
+        id: 'contract-2',
+        clientId: 'client-2',
+        contractNumber: 'CTR-000002',
+        status: 'ACTIVE',
+        startDate: '2026-03-01',
+        billingDay: 15,
+        client: { name: 'Pedro Gomez', docType: 'CEDULA', docNumber: '00112223335', email: 'p@a.com', phone: '8095559999' },
+        plan: { name: 'Fibra 200', serviceType: 'INTERNET', speedMbps: 200, tvChannelsCount: 0, monthlyPrice: 2000 },
+        address: { street: 'Av. Las Americas', buildingNumber: '4', sector: 'Este', municipality: 'Santo Domingo Este', city: 'Santo Domingo' },
+      });
+
+      const mockCompanyService = {
+        getCompanyFiscalInfo: jest.fn().mockResolvedValue({
+          rnc: '133000000',
+          razonSocial: 'SUMTECH ORIENTE SRL',
+          nombreComercial: 'SUMTECH BAVARO',
+          direccion: 'Bulevar Turistico #50',
+          telefono: '809-552-1111',
+          correo: 'bavaro@sumtech.do',
+        }),
+      };
+
+      (service as any).companyService = mockCompanyService;
+
+      await service.generateContractPdf('client-2', 'contract-2');
+
+      expect(mockCompanyService.getCompanyFiscalInfo).toHaveBeenCalled();
+      expect(pdfGenerator.generateContractPdf).toHaveBeenCalledWith(
+        expect.objectContaining({
+          company: expect.objectContaining({
+            rnc: '133000000',
+            razonSocial: 'SUMTECH ORIENTE SRL',
+            nombreComercial: 'SUMTECH BAVARO',
+          }),
+        }),
+      );
+    });
   });
 });
+

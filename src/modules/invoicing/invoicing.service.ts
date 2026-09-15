@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException, ForbiddenException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, ForbiddenException, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, QueryRunner, DataSource, Between } from 'typeorm';
 import { InvoiceEntity } from './entities/invoice.entity';
@@ -19,6 +19,7 @@ import { DgiiClientService } from './dgii/dgii-client.service';
 import { DgiiSignerService } from './dgii/dgii-signer.service';
 import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { InvoiceReceiptMetadata } from '../printing/pdf-generator.types';
+import { CompanyService } from '../company/company.service';
 
 @Injectable()
 export class InvoicingService {
@@ -48,6 +49,7 @@ export class InvoicingService {
     private readonly signerService: DgiiSignerService,
     private readonly pdfGenerator: PdfGeneratorService,
     private readonly dataSource: DataSource,
+    @Optional() private readonly companyService?: CompanyService,
   ) {}
 
   /**
@@ -162,8 +164,26 @@ export class InvoicingService {
       ecfItems[0].tiposImpuestoAdicional = ['002'];
     }
 
+    const dgiiCfg = this.dgiiClient.getConfig();
+    let effectiveConfig = dgiiCfg;
+    if (this.companyService) {
+      const fiscal = await this.companyService.getCompanyFiscalInfo();
+      effectiveConfig = {
+        ...dgiiCfg,
+        rncEmisor: fiscal.rnc || dgiiCfg.rncEmisor,
+        razonSocialEmisor: fiscal.razonSocial || dgiiCfg.razonSocialEmisor,
+        nombreComercial: fiscal.nombreComercial || dgiiCfg.nombreComercial,
+        direccionEmisor: fiscal.direccion || dgiiCfg.direccionEmisor,
+        municipioEmisor: fiscal.municipio || dgiiCfg.municipioEmisor,
+        provinciaEmisor: fiscal.provincia || dgiiCfg.provinciaEmisor,
+        correoEmisor: fiscal.correo || dgiiCfg.correoEmisor,
+        telefonoEmisor: fiscal.telefono || dgiiCfg.telefonoEmisor,
+        webSite: fiscal.website || dgiiCfg.webSite,
+      };
+    }
+
     // 3. Generar XML e-CF conforme a XSD
-    const rawXml = this.xmlGenerator.generateEcfXml({
+    const ecfPayload = {
       ncfType,
       eNcf: ncfNumber,
       fechaEmision: new Date(),
@@ -179,7 +199,11 @@ export class InvoicingService {
       impuestosAdicionales:
         cdtAmount > 0 ? [{ tipoImpuesto: '002', tasa: Number(options?.cdtTasa || 0), monto: cdtAmount }] : undefined,
       fechaVencimientoSecuencia: sequenceExpiryDate,
-    });
+    };
+
+    const rawXml = this.companyService
+      ? this.xmlGenerator.generateEcfXml(ecfPayload, effectiveConfig)
+      : this.xmlGenerator.generateEcfXml(ecfPayload);
 
     // 4. Firmar digitalmente y enviar a los servicios web de la DGII
     const sendResult = await this.dgiiClient.submitEcf(
@@ -478,6 +502,9 @@ export class InvoicingService {
     search?: string;
     dueDateFrom?: string;
     dueDateTo?: string;
+    dueStatus?: 'OVERDUE' | 'UPCOMING';
+    upcomingDays?: number;
+    sectorId?: string;
     sortBy?: 'issuedAt' | 'dueDate';
     sortDir?: 'ASC' | 'DESC';
   }) {
@@ -492,6 +519,7 @@ export class InvoicingService {
       .leftJoinAndSelect('contract.plan', 'plan')
       .leftJoinAndSelect('invoice.sale', 'sale')
       .leftJoinAndSelect('invoice.creditNote', 'creditNote')
+      .leftJoin('client.addresses', 'address', 'address.isPrimary = true')
       .orderBy(`invoice.${dto.sortBy || 'issuedAt'}`, dto.sortDir || 'DESC')
       .skip(skip)
       .take(limit);
@@ -507,6 +535,17 @@ export class InvoicingService {
     }
     if (dto.dueDateTo) {
       query.andWhere('invoice.dueDate <= :dueDateTo', { dueDateTo: dto.dueDateTo });
+    }
+    if (dto.dueStatus === 'OVERDUE') {
+      query.andWhere('invoice.dueDate < CURRENT_DATE');
+    } else if (dto.dueStatus === 'UPCOMING') {
+      const upcomingDays = dto.upcomingDays || 7;
+      query.andWhere("invoice.dueDate BETWEEN CURRENT_DATE AND CURRENT_DATE + make_interval(days => :upcomingDays)", {
+        upcomingDays,
+      });
+    }
+    if (dto.sectorId) {
+      query.andWhere('address.sectorId = :sectorId', { sectorId: dto.sectorId });
     }
     if (dto.search) {
       query.andWhere('(client.name ILIKE :search OR client.docNumber ILIKE :search OR invoice.ncfNumber ILIKE :search)', {
@@ -609,17 +648,39 @@ export class InvoicingService {
       );
     }
     const sale = invoice.sale;
-    const config = this.dgiiClient.getConfig();
+    let company: {
+      rnc: string;
+      razonSocial: string;
+      nombreComercial?: string;
+      direccion?: string;
+      telefono?: string;
+      correo?: string;
+    };
 
-    return {
-      company: {
+    if (this.companyService) {
+      const fiscal = await this.companyService.getCompanyFiscalInfo();
+      company = {
+        rnc: fiscal.rnc,
+        razonSocial: fiscal.razonSocial,
+        nombreComercial: fiscal.nombreComercial,
+        direccion: fiscal.direccion,
+        telefono: fiscal.telefono,
+        correo: fiscal.correo,
+      };
+    } else {
+      const config = this.dgiiClient.getConfig();
+      company = {
         rnc: config.rncEmisor,
         razonSocial: config.razonSocialEmisor,
         nombreComercial: config.nombreComercial,
         direccion: config.direccionEmisor,
         telefono: config.telefonoEmisor,
         correo: config.correoEmisor,
-      },
+      };
+    }
+
+    return {
+      company,
       invoice: {
         id: invoice.id,
         ncfNumber: invoice.ncfNumber,
@@ -673,6 +734,17 @@ export class InvoicingService {
   async generateInvoicePdf(invoiceId: string): Promise<Buffer> {
     const metadata = (await this.getReceiptMetadata(invoiceId)) as unknown as InvoiceReceiptMetadata;
     return this.pdfGenerator.generateInvoiceA4Pdf(metadata);
+  }
+
+  /**
+   * PDF térmico de 80mm con el tamaño de página embebido en el documento —
+   * ver el comentario en PdfGeneratorService.generateInvoiceThermalPdf para
+   * el porqué (el @page CSS del ticket en pantalla no siempre se respeta al
+   * imprimir físicamente).
+   */
+  async generateInvoiceThermalPdf(invoiceId: string): Promise<Buffer> {
+    const metadata = (await this.getReceiptMetadata(invoiceId)) as unknown as InvoiceReceiptMetadata;
+    return this.pdfGenerator.generateInvoiceThermalPdf(metadata);
   }
 
   // 1. Reporte Libro de Ventas DGII 607

@@ -1,15 +1,19 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, FindOptionsWhere } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { ClientEntity } from './entities/client.entity';
 import { AddressEntity } from './entities/address.entity';
+import { AddressGpsRequestEntity } from './entities/address-gps-request.entity';
+import { AiChatbotClientService } from '../ai-chatbot/ai-chatbot-client.service';
 import { ContractEntity } from './entities/contract.entity';
 import { UserEntity } from '../users/entities/user.entity';
 import { RoleEntity } from '../users/entities/role.entity';
 import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { PlanEntity } from '../plans/entities/plan.entity';
+import { SectorEntity } from '../geography/entities/sector.entity';
 import { Role } from '../../common/enums/role.enum';
 import { SystemEvents } from '../../common/enums/system-events.enum';
 import { ContractSuspendedEvent } from '../billing/events/contract-suspended.event';
@@ -24,6 +28,7 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
 import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { DgiiClientService } from '../invoicing/dgii/dgii-client.service';
 import { ContractSignaturesService } from '../contract-signatures/contract-signatures.service';
+import { CompanyService } from '../company/company.service';
 
 function generateRandomPassword(length: number = 6): string {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -51,10 +56,16 @@ export class ClientsService {
     private readonly invoiceRepository: Repository<InvoiceEntity>,
     @InjectRepository(PlanEntity)
     private readonly planRepository: Repository<PlanEntity>,
+    @InjectRepository(SectorEntity)
+    private readonly sectorRepository: Repository<SectorEntity>,
+    @InjectRepository(AddressGpsRequestEntity)
+    private readonly gpsRequestRepository: Repository<AddressGpsRequestEntity>,
+    private readonly aiChatbotClient: AiChatbotClientService,
     private readonly eventEmitter: EventEmitter2,
     private readonly pdfGenerator: PdfGeneratorService,
     private readonly dgiiClient: DgiiClientService,
     private readonly contractSignatures: ContractSignaturesService,
+    @Optional() private readonly companyService?: CompanyService,
   ) {}
 
   async findAll(paginationDto: PaginationDto, search?: string) {
@@ -115,8 +126,32 @@ export class ClientsService {
       throw new ConflictException(`Ya existe un cliente con el documento ${dto.docNumber}`);
     }
 
+    const addressData = { ...dto.address };
+    if (addressData.sectorId) {
+      const sector = await this.sectorRepository.findOne({
+        where: { id: addressData.sectorId },
+        relations: ['municipality', 'municipality.province', 'municipality.province.country'],
+      });
+      if (!sector) {
+        throw new NotFoundException(`Sector con ID ${addressData.sectorId} no encontrado`);
+      }
+      // El texto libre (sector/municipality/city) se sincroniza a partir de la
+      // relación normalizada para no romper a los lectores que todavía solo
+      // conocen las columnas varchar (PDF de contrato, ticket de factura, etc.).
+      addressData.sector = sector.name;
+      addressData.municipality = sector.municipality.name;
+      addressData.city = sector.municipality.province.name;
+      addressData.countryId = sector.municipality.province.countryId;
+      addressData.provinceId = sector.municipality.provinceId;
+      addressData.municipalityId = sector.municipalityId;
+    } else if (!addressData.sector || !addressData.municipality || !addressData.city) {
+      throw new BadRequestException(
+        'Debe indicar sectorId, o bien sector/municipality/city como texto libre',
+      );
+    }
+
     const address = this.addressRepository.create({
-      ...dto.address,
+      ...addressData,
       isPrimary: true,
     });
 
@@ -228,6 +263,45 @@ export class ClientsService {
     }
 
     return saved;
+  }
+
+  /**
+   * Genera un enlace de un solo uso (24h) para que el cliente comparta su
+   * ubicación GPS real desde su propio celular — no depende de que el agente
+   * de oficina esté físicamente en la dirección del cliente. Intenta enviarlo
+   * por WhatsApp automáticamente; si falla (sesión no conectada, etc.) igual
+   * devuelve el enlace para que la oficina lo copie y lo envíe manualmente.
+   */
+  async requestGpsLocation(
+    clientId: string,
+    addressId: string,
+    requestedByUserId?: string,
+  ): Promise<{ token: string; link: string; expiresAt: Date; whatsappSent: boolean }> {
+    const client = await this.findById(clientId);
+    const address = client.addresses?.find((a) => a.id === addressId);
+    if (!address) {
+      throw new NotFoundException(`Dirección ${addressId} no encontrada para el cliente ${clientId}`);
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    const gpsRequest = this.gpsRequestRepository.create({
+      addressId,
+      token,
+      status: 'PENDING',
+      expiresAt,
+      requestedByUserId,
+    });
+    await this.gpsRequestRepository.save(gpsRequest);
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const link = `${frontendUrl}/ubicacion/${token}`;
+
+    const message = `Hola ${client.name}, para completar tu instalación necesitamos tu ubicación GPS. Por favor comparte tu ubicación abriendo este enlace desde tu celular: ${link}\n\nEste enlace vence en 24 horas.`;
+    const whatsappSent = await this.aiChatbotClient.sendWhatsAppMessage(client.phone, message);
+
+    return { token, link, expiresAt, whatsappSent };
   }
 
   private async findActivePlanOrFail(planId: string): Promise<PlanEntity> {
@@ -410,7 +484,36 @@ export class ClientsService {
       throw new NotFoundException(`Contrato ${contractId} no encontrado para el cliente ${clientId}`);
     }
 
-    const config = this.dgiiClient.getConfig();
+    let company: {
+      rnc: string;
+      razonSocial: string;
+      nombreComercial?: string;
+      direccion?: string;
+      telefono?: string;
+      correo?: string;
+    };
+
+    if (this.companyService) {
+      const fiscal = await this.companyService.getCompanyFiscalInfo();
+      company = {
+        rnc: fiscal.rnc,
+        razonSocial: fiscal.razonSocial,
+        nombreComercial: fiscal.nombreComercial,
+        direccion: fiscal.direccion,
+        telefono: fiscal.telefono,
+        correo: fiscal.correo,
+      };
+    } else {
+      const config = this.dgiiClient.getConfig();
+      company = {
+        rnc: config.rncEmisor,
+        razonSocial: config.razonSocialEmisor,
+        nombreComercial: config.nombreComercial,
+        direccion: config.direccionEmisor,
+        telefono: config.telefonoEmisor,
+        correo: config.correoEmisor,
+      };
+    }
 
     // Ninguna de las dos firmas es obligatoria para poder imprimir el
     // contrato (decisión de negocio: la firma electrónica es opcional por
@@ -422,14 +525,7 @@ export class ClientsService {
     ]);
 
     return this.pdfGenerator.generateContractPdf({
-      company: {
-        rnc: config.rncEmisor,
-        razonSocial: config.razonSocialEmisor,
-        nombreComercial: config.nombreComercial,
-        direccion: config.direccionEmisor,
-        telefono: config.telefonoEmisor,
-        correo: config.correoEmisor,
-      },
+      company,
       contract: {
         contractNumber: contract.contractNumber,
         status: contract.status,

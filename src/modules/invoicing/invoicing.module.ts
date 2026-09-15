@@ -15,6 +15,7 @@ import { PlanEntity } from '../plans/entities/plan.entity';
 import { DgiiModule } from './dgii/dgii.module';
 import { UsersModule } from '../users/users.module';
 import { PrintingModule } from '../printing/printing.module';
+import { CompanyModule } from '../company/company.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { PrintingModule } from '../printing/printing.module';
     DgiiModule,
     UsersModule,
     PrintingModule,
+    CompanyModule,
     JwtModule.register({}),
   ],
   controllers: [InvoicingController],

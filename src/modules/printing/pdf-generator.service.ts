@@ -270,6 +270,158 @@ export class PdfGeneratorService {
     return this.streamToBuffer(doc);
   }
 
+  /**
+   * Ticket térmico de 80mm con el tamaño de página embebido en el propio PDF
+   * (226.77pt = 80mm de ancho), en vez de depender de `@page` CSS + window.print()
+   * en el navegador — muchos drivers/diálogos de impresión ignoran el tamaño de
+   * página de CSS y usan el papel por defecto del sistema (A4/Carta), que es la
+   * causa típica de "se ve bien en pantalla pero imprime en A4". Al generar un
+   * PDF real, el tamaño de página queda fijo sin importar el driver.
+   */
+  async generateInvoiceThermalPdf(metadata: InvoiceReceiptMetadata): Promise<Buffer> {
+    const pageWidth = 226.77; // 80mm
+    const marginX = 8;
+    const contentWidth = pageWidth - marginX * 2;
+
+    // Alto estimado según la cantidad de líneas — pdfkit no soporta "auto"
+    // como el CSS @page; se calcula antes de crear el documento (patrón común
+    // para recibos térmicos), dejando algo de holgura al final.
+    const estimatedHeight = 260 + metadata.sale.details.length * 34 + 220;
+
+    const doc = new (PDFDocument as any)({
+      size: [pageWidth, estimatedHeight],
+      margin: marginX,
+      compress: false,
+    }) as PDFKit.PDFDocument;
+
+    const center = (text: string, y: number, opts: PDFKit.Mixins.TextOptions = {}) =>
+      doc.text(text, marginX, y, { width: contentWidth, align: 'center', ...opts });
+
+    const twoCol = (left: string, right: string, y: number, boldRight = false) => {
+      doc.font('Helvetica').text(left, marginX, y, { width: contentWidth * 0.6, continued: false });
+      if (boldRight) doc.font('Helvetica-Bold');
+      doc.text(right, marginX, y, { width: contentWidth, align: 'right' });
+      doc.font('Helvetica');
+    };
+
+    // Encabezado de la empresa
+    doc.font('Helvetica-Bold').fontSize(10).text(metadata.company.razonSocial, marginX, 8, { width: contentWidth, align: 'center' });
+    doc.font('Helvetica-Bold').fontSize(8).text(`RNC: ${metadata.company.rnc}`, marginX, doc.y + 1, { width: contentWidth, align: 'center' });
+    doc.font('Helvetica').fontSize(7);
+    if (metadata.company.direccion) center(metadata.company.direccion, doc.y + 1);
+    const contactLine = [metadata.company.telefono ? `Tel: ${metadata.company.telefono}` : null, metadata.company.correo]
+      .filter(Boolean)
+      .join(' | ');
+    if (contactLine) center(contactLine, doc.y + 1);
+
+    doc
+      .moveTo(marginX, doc.y + 4)
+      .lineTo(marginX + contentWidth, doc.y + 4)
+      .dash(1, { space: 1 })
+      .stroke()
+      .undash();
+
+    doc.font('Helvetica-Bold').fontSize(7.5);
+    center((NCF_TYPE_LABELS[metadata.invoice.ncfType || ''] || 'COMPROBANTE FISCAL ELECTRÓNICO (e-CF)').toUpperCase(), doc.y + 8);
+    doc.font('Helvetica-Bold').fontSize(8);
+    center(`e-NCF: ${metadata.invoice.ncfNumber || 'N/A'}`, doc.y + 3);
+    doc.font('Helvetica').fontSize(7);
+    center(`Código Seguridad: ${metadata.invoice.securityCode || 'N/A'}`, doc.y + 2);
+    if (metadata.invoice.ncfType === 'E34' && metadata.invoice.ncfModificado) {
+      center(`NCF Modificado: ${metadata.invoice.ncfModificado}`, doc.y + 3);
+      center(`Motivo: ${metadata.invoice.razonModificacion || 'Anula el NCF modificado'}`, doc.y + 1);
+    }
+
+    doc
+      .moveTo(marginX, doc.y + 5)
+      .lineTo(marginX + contentWidth, doc.y + 5)
+      .dash(1, { space: 1 })
+      .stroke()
+      .undash();
+
+    // Datos del cliente y período
+    doc.font('Helvetica').fontSize(7.5);
+    let y = doc.y + 8;
+    doc.text(`Fecha Emisión: ${formatDate(metadata.invoice.issuedAt)}`, marginX, y, { width: contentWidth });
+    y = doc.y + 2;
+    doc.text(`Cliente: ${metadata.client.name}`, marginX, y, { width: contentWidth });
+    y = doc.y + 2;
+    doc.text(`${metadata.client.docType || 'Documento'}: ${metadata.client.docNumber}`, marginX, y, { width: contentWidth });
+    y = doc.y + 2;
+    if (metadata.sale.billingPeriod) {
+      doc.text(`Período Facturado: ${metadata.sale.billingPeriod}`, marginX, y, { width: contentWidth });
+      y = doc.y + 2;
+    }
+    doc.text(`Cajero: ${metadata.sale.cashier}`, marginX, y, { width: contentWidth });
+
+    doc
+      .moveTo(marginX, doc.y + 5)
+      .lineTo(marginX + contentWidth, doc.y + 5)
+      .dash(1, { space: 1 })
+      .stroke()
+      .undash();
+
+    // Líneas de detalle
+    y = doc.y + 8;
+    doc.font('Helvetica-Bold').fontSize(7);
+    twoCol('CANT. / DESCRIPCIÓN', 'TOTAL (RD$)', y, true);
+    y = doc.y + 10;
+    doc.font('Helvetica').fontSize(7.5);
+    metadata.sale.details.forEach((item) => {
+      twoCol(`${item.quantity}x ${item.concept}`, formatNumber(item.subtotal), y, true);
+      y = doc.y + 1;
+      doc
+        .font('Helvetica')
+        .fontSize(6.5)
+        .text(`Precio: ${formatNumber(item.unitPrice)}   ITBIS: ${formatNumber(item.itbisAmount)}`, marginX, y, {
+          width: contentWidth,
+        });
+      y = doc.y + 6;
+      doc.fontSize(7.5);
+    });
+
+    doc
+      .moveTo(marginX, y)
+      .lineTo(marginX + contentWidth, y)
+      .dash(1, { space: 1 })
+      .stroke()
+      .undash();
+
+    // Totales
+    y += 8;
+    doc.font('Helvetica').fontSize(8);
+    twoCol('Subtotal:', formatNumber(metadata.sale.subtotal), y);
+    y = doc.y + 3;
+    twoCol('ITBIS Facturado (18%):', formatNumber(metadata.sale.itbisTotal), y);
+    y = doc.y + 4;
+    doc
+      .moveTo(marginX, y)
+      .lineTo(marginX + contentWidth, y)
+      .stroke();
+    y += 4;
+    doc.font('Helvetica-Bold').fontSize(9.5);
+    twoCol('TOTAL A PAGAR:', formatCurrency(metadata.sale.grandTotal), y);
+
+    // QR oficial DGII
+    y = doc.y + 12;
+    const qrUrl = metadata.invoice.qrCodeUrl || `https://ecf.dgii.gov.do/testecf/consultatimbre?encf=${metadata.invoice.ncfNumber}`;
+    const qrSize = 90;
+    const qrBuffer = await QRCode.toBuffer(qrUrl, { type: 'png', width: qrSize * 2, margin: 1 });
+    doc.image(qrBuffer, marginX + (contentWidth - qrSize) / 2, y, { width: qrSize });
+    y += qrSize + 6;
+    doc.font('Helvetica').fontSize(6);
+    center('Consulte la validez de este comprobante en el portal oficial de la DGII', y);
+
+    // Pie de página
+    y = doc.y + 8;
+    doc.font('Helvetica-Bold').fontSize(7.5);
+    center('¡Gracias por su preferencia!', y);
+    doc.font('Helvetica').fontSize(7);
+    center('Servicio de Telecomunicaciones de Alta Velocidad', doc.y + 1);
+
+    return this.streamToBuffer(doc);
+  }
+
   async generateContractPdf(data: ContractPdfData): Promise<Buffer> {
     const doc = new (PDFDocument as any)({ size: 'A4', margin: 40, compress: false }) as PDFKit.PDFDocument;
     const marginX = 40;

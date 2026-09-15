@@ -11,6 +11,7 @@ import { EmployeeEntity } from '../modules/employees/entities/employee.entity';
 import { PlanEntity } from '../modules/plans/entities/plan.entity';
 import { ClientEntity } from '../modules/clients/entities/client.entity';
 import { AddressEntity } from '../modules/clients/entities/address.entity';
+import { AddressGpsRequestEntity } from '../modules/clients/entities/address-gps-request.entity';
 import { ContractEntity } from '../modules/clients/entities/contract.entity';
 import { ProductEntity } from '../modules/inventory/entities/product.entity';
 import { SerialNumberEntity } from '../modules/inventory/entities/serial-number.entity';
@@ -36,8 +37,15 @@ import { TicketRepairEntity } from '../modules/tickets/entities/ticket-repair.en
 import { DailyClosureEntity } from '../modules/daily-closures/entities/daily-closure.entity';
 import { DailyClosureExpenseEntity } from '../modules/daily-closures/entities/daily-closure-expense.entity';
 import { ScheduleEventEntity } from '../modules/tickets/entities/schedule-event.entity';
-import { LeadEntity } from '../modules/crm/entities/lead.entity';
+import { OpportunityEntity } from '../modules/crm/entities/opportunity.entity';
 import { InteractionEntity } from '../modules/crm/entities/interaction.entity';
+import { SubscriptionStatusEntity } from '../modules/crm/entities/subscription-status.entity';
+import { NextActionEntity } from '../modules/crm/entities/next-action.entity';
+import { LossReasonEntity } from '../modules/crm/entities/loss-reason.entity';
+import { RoundRobinCursorEntity } from '../modules/crm/entities/round-robin-cursor.entity';
+import { OpportunityStateHistoryEntity } from '../modules/crm/entities/opportunity-state-history.entity';
+import { SlaPolicyEntity as CrmSlaPolicyEntity } from '../modules/crm/entities/sla-policy.entity';
+import { SatisfactionSurveyEntity } from '../modules/crm/entities/satisfaction-survey.entity';
 import { DepositProofEntity } from '../modules/portal/entities/deposit-proof.entity';
 import { PlanChangeRequestEntity } from '../modules/portal/entities/plan-change-request.entity';
 import { ClientNotificationEntity } from '../modules/portal/entities/client-notification.entity';
@@ -48,6 +56,7 @@ import { SectorEntity } from '../modules/geography/entities/sector.entity';
 import { GenieAcsDeviceEntity } from '../modules/genieacs/entities/genieacs-device.entity';
 import { GenieAcsAuditLogEntity } from '../modules/genieacs/entities/genieacs-audit-log.entity';
 import { ContractSignatureEntity } from '../modules/contract-signatures/entities/contract-signature.entity';
+import { TenantConfigEntity } from '../modules/company/entities/tenant-config.entity';
 
 export const entities = [
   // geo
@@ -61,10 +70,12 @@ export const entities = [
   AuditLogEntity,
   RefreshTokenEntity,
   EmployeeEntity,
+  TenantConfigEntity,
   // com
   PlanEntity,
   ClientEntity,
   AddressEntity,
+  AddressGpsRequestEntity,
   ContractEntity,
   ContractSignatureEntity,
   PlanChangeRequestEntity,
@@ -98,8 +109,15 @@ export const entities = [
   DailyClosureEntity,
   DailyClosureExpenseEntity,
   // crm
-  LeadEntity,
+  OpportunityEntity,
   InteractionEntity,
+  SubscriptionStatusEntity,
+  NextActionEntity,
+  LossReasonEntity,
+  RoundRobinCursorEntity,
+  OpportunityStateHistoryEntity,
+  CrmSlaPolicyEntity,
+  SatisfactionSurveyEntity,
   // net
   GenieAcsDeviceEntity,
   GenieAcsAuditLogEntity,

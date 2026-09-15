@@ -37,6 +37,24 @@ export class FindInvoicesDto {
   @IsDateString()
   dueDateTo?: string;
 
+  // Filtro rápido de cobranza para el POS: solo vencidas, o próximas a vencer
+  // dentro de `upcomingDays` (default 7). Se aplica además de dueDateFrom/dueDateTo.
+  @IsOptional()
+  @IsEnum(['OVERDUE', 'UPCOMING'])
+  dueStatus?: 'OVERDUE' | 'UPCOMING';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(90)
+  upcomingDays?: number;
+
+  // Filtra por el sector/zona de la dirección principal del cliente (com.addresses.sector_id).
+  @IsOptional()
+  @IsUUID('4')
+  sectorId?: string;
+
   // Sin especificar, InvoicingService.findAll() mantiene el orden actual
   // (issuedAt DESC, usado por /dashboard/facturas). El POS pasa explícitamente
   // sortBy=dueDate&sortDir=ASC para priorizar lo que vence primero.

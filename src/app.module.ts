@@ -24,6 +24,7 @@ import { GeographyModule } from './modules/geography/geography.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { DailyClosuresModule } from './modules/daily-closures/daily-closures.module';
 import { GenieAcsModule } from './modules/genieacs/genieacs.module';
+import { CompanyModule } from './modules/company/company.module';
 
 @Module({
   imports: [
@@ -72,6 +73,7 @@ import { GenieAcsModule } from './modules/genieacs/genieacs.module';
     BillingModule,
     DailyClosuresModule,
     GenieAcsModule,
+    CompanyModule,
   ],
 })
 export class AppModule {}

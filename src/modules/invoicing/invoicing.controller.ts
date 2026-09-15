@@ -85,6 +85,19 @@ export class InvoicingController {
     res.end(pdfBuffer);
   }
 
+  @Get(':id/thermal-pdf')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
+  async getInvoiceThermalPdf(@Param('id') id: string, @Res() res: Response) {
+    const invoice = await this.invoicingService.findById(id);
+    const pdfBuffer = await this.invoicingService.generateInvoiceThermalPdf(id);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="Ticket-80mm-${invoice.ncfNumber || id}.pdf"`,
+      'Content-Length': pdfBuffer.length,
+    });
+    res.end(pdfBuffer);
+  }
+
   @Get(':id')
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
   async findById(@Param('id') id: string) {

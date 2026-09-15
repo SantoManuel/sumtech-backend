@@ -74,6 +74,16 @@ export class ClientsController {
     return this.clientsService.setDigitalAccess(id, isActive);
   }
 
+  @Post(':clientId/addresses/:addressId/gps-request')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.AGENTE_CRM)
+  async requestGpsLocation(
+    @Param('clientId') clientId: string,
+    @Param('addressId') addressId: string,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.clientsService.requestGpsLocation(clientId, addressId, userId);
+  }
+
   @Get(':id/contracts')
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO, Role.AGENTE_CRM)
   async getContracts(@Param('id') id: string) {
