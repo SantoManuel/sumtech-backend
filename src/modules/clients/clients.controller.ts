@@ -1,5 +1,5 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, Res, UseGuards } from '@nestjs/common';
-import type { Response } from 'express';
+import { Controller, Get, Post, Patch, Body, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { ClientsService } from './clients.service';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
@@ -10,11 +10,19 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ContractSignaturesService } from '../contract-signatures/contract-signatures.service';
+import { CreateContractSignatureDto } from '../contract-signatures/dto/create-contract-signature.dto';
+
+const SIGNATURE_ROLES = [Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.AGENTE_CRM, Role.TECNICO];
 
 @Controller('clients')
 @UseGuards(AuthGuard, RolesGuard)
 export class ClientsController {
-  constructor(private readonly clientsService: ClientsService) {}
+  constructor(
+    private readonly clientsService: ClientsService,
+    private readonly contractSignaturesService: ContractSignaturesService,
+  ) {}
 
   @Get()
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO, Role.AGENTE_CRM)
@@ -125,6 +133,31 @@ export class ClientsController {
       'Content-Length': pdfBuffer.length,
     });
     res.end(pdfBuffer);
+  }
+
+  @Get(':clientId/contracts/:id/signatures')
+  @Roles(...SIGNATURE_ROLES)
+  async getContractSignatures(@Param('clientId') clientId: string, @Param('id') id: string) {
+    return this.contractSignaturesService.getStatus(clientId, id);
+  }
+
+  @Post(':clientId/contracts/:id/signatures')
+  @Roles(...SIGNATURE_ROLES)
+  async createContractSignature(
+    @Param('clientId') clientId: string,
+    @Param('id') id: string,
+    @Body() dto: CreateContractSignatureDto,
+    @CurrentUser('sub') userId: string,
+    @CurrentUser('employeeId') employeeId: string | undefined,
+    @CurrentUser('roles') roles: string[],
+    @Req() req: Request,
+  ) {
+    return this.contractSignaturesService.create(clientId, id, dto, {
+      userId,
+      employeeId,
+      roles: roles || [],
+      ipAddress: req.ip,
+    });
   }
 
   @Get(':id/invoices')

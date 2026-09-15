@@ -1,10 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Readable } from 'stream';
 import { MinioStorageService } from './minio-storage.service';
 
 const bucketExistsMock = jest.fn();
 const makeBucketMock = jest.fn();
 const putObjectMock = jest.fn();
 const presignedGetObjectMock = jest.fn();
+const getObjectMock = jest.fn();
 
 jest.mock('minio', () => ({
   Client: jest.fn().mockImplementation(() => ({
@@ -12,6 +14,7 @@ jest.mock('minio', () => ({
     makeBucket: makeBucketMock,
     putObject: putObjectMock,
     presignedGetObject: presignedGetObjectMock,
+    getObject: getObjectMock,
   })),
 }));
 
@@ -91,6 +94,31 @@ describe('MinioStorageService', () => {
 
       expect(url).toBe('https://minio.local/presigned-url');
       expect(presignedGetObjectMock).toHaveBeenCalledWith('sumtech-daily-closures', 'daily-closures/2026-09-07/foo.jpg', 900);
+    });
+  });
+
+  describe('getObjectBuffer', () => {
+    it('descarga el objeto completo y lo devuelve como un único Buffer', async () => {
+      const stream = Readable.from([Buffer.from('parte-1-'), Buffer.from('parte-2')]);
+      getObjectMock.mockResolvedValue(stream);
+
+      const buffer = await service.getObjectBuffer('contracts/signatures/contract-1/firma.png');
+
+      expect(getObjectMock).toHaveBeenCalledWith('sumtech-daily-closures', 'contracts/signatures/contract-1/firma.png');
+      expect(buffer.toString('utf-8')).toBe('parte-1-parte-2');
+    });
+
+    it('rechaza si el stream de MinIO emite un error (objeto inexistente / falla de red)', async () => {
+      const stream = new Readable({
+        read() {
+          this.emit('error', new Error('The specified key does not exist.'));
+        },
+      });
+      getObjectMock.mockResolvedValue(stream);
+
+      await expect(service.getObjectBuffer('contracts/signatures/no-existe/firma.png')).rejects.toThrow(
+        'The specified key does not exist.',
+      );
     });
   });
 });

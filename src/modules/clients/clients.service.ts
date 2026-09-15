@@ -23,6 +23,7 @@ import { FindContractsDto } from './dto/find-contracts.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { DgiiClientService } from '../invoicing/dgii/dgii-client.service';
+import { ContractSignaturesService } from '../contract-signatures/contract-signatures.service';
 
 function generateRandomPassword(length: number = 6): string {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -53,6 +54,7 @@ export class ClientsService {
     private readonly eventEmitter: EventEmitter2,
     private readonly pdfGenerator: PdfGeneratorService,
     private readonly dgiiClient: DgiiClientService,
+    private readonly contractSignatures: ContractSignaturesService,
   ) {}
 
   async findAll(paginationDto: PaginationDto, search?: string) {
@@ -410,6 +412,15 @@ export class ClientsService {
 
     const config = this.dgiiClient.getConfig();
 
+    // Ninguna de las dos firmas es obligatoria para poder imprimir el
+    // contrato (decisión de negocio: la firma electrónica es opcional por
+    // ahora) — getLatestBufferForPdf nunca lanza, así que un fallo de MinIO
+    // al leer la imagen degrada a "sin firma" en vez de romper la descarga.
+    const [clientSignature, companySignature] = await Promise.all([
+      this.contractSignatures.getLatestBufferForPdf(contractId, 'CLIENT'),
+      this.contractSignatures.getLatestBufferForPdf(contractId, 'COMPANY'),
+    ]);
+
     return this.pdfGenerator.generateContractPdf({
       company: {
         rnc: config.rncEmisor,
@@ -446,6 +457,14 @@ export class ClientsService {
         sector: contract.address.sector,
         municipality: contract.address.municipality,
         city: contract.address.city,
+      },
+      signatures: {
+        client: clientSignature
+          ? { imageBuffer: clientSignature.buffer, signedByName: clientSignature.signedByName, signedAt: clientSignature.signedAt }
+          : undefined,
+        company: companySignature
+          ? { imageBuffer: companySignature.buffer, signedByName: companySignature.signedByName, signedAt: companySignature.signedAt }
+          : undefined,
       },
     });
   }

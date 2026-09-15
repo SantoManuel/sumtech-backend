@@ -60,6 +60,12 @@ export interface InvoiceReceiptMetadata {
   };
 }
 
+export interface ContractSignatureImageInfo {
+  imageBuffer: Buffer;
+  signedByName: string;
+  signedAt: Date;
+}
+
 export interface ContractPdfData {
   company: CompanyPdfInfo;
   contract: {
@@ -68,6 +74,11 @@ export interface ContractPdfData {
     startDate: string;
     endDate?: string;
     billingDay: number;
+  };
+  /** Ausentes cuando esa parte todavía no firmó — la firma es opcional, el PDF nunca falla por esto. */
+  signatures?: {
+    client?: ContractSignatureImageInfo;
+    company?: ContractSignatureImageInfo;
   };
   client: {
     name: string;

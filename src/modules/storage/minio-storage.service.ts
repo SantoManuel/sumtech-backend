@@ -58,4 +58,20 @@ export class MinioStorageService implements OnModuleInit {
   async getPresignedUrl(objectKey: string, expirySeconds = 3600): Promise<string> {
     return this.client.presignedGetObject(this.config.bucket, objectKey, expirySeconds);
   }
+
+  /**
+   * Descarga el contenido completo de un objeto a memoria — para cuando el
+   * consumidor necesita los bytes directamente (ej. pdfkit dibujando una
+   * imagen de firma dentro de un PDF), no una URL para que el navegador la
+   * pida por su cuenta.
+   */
+  async getObjectBuffer(objectKey: string): Promise<Buffer> {
+    const stream = await this.client.getObject(this.config.bucket, objectKey);
+    const chunks: Buffer[] = [];
+    return new Promise((resolve, reject) => {
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+      stream.on('error', reject);
+    });
+  }
 }

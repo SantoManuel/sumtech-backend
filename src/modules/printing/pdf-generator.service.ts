@@ -40,6 +40,13 @@ function formatDate(value: Date | string | undefined): string {
   return date.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
+function formatDateTime(value: Date | string | undefined): string {
+  if (!value) return 'N/A';
+  const date = typeof value === 'string' ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) return String(value);
+  return `${formatDate(date)} ${date.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
 /**
  * Genera los PDF de Representación Impresa (RI) de facturas e-CF en formato A4
  * conforme al layout de las muestras oficiales de la DGII, y el PDF de contrato
@@ -323,17 +330,52 @@ export class PdfGeneratorService {
     });
 
     const signatureY = Math.max(doc.y + 50, doc.page.height - 130);
+    const clientSignatureX = marginX;
+    const companySignatureX = marginX + contentWidth - 200;
+
     doc
-      .moveTo(marginX, signatureY)
-      .lineTo(marginX + 200, signatureY)
+      .moveTo(clientSignatureX, signatureY)
+      .lineTo(clientSignatureX + 200, signatureY)
       .stroke();
     doc
-      .moveTo(marginX + contentWidth - 200, signatureY)
+      .moveTo(companySignatureX, signatureY)
       .lineTo(marginX + contentWidth, signatureY)
       .stroke();
-    doc.font('Helvetica').fontSize(8).text('Firma del Cliente', marginX, signatureY + 5, { width: 200, align: 'center' });
-    doc.text('Firma de la Empresa', marginX + contentWidth - 200, signatureY + 5, { width: 200, align: 'center' });
+
+    this.drawSignatureIfPresent(doc, data.signatures?.client, clientSignatureX, signatureY);
+    this.drawSignatureIfPresent(doc, data.signatures?.company, companySignatureX, signatureY);
+
+    doc.font('Helvetica').fontSize(8).text('Firma del Cliente', clientSignatureX, signatureY + 5, { width: 200, align: 'center' });
+    doc.text('Firma de la Empresa', companySignatureX, signatureY + 5, { width: 200, align: 'center' });
 
     return this.streamToBuffer(doc);
+  }
+
+  /**
+   * Dibuja la imagen de la firma (PNG) justo encima de su línea, con una
+   * leyenda de quién y cuándo firmó — o no dibuja nada si esa parte todavía
+   * no firmó (la línea en blanco de siempre, sin regresión de comportamiento).
+   */
+  private drawSignatureIfPresent(
+    doc: PDFKit.PDFDocument,
+    signature: { imageBuffer: Buffer; signedByName: string; signedAt: Date } | undefined,
+    lineX: number,
+    lineY: number,
+  ): void {
+    if (!signature) return;
+
+    const imageHeight = 45;
+    const imageWidth = 190;
+    doc.image(signature.imageBuffer, lineX + 5, lineY - imageHeight - 2, {
+      fit: [imageWidth, imageHeight],
+      align: 'center',
+    });
+    doc
+      .font('Helvetica-Oblique')
+      .fontSize(6.5)
+      .text(`Firmado electrónicamente el ${formatDateTime(signature.signedAt)} por ${signature.signedByName}`, lineX, lineY + 16, {
+        width: 200,
+        align: 'center',
+      });
   }
 }

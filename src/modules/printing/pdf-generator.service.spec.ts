@@ -319,5 +319,66 @@ describe('PdfGeneratorService', () => {
 
       expect(text).toContain('GENERALES');
     });
+
+    // PNG transparente de 1x1 válido — suficiente para que pdfkit lo procese
+    // como imagen real sin depender de un archivo de fixture en disco.
+    const MINIMAL_PNG = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    );
+
+    it('no incluye ninguna leyenda de firma cuando "signatures" no viene definido (sin regresión)', async () => {
+      const buffer = await service.generateContractPdf(contractData);
+      const text = extractPdfText(buffer);
+
+      expect(text).not.toContain('Firmado');
+    });
+
+    it('dibuja la firma del cliente con su leyenda cuando viene en signatures.client', async () => {
+      const buffer = await service.generateContractPdf({
+        ...contractData,
+        signatures: {
+          client: { imageBuffer: MINIMAL_PNG, signedByName: 'Carlos Mendoza', signedAt: new Date('2026-03-01T14:30:00Z') },
+        },
+      });
+
+      expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+      // El texto de la leyenda es largo y puede envolver en dos líneas dentro
+      // del ancho de 200pt asignado — extractPdfText reconstruye cada línea
+      // envuelta como un "run" separado y los une con un espacio, lo que
+      // puede introducir un espacio doble justo en el punto de envoltura
+      // (un artefacto de reconstrucción del helper de test, no del PDF real:
+      // un lector de PDF real muestra el texto envuelto con espaciado normal).
+      const text = extractPdfText(buffer).replace(/\s+/g, ' ');
+      expect(text).toContain('Carlos Mendoza');
+    });
+
+    it('dibuja ambas firmas (cliente y empresa) de forma independiente', async () => {
+      const buffer = await service.generateContractPdf({
+        ...contractData,
+        signatures: {
+          client: { imageBuffer: MINIMAL_PNG, signedByName: 'Carlos Mendoza', signedAt: new Date('2026-03-01T14:30:00Z') },
+          company: { imageBuffer: MINIMAL_PNG, signedByName: 'Maria Representante', signedAt: new Date('2026-03-01T15:00:00Z') },
+        },
+      });
+
+      const text = extractPdfText(buffer).replace(/\s+/g, ' ');
+      expect(text).toContain('Carlos Mendoza');
+      expect(text).toContain('Maria Representante');
+    });
+
+    it('genera un PDF válido cuando solo una de las dos partes firmó (parcial)', async () => {
+      const buffer = await service.generateContractPdf({
+        ...contractData,
+        signatures: {
+          company: { imageBuffer: MINIMAL_PNG, signedByName: 'Maria Representante', signedAt: new Date('2026-03-01T15:00:00Z') },
+        },
+      });
+
+      expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+      const text = extractPdfText(buffer).replace(/\s+/g, ' ');
+      expect(text).toContain('Maria Representante');
+      expect(text).not.toContain('Carlos Mendoza');
+    });
   });
 });

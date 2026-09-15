@@ -47,6 +47,7 @@ import { MunicipalityEntity } from '../modules/geography/entities/municipality.e
 import { SectorEntity } from '../modules/geography/entities/sector.entity';
 import { GenieAcsDeviceEntity } from '../modules/genieacs/entities/genieacs-device.entity';
 import { GenieAcsAuditLogEntity } from '../modules/genieacs/entities/genieacs-audit-log.entity';
+import { ContractSignatureEntity } from '../modules/contract-signatures/entities/contract-signature.entity';
 
 export const entities = [
   // geo
@@ -65,6 +66,7 @@ export const entities = [
   ClientEntity,
   AddressEntity,
   ContractEntity,
+  ContractSignatureEntity,
   PlanChangeRequestEntity,
   ClientNotificationEntity,
   BillingSettingsEntity,

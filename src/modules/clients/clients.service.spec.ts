@@ -13,6 +13,7 @@ import { PlanEntity } from '../plans/entities/plan.entity';
 import { SystemEvents } from '../../common/enums/system-events.enum';
 import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { DgiiClientService } from '../invoicing/dgii/dgii-client.service';
+import { ContractSignaturesService } from '../contract-signatures/contract-signatures.service';
 
 describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
   let service: ClientsService;
@@ -23,6 +24,7 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
   let eventEmitter: any;
   let pdfGenerator: any;
   let dgiiClient: any;
+  let contractSignatures: any;
 
   let userRepo: any;
   let roleRepo: any;
@@ -90,6 +92,9 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
         correoEmisor: 'facturacion@sumtech.com.do',
       }),
     };
+    contractSignatures = {
+      getLatestBufferForPdf: jest.fn().mockResolvedValue(null),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -104,6 +109,7 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: PdfGeneratorService, useValue: pdfGenerator },
         { provide: DgiiClientService, useValue: dgiiClient },
+        { provide: ContractSignaturesService, useValue: contractSignatures },
       ],
     }).compile();
 
@@ -462,6 +468,39 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
           contract: expect.objectContaining({ contractNumber: 'CTR-000001' }),
           client: expect.objectContaining({ name: 'Juan Perez' }),
           plan: expect.objectContaining({ name: 'Fibra 100' }),
+          signatures: { client: undefined, company: undefined },
+        }),
+      );
+    });
+
+    it('pasa las firmas del cliente y de la empresa al PdfGeneratorService cuando ambas existen', async () => {
+      contractRepo.findOne.mockResolvedValue({
+        id: 'contract-1',
+        clientId: 'client-1',
+        contractNumber: 'CTR-000001',
+        status: 'ACTIVE',
+        startDate: '2026-03-01',
+        billingDay: 15,
+        client: { name: 'Juan Perez', docType: 'CEDULA', docNumber: '00112223334', email: 'juan@a.com', phone: '8095551234' },
+        plan: { name: 'Fibra 100', serviceType: 'INTERNET', speedMbps: 100, tvChannelsCount: 0, monthlyPrice: 1500 },
+        address: { street: 'Calle Duarte', buildingNumber: '12', sector: 'Centro', municipality: 'Santo Domingo', city: 'Santo Domingo' },
+      });
+      const clientSignature = { buffer: Buffer.from('firma-cliente'), signedByName: 'Juan Perez', signedAt: new Date('2026-03-01T10:00:00Z') };
+      const companySignature = { buffer: Buffer.from('firma-empresa'), signedByName: 'Maria Representante', signedAt: new Date('2026-03-01T10:05:00Z') };
+      contractSignatures.getLatestBufferForPdf
+        .mockResolvedValueOnce(clientSignature)
+        .mockResolvedValueOnce(companySignature);
+
+      await service.generateContractPdf('client-1', 'contract-1');
+
+      expect(contractSignatures.getLatestBufferForPdf).toHaveBeenCalledWith('contract-1', 'CLIENT');
+      expect(contractSignatures.getLatestBufferForPdf).toHaveBeenCalledWith('contract-1', 'COMPANY');
+      expect(pdfGenerator.generateContractPdf).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signatures: {
+            client: { imageBuffer: clientSignature.buffer, signedByName: 'Juan Perez', signedAt: clientSignature.signedAt },
+            company: { imageBuffer: companySignature.buffer, signedByName: 'Maria Representante', signedAt: companySignature.signedAt },
+          },
         }),
       );
     });

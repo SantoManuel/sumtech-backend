@@ -13,6 +13,7 @@ import { PlanEntity } from '../plans/entities/plan.entity';
 import { UsersModule } from '../users/users.module';
 import { PrintingModule } from '../printing/printing.module';
 import { DgiiModule } from '../invoicing/dgii/dgii.module';
+import { ContractSignaturesModule } from '../contract-signatures/contract-signatures.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { DgiiModule } from '../invoicing/dgii/dgii.module';
     UsersModule,
     PrintingModule,
     DgiiModule,
+    ContractSignaturesModule,
     JwtModule.register({}),
   ],
   controllers: [ClientsController],
