@@ -123,4 +123,11 @@ export interface ContractPdfData {
     municipality: string;
     city: string;
   };
+  /**
+   * Presente SOLO la primera vez que se imprime este contrato tras generar o
+   * resetear la contraseña del Portal de Autoservicio (ver
+   * ClientsService.generateContractPdf) — la contraseña es de un solo uso:
+   * una vez impresa, no vuelve a aparecer en reimpresiones posteriores.
+   */
+  portalCredentials?: { username: string; password: string };
 }

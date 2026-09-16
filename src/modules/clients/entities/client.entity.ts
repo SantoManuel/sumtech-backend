@@ -37,6 +37,16 @@ export class ClientEntity {
   @Column({ name: 'user_id', type: 'uuid', nullable: true, unique: true })
   userId?: string;
 
+  /**
+   * Contraseña del Portal de Autoservicio en texto plano — SOLO hasta que se
+   * imprime el primer contrato del cliente (ClientsService.generateContractPdf
+   * la embebe en el PDF y la limpia a NULL en la misma operación). Nunca se
+   * selecciona por defecto (select: false, igual que UserEntity.passwordHash)
+   * para que no aparezca en ningún GET de cliente por accidente.
+   */
+  @Column({ name: 'pending_portal_password', type: 'varchar', length: 20, nullable: true, select: false })
+  pendingPortalPassword?: string | null;
+
   @OneToOne(() => UserEntity, (user) => user.client, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'user_id' })
   user?: UserEntity;

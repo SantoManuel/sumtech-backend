@@ -31,7 +31,7 @@ import { DgiiClientService } from '../invoicing/dgii/dgii-client.service';
 import { ContractSignaturesService } from '../contract-signatures/contract-signatures.service';
 import { CompanyService } from '../company/company.service';
 
-function generateRandomPassword(length: number = 6): string {
+export function generateRandomPassword(length: number = 6): string {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
   let result = '';
   for (let i = 0; i < length; i++) {
@@ -209,6 +209,10 @@ export class ClientsService {
     }
 
     savedClient.userId = digitalUser.id;
+    // Se guarda en texto plano hasta que se imprima el primer contrato del
+    // cliente (ver generateContractPdf) — el modal de alta y el PDF del
+    // contrato deben mostrar la MISMA contraseña, nunca dos distintas.
+    savedClient.pendingPortalPassword = initialPlainPassword;
     await this.clientRepository.save(savedClient);
 
     const result = savedClient as ClientEntity & { initialDigitalPassword?: string };
@@ -221,7 +225,9 @@ export class ClientsService {
    * autoservicio) — el hash original no es recuperable, así que esta es la
    * única forma de que el ERP le entregue una contraseña nueva a un cliente
    * que la perdió. Se devuelve en texto plano una sola vez, igual que en el
-   * alta inicial (RF-35).
+   * alta inicial (RF-35). También actualiza pending_portal_password: si el
+   * contrato todavía no se había impreso, el PDF debe reflejar esta
+   * contraseña nueva, no la vieja (que ya dejó de ser válida).
    */
   async resetDigitalPassword(clientId: string): Promise<{ initialDigitalPassword: string }> {
     const client = await this.findById(clientId);
@@ -232,6 +238,7 @@ export class ClientsService {
     const newPlainPassword = generateRandomPassword(6);
     const passwordHash = await bcrypt.hash(newPlainPassword, 10);
     await this.userRepository.update(client.userId, { passwordHash });
+    await this.clientRepository.update(clientId, { pendingPortalPassword: newPlainPassword });
 
     return { initialDigitalPassword: newPlainPassword };
   }
@@ -555,6 +562,27 @@ export class ClientsService {
       this.contractSignatures.getLatestBufferForPdf(contractId, 'COMPANY'),
     ]);
 
+    // pendingPortalPassword es select:false por defecto — hay que pedirlo
+    // explícitamente. Si existe, esta es la primera impresión del contrato
+    // desde que se generó/reseteó la contraseña: se embebe en el PDF y se
+    // limpia de inmediato (nunca vuelve a aparecer en una reimpresión).
+    // NOTA: select parcial + relations exige incluir el id explícitamente —
+    // sin él, TypeORM arma mal su subquery interna de DISTINCT y revienta
+    // con "column distinctAlias.ClientEntity_id does not exist".
+    let portalCredentials: { username: string; password: string } | undefined;
+    const clientWithCredentials = await this.clientRepository.findOne({
+      where: { id: clientId },
+      relations: ['user'],
+      select: { id: true, pendingPortalPassword: true, user: { id: true, username: true } },
+    });
+    if (clientWithCredentials?.pendingPortalPassword && clientWithCredentials.user?.username) {
+      portalCredentials = {
+        username: clientWithCredentials.user.username,
+        password: clientWithCredentials.pendingPortalPassword,
+      };
+      await this.clientRepository.update(clientId, { pendingPortalPassword: null });
+    }
+
     return this.pdfGenerator.generateContractPdf({
       company,
       contract: {
@@ -593,6 +621,7 @@ export class ClientsService {
           ? { imageBuffer: companySignature.buffer, signedByName: companySignature.signedByName, signedAt: companySignature.signedAt }
           : undefined,
       },
+      portalCredentials,
     });
   }
 

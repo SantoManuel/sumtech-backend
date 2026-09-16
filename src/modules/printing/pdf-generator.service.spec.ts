@@ -320,6 +320,38 @@ describe('PdfGeneratorService', () => {
       expect(text).toContain('GENERALES');
     });
 
+    it('sin portalCredentials, no incluye la sección de acceso al portal', async () => {
+      const buffer = await service.generateContractPdf(contractData);
+      const text = extractPdfText(buffer);
+
+      expect(text).not.toContain('PORTAL DE AUTOSERVICIO');
+    });
+
+    it('con portalCredentials, incluye usuario y contraseña en el PDF', async () => {
+      const buffer = await service.generateContractPdf({
+        ...contractData,
+        portalCredentials: { username: 'ana001', password: 'Xy9pQr' },
+      });
+      const text = extractPdfText(buffer).replace(/\s+/g, ' ');
+
+      expect(text).toContain('ACCESO AL PORTAL DE AUTOSERVICIO');
+      expect(text).toContain('ana001');
+      expect(text).toContain('Xy9pQr');
+    });
+
+    it('con portalCredentials, el PDF sigue siendo válido y con el resto del contenido intacto', async () => {
+      const buffer = await service.generateContractPdf({
+        ...contractData,
+        portalCredentials: { username: 'ana001', password: 'Xy9pQr' },
+      });
+      const text = extractPdfText(buffer);
+
+      expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+      expect(text).toContain('CTR-000123');
+      expect(text).toContain('Fibra 100 Mbps');
+      expect(text).toContain('GENERALES');
+    });
+
     // PNG transparente de 1x1 válido — suficiente para que pdfkit lo procese
     // como imagen real sin depender de un archivo de fixture en disco.
     const MINIMAL_PNG = Buffer.from(

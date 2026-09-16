@@ -48,6 +48,7 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       findOne: jest.fn().mockResolvedValue({ id: 'client-1', name: 'Cliente Test' }),
       create: jest.fn((dto: any) => dto),
       save: jest.fn((entity: any) => Promise.resolve({ id: entity.id || 'client-generated', ...entity })),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       createQueryBuilder: jest.fn(() => clientQueryBuilder),
     };
     userRepo = {
@@ -161,6 +162,14 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       expect(clientRepo.save).toHaveBeenCalledTimes(2);
     });
 
+    it('guarda la misma contraseña inicial en pendingPortalPassword (para que el PDF del contrato la muestre después)', async () => {
+      clientRepo.findOne.mockResolvedValueOnce(null);
+
+      const result = await service.create(baseDto as any);
+
+      expect((result as any).pendingPortalPassword).toBe(result.initialDigitalPassword);
+    });
+
     it('lanza ConflictException si ya existe un cliente con el mismo docNumber', async () => {
       clientRepo.findOne.mockResolvedValueOnce({ id: 'existing-client', docNumber: baseDto.docNumber });
 
@@ -222,6 +231,23 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       expect(sectorRepo.findOne).not.toHaveBeenCalled();
       const savedAddress = (result as any).addresses[0];
       expect(savedAddress.sector).toBe('Centro');
+    });
+  });
+
+  describe('resetDigitalPassword', () => {
+    it('lanza ConflictException si el cliente no tiene cuenta digital', async () => {
+      clientRepo.findOne.mockResolvedValueOnce({ id: 'client-1', name: 'Sin cuenta' });
+      await expect(service.resetDigitalPassword('client-1')).rejects.toThrow(ConflictException);
+    });
+
+    it('actualiza el hash del usuario y guarda la nueva contraseña en pendingPortalPassword', async () => {
+      clientRepo.findOne.mockResolvedValueOnce({ id: 'client-1', name: 'Ana Pérez', userId: 'user-1' });
+
+      const result = await service.resetDigitalPassword('client-1');
+
+      expect(result.initialDigitalPassword).toHaveLength(6);
+      expect(userRepo.update).toHaveBeenCalledWith('user-1', { passwordHash: expect.any(String) });
+      expect(clientRepo.update).toHaveBeenCalledWith('client-1', { pendingPortalPassword: result.initialDigitalPassword });
     });
   });
 
@@ -717,6 +743,53 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
           }),
         }),
       );
+    });
+
+    it('cuando el cliente tiene pendingPortalPassword, la embebe en el PDF y la limpia (nunca vuelve a aparecer)', async () => {
+      contractRepo.findOne.mockResolvedValue({
+        id: 'contract-1',
+        clientId: 'client-1',
+        contractNumber: 'CTR-000001',
+        status: 'ACTIVE',
+        startDate: '2026-03-01',
+        billingDay: 15,
+        client: { name: 'Juan Perez', docType: 'CEDULA', docNumber: '00112223334', email: 'juan@a.com', phone: '8095551234' },
+        plan: { name: 'Fibra 100', serviceType: 'INTERNET', speedMbps: 100, tvChannelsCount: 0, monthlyPrice: 1500 },
+        address: { street: 'Calle Duarte', buildingNumber: '12', sector: 'Centro', municipality: 'Santo Domingo', city: 'Santo Domingo' },
+      });
+      clientRepo.findOne.mockResolvedValueOnce({
+        pendingPortalPassword: 'Ab12Cd',
+        user: { username: 'juan001' },
+      });
+
+      await service.generateContractPdf('client-1', 'contract-1');
+
+      expect(pdfGenerator.generateContractPdf).toHaveBeenCalledWith(
+        expect.objectContaining({ portalCredentials: { username: 'juan001', password: 'Ab12Cd' } }),
+      );
+      expect(clientRepo.update).toHaveBeenCalledWith('client-1', { pendingPortalPassword: null });
+    });
+
+    it('sin pendingPortalPassword (ya se imprimió antes, o nunca tuvo), no incluye credenciales ni las vuelve a tocar', async () => {
+      contractRepo.findOne.mockResolvedValue({
+        id: 'contract-1',
+        clientId: 'client-1',
+        contractNumber: 'CTR-000001',
+        status: 'ACTIVE',
+        startDate: '2026-03-01',
+        billingDay: 15,
+        client: { name: 'Juan Perez', docType: 'CEDULA', docNumber: '00112223334', email: 'juan@a.com', phone: '8095551234' },
+        plan: { name: 'Fibra 100', serviceType: 'INTERNET', speedMbps: 100, tvChannelsCount: 0, monthlyPrice: 1500 },
+        address: { street: 'Calle Duarte', buildingNumber: '12', sector: 'Centro', municipality: 'Santo Domingo', city: 'Santo Domingo' },
+      });
+      clientRepo.findOne.mockResolvedValueOnce({ pendingPortalPassword: null, user: { username: 'juan001' } });
+
+      await service.generateContractPdf('client-1', 'contract-1');
+
+      expect(pdfGenerator.generateContractPdf).toHaveBeenCalledWith(
+        expect.objectContaining({ portalCredentials: undefined }),
+      );
+      expect(clientRepo.update).not.toHaveBeenCalled();
     });
   });
 });

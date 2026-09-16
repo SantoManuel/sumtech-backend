@@ -448,7 +448,25 @@ export class PdfGeneratorService {
       doc.text([data.client.phone, data.client.email].filter(Boolean).join('  |  '), marginX + 8, doc.y + 2);
     }
 
-    const serviceBoxY = clientBoxY + 65;
+    let nextBoxY = clientBoxY + 65;
+    if (data.portalCredentials) {
+      const credentialsBoxHeight = 40;
+      doc.rect(marginX, nextBoxY, contentWidth, credentialsBoxHeight).stroke();
+      doc.font('Helvetica-Bold').fontSize(9).text('ACCESO AL PORTAL DE AUTOSERVICIO', marginX + 8, nextBoxY + 6);
+      doc
+        .font('Helvetica')
+        .fontSize(8.5)
+        .text(`Usuario: ${data.portalCredentials.username}    Contraseña: ${data.portalCredentials.password}`, marginX + 8, doc.y + 3);
+      doc
+        .font('Helvetica-Oblique')
+        .fontSize(7.5)
+        .text('Ingrese en el portal del cliente y cambie esta contraseña en su primer inicio de sesión.', marginX + 8, doc.y + 2, {
+          width: contentWidth - 16,
+        });
+      nextBoxY += credentialsBoxHeight + 10;
+    }
+
+    const serviceBoxY = nextBoxY;
     doc.rect(marginX, serviceBoxY, contentWidth, 78).stroke();
     doc.font('Helvetica-Bold').fontSize(9).text('DATOS DEL SERVICIO', marginX + 8, serviceBoxY + 6);
     doc

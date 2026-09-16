@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { BullModule } from '@nestjs/bullmq';
 
 import { databaseConfig } from './config/database.config';
 import { AuthModule } from './modules/auth/auth.module';
@@ -54,6 +55,21 @@ import { CompanyModule } from './modules/company/company.module';
     // PublicController), no como guard global: el resto de la API no tenía
     // ninguna protección de este tipo y no es objetivo de este cambio tocarla.
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
+
+    // Cola de jobs en background (Redis, vía DBngin en desarrollo) — usada
+    // por la importación masiva de clientes (ClientsImportModule) para no
+    // bloquear un request HTTP con archivos de decenas de miles de filas.
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        connection: {
+          host: configService.get<string>('REDIS_HOST', 'localhost'),
+          port: configService.get<number>('REDIS_PORT', 6379),
+          password: configService.get<string>('REDIS_PASSWORD') || undefined,
+          db: configService.get<number>('REDIS_DB', 0),
+        },
+      }),
+    }),
 
     // Módulos de Dominio del Monolito Modular
     AuthModule,
