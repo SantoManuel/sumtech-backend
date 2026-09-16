@@ -25,7 +25,8 @@ import { TicketEntity } from '../../modules/tickets/entities/ticket.entity';
 import { TicketHistoryEntity } from '../../modules/tickets/entities/ticket-history.entity';
 import { TicketRepairEntity } from '../../modules/tickets/entities/ticket-repair.entity';
 import { ScheduleEventEntity } from '../../modules/tickets/entities/schedule-event.entity';
-import { LeadEntity } from '../../modules/crm/entities/lead.entity';
+import { OpportunityEntity } from '../../modules/crm/entities/opportunity.entity';
+import { SubscriptionStatusEntity, SUBSCRIPTION_STATUS_CODE } from '../../modules/crm/entities/subscription-status.entity';
 import { InteractionEntity } from '../../modules/crm/entities/interaction.entity';
 
 export async function runInitialSeed() {
@@ -75,7 +76,8 @@ export async function runInitialSeed() {
   const ticketRepo = AppDataSource.getRepository(TicketEntity);
   const historyRepo = AppDataSource.getRepository(TicketHistoryEntity);
   const repairRepo = AppDataSource.getRepository(TicketRepairEntity);
-  const leadRepo = AppDataSource.getRepository(LeadEntity);
+  const opportunityRepo = AppDataSource.getRepository(OpportunityEntity);
+  const subscriptionStatusRepo = AppDataSource.getRepository(SubscriptionStatusEntity);
   const interactionRepo = AppDataSource.getRepository(InteractionEntity);
 
   // ----------------------------------------------------------------------------
@@ -587,17 +589,29 @@ export async function runInitialSeed() {
   // ----------------------------------------------------------------------------
   // 20. CRM LEADS & INTERACCIONES (5 Registros cada uno en crm)
   // ----------------------------------------------------------------------------
-  const leadsData = [
-    { name: 'José Ramírez', phone: '809-555-7744', email: 'j.ramirez@gmail.com', planId: savedPlans[2].id, source: 'WEB_LANDING' as const, status: 'NEW' as const, notes: 'Sector: Alma Rosa II (Calle Club de Leones)' },
-    { name: 'Consultoría Financiera SRL', phone: '829-555-1100', email: 'contacto@cfinanciera.do', planId: savedPlans[3].id, source: 'CALL_INBOUND' as const, status: 'CONTACTED' as const, notes: 'Sector: Piantini. Interesados en 2 enlaces simétricos.' },
-    { name: 'Ana Patricia Morales', phone: '809-555-3399', email: 'ana.morales@hotmail.com', planId: savedPlans[0].id, source: 'WEB_LANDING' as const, status: 'QUALIFIED' as const, notes: 'Sector: Ensanche Ozama. Cobertura validada.' },
-    { name: 'Dra. Carmen Peña', phone: '849-555-6677', email: 'dra.carmenp@medico.do', planId: savedPlans[2].id, source: 'WHATSAPP' as const, status: 'CONVERTED' as const, notes: 'Sector: Naco. Cliente convertida a suscriptor formal.' },
-    { name: 'Supermercado El Sol', phone: '809-555-9988', email: 'gerencia@superelsol.do', planId: savedPlans[4].id, source: 'FLYER' as const, status: 'NEW' as const, notes: 'Sector: Santiago de los Caballeros. Enlace para sucursales.' },
+  const statusByCode: Record<string, string> = {};
+  for (const status of await subscriptionStatusRepo.find()) {
+    statusByCode[status.code] = status.id;
+  }
+
+  const opportunitiesData = [
+    { name: 'José Ramírez', phone: '809-555-7744', email: 'j.ramirez@gmail.com', planId: savedPlans[2].id, source: 'WEB_LANDING' as const, statusCode: SUBSCRIPTION_STATUS_CODE.PROSPECTO, notes: 'Sector: Alma Rosa II (Calle Club de Leones)' },
+    { name: 'Consultoría Financiera SRL', phone: '829-555-1100', email: 'contacto@cfinanciera.do', planId: savedPlans[3].id, source: 'CALL_INBOUND' as const, statusCode: SUBSCRIPTION_STATUS_CODE.EN_NEGOCIACION, notes: 'Sector: Piantini. Interesados en 2 enlaces simétricos.' },
+    { name: 'Ana Patricia Morales', phone: '809-555-3399', email: 'ana.morales@hotmail.com', planId: savedPlans[0].id, source: 'WEB_LANDING' as const, statusCode: SUBSCRIPTION_STATUS_CODE.EN_NEGOCIACION, notes: 'Sector: Ensanche Ozama. Cobertura validada.' },
+    { name: 'Dra. Carmen Peña', phone: '849-555-6677', email: 'dra.carmenp@medico.do', planId: savedPlans[2].id, source: 'WHATSAPP' as const, statusCode: SUBSCRIPTION_STATUS_CODE.SUSCRIPCION_ACTIVA, notes: 'Sector: Naco. Cliente convertida a suscriptor formal.' },
+    { name: 'Supermercado El Sol', phone: '809-555-9988', email: 'gerencia@superelsol.do', planId: savedPlans[4].id, source: 'FLYER' as const, statusCode: SUBSCRIPTION_STATUS_CODE.PROSPECTO, notes: 'Sector: Santiago de los Caballeros. Enlace para sucursales.' },
   ];
-  for (const l of leadsData) {
-    let lead = await leadRepo.findOneBy({ phone: l.phone });
-    if (!lead) {
-      await leadRepo.save(leadRepo.create(l));
+  for (const o of opportunitiesData) {
+    const existing = await opportunityRepo.findOneBy({ phone: o.phone });
+    if (!existing) {
+      const { statusCode, ...rest } = o;
+      await opportunityRepo.save(
+        opportunityRepo.create({
+          ...rest,
+          subscriptionStatusId: statusByCode[statusCode],
+          firstContactAt: new Date(),
+        }),
+      );
     }
   }
 
@@ -614,7 +628,7 @@ export async function runInitialSeed() {
       await interactionRepo.save(interactionRepo.create(inter));
     }
   }
-  console.log('✅ 20/20 crm.leads & crm.interactions: 5 prospectos y 5 interacciones 360° insertados.');
+  console.log('✅ 20/20 crm.opportunities & crm.interactions: 5 prospectos y 5 interacciones 360° insertados.');
 
   // ----------------------------------------------------------------------------
   // 21. EVENTOS Y ACTIVIDADES DE OFICINA / GANTT (5 Registros en tickets.schedule_events)

@@ -19,7 +19,7 @@ export class PublicService {
   }
 
   async createLead(dto: RequestLeadDto) {
-    const lead = await this.crmService.createLead({
+    const opportunity = await this.crmService.create({
       name: dto.name,
       phone: dto.phone,
       email: dto.email,
@@ -31,7 +31,7 @@ export class PublicService {
     return {
       success: true,
       message: 'Solicitud recibida con éxito. Un asesor de Sumtech te contactará a la brevedad.',
-      leadId: lead.id,
+      leadId: opportunity.id,
     };
   }
 }

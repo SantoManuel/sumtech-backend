@@ -15,11 +15,13 @@ import {
 } from './dgii-b2b.controller';
 import { DgiiReceivedInvoice } from '../entities/dgii-received-invoice.entity';
 import { UsersModule } from '../../users/users.module';
+import { CompanyModule } from '../../company/company.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([DgiiReceivedInvoice]),
     UsersModule,
+    CompanyModule,
     JwtModule.register({}),
   ],
   controllers: [

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as PDFDocument from 'pdfkit';
 import * as QRCode from 'qrcode';
 import { CONTRACT_CLAUSES_PLACEHOLDER } from './contract-clauses.constant';
-import { CompanyPdfInfo, ContractPdfData, InvoiceReceiptMetadata } from './pdf-generator.types';
+import { ClientsListPdfData, CompanyPdfInfo, ContractPdfData, InvoiceReceiptMetadata } from './pdf-generator.types';
 
 const NCF_TYPE_LABELS: Record<string, string> = {
   E31: 'FACTURA DE CRÉDITO FISCAL ELECTRÓNICA',
@@ -38,6 +38,13 @@ function formatDate(value: Date | string | undefined): string {
   const date = typeof value === 'string' ? new Date(value) : value;
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function formatDateTime(value: Date | string | undefined): string {
+  if (!value) return 'N/A';
+  const date = typeof value === 'string' ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) return String(value);
+  return `${formatDate(date)} ${date.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })}`;
 }
 
 /**
@@ -263,6 +270,158 @@ export class PdfGeneratorService {
     return this.streamToBuffer(doc);
   }
 
+  /**
+   * Ticket térmico de 80mm con el tamaño de página embebido en el propio PDF
+   * (226.77pt = 80mm de ancho), en vez de depender de `@page` CSS + window.print()
+   * en el navegador — muchos drivers/diálogos de impresión ignoran el tamaño de
+   * página de CSS y usan el papel por defecto del sistema (A4/Carta), que es la
+   * causa típica de "se ve bien en pantalla pero imprime en A4". Al generar un
+   * PDF real, el tamaño de página queda fijo sin importar el driver.
+   */
+  async generateInvoiceThermalPdf(metadata: InvoiceReceiptMetadata): Promise<Buffer> {
+    const pageWidth = 226.77; // 80mm
+    const marginX = 8;
+    const contentWidth = pageWidth - marginX * 2;
+
+    // Alto estimado según la cantidad de líneas — pdfkit no soporta "auto"
+    // como el CSS @page; se calcula antes de crear el documento (patrón común
+    // para recibos térmicos), dejando algo de holgura al final.
+    const estimatedHeight = 260 + metadata.sale.details.length * 34 + 220;
+
+    const doc = new (PDFDocument as any)({
+      size: [pageWidth, estimatedHeight],
+      margin: marginX,
+      compress: false,
+    }) as PDFKit.PDFDocument;
+
+    const center = (text: string, y: number, opts: PDFKit.Mixins.TextOptions = {}) =>
+      doc.text(text, marginX, y, { width: contentWidth, align: 'center', ...opts });
+
+    const twoCol = (left: string, right: string, y: number, boldRight = false) => {
+      doc.font('Helvetica').text(left, marginX, y, { width: contentWidth * 0.6, continued: false });
+      if (boldRight) doc.font('Helvetica-Bold');
+      doc.text(right, marginX, y, { width: contentWidth, align: 'right' });
+      doc.font('Helvetica');
+    };
+
+    // Encabezado de la empresa
+    doc.font('Helvetica-Bold').fontSize(10).text(metadata.company.razonSocial, marginX, 8, { width: contentWidth, align: 'center' });
+    doc.font('Helvetica-Bold').fontSize(8).text(`RNC: ${metadata.company.rnc}`, marginX, doc.y + 1, { width: contentWidth, align: 'center' });
+    doc.font('Helvetica').fontSize(7);
+    if (metadata.company.direccion) center(metadata.company.direccion, doc.y + 1);
+    const contactLine = [metadata.company.telefono ? `Tel: ${metadata.company.telefono}` : null, metadata.company.correo]
+      .filter(Boolean)
+      .join(' | ');
+    if (contactLine) center(contactLine, doc.y + 1);
+
+    doc
+      .moveTo(marginX, doc.y + 4)
+      .lineTo(marginX + contentWidth, doc.y + 4)
+      .dash(1, { space: 1 })
+      .stroke()
+      .undash();
+
+    doc.font('Helvetica-Bold').fontSize(7.5);
+    center((NCF_TYPE_LABELS[metadata.invoice.ncfType || ''] || 'COMPROBANTE FISCAL ELECTRÓNICO (e-CF)').toUpperCase(), doc.y + 8);
+    doc.font('Helvetica-Bold').fontSize(8);
+    center(`e-NCF: ${metadata.invoice.ncfNumber || 'N/A'}`, doc.y + 3);
+    doc.font('Helvetica').fontSize(7);
+    center(`Código Seguridad: ${metadata.invoice.securityCode || 'N/A'}`, doc.y + 2);
+    if (metadata.invoice.ncfType === 'E34' && metadata.invoice.ncfModificado) {
+      center(`NCF Modificado: ${metadata.invoice.ncfModificado}`, doc.y + 3);
+      center(`Motivo: ${metadata.invoice.razonModificacion || 'Anula el NCF modificado'}`, doc.y + 1);
+    }
+
+    doc
+      .moveTo(marginX, doc.y + 5)
+      .lineTo(marginX + contentWidth, doc.y + 5)
+      .dash(1, { space: 1 })
+      .stroke()
+      .undash();
+
+    // Datos del cliente y período
+    doc.font('Helvetica').fontSize(7.5);
+    let y = doc.y + 8;
+    doc.text(`Fecha Emisión: ${formatDate(metadata.invoice.issuedAt)}`, marginX, y, { width: contentWidth });
+    y = doc.y + 2;
+    doc.text(`Cliente: ${metadata.client.name}`, marginX, y, { width: contentWidth });
+    y = doc.y + 2;
+    doc.text(`${metadata.client.docType || 'Documento'}: ${metadata.client.docNumber}`, marginX, y, { width: contentWidth });
+    y = doc.y + 2;
+    if (metadata.sale.billingPeriod) {
+      doc.text(`Período Facturado: ${metadata.sale.billingPeriod}`, marginX, y, { width: contentWidth });
+      y = doc.y + 2;
+    }
+    doc.text(`Cajero: ${metadata.sale.cashier}`, marginX, y, { width: contentWidth });
+
+    doc
+      .moveTo(marginX, doc.y + 5)
+      .lineTo(marginX + contentWidth, doc.y + 5)
+      .dash(1, { space: 1 })
+      .stroke()
+      .undash();
+
+    // Líneas de detalle
+    y = doc.y + 8;
+    doc.font('Helvetica-Bold').fontSize(7);
+    twoCol('CANT. / DESCRIPCIÓN', 'TOTAL (RD$)', y, true);
+    y = doc.y + 10;
+    doc.font('Helvetica').fontSize(7.5);
+    metadata.sale.details.forEach((item) => {
+      twoCol(`${item.quantity}x ${item.concept}`, formatNumber(item.subtotal), y, true);
+      y = doc.y + 1;
+      doc
+        .font('Helvetica')
+        .fontSize(6.5)
+        .text(`Precio: ${formatNumber(item.unitPrice)}   ITBIS: ${formatNumber(item.itbisAmount)}`, marginX, y, {
+          width: contentWidth,
+        });
+      y = doc.y + 6;
+      doc.fontSize(7.5);
+    });
+
+    doc
+      .moveTo(marginX, y)
+      .lineTo(marginX + contentWidth, y)
+      .dash(1, { space: 1 })
+      .stroke()
+      .undash();
+
+    // Totales
+    y += 8;
+    doc.font('Helvetica').fontSize(8);
+    twoCol('Subtotal:', formatNumber(metadata.sale.subtotal), y);
+    y = doc.y + 3;
+    twoCol('ITBIS Facturado (18%):', formatNumber(metadata.sale.itbisTotal), y);
+    y = doc.y + 4;
+    doc
+      .moveTo(marginX, y)
+      .lineTo(marginX + contentWidth, y)
+      .stroke();
+    y += 4;
+    doc.font('Helvetica-Bold').fontSize(9.5);
+    twoCol('TOTAL A PAGAR:', formatCurrency(metadata.sale.grandTotal), y);
+
+    // QR oficial DGII
+    y = doc.y + 12;
+    const qrUrl = metadata.invoice.qrCodeUrl || `https://ecf.dgii.gov.do/testecf/consultatimbre?encf=${metadata.invoice.ncfNumber}`;
+    const qrSize = 90;
+    const qrBuffer = await QRCode.toBuffer(qrUrl, { type: 'png', width: qrSize * 2, margin: 1 });
+    doc.image(qrBuffer, marginX + (contentWidth - qrSize) / 2, y, { width: qrSize });
+    y += qrSize + 6;
+    doc.font('Helvetica').fontSize(6);
+    center('Consulte la validez de este comprobante en el portal oficial de la DGII', y);
+
+    // Pie de página
+    y = doc.y + 8;
+    doc.font('Helvetica-Bold').fontSize(7.5);
+    center('¡Gracias por su preferencia!', y);
+    doc.font('Helvetica').fontSize(7);
+    center('Servicio de Telecomunicaciones de Alta Velocidad', doc.y + 1);
+
+    return this.streamToBuffer(doc);
+  }
+
   async generateContractPdf(data: ContractPdfData): Promise<Buffer> {
     const doc = new (PDFDocument as any)({ size: 'A4', margin: 40, compress: false }) as PDFKit.PDFDocument;
     const marginX = 40;
@@ -323,17 +482,168 @@ export class PdfGeneratorService {
     });
 
     const signatureY = Math.max(doc.y + 50, doc.page.height - 130);
+    const clientSignatureX = marginX;
+    const companySignatureX = marginX + contentWidth - 200;
+
     doc
-      .moveTo(marginX, signatureY)
-      .lineTo(marginX + 200, signatureY)
+      .moveTo(clientSignatureX, signatureY)
+      .lineTo(clientSignatureX + 200, signatureY)
       .stroke();
     doc
-      .moveTo(marginX + contentWidth - 200, signatureY)
+      .moveTo(companySignatureX, signatureY)
       .lineTo(marginX + contentWidth, signatureY)
       .stroke();
-    doc.font('Helvetica').fontSize(8).text('Firma del Cliente', marginX, signatureY + 5, { width: 200, align: 'center' });
-    doc.text('Firma de la Empresa', marginX + contentWidth - 200, signatureY + 5, { width: 200, align: 'center' });
+
+    this.drawSignatureIfPresent(doc, data.signatures?.client, clientSignatureX, signatureY);
+    this.drawSignatureIfPresent(doc, data.signatures?.company, companySignatureX, signatureY);
+
+    doc.font('Helvetica').fontSize(8).text('Firma del Cliente', clientSignatureX, signatureY + 5, { width: 200, align: 'center' });
+    doc.text('Firma de la Empresa', companySignatureX, signatureY + 5, { width: 200, align: 'center' });
 
     return this.streamToBuffer(doc);
+  }
+
+  /**
+   * Dibuja la imagen de la firma (PNG) justo encima de su línea, con una
+   * leyenda de quién y cuándo firmó — o no dibuja nada si esa parte todavía
+   * no firmó (la línea en blanco de siempre, sin regresión de comportamiento).
+   */
+  private drawSignatureIfPresent(
+    doc: PDFKit.PDFDocument,
+    signature: { imageBuffer: Buffer; signedByName: string; signedAt: Date } | undefined,
+    lineX: number,
+    lineY: number,
+  ): void {
+    if (!signature) return;
+
+    const imageHeight = 45;
+    const imageWidth = 190;
+    doc.image(signature.imageBuffer, lineX + 5, lineY - imageHeight - 2, {
+      fit: [imageWidth, imageHeight],
+      align: 'center',
+    });
+    doc
+      .font('Helvetica-Oblique')
+      .fontSize(6.5)
+      .text(`Firmado electrónicamente el ${formatDateTime(signature.signedAt)} por ${signature.signedByName}`, lineX, lineY + 16, {
+        width: 200,
+        align: 'center',
+      });
+  }
+
+  /**
+   * Listado tabular de clientes en A4 horizontal, para el export desde
+   * /dashboard/clientes (solo ADMIN/GERENTE). Solo muestra un subconjunto de
+   * 8 columnas legibles en una hoja impresa — el detalle completo de 19
+   * columnas vive en los formatos Excel/CSV, pensados para procesamiento.
+   * `bufferPages: true` permite numerar "Página X de Y" al final, una vez que
+   * se sabe cuántas páginas generó el contenido.
+   */
+  async generateClientsListPdf(data: ClientsListPdfData): Promise<Buffer> {
+    const doc = new (PDFDocument as any)({
+      size: 'A4',
+      layout: 'landscape',
+      margin: 30,
+      compress: false,
+      bufferPages: true,
+    }) as PDFKit.PDFDocument;
+    const marginX = 30;
+    const contentWidth = doc.page.width - marginX * 2;
+    const bottomLimit = doc.page.height - 45;
+
+    const columns: Array<{ key: keyof ClientsListPdfData['rows'][number]; label: string; width: number }> = [
+      { key: 'nombre', label: 'Cliente', width: 148 },
+      { key: 'documento', label: 'Documento', width: 108 },
+      { key: 'telefono', label: 'Teléfono', width: 72 },
+      { key: 'ubicacion', label: 'Ubicación', width: 128 },
+      { key: 'planActivo', label: 'Plan Activo', width: 98 },
+      { key: 'estadoContrato', label: 'Estado Contrato', width: 82 },
+      { key: 'estadoCliente', label: 'Estado Cliente', width: 68 },
+      { key: 'fechaAlta', label: 'Fecha Alta', width: 66 },
+    ];
+
+    const drawPageHeader = (): number => {
+      const top = 30;
+      this.drawCompanyHeader(doc, data.company, marginX, top, 320);
+
+      const rightX = marginX + 330;
+      const rightWidth = contentWidth - 330;
+      doc.font('Helvetica-Bold').fontSize(13).text('LISTADO DE CLIENTES', rightX, top, { width: rightWidth, align: 'right' });
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .text(`Generado: ${formatDateTime(data.generatedAt)}`, rightX, top + 20, { width: rightWidth, align: 'right' });
+      doc.text(`Por: ${data.generatedByUsername}`, rightX, top + 32, { width: rightWidth, align: 'right' });
+      doc.text(`Total exportado: ${data.totalExportado}`, rightX, top + 44, { width: rightWidth, align: 'right' });
+      doc
+        .font('Helvetica-Oblique')
+        .fontSize(7.5)
+        .text(`Filtros: ${data.filtersSummary}`, rightX, top + 58, { width: rightWidth, align: 'right' });
+
+      return this.drawTableHeaderRow(doc, columns, marginX, top + 90, contentWidth);
+    };
+
+    let rowY = drawPageHeader();
+    doc.font('Helvetica').fontSize(7.5).fillColor('#000000');
+
+    data.rows.forEach((row) => {
+      const nombreHeight = doc.heightOfString(row.nombre || '', { width: columns[0].width - 8 });
+      const rowHeight = Math.max(14, nombreHeight + 6);
+
+      if (rowY + rowHeight > bottomLimit) {
+        doc.addPage();
+        rowY = drawPageHeader();
+        doc.font('Helvetica').fontSize(7.5).fillColor('#000000');
+      }
+
+      let colX = marginX;
+      columns.forEach((col) => {
+        doc.text(String(row[col.key] ?? ''), colX + 4, rowY + 4, { width: col.width - 8 });
+        colX += col.width;
+      });
+      doc
+        .moveTo(marginX, rowY + rowHeight)
+        .lineTo(marginX + contentWidth, rowY + rowHeight)
+        .strokeColor('#e2e8f0')
+        .stroke();
+      rowY += rowHeight;
+    });
+
+    if (data.rows.length === 0) {
+      doc.font('Helvetica-Oblique').fontSize(9).text('No se encontraron clientes con los filtros aplicados.', marginX, rowY + 10);
+    }
+
+    const pageRange = doc.bufferedPageRange();
+    for (let i = pageRange.start; i < pageRange.start + pageRange.count; i++) {
+      doc.switchToPage(i);
+      doc
+        .font('Helvetica')
+        .fontSize(7.5)
+        .fillColor('#64748b')
+        .text(`Página ${i + 1} de ${pageRange.count}`, marginX, doc.page.height - 30, {
+          width: contentWidth,
+          align: 'center',
+        });
+    }
+
+    return this.streamToBuffer(doc);
+  }
+
+  private drawTableHeaderRow(
+    doc: PDFKit.PDFDocument,
+    columns: Array<{ label: string; width: number }>,
+    marginX: number,
+    y: number,
+    contentWidth: number,
+  ): number {
+    doc.rect(marginX, y, contentWidth, 18).fill('#1e293b');
+    doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8);
+    let colX = marginX;
+    columns.forEach((col) => {
+      doc.text(col.label, colX + 4, y + 5, { width: col.width - 8 });
+      colX += col.width;
+    });
+    doc.fillColor('#000000');
+    return y + 18;
   }
 }

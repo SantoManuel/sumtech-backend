@@ -9,6 +9,21 @@ export interface AiChatbotResponse {
   escalated: boolean;
 }
 
+export interface AiChatbotMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'agent';
+  content: string;
+  createdAt: string;
+}
+
+export interface AiChatbotConversation {
+  id: string;
+  channel: string;
+  externalId: string;
+  status: string;
+  messages: AiChatbotMessage[];
+}
+
 /**
  * Cliente HTTP hacia `Chatbot_sumtech` (proyecto NestJS separado con RAG +
  * Gemini/Ollama). Encapsula la comunicación server-to-server para que sus
@@ -52,5 +67,43 @@ export class AiChatbotClientService {
       userName,
     });
     return data;
+  }
+
+  /**
+   * Envía un WhatsApp saliente arbitrario (ej. el enlace de "comparte tu
+   * ubicación GPS" al crear un cliente) reutilizando la instancia de Evolution
+   * API que ya administra `Chatbot_sumtech`. Nunca lanza: si la sesión de
+   * WhatsApp no está conectada o el envío falla, el llamador debe caer al
+   * flujo manual de "copiar enlace" en vez de bloquear la operación.
+   */
+  async sendWhatsAppMessage(phone: string, text: string): Promise<boolean> {
+    try {
+      const { data } = await this.http.post<{ success: boolean }>('/whatsapp/send', { phone, text });
+      return !!data?.success;
+    } catch (err) {
+      this.logger.warn(`No se pudo enviar el WhatsApp a ${phone}: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Trae el hilo completo de la conversación más reciente de un teléfono —
+   * usado por el CRM del ERP para tabular la charla del lead con el
+   * bot/agente. `externalId` en Chatbot_sumtech se guarda solo con dígitos
+   * (sin "+" ni sufijos de WhatsApp); el llamador debe normalizar el teléfono
+   * antes de invocar este método. Devuelve `null` si no hay conversación
+   * registrada (404), en vez de lanzar — es un caso esperado, no un error.
+   */
+  async getConversationByPhone(phone: string): Promise<AiChatbotConversation | null> {
+    try {
+      const { data } = await this.http.get<AiChatbotConversation>(`/admin/conversations/by-external-id/${phone}`);
+      return data;
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) {
+        return null;
+      }
+      this.logger.warn(`No se pudo obtener la conversación de ${phone}: ${(err as Error).message}`);
+      return null;
+    }
   }
 }

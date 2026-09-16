@@ -6,7 +6,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 
-const READ_ROLES = [Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO];
+const READ_ROLES = [Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO, Role.AGENTE_CRM];
 
 @Controller('geography')
 @UseGuards(AuthGuard, RolesGuard)

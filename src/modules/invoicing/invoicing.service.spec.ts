@@ -40,6 +40,7 @@ describe('InvoicingService', () => {
 
     const invoiceQueryBuilder: any = {
       leftJoinAndSelect: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
@@ -246,6 +247,57 @@ describe('InvoicingService', () => {
       await service.findAll({});
 
       expect(qb.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('dueDate'), expect.anything());
+    });
+
+    it('dueStatus=OVERDUE filtra solo facturas cuya fecha de vencimiento ya pasó', async () => {
+      const qb = invoiceRepo.createQueryBuilder();
+      await service.findAll({ dueStatus: 'OVERDUE' });
+
+      expect(qb.andWhere).toHaveBeenCalledWith('invoice.dueDate < CURRENT_DATE');
+    });
+
+    it('dueStatus=UPCOMING usa 7 días por defecto cuando no se especifica upcomingDays', async () => {
+      const qb = invoiceRepo.createQueryBuilder();
+      await service.findAll({ dueStatus: 'UPCOMING' });
+
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'invoice.dueDate BETWEEN CURRENT_DATE AND CURRENT_DATE + make_interval(days => :upcomingDays)',
+        { upcomingDays: 7 },
+      );
+    });
+
+    it('dueStatus=UPCOMING respeta upcomingDays cuando se especifica', async () => {
+      const qb = invoiceRepo.createQueryBuilder();
+      await service.findAll({ dueStatus: 'UPCOMING', upcomingDays: 15 });
+
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'invoice.dueDate BETWEEN CURRENT_DATE AND CURRENT_DATE + make_interval(days => :upcomingDays)',
+        { upcomingDays: 15 },
+      );
+    });
+
+    it('sin dueStatus no aplica ningún filtro de vencidas/próximas', async () => {
+      const qb = invoiceRepo.createQueryBuilder();
+      await service.findAll({});
+
+      expect(qb.andWhere).not.toHaveBeenCalledWith('invoice.dueDate < CURRENT_DATE');
+      expect(qb.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('make_interval'), expect.anything());
+    });
+
+    it('aplica el join a la dirección primaria del cliente y filtra por sectorId cuando se provee', async () => {
+      const qb = invoiceRepo.createQueryBuilder();
+      await service.findAll({ sectorId: 'sector-1' });
+
+      expect(qb.leftJoin).toHaveBeenCalledWith('client.addresses', 'address', 'address.isPrimary = true');
+      expect(qb.andWhere).toHaveBeenCalledWith('address.sectorId = :sectorId', { sectorId: 'sector-1' });
+    });
+
+    it('sin sectorId no aplica el filtro de sector (aunque el join a addresses siempre se agrega)', async () => {
+      const qb = invoiceRepo.createQueryBuilder();
+      await service.findAll({});
+
+      expect(qb.leftJoin).toHaveBeenCalledWith('client.addresses', 'address', 'address.isPrimary = true');
+      expect(qb.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('sectorId'), expect.anything());
     });
   });
 
@@ -710,5 +762,53 @@ describe('InvoicingService', () => {
         'está pendiente de pago y aún no tiene una venta asociada',
       );
     });
+
+    it('utiliza la información de CompanyService cuando está disponible para el encabezado del PDF A4', async () => {
+      const mockCompanyService = {
+        getCompanyFiscalInfo: jest.fn().mockResolvedValue({
+          rnc: '132000000',
+          razonSocial: 'SUMTECH DEL CIBAO SRL',
+          nombreComercial: 'SUMTECH SANTIAGO',
+          direccion: 'Calle del Sol #10',
+          telefono: '809-580-0000',
+          correo: 'cibao@sumtech.do',
+        }),
+      };
+
+      (service as any).companyService = mockCompanyService;
+
+      const sale = {
+        id: 'sale-3',
+        client: { name: 'Cliente Santiago', docNumber: '031000000' },
+        user: { username: 'cajero1' },
+        details: [],
+        subtotal: 1000,
+        discountAmount: 0,
+        itbisTotal: 180,
+        grandTotal: 1180,
+      };
+      invoiceRepo.findOne.mockResolvedValue({
+        id: 'inv-3',
+        ncfNumber: 'E3100000002',
+        ncfType: 'E31',
+        sale,
+        issuedAt: new Date(),
+      });
+
+      const pdfGenerator = (service as any).pdfGenerator;
+      await service.generateInvoicePdf('inv-3');
+
+      expect(mockCompanyService.getCompanyFiscalInfo).toHaveBeenCalled();
+      expect(pdfGenerator.generateInvoiceA4Pdf).toHaveBeenCalledWith(
+        expect.objectContaining({
+          company: expect.objectContaining({
+            rnc: '132000000',
+            razonSocial: 'SUMTECH DEL CIBAO SRL',
+            nombreComercial: 'SUMTECH SANTIAGO',
+          }),
+        }),
+      );
+    });
   });
 });
+

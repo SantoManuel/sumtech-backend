@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsEnum, IsEmail, IsString, IsOptional, ValidateNested, IsNumber } from 'class-validator';
+import { IsNotEmpty, IsEnum, IsEmail, IsString, IsOptional, ValidateNested, IsNumber, IsUUID } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateAddressDto {
@@ -10,17 +10,37 @@ export class CreateAddressDto {
   @IsString()
   buildingNumber?: string;
 
-  @IsNotEmpty()
+  // sector/municipality/city como texto libre quedan opcionales: si se manda
+  // sectorId, ClientsService las resuelve automáticamente a partir del
+  // módulo de geografía. Siguen siendo obligatorias si no se manda sectorId
+  // (ClientsService.create() valida esto explícitamente).
+  @IsOptional()
   @IsString()
-  sector: string;
+  sector?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  municipality: string;
+  municipality?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  city: string;
+  city?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  countryId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  provinceId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  municipalityId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  sectorId?: string;
 
   @IsOptional()
   @IsNumber()

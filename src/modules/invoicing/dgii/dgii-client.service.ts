@@ -1,7 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import axios, { AxiosInstance } from 'axios';
 import { DgiiConfig, DEFAULT_DGII_CONFIG } from './dgii-config.interface';
 import { DgiiSignerService } from './dgii-signer.service';
+import { CompanyService } from '../../company/company.service';
 
 export interface DgiiSendResult {
   trackId: string;
@@ -30,14 +32,55 @@ export interface ConnectionDiagnosticResult {
 }
 
 @Injectable()
-export class DgiiClientService {
+export class DgiiClientService implements OnModuleInit {
   private readonly logger = new Logger(DgiiClientService.name);
   private config: DgiiConfig = { ...DEFAULT_DGII_CONFIG };
   private token: string | null = null;
   private tokenExpiresAt: Date | null = null;
 
-  constructor(private readonly signerService: DgiiSignerService) {
+  constructor(
+    private readonly signerService: DgiiSignerService,
+    @Optional() private readonly companyService?: CompanyService,
+  ) {
     this.initFromEnv();
+  }
+
+  async onModuleInit() {
+    if (this.companyService) {
+      try {
+        await this.syncFromCompanyService();
+      } catch (err: any) {
+        this.logger.warn(`No se pudo sincronizar configuración corporativa inicial: ${err.message}`);
+      }
+    }
+  }
+
+  @OnEvent('company.tenant.updated')
+  @OnEvent('company.tenant.default_changed')
+  async handleCompanyConfigChanged() {
+    await this.syncFromCompanyService();
+  }
+
+  public async syncFromCompanyService() {
+    if (!this.companyService) return;
+    try {
+      const fiscal = await this.companyService.getCompanyFiscalInfo();
+      this.config = {
+        ...this.config,
+        rncEmisor: fiscal.rnc || this.config.rncEmisor,
+        razonSocialEmisor: fiscal.razonSocial || this.config.razonSocialEmisor,
+        nombreComercial: fiscal.nombreComercial || this.config.nombreComercial,
+        direccionEmisor: fiscal.direccion || this.config.direccionEmisor,
+        municipioEmisor: fiscal.municipio || this.config.municipioEmisor,
+        provinciaEmisor: fiscal.provincia || this.config.provinciaEmisor,
+        correoEmisor: fiscal.correo || this.config.correoEmisor,
+        telefonoEmisor: fiscal.telefono || this.config.telefonoEmisor,
+        webSite: fiscal.website || this.config.webSite,
+      };
+      this.logger.log(`Configuración fiscal sincronizada desde BD para RNC: ${this.config.rncEmisor}`);
+    } catch (err: any) {
+      this.logger.warn(`Error al sincronizar datos fiscales desde CompanyService: ${err.message}`);
+    }
   }
 
   private initFromEnv() {
@@ -61,10 +104,27 @@ export class DgiiClientService {
     return { ...this.config };
   }
 
-  public updateConfig(newConfig: Partial<DgiiConfig>) {
+  public async updateConfig(newConfig: Partial<DgiiConfig>) {
     this.config = { ...this.config, ...newConfig };
     this.token = null;
     this.tokenExpiresAt = null;
+
+    if (this.companyService) {
+      try {
+        const defaultTenant = await this.companyService.getDefaultTenant();
+        await this.companyService.update(defaultTenant.id, {
+          rnc: newConfig.rncEmisor,
+          companyName: newConfig.razonSocialEmisor,
+          commercialName: newConfig.nombreComercial,
+          address: newConfig.direccionEmisor,
+          phone: newConfig.telefonoEmisor,
+          email: newConfig.correoEmisor,
+          website: newConfig.webSite,
+        });
+      } catch (err: any) {
+        this.logger.warn(`Error persistiendo datos fiscales en tenant_config: ${err.message}`);
+      }
+    }
   }
 
   /**

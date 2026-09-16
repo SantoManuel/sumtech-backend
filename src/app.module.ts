@@ -24,6 +24,8 @@ import { GeographyModule } from './modules/geography/geography.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { DailyClosuresModule } from './modules/daily-closures/daily-closures.module';
 import { NetworkModule } from './modules/network/network.module';
+import { GenieAcsModule } from './modules/genieacs/genieacs.module';
+import { CompanyModule } from './modules/company/company.module';
 
 @Module({
   imports: [
@@ -72,6 +74,8 @@ import { NetworkModule } from './modules/network/network.module';
     BillingModule,
     DailyClosuresModule,
     NetworkModule,
+    GenieAcsModule,
+    CompanyModule,
   ],
 })
 export class AppModule {}
