@@ -1,5 +1,9 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import * as bcrypt from 'bcrypt';
 import { AppDataSource } from '../../config/database.config';
+import { runGeographySeed } from './geography-seed';
 import { RoleEntity } from '../../modules/users/entities/role.entity';
 import { UserEntity } from '../../modules/users/entities/user.entity';
 import { AuditLogEntity } from '../../modules/users/entities/audit-log.entity';
@@ -39,7 +43,7 @@ export async function runInitialSeed() {
   }
 
   // 1. Crear esquemas multi-tenant / multi-esquema si no existen
-  console.log('📦 Verificando y creando esquemas PostgreSQL (sec, com, pos, inv, tickets, crm)...');
+  console.log('📦 Verificando y creando esquemas PostgreSQL (sec, com, pos, inv, tickets, crm, geo, net)...');
   await AppDataSource.query(`
     CREATE SCHEMA IF NOT EXISTS sec;
     CREATE SCHEMA IF NOT EXISTS com;
@@ -47,12 +51,17 @@ export async function runInitialSeed() {
     CREATE SCHEMA IF NOT EXISTS inv;
     CREATE SCHEMA IF NOT EXISTS tickets;
     CREATE SCHEMA IF NOT EXISTS crm;
+    CREATE SCHEMA IF NOT EXISTS geo;
+    CREATE SCHEMA IF NOT EXISTS net;
   `);
 
   // 2. Sincronizar automáticamente la estructura de tablas TypeORM
   console.log('⚙️  Sincronizando estructura relacional 3NF de tablas y claves foráneas...');
   await AppDataSource.synchronize();
   console.log('✅ Esquemas y tablas sincronizados exitosamente.');
+
+  // 2.5 Poblar catálogo de geografía nacional (República Dominicana)
+  await runGeographySeed();
 
   const roleRepo = AppDataSource.getRepository(RoleEntity);
   const userRepo = AppDataSource.getRepository(UserEntity);
@@ -500,11 +509,11 @@ export async function runInitialSeed() {
   // 15. FACTURAS ELECTRÓNICAS e-CF DGII (5 Registros en pos.invoices)
   // ----------------------------------------------------------------------------
   const invoicesData = [
-    { saleId: savedSales[0].id, ncfNumber: 'E3100000001', ncfType: 'E31' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881901', securityCode: 'A8B2C4', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=E3100000001' },
-    { saleId: savedSales[1].id, ncfNumber: 'B0100000001', ncfType: 'B01' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881902', securityCode: 'F9D3E1', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=B0100000001' },
-    { saleId: savedSales[2].id, ncfNumber: 'B0200000001', ncfType: 'B02' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881903', securityCode: 'C1E8A9', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=B0200000001' },
-    { saleId: savedSales[3].id, ncfNumber: 'E3100000002', ncfType: 'E31' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881904', securityCode: 'K7L4M2', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=E3100000002' },
-    { saleId: savedSales[4].id, ncfNumber: 'B0100000002', ncfType: 'B01' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881905', securityCode: 'P2Q5R8', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=B0100000002' },
+    { saleId: savedSales[0].id, clientId: savedSales[0].clientId, contractId: savedSales[0].contractId, ncfNumber: 'E3100000001', ncfType: 'E31' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881901', securityCode: 'A8B2C4', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=E3100000001' },
+    { saleId: savedSales[1].id, clientId: savedSales[1].clientId, contractId: savedSales[1].contractId, ncfNumber: 'B0100000001', ncfType: 'B01' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881902', securityCode: 'F9D3E1', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=B0100000001' },
+    { saleId: savedSales[2].id, clientId: savedSales[2].clientId, contractId: savedSales[2].contractId, ncfNumber: 'B0200000001', ncfType: 'B02' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881903', securityCode: 'C1E8A9', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=B0200000001' },
+    { saleId: savedSales[3].id, clientId: savedSales[3].clientId, contractId: savedSales[3].contractId, ncfNumber: 'E3100000002', ncfType: 'E31' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881904', securityCode: 'K7L4M2', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=E3100000002' },
+    { saleId: savedSales[4].id, clientId: savedSales[4].clientId, contractId: savedSales[4].contractId, ncfNumber: 'B0100000002', ncfType: 'B01' as const, dgiiStatus: 'ACCEPTED' as const, dgiiTrackId: 'TRK-DGII-881905', securityCode: 'P2Q5R8', qrCodeContent: 'https://ecf.dgii.gov.do/consulta?encf=B0100000002' },
   ];
   for (const inv of invoicesData) {
     let invoice = await invoiceRepo.findOneBy({ ncfNumber: inv.ncfNumber });

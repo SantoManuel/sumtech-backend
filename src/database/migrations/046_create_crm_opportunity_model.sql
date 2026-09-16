@@ -66,7 +66,14 @@ ON CONFLICT ("name") DO NOTHING;
 
 -- 2. crm.leads -> crm.opportunities ------------------------------------------
 
-ALTER TABLE "crm"."leads" RENAME TO "opportunities";
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables 
+    WHERE table_schema = 'crm' AND table_name = 'leads'
+  ) THEN
+    ALTER TABLE "crm"."leads" RENAME TO "opportunities";
+  END IF;
+END $$;
 
 ALTER TABLE "crm"."opportunities"
     ADD COLUMN IF NOT EXISTS "client_id" UUID REFERENCES "com"."clients"("id") ON DELETE SET NULL,
@@ -81,28 +88,31 @@ ALTER TABLE "crm"."opportunities"
     ADD COLUMN IF NOT EXISTS "first_contact_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     ADD COLUMN IF NOT EXISTS "last_updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
 
--- Backfill: mapea el status viejo (enum) al nuevo catálogo por código.
-UPDATE "crm"."opportunities" o
-SET "subscription_status_id" = s."id"
-FROM "crm"."subscription_statuses" s
-WHERE o."subscription_status_id" IS NULL
-    AND s."code" = CASE o."status"
-        WHEN 'NEW' THEN 'PROSPECTO'
-        WHEN 'CONTACTED' THEN 'EN_NEGOCIACION'
-        WHEN 'QUALIFIED' THEN 'EN_NEGOCIACION'
-        WHEN 'CONVERTED' THEN 'SUSCRIPCION_ACTIVA'
-        WHEN 'DISCARDED' THEN 'PERDIDA'
-    END;
+-- Backfill: mapea el status viejo (enum) al nuevo catálogo por código si existía la columna
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_schema = 'crm' AND table_name = 'opportunities' AND column_name = 'status'
+  ) THEN
+    EXECUTE '
+      UPDATE "crm"."opportunities" o
+      SET "subscription_status_id" = s."id"
+      FROM "crm"."subscription_statuses" s
+      WHERE o."subscription_status_id" IS NULL
+          AND s."code" = CASE o."status"
+              WHEN ''NEW'' THEN ''PROSPECTO''
+              WHEN ''CONTACTED'' THEN ''EN_NEGOCIACION''
+              WHEN ''QUALIFIED'' THEN ''EN_NEGOCIACION''
+              WHEN ''CONVERTED'' THEN ''SUSCRIPCION_ACTIVA''
+              WHEN ''DISCARDED'' THEN ''PERDIDA''
+          END;
 
--- Los DISCARDED migrados quedan con un motivo de pérdida genérico (no había
--- captura de motivo en el modelo viejo).
-UPDATE "crm"."opportunities" o
-SET "loss_reason_id" = (SELECT "id" FROM "crm"."loss_reasons" WHERE "name" = 'Otro' LIMIT 1)
-WHERE o."status" = 'DISCARDED' AND o."loss_reason_id" IS NULL;
-
--- NOTA: los leads ya CONVERTED no se pueden enlazar retroactivamente a su
--- Client real — ese vínculo nunca existió en el modelo viejo. client_id queda
--- NULL para esos registros históricos.
+      UPDATE "crm"."opportunities" o
+      SET "loss_reason_id" = (SELECT "id" FROM "crm"."loss_reasons" WHERE "name" = ''Otro'' LIMIT 1)
+      WHERE o."status" = ''DISCARDED'' AND o."loss_reason_id" IS NULL;
+    ';
+  END IF;
+END $$;
 
 ALTER TABLE "crm"."opportunities" ALTER COLUMN "subscription_status_id" SET NOT NULL;
 

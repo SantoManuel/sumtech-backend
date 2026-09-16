@@ -17,7 +17,19 @@ export async function applyMigrations() {
     if (!AppDataSource.isInitialized) {
       await AppDataSource.initialize();
     }
-    console.log('✅ Base de datos conectada.');
+    await AppDataSource.query(`SET client_encoding = 'UTF8';`);
+    // Asegurar que existan todos los esquemas del modelo multi-esquema de Sumtech
+    console.log('📦 Verificando y creando esquemas PostgreSQL si no existen...');
+    await AppDataSource.query(`
+      CREATE SCHEMA IF NOT EXISTS "sec";
+      CREATE SCHEMA IF NOT EXISTS "com";
+      CREATE SCHEMA IF NOT EXISTS "pos";
+      CREATE SCHEMA IF NOT EXISTS "inv";
+      CREATE SCHEMA IF NOT EXISTS "tickets";
+      CREATE SCHEMA IF NOT EXISTS "crm";
+      CREATE SCHEMA IF NOT EXISTS "geo";
+      CREATE SCHEMA IF NOT EXISTS "net";
+    `);
 
     await AppDataSource.query(`
       CREATE TABLE IF NOT EXISTS "sec"."schema_migrations" (
@@ -25,6 +37,18 @@ export async function applyMigrations() {
         "applied_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
       );
     `);
+
+    // Si la base de datos está vacía (sin tablas base en sec), inicializar estructura de entidades
+    const baseTables = await AppDataSource.query(`
+      SELECT table_name FROM information_schema.tables 
+      WHERE table_schema = 'sec' AND table_name != 'schema_migrations';
+    `);
+
+    if (baseTables.length === 0) {
+      console.log('⚙️  Base de datos vacía detectada: sincronizando estructura inicial de tablas...');
+      await AppDataSource.synchronize();
+      console.log('✅ Tablas base inicializadas exitosamente.');
+    }
 
     const migrationsDir = path.join(__dirname, 'migrations');
     const files = fs.readdirSync(migrationsDir)
@@ -39,7 +63,10 @@ export async function applyMigrations() {
 
     for (const file of pending) {
       const filePath = path.join(migrationsDir, file);
-      const sql = fs.readFileSync(filePath, 'utf8');
+      let sql = fs.readFileSync(filePath, 'utf8');
+      // Remover comentarios SQL para evitar rechazo de codificación (WIN1252 vs UTF-8) en Windows
+      sql = sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*$/gm, '');
+
       console.log(`➡️  Ejecutando migración: ${file}...`);
       await AppDataSource.query(sql);
       await AppDataSource.query(`INSERT INTO "sec"."schema_migrations" ("filename") VALUES ($1)`, [file]);

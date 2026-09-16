@@ -58,6 +58,11 @@ ALTER TABLE "inv"."warehouses"
     ADD COLUMN IF NOT EXISTS "gps_latitude" DECIMAL(10, 7),
     ADD COLUMN IF NOT EXISTS "gps_longitude" DECIMAL(10, 7);
 
+-- Asegurar índices únicos para soportar ON CONFLICT en sincronización previa
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_provinces_country_name" ON "geo"."provinces" ("country_id", "name");
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_municipalities_province_name" ON "geo"."municipalities" ("province_id", "name");
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_sectors_municipality_name" ON "geo"."sectors" ("municipality_id", "name");
+
 -- 6. Semillas Geográficas Iniciales (República Dominicana)
 DO $$
 DECLARE

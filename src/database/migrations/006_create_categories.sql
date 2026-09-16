@@ -53,9 +53,18 @@ DO $$ BEGIN
     REFERENCES "inv"."categories"("id") ON DELETE RESTRICT;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-UPDATE "inv"."products" p
-SET "category_id" = c."id"
-FROM "inv"."categories" c
-WHERE p."category_id" IS NULL AND c."code" = p."category"::TEXT;
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_schema = 'inv' AND table_name = 'products' AND column_name = 'category'
+  ) THEN
+    EXECUTE '
+      UPDATE "inv"."products" p
+      SET "category_id" = c."id"
+      FROM "inv"."categories" c
+      WHERE p."category_id" IS NULL AND c."code" = p."category"::TEXT;
+    ';
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS "idx_products_category" ON "inv"."products" ("category_id");

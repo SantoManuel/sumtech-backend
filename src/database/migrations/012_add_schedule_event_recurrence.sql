@@ -37,4 +37,5 @@ SELECT
 WHERE NOT EXISTS (
   SELECT 1 FROM "tickets"."schedule_events" 
   WHERE "is_recurring" = TRUE AND "recurrence_type" = 'MONTHLY_DAY' AND "recurrence_day" = 25
-);
+)
+AND EXISTS (SELECT 1 FROM "sec"."users");

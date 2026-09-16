@@ -7,4 +7,12 @@
 -- Esquema: crm.leads
 -- ==============================================================================
 
-ALTER TYPE "crm"."leads_source_enum" ADD VALUE IF NOT EXISTS 'WEB_CHATBOT';
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_type t 
+    JOIN pg_namespace n ON n.oid = t.typnamespace 
+    WHERE n.nspname = 'crm' AND t.typname = 'leads_source_enum'
+  ) THEN
+    ALTER TYPE "crm"."leads_source_enum" ADD VALUE IF NOT EXISTS 'WEB_CHATBOT';
+  END IF;
+END $$;
