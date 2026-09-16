@@ -127,4 +127,106 @@ describe('TicketsService — geolocalización obligatoria al resolver instalaci�
       service.updateStatus('ticket-1', 'user-1', { status: 'RESOLVED', latitude: 1, longitude: 1 }),
     ).rejects.toThrow(BadRequestException);
   });
+
+  describe('pivotSchedule', () => {
+    // Regresión: la condición original usaba "ticket.scheduledStart::date =
+    // :sourceDate" — TypeORM no traduce alias.propiedad -> columna real
+    // cuando el cast "::date" queda pegado sin espacio, así que Postgres
+    // recibía el identificador sin comillas ("scheduledstart", minúsculas) y
+    // fallaba con "column ticket.scheduledstart does not exist" (500 real,
+    // reproducido contra la BD — un mock nunca lo habría detectado). El
+    // fix envuelve la columna en DATE(...) en vez del sufijo "::date".
+    let queryBuilder: any;
+
+    const pivotTicket = (overrides: Partial<TicketEntity> = {}): any => ({
+      id: 'ticket-1',
+      status: 'OPEN',
+      scheduledStart: new Date('2026-09-15T16:59:00.000Z'),
+      assignedEmployeeId: 'tech-1',
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      queryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      };
+      ticketRepo.createQueryBuilder = jest.fn().mockReturnValue(queryBuilder);
+    });
+
+    it('usa DATE(ticket.scheduledStart) en vez de "::date" al filtrar por fecha origen', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.pivotSchedule({ sourceDate: '2026-09-15', targetDate: '2026-09-20' } as any, 'user-1');
+
+      expect(queryBuilder.where).toHaveBeenCalledWith('DATE(ticket.scheduledStart) = :sourceDate', {
+        sourceDate: '2026-09-15',
+      });
+    });
+
+    it('filtra por ticketIds en vez de sourceDate cuando se proveen', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.pivotSchedule(
+        { ticketIds: ['ticket-1'], sourceDate: '2026-09-15', targetDate: '2026-09-20' } as any,
+        'user-1',
+      );
+
+      expect(queryBuilder.where).toHaveBeenCalledWith('ticket.id IN (:...ticketIds)', { ticketIds: ['ticket-1'] });
+    });
+
+    it('agrega el filtro de técnicos con andWhere cuando se proveen technicianIds', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.pivotSchedule(
+        { sourceDate: '2026-09-15', targetDate: '2026-09-20', technicianIds: ['tech-1'] } as any,
+        'user-1',
+      );
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('ticket.assignedEmployeeId IN (:...technicianIds)', {
+        technicianIds: ['tech-1'],
+      });
+    });
+
+    it('mueve los tickets encontrados a la fecha destino preservando la hora original y registra el historial', async () => {
+      const ticket = pivotTicket();
+      queryBuilder.getMany.mockResolvedValue([ticket]);
+      ticketRepo.save.mockImplementation((entity: any) => Promise.resolve(entity));
+
+      const result = await service.pivotSchedule(
+        { sourceDate: '2026-09-15', targetDate: '2026-09-20', reason: 'Ajuste de agenda' } as any,
+        'user-1',
+      );
+
+      expect(result.count).toBe(1);
+      // El servicio construye la fecha destino con componentes locales
+      // (new Date(year, month-1, day, hours, minutes)) — se comparan
+      // getters locales, no UTC, para no depender de la zona horaria de
+      // quien ejecute la prueba.
+      expect(ticket.scheduledStart.getFullYear()).toBe(2026);
+      expect(ticket.scheduledStart.getMonth()).toBe(8); // Septiembre (0-index)
+      expect(ticket.scheduledStart.getDate()).toBe(20);
+      expect(historyRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ticketId: 'ticket-1',
+          note: expect.stringContaining('GANTT PIVOT'),
+        }),
+      );
+    });
+
+    it('no mueve nada ni escribe historial si no hay tickets para la fecha origen', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      const result = await service.pivotSchedule(
+        { sourceDate: '2026-09-15', targetDate: '2026-09-20' } as any,
+        'user-1',
+      );
+
+      expect(result).toEqual({ count: 0, movedTickets: [] });
+      expect(ticketRepo.save).not.toHaveBeenCalled();
+      expect(historyRepo.save).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -400,7 +400,12 @@ export class TicketsService {
     if (dto.ticketIds && dto.ticketIds.length > 0) {
       query.where('ticket.id IN (:...ticketIds)', { ticketIds: dto.ticketIds });
     } else {
-      query.where("ticket.scheduledStart::date = :sourceDate", { sourceDate: dto.sourceDate });
+      // DATE(...) en vez de "ticket.scheduledStart::date": el reemplazo de
+      // alias.propiedad -> columna real de TypeORM en condiciones crudas no
+      // reconoce el límite cuando "::date" queda pegado al nombre, y el
+      // identificador sin comillas llega a Postgres en minúsculas
+      // ("scheduledstart"), que no existe (la columna real es snake_case).
+      query.where('DATE(ticket.scheduledStart) = :sourceDate', { sourceDate: dto.sourceDate });
     }
 
     if (dto.technicianIds && dto.technicianIds.length > 0) {
