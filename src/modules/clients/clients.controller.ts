@@ -1,11 +1,13 @@
 import { Controller, Get, Post, Patch, Body, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ClientsService } from './clients.service';
+import { ClientsExportService } from './export/clients-export.service';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
 import { FindContractsDto } from './dto/find-contracts.dto';
 import { FilterClientDto } from './dto/filter-client.dto';
+import { ExportClientsDto } from './dto/export-clients.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { AuthGuard } from '../../common/guards/auth.guard';
@@ -21,6 +23,7 @@ const SIGNATURE_ROLES = [Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.AGENTE_CRM,
 export class ClientsController {
   constructor(
     private readonly clientsService: ClientsService,
+    private readonly clientsExportService: ClientsExportService,
     private readonly contractSignaturesService: ContractSignaturesService,
   ) {}
 
@@ -36,6 +39,25 @@ export class ClientsController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.AGENTE_CRM)
   async findAllContracts(@Query() dto: FindContractsDto) {
     return this.clientsService.findAllContracts(dto);
+  }
+
+  // Debe declararse antes de ':id' — mismo motivo que 'contracts' arriba.
+  @Get('export')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async exportClients(
+    @Query() dto: ExportClientsDto,
+    @CurrentUser('sub') userId: string,
+    @CurrentUser('username') username: string,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const result = await this.clientsExportService.export(dto, userId, username, req.ip);
+    res.set({
+      'Content-Type': result.contentType,
+      'Content-Disposition': `attachment; filename="${result.filename}"`,
+      'Content-Length': result.buffer.length,
+    });
+    res.end(result.buffer);
   }
 
   @Get(':id')

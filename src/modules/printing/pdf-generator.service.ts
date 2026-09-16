@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as PDFDocument from 'pdfkit';
 import * as QRCode from 'qrcode';
 import { CONTRACT_CLAUSES_PLACEHOLDER } from './contract-clauses.constant';
-import { CompanyPdfInfo, ContractPdfData, InvoiceReceiptMetadata } from './pdf-generator.types';
+import { ClientsListPdfData, CompanyPdfInfo, ContractPdfData, InvoiceReceiptMetadata } from './pdf-generator.types';
 
 const NCF_TYPE_LABELS: Record<string, string> = {
   E31: 'FACTURA DE CRÉDITO FISCAL ELECTRÓNICA',
@@ -529,5 +529,121 @@ export class PdfGeneratorService {
         width: 200,
         align: 'center',
       });
+  }
+
+  /**
+   * Listado tabular de clientes en A4 horizontal, para el export desde
+   * /dashboard/clientes (solo ADMIN/GERENTE). Solo muestra un subconjunto de
+   * 8 columnas legibles en una hoja impresa — el detalle completo de 19
+   * columnas vive en los formatos Excel/CSV, pensados para procesamiento.
+   * `bufferPages: true` permite numerar "Página X de Y" al final, una vez que
+   * se sabe cuántas páginas generó el contenido.
+   */
+  async generateClientsListPdf(data: ClientsListPdfData): Promise<Buffer> {
+    const doc = new (PDFDocument as any)({
+      size: 'A4',
+      layout: 'landscape',
+      margin: 30,
+      compress: false,
+      bufferPages: true,
+    }) as PDFKit.PDFDocument;
+    const marginX = 30;
+    const contentWidth = doc.page.width - marginX * 2;
+    const bottomLimit = doc.page.height - 45;
+
+    const columns: Array<{ key: keyof ClientsListPdfData['rows'][number]; label: string; width: number }> = [
+      { key: 'nombre', label: 'Cliente', width: 148 },
+      { key: 'documento', label: 'Documento', width: 108 },
+      { key: 'telefono', label: 'Teléfono', width: 72 },
+      { key: 'ubicacion', label: 'Ubicación', width: 128 },
+      { key: 'planActivo', label: 'Plan Activo', width: 98 },
+      { key: 'estadoContrato', label: 'Estado Contrato', width: 82 },
+      { key: 'estadoCliente', label: 'Estado Cliente', width: 68 },
+      { key: 'fechaAlta', label: 'Fecha Alta', width: 66 },
+    ];
+
+    const drawPageHeader = (): number => {
+      const top = 30;
+      this.drawCompanyHeader(doc, data.company, marginX, top, 320);
+
+      const rightX = marginX + 330;
+      const rightWidth = contentWidth - 330;
+      doc.font('Helvetica-Bold').fontSize(13).text('LISTADO DE CLIENTES', rightX, top, { width: rightWidth, align: 'right' });
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .text(`Generado: ${formatDateTime(data.generatedAt)}`, rightX, top + 20, { width: rightWidth, align: 'right' });
+      doc.text(`Por: ${data.generatedByUsername}`, rightX, top + 32, { width: rightWidth, align: 'right' });
+      doc.text(`Total exportado: ${data.totalExportado}`, rightX, top + 44, { width: rightWidth, align: 'right' });
+      doc
+        .font('Helvetica-Oblique')
+        .fontSize(7.5)
+        .text(`Filtros: ${data.filtersSummary}`, rightX, top + 58, { width: rightWidth, align: 'right' });
+
+      return this.drawTableHeaderRow(doc, columns, marginX, top + 90, contentWidth);
+    };
+
+    let rowY = drawPageHeader();
+    doc.font('Helvetica').fontSize(7.5).fillColor('#000000');
+
+    data.rows.forEach((row) => {
+      const nombreHeight = doc.heightOfString(row.nombre || '', { width: columns[0].width - 8 });
+      const rowHeight = Math.max(14, nombreHeight + 6);
+
+      if (rowY + rowHeight > bottomLimit) {
+        doc.addPage();
+        rowY = drawPageHeader();
+        doc.font('Helvetica').fontSize(7.5).fillColor('#000000');
+      }
+
+      let colX = marginX;
+      columns.forEach((col) => {
+        doc.text(String(row[col.key] ?? ''), colX + 4, rowY + 4, { width: col.width - 8 });
+        colX += col.width;
+      });
+      doc
+        .moveTo(marginX, rowY + rowHeight)
+        .lineTo(marginX + contentWidth, rowY + rowHeight)
+        .strokeColor('#e2e8f0')
+        .stroke();
+      rowY += rowHeight;
+    });
+
+    if (data.rows.length === 0) {
+      doc.font('Helvetica-Oblique').fontSize(9).text('No se encontraron clientes con los filtros aplicados.', marginX, rowY + 10);
+    }
+
+    const pageRange = doc.bufferedPageRange();
+    for (let i = pageRange.start; i < pageRange.start + pageRange.count; i++) {
+      doc.switchToPage(i);
+      doc
+        .font('Helvetica')
+        .fontSize(7.5)
+        .fillColor('#64748b')
+        .text(`Página ${i + 1} de ${pageRange.count}`, marginX, doc.page.height - 30, {
+          width: contentWidth,
+          align: 'center',
+        });
+    }
+
+    return this.streamToBuffer(doc);
+  }
+
+  private drawTableHeaderRow(
+    doc: PDFKit.PDFDocument,
+    columns: Array<{ label: string; width: number }>,
+    marginX: number,
+    y: number,
+    contentWidth: number,
+  ): number {
+    doc.rect(marginX, y, contentWidth, 18).fill('#1e293b');
+    doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8);
+    let colX = marginX;
+    columns.forEach((col) => {
+      doc.text(col.label, colX + 4, y + 5, { width: col.width - 8 });
+      colX += col.width;
+    });
+    doc.fillColor('#000000');
+    return y + 18;
   }
 }
