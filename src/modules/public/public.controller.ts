@@ -31,7 +31,11 @@ export class PublicController {
     return this.publicService.getFeaturedPlans();
   }
 
+  // Formulario "Solicitar Instalación" del landing — mismo patrón de rate
+  // limit que el resto de los endpoints públicos de este controller.
   @Post('leads')
+  @UseGuards(SpanishThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 3_600_000 } })
   async createLead(@Body() dto: RequestLeadDto) {
     return this.publicService.createLead(dto);
   }

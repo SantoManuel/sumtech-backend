@@ -20,4 +20,12 @@ export class RequestLeadDto {
   @IsNotEmpty({ message: 'El sector o dirección es requerido' })
   @IsString()
   sector: string;
+
+  @IsOptional()
+  @IsString()
+  planInteres?: string;
+
+  @IsOptional()
+  @IsString()
+  folio?: string;
 }

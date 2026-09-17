@@ -19,13 +19,17 @@ export class PublicService {
   }
 
   async createLead(dto: RequestLeadDto) {
+    const notesParts = [`Sector de interés: ${dto.sector}`];
+    if (dto.planInteres) notesParts.push(`Plan de interés: ${dto.planInteres}`);
+    if (dto.folio) notesParts.push(`Folio web: ${dto.folio}`);
+
     const opportunity = await this.crmService.create({
       name: dto.name,
       phone: dto.phone,
       email: dto.email,
       planId: dto.planId,
       source: 'WEB_LANDING',
-      notes: `Sector de interés: ${dto.sector}`,
+      notes: notesParts.join(' | '),
     });
 
     return {
