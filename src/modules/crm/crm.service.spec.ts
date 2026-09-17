@@ -101,7 +101,7 @@ describe('CrmService', () => {
       addContract: jest.fn(),
     };
     aiChatbotClient = {
-      getConversationByPhone: jest.fn(),
+      getConversationByExternalId: jest.fn(),
     };
     stateHistoryRepo = {
       create: jest.fn((dto: any) => dto),
@@ -667,6 +667,46 @@ describe('CrmService', () => {
       const result = await service.getSatisfactionSurveys();
 
       expect(result.averageRating).toBe(0);
+    });
+  });
+
+  describe('getOpportunityConversation', () => {
+    it('encuentra la conversación de WhatsApp por teléfono normalizado (no consulta por id)', async () => {
+      const opportunity = baseOpportunity({ id: 'opp-1', phone: '(809) 555-1234' });
+      opportunityRepo.findOne.mockResolvedValue(opportunity);
+      const conversation = { id: 'conv-1', channel: 'WHATSAPP', externalId: '8095551234', status: 'ACTIVE', messages: [] };
+      aiChatbotClient.getConversationByExternalId.mockResolvedValueOnce(conversation);
+
+      const result = await service.getOpportunityConversation('opp-1');
+
+      expect(aiChatbotClient.getConversationByExternalId).toHaveBeenCalledWith('8095551234');
+      expect(aiChatbotClient.getConversationByExternalId).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ found: true, conversation });
+    });
+
+    it('cuando no hay nada por teléfono, cae al id de la oportunidad (leads del widget de la landing, source WEB_CHATBOT)', async () => {
+      const opportunity = baseOpportunity({ id: 'opp-1', phone: '8296602733' });
+      opportunityRepo.findOne.mockResolvedValue(opportunity);
+      const conversation = { id: 'conv-2', channel: 'WEB', externalId: 'opp-1', status: 'ACTIVE', messages: [] };
+      aiChatbotClient.getConversationByExternalId
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(conversation);
+
+      const result = await service.getOpportunityConversation('opp-1');
+
+      expect(aiChatbotClient.getConversationByExternalId).toHaveBeenNthCalledWith(1, '8296602733');
+      expect(aiChatbotClient.getConversationByExternalId).toHaveBeenNthCalledWith(2, 'opp-1');
+      expect(result).toEqual({ found: true, conversation });
+    });
+
+    it('devuelve found:false si no hay conversación ni por teléfono ni por id', async () => {
+      const opportunity = baseOpportunity({ id: 'opp-1', phone: '8095551234' });
+      opportunityRepo.findOne.mockResolvedValue(opportunity);
+      aiChatbotClient.getConversationByExternalId.mockResolvedValue(null);
+
+      const result = await service.getOpportunityConversation('opp-1');
+
+      expect(result).toEqual({ found: false, conversation: null });
     });
   });
 });

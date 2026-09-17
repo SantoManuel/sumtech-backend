@@ -445,16 +445,21 @@ export class CrmService {
   }
 
   /**
-   * Trae la conversación de WhatsApp de la oportunidad con el bot/agente,
-   * tabulada para /dashboard/crm — vive en el proyecto separado
-   * `Chatbot_sumtech`, no en este backend. `externalId` allá se guarda solo
-   * con dígitos (sin "+" ni sufijos de WhatsApp), así que se normaliza el
-   * teléfono antes de pedirla.
+   * Trae la conversación de la oportunidad con el bot/agente, tabulada para
+   * /dashboard/crm — vive en el proyecto separado `Chatbot_sumtech`, no en
+   * este backend. El `externalId` con el que se indexó allá depende del
+   * canal: los leads de WhatsApp se guardan por teléfono (solo dígitos), pero
+   * los que llegan por el widget de chat de la landing page (source
+   * WEB_CHATBOT) se guardan por el `id` de esta misma Opportunity, porque así
+   * lo envía `PublicChatService.sendMessage` como `sessionId`. Se prueba
+   * primero por teléfono (caso más común) y si no hay nada se cae al id.
    */
   async getOpportunityConversation(id: string): Promise<{ found: boolean; conversation: AiChatbotConversation | null }> {
     const opportunity = await this.findById(id);
     const normalizedPhone = opportunity.phone.replace(/\D/g, '');
-    const conversation = await this.aiChatbotClient.getConversationByPhone(normalizedPhone);
+    const conversation =
+      (await this.aiChatbotClient.getConversationByExternalId(normalizedPhone)) ||
+      (await this.aiChatbotClient.getConversationByExternalId(opportunity.id));
     return { found: !!conversation, conversation };
   }
 

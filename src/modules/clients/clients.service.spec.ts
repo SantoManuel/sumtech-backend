@@ -111,7 +111,7 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
     };
     aiChatbotClient = {
       sendWhatsAppMessage: jest.fn().mockResolvedValue(true),
-      getConversationByPhone: jest.fn(),
+      getConversationByExternalId: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({

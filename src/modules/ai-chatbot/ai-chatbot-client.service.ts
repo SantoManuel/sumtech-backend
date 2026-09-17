@@ -87,22 +87,25 @@ export class AiChatbotClientService {
   }
 
   /**
-   * Trae el hilo completo de la conversación más reciente de un teléfono —
-   * usado por el CRM del ERP para tabular la charla del lead con el
-   * bot/agente. `externalId` en Chatbot_sumtech se guarda solo con dígitos
-   * (sin "+" ni sufijos de WhatsApp); el llamador debe normalizar el teléfono
-   * antes de invocar este método. Devuelve `null` si no hay conversación
-   * registrada (404), en vez de lanzar — es un caso esperado, no un error.
+   * Trae el hilo completo de la conversación más reciente asociada a un
+   * `externalId` de Chatbot_sumtech — usado por el CRM del ERP para tabular
+   * la charla del lead con el bot/agente. Qué es el `externalId` depende del
+   * canal por el que llegó el lead: para WhatsApp es el teléfono (solo
+   * dígitos, sin "+" ni sufijos); para el widget de chat de la landing page
+   * (`source: WEB_CHATBOT`) es el `id` de la Opportunity, porque así lo envía
+   * `PublicChatService.sendMessage` como `sessionId`. Devuelve `null` si no
+   * hay conversación registrada (404), en vez de lanzar — es un caso
+   * esperado, no un error.
    */
-  async getConversationByPhone(phone: string): Promise<AiChatbotConversation | null> {
+  async getConversationByExternalId(externalId: string): Promise<AiChatbotConversation | null> {
     try {
-      const { data } = await this.http.get<AiChatbotConversation>(`/admin/conversations/by-external-id/${phone}`);
+      const { data } = await this.http.get<AiChatbotConversation>(`/admin/conversations/by-external-id/${externalId}`);
       return data;
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.status === 404) {
         return null;
       }
-      this.logger.warn(`No se pudo obtener la conversación de ${phone}: ${(err as Error).message}`);
+      this.logger.warn(`No se pudo obtener la conversación de ${externalId}: ${(err as Error).message}`);
       return null;
     }
   }
