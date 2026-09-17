@@ -1,6 +1,8 @@
-import { Controller, Get, Post, Body, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, UseGuards, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { DgiiCertificationService, TestCaseItem } from './dgii-certification.service';
 import { DgiiClientService } from './dgii-client.service';
+import { DgiiTestSetImportService } from './dgii-testset-import.service';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { Role } from '../../../common/enums/role.enum';
 import { AuthGuard } from '../../../common/guards/auth.guard';
@@ -12,6 +14,7 @@ export class DgiiCertificationController {
   constructor(
     private readonly certService: DgiiCertificationService,
     private readonly dgiiClient: DgiiClientService,
+    private readonly testSetImportService: DgiiTestSetImportService,
   ) {}
 
   @Get('config')
@@ -54,6 +57,38 @@ export class DgiiCertificationController {
     return this.certService.getDefaultTestSetCases();
   }
 
+  /**
+   * Historial auditable de corridas de certificación (persistido en
+   * `dgii_certification_runs`) — sobrevive a un recargo de pantalla, a
+   * diferencia de los casos en memoria de arriba.
+   */
+  @Get('certification/history')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getCertificationHistory(@Query('page') page?: string, @Query('limit') limit?: string) {
+    return this.certService.getCertificationHistory(
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 20,
+    );
+  }
+
+  /**
+   * Importa el set de pruebas oficial que la DGII asigna y entrega por RNC
+   * para la certificación (.xlsx descargado de su portal, hojas "ECF" y
+   * "RFCE") — reemplaza los casos de demostración hardcodeados por los
+   * e-NCF/tipo/monto reales que la DGII prescribió para esta ronda.
+   */
+  @Post('certification/import-testset')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  @UseInterceptors(FileInterceptor('file'))
+  async importTestSet(@UploadedFile() file: Express.Multer.File) {
+    if (!file || !file.buffer) {
+      throw new BadRequestException('Debes adjuntar el archivo .xlsx del set de pruebas de la DGII.');
+    }
+    const imported = await this.testSetImportService.parseWorkbook(file.buffer);
+    const cases = this.certService.buildTestCasesFromImport(imported);
+    return { totalEcf: imported.ecfRows.length, totalRfce: imported.rfceRows.length, cases };
+  }
+
   @Post('certification/run-case')
   @Roles(Role.ADMIN)
   async runTestCase(@Body() caseItem: TestCaseItem) {
@@ -83,9 +118,19 @@ export class DgiiCertificationController {
   @Post('certification/acecf')
   @Roles(Role.ADMIN, Role.GERENTE)
   async submitCommercialApproval(
-    @Body() dto: { rncEmisorProveedor: string; eNcf: string; estadoAprobacion: 1 | 2; comentario?: string },
+    @Body() dto: {
+      rncEmisorProveedor: string;
+      eNcf: string;
+      fechaEmisionEcf: string;
+      montoTotalEcf: number;
+      estadoAprobacion: 1 | 2;
+      comentario?: string;
+    },
   ) {
-    return this.certService.runCommercialApproval(dto);
+    return this.certService.runCommercialApproval({
+      ...dto,
+      fechaEmisionEcf: new Date(dto.fechaEmisionEcf),
+    });
   }
 
   @Post('certification/anecf')

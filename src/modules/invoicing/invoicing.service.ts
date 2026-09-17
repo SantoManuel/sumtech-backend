@@ -210,6 +210,7 @@ export class InvoicingService {
       rawXml,
       ncfNumber,
       Number(sale.grandTotal),
+      ncfType,
       sale.client?.docNumber,
     );
 

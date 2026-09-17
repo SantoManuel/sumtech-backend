@@ -1,8 +1,14 @@
 import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import axios, { AxiosInstance } from 'axios';
+import * as https from 'https';
 import { DgiiConfig, DEFAULT_DGII_CONFIG } from './dgii-config.interface';
 import { DgiiSignerService } from './dgii-signer.service';
+import { DgiiXsdValidatorService } from './dgii-xsd-validator.service';
+import { ecfTipoDoc } from './dgii-xml-generator.service';
+import { DgiiCertificationRun } from './entities/dgii-certification-run.entity';
 import { CompanyService } from '../../company/company.service';
 
 export interface DgiiSendResult {
@@ -13,6 +19,7 @@ export interface DgiiSendResult {
   responseMessage: string;
   timestamp: Date;
   signedXml: string;
+  validationErrors?: string[];
 }
 
 export interface ConnectionDiagnosticResult {
@@ -40,6 +47,9 @@ export class DgiiClientService implements OnModuleInit {
 
   constructor(
     private readonly signerService: DgiiSignerService,
+    private readonly xsdValidator: DgiiXsdValidatorService,
+    @InjectRepository(DgiiCertificationRun)
+    private readonly runRepository: Repository<DgiiCertificationRun>,
     @Optional() private readonly companyService?: CompanyService,
   ) {
     this.initFromEnv();
@@ -128,11 +138,25 @@ export class DgiiClientService implements OnModuleInit {
   }
 
   /**
-   * Obtiene un cliente Axios preconfigurado
+   * Obtiene un cliente Axios preconfigurado. `baseUrlOverride` se usa para
+   * RFCE, que la DGII expone en un host distinto (`fc.dgii.gov.do`,
+   * `config.baseUrlRfce`) aunque reutiliza el mismo token Bearer emitido
+   * contra el host principal.
    */
-  private getHttpClient(): AxiosInstance {
-    let baseUrl = this.config.baseUrl;
+  private getHttpClient(baseUrlOverride?: string): AxiosInstance {
+    let baseUrl = baseUrlOverride || this.config.baseUrl;
     if (!baseUrl.endsWith('/')) baseUrl += '/';
+
+    // Aplica SOLO a este cliente HTTP hacia la DGII (nunca globalmente): un
+    // proveedor certificado de referencia (TarbiatAdmin.Dgii) desactiva la
+    // validación del certificado TLS del servidor de la DGII en dos
+    // transportes independientes, señal de un problema real de cadena de
+    // certificados del lado de la DGII. Se deja apagado por defecto — solo se
+    // activa explícitamente si un envío real revienta por TLS.
+    const insecure = process.env.DGII_TLS_INSECURE === 'true';
+    if (insecure) {
+      this.logger.warn('DGII_TLS_INSECURE=true: validación del certificado TLS de la DGII desactivada para este cliente. Usar solo si un envío real falla por la cadena de certificados de la DGII.');
+    }
 
     return axios.create({
       baseURL: baseUrl,
@@ -141,6 +165,7 @@ export class DgiiClientService implements OnModuleInit {
         Accept: 'application/json',
         'X-RncEmisor': this.config.rncEmisor,
       },
+      httpsAgent: insecure ? new https.Agent({ rejectUnauthorized: false }) : undefined,
     });
   }
 
@@ -334,16 +359,38 @@ export class DgiiClientService implements OnModuleInit {
   }
 
   /**
-   * Envía un e-CF firmado digitalmente a la DGII y retorna el resultado del timbrado
+   * Envía un e-CF firmado digitalmente a la DGII y retorna el resultado del timbrado.
+   * `ncfType` (ej. 'E31', 'B01') se usa para elegir el XSD correcto — la
+   * validación corre DESPUÉS de firmar porque el esquema exige el nodo de
+   * firma al final del documento (ver DgiiXsdValidatorService).
    */
   async submitEcf(
     rawXml: string,
     eNcf: string,
     montoTotal: number,
+    ncfType: string,
     rncComprador?: string,
   ): Promise<DgiiSendResult> {
     // 1. Firmar el documento XML
     const { signedXml, securityCode } = this.signerService.signXml(rawXml, this.config.certPath, this.config.certPassword);
+
+    // 1.b Validar contra el XSD oficial de la DGII — un documento mal armado
+    // no debe siquiera intentar enviarse (ni consumir un intento de red/e-NCF).
+    const tipoDoc = ecfTipoDoc(ncfType);
+    const validation = this.xsdValidator.validateEcf(signedXml, tipoDoc);
+    if (!validation.valid) {
+      this.logger.error(`e-CF ${eNcf} (tipo ${tipoDoc}) no pasó la validación XSD: ${validation.errors.join(' | ')}`);
+      return {
+        trackId: `TRK-XSD-ERR-${Date.now()}`,
+        status: 'REJECTED',
+        securityCode,
+        qrCodeUrl: this.generateQrCodeUrl(eNcf, montoTotal, securityCode, new Date(), rncComprador),
+        responseMessage: 'El documento no cumple el esquema XSD oficial de la DGII — no fue enviado.',
+        timestamp: new Date(),
+        signedXml,
+        validationErrors: validation.errors,
+      };
+    }
 
     // 2. Generar URL QR
     const qrCodeUrl = this.generateQrCodeUrl(eNcf, montoTotal, securityCode, new Date(), rncComprador);
@@ -410,9 +457,101 @@ export class DgiiClientService implements OnModuleInit {
   }
 
   /**
-   * Envía una Aprobación Comercial (ACECF) firmada digitalmente a la DGII
+   * Envía un Resumen de Factura de Consumo Electrónica (RFCE, e-CF tipo 32
+   * < RD$250,000) — la DGII lo recibe en un HOST DISTINTO al del resto de
+   * documentos (`fc.dgii.gov.do`, `config.baseUrlRfce`, ruta
+   * `recepcionfc/api/recepcion/ecf`), aunque reutiliza el mismo token Bearer.
+   * Antes de este método, las pruebas de RFCE se enviaban por error a través
+   * de `submitEcf` (el host y la ruta de `ecf.dgii.gov.do` para e-CF regular),
+   * algo que la DGII real habría rechazado.
+   */
+  async submitRfce(rawXml: string, eNcf: string, montoTotal: number): Promise<DgiiSendResult> {
+    const { signedXml, securityCode } = this.signerService.signXml(rawXml, this.config.certPath, this.config.certPassword);
+
+    const validation = this.xsdValidator.validateRfce(signedXml);
+    if (!validation.valid) {
+      this.logger.error(`RFCE ${eNcf} no pasó la validación XSD: ${validation.errors.join(' | ')}`);
+      return {
+        trackId: `TRK-XSD-ERR-${Date.now()}`,
+        status: 'REJECTED',
+        securityCode,
+        qrCodeUrl: this.generateQrCodeUrl(eNcf, montoTotal, securityCode, new Date()),
+        responseMessage: 'El resumen RFCE no cumple el esquema XSD oficial de la DGII — no fue enviado.',
+        timestamp: new Date(),
+        signedXml,
+        validationErrors: validation.errors,
+      };
+    }
+
+    const qrCodeUrl = this.generateQrCodeUrl(eNcf, montoTotal, securityCode, new Date());
+
+    if (this.config.environment !== 'sandbox') {
+      try {
+        const token = await this.ensureToken();
+        const client = this.getHttpClient(this.config.baseUrlRfce);
+        const FormData = require('form-data');
+        const form = new FormData();
+        form.append('xml', Buffer.from(signedXml, 'utf8'), {
+          filename: `${this.config.rncEmisor}${eNcf}.xml`,
+          contentType: 'text/xml',
+        });
+
+        const sendRes = await client.post('recepcionfc/api/recepcion/ecf', form, {
+          headers: {
+            ...form.getHeaders(),
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        const data = sendRes.data;
+        const trackId = data?.trackId || `TRK-RFCE-${Date.now()}`;
+        const status = data?.estado === 'RECHAZADO' ? 'REJECTED' : 'ACCEPTED';
+        const responseMessage = data?.mensaje || 'Resumen RFCE recibido y aceptado por DGII';
+
+        return { trackId, status, securityCode, qrCodeUrl, responseMessage, timestamp: new Date(), signedXml };
+      } catch (err: any) {
+        this.logger.warn(`Fallo en el envío online de RFCE a DGII (${err.message}). Registrando en modo CONTINGENCIA.`);
+        return {
+          trackId: `TRK-CONTINGENCY-RFCE-${Date.now()}`,
+          status: 'CONTINGENCY',
+          securityCode,
+          qrCodeUrl,
+          responseMessage: 'Resumen RFCE emitido en Contingencia por indisponibilidad de enlace DGII',
+          timestamp: new Date(),
+          signedXml,
+        };
+      }
+    }
+
+    return {
+      trackId: `TRK-SBX-RFCE-${Date.now()}`,
+      status: 'ACCEPTED',
+      securityCode,
+      qrCodeUrl,
+      responseMessage: 'Resumen RFCE Simulado y Certificado en Sandbox DGII',
+      timestamp: new Date(),
+      signedXml,
+    };
+  }
+
+  /**
+   * Envía una Aprobación Comercial (ACECF) firmada digitalmente a la DGII.
+   * A diferencia del e-CF, el XSD de la ACECF trae la firma como opcional
+   * (`xs:any minOccurs="0"`), así que aquí se valida el contenido SIN firmar
+   * primero — más fácil de depurar un rechazo — y se firma después.
    */
   async submitCommercialApproval(rawXml: string, eNcf: string): Promise<any> {
+    const validation = this.xsdValidator.validateAcecf(rawXml);
+    if (!validation.valid) {
+      this.logger.error(`ACECF de ${eNcf} no pasó la validación XSD: ${validation.errors.join(' | ')}`);
+      return {
+        trackId: `TRK-ACE-XSD-ERR-${Date.now()}`,
+        estado: 'ERROR',
+        mensaje: 'El documento ACECF no cumple el esquema XSD oficial de la DGII — no fue enviado.',
+        validationErrors: validation.errors,
+      };
+    }
+
     const { signedXml } = this.signerService.signXml(rawXml, this.config.certPath, this.config.certPassword);
 
     if (this.config.environment === 'sandbox') {
@@ -512,11 +651,24 @@ export class DgiiClientService implements OnModuleInit {
    */
   async queryTrackIdStatus(trackId: string): Promise<any> {
     if (this.config.environment === 'sandbox' || trackId.startsWith('TRK-SBX') || trackId.startsWith('TRK-CONTINGENCY')) {
+      // El resultado ya no se inventa como "ACEPTADO" fijo: se consulta el
+      // historial persistido (DgiiCertificationRun) para devolver el estado
+      // que REALMENTE se guardó al ejecutar ese caso — un caso rechazado en
+      // sandbox debe seguir reportándose como rechazado al consultarlo después.
+      const run = await this.runRepository.findOne({ where: { trackId }, order: { executedAt: 'DESC' } });
+      if (run) {
+        return {
+          trackId,
+          estado: run.status === 'ACCEPTED' ? 'ACEPTADO' : run.status === 'CONTINGENCY' ? 'CONTINGENCIA' : run.status === 'REJECTED' ? 'RECHAZADO' : 'EN_PROCESO',
+          codigo: run.status === 'ACCEPTED' ? '0' : '1',
+          mensaje: run.responseMessage || 'Comprobante procesado (Sandbox / Contingencia)',
+        };
+      }
       return {
         trackId,
-        estado: 'ACEPTADO',
-        codigo: '0',
-        mensaje: 'Comprobante procesado exitosamente (Sandbox / Contingencia)',
+        estado: 'NO_ENCONTRADO',
+        codigo: '404',
+        mensaje: 'No hay ningún registro persistido para este TrackId en el historial de certificación.',
       };
     }
 

@@ -49,6 +49,7 @@
     "exceljs": "^4.4.0",
     "handlebars": "^4.7.9",
     "ioredis": "^5.3.2",
+    "libxmljs2": "^0.37.0",
     "minio": "^8.0.7",
     "node-forge": "^1.4.0",
     "nodemailer": "^10.0.10",

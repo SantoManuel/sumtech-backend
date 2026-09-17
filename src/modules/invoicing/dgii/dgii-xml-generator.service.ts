@@ -60,7 +60,13 @@ export interface AcecfGenerationInput {
   rncEmisor: string;
   rncComprador: string;
   eNcf: string;
+  // Fecha y monto del e-CF ORIGINAL que se está aprobando/rechazando (no de
+  // la aprobación en sí) — ambos obligatorios según el XSD (acecf.xsd:12-13).
+  fechaEmisionEcf: Date;
+  montoTotalEcf: number;
   estadoAprobacion: 1 | 2; // 1 = Aprobado, 2 = Rechazado
+  // Solo aplica cuando se rechaza (estadoAprobacion=2); el XSD la nombra
+  // "DetalleMotivoRechazo", no "Comentario" (acecf.xsd:16).
   comentario?: string;
   fechaAprobacion?: Date;
 }
@@ -251,11 +257,15 @@ export class DgiiXmlGeneratorService {
     if (config.provinciaEmisor) {
       emisorXml += `<Provincia>${this.escapeXml(config.provinciaEmisor)}</Provincia>`;
     }
-    if (config.correoEmisor) {
-      emisorXml += `<CorreoEmisor>${this.escapeXml(config.correoEmisor)}</CorreoEmisor>`;
-    }
+    // Orden exigido por el XSD oficial de la DGII dentro de <Emisor>:
+    // TablaTelefonoEmisor va ANTES que CorreoEmisor (ecf-31.xsd:56-63 vs.
+    // :63) — invertirlo hace que el documento entero sea rechazado por
+    // validación de esquema en cuanto se configura un teléfono de emisor.
     if (config.telefonoEmisor) {
       emisorXml += `<TablaTelefonoEmisor><TelefonoEmisor>${this.escapeXml(config.telefonoEmisor)}</TelefonoEmisor></TablaTelefonoEmisor>`;
+    }
+    if (config.correoEmisor) {
+      emisorXml += `<CorreoEmisor>${this.escapeXml(config.correoEmisor)}</CorreoEmisor>`;
     }
     if (config.webSite) {
       emisorXml += `<WebSite>${this.escapeXml(config.webSite)}</WebSite>`;
@@ -408,19 +418,26 @@ export class DgiiXmlGeneratorService {
   }
 
   /**
-   * Genera el XML de Aprobación Comercial (ACECF) para acuse o rechazo de facturas de compras
+   * Genera el XML de Aprobación Comercial (ACECF) para acuse o rechazo de facturas de compras.
+   * Orden y nombres de campo verificados contra el XSD oficial de la DGII
+   * (acecf.xsd:6-18) — RNCEmisor, eNCF, FechaEmision y MontoTotal (del e-CF
+   * original) van ANTES de RNCComprador, el estado se llama "Estado" (no
+   * "EstadoAprobacion"), y el motivo de rechazo es "DetalleMotivoRechazo".
    */
   generateAcecfXml(input: AcecfGenerationInput): string {
     const fechaHoraStr = this.formatDateTimeDgii(input.fechaAprobacion || new Date());
+    const fechaEmisionEcfStr = this.formatDateDgii(input.fechaEmisionEcf);
     return (
       `<ACECF>` +
         `<DetalleAprobacionComercial>` +
           `<Version>1.0</Version>` +
           `<RNCEmisor>${this.escapeXml(input.rncEmisor)}</RNCEmisor>` +
-          `<RNCComprador>${this.escapeXml(input.rncComprador)}</RNCComprador>` +
           `<eNCF>${this.escapeXml(input.eNcf)}</eNCF>` +
-          `<EstadoAprobacion>${input.estadoAprobacion}</EstadoAprobacion>` +
-          (input.comentario ? `<Comentario>${this.escapeXml(input.comentario)}</Comentario>` : '') +
+          `<FechaEmision>${fechaEmisionEcfStr}</FechaEmision>` +
+          `<MontoTotal>${this.formatDecimal(input.montoTotalEcf)}</MontoTotal>` +
+          `<RNCComprador>${this.escapeXml(input.rncComprador)}</RNCComprador>` +
+          `<Estado>${input.estadoAprobacion}</Estado>` +
+          (input.estadoAprobacion === 2 && input.comentario ? `<DetalleMotivoRechazo>${this.escapeXml(input.comentario)}</DetalleMotivoRechazo>` : '') +
           `<FechaHoraAprobacionComercial>${fechaHoraStr}</FechaHoraAprobacionComercial>` +
         `</DetalleAprobacionComercial>` +
       `</ACECF>`

@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { DgiiXmlGeneratorService, EcfGenerationInput, AcecfGenerationInput, AnecfGenerationInput } from './dgii-xml-generator.service';
 import { DgiiClientService, DgiiSendResult } from './dgii-client.service';
 import { DgiiSignerService } from './dgii-signer.service';
+import { DgiiTestSetImportResult } from './dgii-testset-import.service';
+import { DgiiCertificationRun } from './entities/dgii-certification-run.entity';
 
 export interface TestCaseItem {
   id: string;
@@ -14,11 +18,21 @@ export interface TestCaseItem {
   montoTotal: number;
   itemsCount: number;
   descripcion: string;
-  status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'ERROR';
+  // CONTINGENCY: la DGII no fue alcanzable y el comprobante quedó registrado en
+  // modo contingencia (contemplado por la norma fiscal dominicana) — no es lo
+  // mismo que ACCEPTED (aceptación real y confirmada por la DGII), así que se
+  // reporta como su propio estado en vez de pintarse en verde como si fuera igual.
+  status: 'PENDING' | 'ACCEPTED' | 'CONTINGENCY' | 'REJECTED' | 'ERROR';
   trackId?: string;
   securityCode?: string;
   executedAt?: Date;
   logs: string[];
+  // Presente solo en casos construidos desde el set de pruebas oficial de la
+  // DGII (ver DgiiTestSetImportService) — el e-NCF que esta nota modifica.
+  eNCFModificado?: string;
+  // true = este caso es un Resumen de Factura de Consumo (RFCE) — se envía
+  // por un canal/host distinto al del resto de los e-CF (ver runRfceCase).
+  esRfce?: boolean;
 }
 
 export interface SimulationDataset {
@@ -36,7 +50,79 @@ export class DgiiCertificationService {
     private readonly xmlGenerator: DgiiXmlGeneratorService,
     private readonly dgiiClient: DgiiClientService,
     private readonly signerService: DgiiSignerService,
+    @InjectRepository(DgiiCertificationRun)
+    private readonly runRepository: Repository<DgiiCertificationRun>,
   ) {}
+
+  /**
+   * Guarda un rastro auditable de la ejecución en `dgii_certification_runs`.
+   * Nunca lanza: un fallo al persistir no debe hacer que el caso completo se
+   * reporte como error si la DGII sí respondió.
+   */
+  private async persistRun(
+    source: 'TEST_CASE' | 'RUN_ALL' | 'SIMULATION',
+    item: TestCaseItem,
+    result: {
+      status: TestCaseItem['status'];
+      trackId?: string;
+      securityCode?: string;
+      responseMessage?: string;
+      signedXml?: string;
+      validationErrors?: string[];
+    },
+  ): Promise<void> {
+    try {
+      const config = this.dgiiClient.getConfig();
+      const run = this.runRepository.create({
+        runSource: source,
+        casoNumero: item.casoNumero,
+        nombreCaso: item.nombreCaso,
+        tipoEcf: item.tipoeCF.replace(/^E/i, ''),
+        esRfce: !!item.esRfce,
+        eNcf: item.eNCF,
+        eNcfModificado: item.eNCFModificado,
+        rncComprador: item.rncComprador,
+        razonSocialComprador: item.razonSocialComprador,
+        montoTotal: item.montoTotal,
+        status: result.status,
+        trackId: result.trackId,
+        securityCode: result.securityCode,
+        responseMessage: result.responseMessage,
+        validationErrors: result.validationErrors,
+        signedXml: result.signedXml,
+        environment: config.environment,
+      });
+      await this.runRepository.save(run);
+    } catch (err: any) {
+      this.logger.error(`No se pudo persistir el historial de certificación para ${item.eNCF}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Último estado real conocido de un e-NCF, según el historial persistido.
+   * Usado para no enviar una nota de crédito/débito cuyo e-CF base nunca fue
+   * aceptado por la DGII (evita el error 615 de la DGII: referencia a un
+   * comprobante que no existe/no fue aceptado).
+   */
+  private async getLastStatus(eNcf: string): Promise<DgiiCertificationRun | null> {
+    return this.runRepository.findOne({ where: { eNcf }, order: { executedAt: 'DESC' } });
+  }
+
+  /**
+   * Historial paginado de corridas de certificación, más reciente primero —
+   * consultable desde /dashboard/dgii/certificacion en vez de perderse al
+   * recargar la pantalla.
+   */
+  async getCertificationHistory(page = 1, limit = 20): Promise<{ total: number; page: number; limit: number; runs: DgiiCertificationRun[] }> {
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(100, Math.max(1, limit));
+    const [runs, total] = await this.runRepository.findAndCount({
+      order: { executedAt: 'DESC' },
+      skip: (safePage - 1) * safeLimit,
+      take: safeLimit,
+    });
+    return { total, page: safePage, limit: safeLimit, runs };
+  }
 
   /**
    * Retorna la batería de casos de prueba oficiales del Set de Pruebas DGII para telecomunicaciones
@@ -351,25 +437,25 @@ export class DgiiCertificationService {
         id: 'sim-22', casoNumero: 22, nombreCaso: 'Simulación 22 - Tipo 32 < 250k (Plan Residencial 50M)',
         tipoeCF: 'E32', eNCF: `E32${pad(3)}`, rncComprador: '131880681',
         razonSocialComprador: 'DOCUMENTOS ELECTRONICOS DE 03', montoTotal: 4130.0, itemsCount: 1,
-        descripcion: 'Plan Fibra Residencial 50 Mbps + Router Wi-Fi', status: 'PENDING', logs: [],
+        descripcion: 'Plan Fibra Residencial 50 Mbps + Router Wi-Fi', status: 'PENDING', logs: [], esRfce: true,
       },
       {
         id: 'sim-23', casoNumero: 23, nombreCaso: 'Simulación 23 - Tipo 32 < 250k (Plan Dúo 100M)',
         tipoeCF: 'E32', eNCF: `E32${pad(4)}`, rncComprador: '131880681',
         razonSocialComprador: 'DOCUMENTOS ELECTRONICOS DE 03', montoTotal: 4956.0, itemsCount: 1,
-        descripcion: 'Plan Dúo 100 Mbps Internet + Televisión HD', status: 'PENDING', logs: [],
+        descripcion: 'Plan Dúo 100 Mbps Internet + Televisión HD', status: 'PENDING', logs: [], esRfce: true,
       },
       {
         id: 'sim-24', casoNumero: 24, nombreCaso: 'Simulación 24 - Tipo 32 < 250k (Control Remoto & Deco)',
         tipoeCF: 'E32', eNCF: `E32${pad(5)}`, rncComprador: '131880681',
         razonSocialComprador: 'DOCUMENTOS ELECTRONICOS DE 03', montoTotal: 3304.0, itemsCount: 1,
-        descripcion: 'Venta de Control Remoto Universal y Decodificador Adicional', status: 'PENDING', logs: [],
+        descripcion: 'Venta de Control Remoto Universal y Decodificador Adicional', status: 'PENDING', logs: [], esRfce: true,
       },
       {
         id: 'sim-25', casoNumero: 25, nombreCaso: 'Simulación 25 - Tipo 32 < 250k (Cargo Reubicación)',
         tipoeCF: 'E32', eNCF: `E32${pad(6)}`, rncComprador: '131880681',
         razonSocialComprador: 'DOCUMENTOS ELECTRONICOS DE 03', montoTotal: 1770.0, itemsCount: 1,
-        descripcion: 'Cargo por Reubicación de Acometida de Fibra Óptica', status: 'PENDING', logs: [],
+        descripcion: 'Cargo por Reubicación de Acometida de Fibra Óptica', status: 'PENDING', logs: [], esRfce: true,
       },
     ];
 
@@ -379,6 +465,79 @@ export class DgiiCertificationService {
       ecfConsumoMenor,
       todosLosCasos: [...ecfGenerales, ...ecfNotas, ...ecfConsumoMenor],
     };
+  }
+
+  /**
+   * Descripción y datos de comprador de respaldo por tipo de e-CF — el propio
+   * archivo de la DGII deja estos campos en blanco ("#e") a propósito porque
+   * es el emisor quien debe redactar el contenido de cada caso; la DGII solo
+   * prescribe qué e-NCF, tipo y monto usar en cada uno.
+   */
+  private static readonly DESCRIPCION_POR_TIPO: Record<string, { nombreCaso: string; descripcion: string; razonSocialComprador: string; rncComprador?: string }> = {
+    '31': { nombreCaso: 'Factura de Crédito Fiscal', descripcion: 'Servicio de telecomunicaciones facturado a persona jurídica', razonSocialComprador: 'EMPRESA CLIENTE S.A.', rncComprador: '130000001' },
+    '32': { nombreCaso: 'Factura de Consumo', descripcion: 'Servicio de telecomunicaciones facturado a consumidor final', razonSocialComprador: 'Consumidor Final' },
+    '33': { nombreCaso: 'Nota de Débito Electrónica', descripcion: 'Recargo o ajuste sobre comprobante previo', razonSocialComprador: 'EMPRESA CLIENTE S.A.', rncComprador: '130000001' },
+    '34': { nombreCaso: 'Nota de Crédito Electrónica', descripcion: 'Descuento o anulación sobre comprobante previo', razonSocialComprador: 'EMPRESA CLIENTE S.A.', rncComprador: '130000001' },
+    '41': { nombreCaso: 'Registro de Proveedores Informales', descripcion: 'Servicio recibido de proveedor informal', razonSocialComprador: 'Proveedor Informal', rncComprador: '00100000001' },
+    '43': { nombreCaso: 'Gastos Menores Electrónico', descripcion: 'Gasto menor operativo', razonSocialComprador: 'Consumidor Final Gastos Menores' },
+    '44': { nombreCaso: 'Régimen Especial de Tributación', descripcion: 'Servicio exento de ITBIS bajo régimen especial', razonSocialComprador: 'ZONA FRANCA S.A.', rncComprador: '130999999' },
+    '45': { nombreCaso: 'Comprobante Gubernamental', descripcion: 'Servicio prestado a entidad gubernamental', razonSocialComprador: 'ENTIDAD GUBERNAMENTAL', rncComprador: '401000001' },
+    '46': { nombreCaso: 'Comprobante para Pagos al Exterior', descripcion: 'Servicio pagado a proveedor en el exterior', razonSocialComprador: 'FOREIGN PROVIDER LLC' },
+    '47': { nombreCaso: 'Comprobante para Exportaciones', descripcion: 'Servicio exportado a cliente en el exterior', razonSocialComprador: 'FOREIGN CLIENT INC.' },
+  };
+
+  /**
+   * Convierte el set de pruebas importado desde el .xlsx oficial de la DGII
+   * en el modelo `TestCaseItem` que ya consumen la UI y `runTestCase`/
+   * `runAllTestCases`. A diferencia de `getDefaultTestSetCases()`, el e-NCF,
+   * el tipo y el monto vienen directamente del archivo que la DGII asignó
+   * para esta certificación — no son inventados por sumtech.
+   */
+  buildTestCasesFromImport(imported: DgiiTestSetImportResult): TestCaseItem[] {
+    const fallback = { nombreCaso: 'Caso de Prueba DGII', descripcion: 'Comprobante de prueba', razonSocialComprador: 'Consumidor Final' };
+
+    const fromEcf: TestCaseItem[] = imported.ecfRows.map((row, index) => {
+      const tipo = row.tipoeCF.replace(/^E/i, '').padStart(2, '0');
+      const info = DgiiCertificationService.DESCRIPCION_POR_TIPO[tipo] || fallback;
+      const esNota = tipo === '33' || tipo === '34';
+
+      return {
+        id: `dgii-import-ecf-${index + 1}`,
+        casoNumero: index + 1,
+        nombreCaso: `${row.casoPrueba || info.nombreCaso} (E${tipo})`,
+        tipoeCF: `E${tipo}` as TestCaseItem['tipoeCF'],
+        eNCF: row.eNCF,
+        rncComprador: row.rncComprador || info.rncComprador,
+        razonSocialComprador: row.razonSocialComprador || info.razonSocialComprador,
+        montoTotal: row.montoTotal,
+        itemsCount: 1,
+        descripcion: info.descripcion,
+        status: 'PENDING',
+        logs: [],
+        eNCFModificado: esNota ? row.eNCFModificado : undefined,
+      };
+    });
+
+    const fromRfce: TestCaseItem[] = imported.rfceRows.map((row, index) => {
+      const info = DgiiCertificationService.DESCRIPCION_POR_TIPO['32'];
+      return {
+        id: `dgii-import-rfce-${index + 1}`,
+        casoNumero: fromEcf.length + index + 1,
+        nombreCaso: `${row.casoPrueba || 'Resumen RFCE'} (RFCE, consumo < RD$250,000)`,
+        tipoeCF: 'E32',
+        eNCF: row.eNCF,
+        rncComprador: row.rncComprador,
+        razonSocialComprador: row.razonSocialComprador || info.razonSocialComprador,
+        montoTotal: row.montoTotal,
+        itemsCount: 1,
+        descripcion: 'Resumen de Factura de Consumo Electrónica (RFCE)',
+        status: 'PENDING',
+        logs: [],
+        esRfce: true,
+      };
+    });
+
+    return [...fromEcf, ...fromRfce];
   }
 
   /**
@@ -408,7 +567,7 @@ export class DgiiCertificationService {
     // ETAPA 1: 18 Comprobantes Base
     globalLogs.push(`\n[${now()}] --- ETAPA 1: Enviando Comprobantes Base a Recepción e-CF (18 comprobantes) ---`);
     for (const item of dataset.ecfGenerales) {
-      const res = await this.runTestCase(item);
+      const res = await this.runTestCase(item, 'SIMULATION');
       results.push(res);
       if (res.status === 'ACCEPTED') aceptadosEtapa1++;
       globalLogs.push(`[${now()}] [Etapa 1] ${item.eNCF} (${item.tipoeCF}) -> ${res.status} | TrackId: ${res.trackId || 'N/A'}`);
@@ -419,7 +578,7 @@ export class DgiiCertificationService {
     for (const item of dataset.ecfNotas) {
       // Vincular con eNCF correspondiente
       if (item.tipoeCF === 'E33') item.eNCF = item.eNCF; // referencia a E31
-      const res = await this.runTestCase(item);
+      const res = await this.runTestCase(item, 'SIMULATION');
       results.push(res);
       if (res.status === 'ACCEPTED') aceptadosEtapa2++;
       globalLogs.push(`[${now()}] [Etapa 2] ${item.eNCF} (${item.tipoeCF}) -> ${res.status} | TrackId: ${res.trackId || 'N/A'}`);
@@ -428,7 +587,7 @@ export class DgiiCertificationService {
     // ETAPA 3: 4 Resúmenes RFCE
     globalLogs.push(`\n[${now()}] --- ETAPA 3: Enviando Resúmenes RFCE para Consumo Menor (4 comprobantes) ---`);
     for (const item of dataset.ecfConsumoMenor) {
-      const res = await this.runTestCase(item);
+      const res = await this.runTestCase(item, 'SIMULATION');
       results.push(res);
       if (res.status === 'ACCEPTED') aceptadosEtapa3++;
       globalLogs.push(`[${now()}] [Etapa 3 RFCE] ${item.eNCF} (${item.tipoeCF}) -> ${res.status} | TrackId: ${res.trackId || 'N/A'}`);
@@ -449,13 +608,38 @@ export class DgiiCertificationService {
   }
 
   /**
-   * Ejecuta un caso individual del Set de Pruebas DGII
+   * Ejecuta un caso individual del Set de Pruebas DGII. `source` distingue en
+   * el historial persistido si vino de un solo "Ejecutar", de "Ejecutar Todos
+   * los Casos" o del runner de Simulación (Paso 4).
    */
-  async runTestCase(item: TestCaseItem): Promise<TestCaseItem> {
+  async runTestCase(item: TestCaseItem, source: 'TEST_CASE' | 'RUN_ALL' | 'SIMULATION' = 'TEST_CASE'): Promise<TestCaseItem> {
     const logs: string[] = [];
     const now = () => new Date().toLocaleTimeString('es-DO', { hour12: false });
 
     logs.push(`[${now()}] 🚀 Iniciando ejecución de Caso ${item.casoNumero}: ${item.nombreCaso} (${item.tipoeCF})`);
+
+    // Un Resumen RFCE no es un e-CF individual: va por un host/ruta distinto
+    // de la DGII y su Código de Seguridad depende de la firma real del e-CF
+    // de consumo subyacente, no de un valor de relleno (ver runRfceCase).
+    if (item.esRfce) {
+      return this.runRfceCase(item, logs, source);
+    }
+
+    const esNota = item.tipoeCF === 'E33' || item.tipoeCF === 'E34';
+    if (esNota && item.eNCFModificado) {
+      const baseRun = await this.getLastStatus(item.eNCFModificado);
+      if (!baseRun || baseRun.status !== 'ACCEPTED') {
+        const motivo = baseRun ? `tiene estado ${baseRun.status}` : 'no tiene ninguna corrida registrada todavía';
+        logs.push(`[${now()}] ⛔ Nota bloqueada localmente: el e-CF base ${item.eNCFModificado} ${motivo} — la DGII rechazaría esta nota (error 615, referencia a comprobante inexistente/no aceptado).`);
+        const blocked: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs };
+        await this.persistRun(source, blocked, {
+          status: 'ERROR',
+          responseMessage: `Bloqueado localmente: el e-CF base ${item.eNCFModificado} no está aceptado (${motivo}).`,
+        });
+        return blocked;
+      }
+      logs.push(`[${now()}] ✅ e-CF base ${item.eNCFModificado} verificado como ACCEPTED en el historial — se procede a emitir la nota.`);
+    }
 
     try {
       const config = this.dgiiClient.getConfig();
@@ -472,7 +656,10 @@ export class DgiiCertificationService {
         correoComprador: 'cliente_simulacion@sumtech.com.do',
         direccionComprador: 'Av. Winston Churchill #100, Santo Domingo',
         tipoPago: '1',
-        ncfModificado: (item.tipoeCF === 'E33' || item.tipoeCF === 'E34') ? 'E3100000001' : undefined,
+        // Preferir el e-NCF base real que trae el set de pruebas importado de
+        // la DGII (item.eNCFModificado); solo caer al valor fijo de los casos
+        // de demostración hardcodeados cuando no se importó nada.
+        ncfModificado: (item.tipoeCF === 'E33' || item.tipoeCF === 'E34') ? (item.eNCFModificado || 'E3100000001') : undefined,
         codigoModificacion: isTextoCorrige ? '2' : '1',
         razonModificacion: isTextoCorrige ? 'Corrección de texto descriptivo' : 'Ajuste de facturación de pruebas',
         items: [
@@ -492,6 +679,15 @@ export class DgiiCertificationService {
       const rawXml = this.xmlGenerator.generateEcfXml(input, config);
       logs.push(`[${now()}] ✅ XML generado (${rawXml.length} bytes)`);
 
+      // Validación fiscal local: el <MontoTotal> que el generador calculó a
+      // partir de los ítems debe reconciliar con el monto declarado del caso
+      // — barato de detectar aquí, antes de firmar/enviar nada a la DGII.
+      const montoGeneradoMatch = rawXml.match(/<MontoTotal>([\d.]+)<\/MontoTotal>/);
+      const montoGenerado = montoGeneradoMatch ? Number(montoGeneradoMatch[1]) : NaN;
+      if (Number.isFinite(montoGenerado) && Math.abs(montoGenerado - item.montoTotal) > 0.02) {
+        logs.push(`[${now()}] ⚠️ Validación fiscal: el monto total generado (${montoGenerado.toFixed(2)}) no reconcilia con el monto declarado del caso (${item.montoTotal.toFixed(2)}).`);
+      }
+
       logs.push(`[${now()}] 🔐 Aplicando firma digital XMLDSig RSA-SHA256 y C14N...`);
       const { securityCode } = this.signerService.signXml(rawXml, config.certPath, config.certPassword || '');
       logs.push(`[${now()}] 🔑 Código de Seguridad DGII extraído: [${securityCode}]`);
@@ -501,27 +697,95 @@ export class DgiiCertificationService {
         rawXml,
         item.eNCF,
         item.montoTotal,
+        item.tipoeCF,
         item.rncComprador,
       );
 
       logs.push(`[${now()}] 📥 Respuesta DGII recibida: ${result.status} | TrackId: ${result.trackId}`);
+      if (result.status === 'CONTINGENCY') {
+        logs.push(`[${now()}] ⚠️ La DGII no fue alcanzable — el comprobante quedó en modo CONTINGENCIA, no fue aceptado por la DGII todavía.`);
+      }
+      if (result.validationErrors?.length) {
+        result.validationErrors.forEach((e) => logs.push(`[${now()}] ⛔ XSD: ${e}`));
+      }
 
-      return {
+      const executed: TestCaseItem = {
         ...item,
-        status: result.status === 'ACCEPTED' || result.status === 'CONTINGENCY' ? 'ACCEPTED' : 'REJECTED',
+        status: result.status,
         trackId: result.trackId,
         securityCode: result.securityCode,
         executedAt: new Date(),
         logs,
       };
+      await this.persistRun(source, executed, result);
+      return executed;
     } catch (error: any) {
       logs.push(`[${now()}] ❌ ERROR durante la ejecución: ${error.message}`);
-      return {
+      const failed: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs };
+      await this.persistRun(source, failed, { status: 'ERROR', responseMessage: error.message });
+      return failed;
+    }
+  }
+
+  /**
+   * Ejecuta un Resumen RFCE: primero genera y firma LOCALMENTE (sin enviar a
+   * la DGII) el e-CF tipo 32 que resume, para extraer su Código de Seguridad
+   * real a partir de la firma — la DGII exige que ese código venga de una
+   * firma genuina, no de un valor de relleno (así lo hace un proveedor
+   * certificado de referencia, ver DgiiTestRunner.cs:349-361) — y luego arma
+   * y transmite el propio RFCE por el canal específico de resúmenes.
+   */
+  private async runRfceCase(item: TestCaseItem, logs: string[], source: 'TEST_CASE' | 'RUN_ALL' | 'SIMULATION'): Promise<TestCaseItem> {
+    const now = () => new Date().toLocaleTimeString('es-DO', { hour12: false });
+
+    try {
+      const config = this.dgiiClient.getConfig();
+      logs.push(`[${now()}] ⚙️ Entorno: ${config.environment.toUpperCase()} | Emisor: ${config.rncEmisor}`);
+
+      const montoGravado = Number((item.montoTotal / 1.18).toFixed(2));
+      const totalITBIS = Number((item.montoTotal - montoGravado).toFixed(2));
+
+      logs.push(`[${now()}] 📄 Generando y firmando localmente el e-CF de consumo subyacente (${item.eNCF}) para extraer su Código de Seguridad real...`);
+      const baseInput: EcfGenerationInput = {
+        ncfType: 'E32',
+        eNcf: item.eNCF,
+        rncComprador: item.rncComprador,
+        razonSocialComprador: item.razonSocialComprador,
+        tipoPago: '1',
+        items: [
+          { numeroLinea: 1, nombreItem: item.descripcion, indicadorBienoServicio: '2', indicadorFacturacion: '1', cantidad: 1, precioUnitario: montoGravado, montoItem: montoGravado },
+        ],
+      };
+      const baseRawXml = this.xmlGenerator.generateEcfXml(baseInput, config);
+      const { securityCode: baseSecurityCode } = this.signerService.signXml(baseRawXml, config.certPath, config.certPassword || '');
+      logs.push(`[${now()}] 🔑 Código de Seguridad real del e-CF de consumo: [${baseSecurityCode}]`);
+
+      logs.push(`[${now()}] 📄 Construyendo Resumen RFCE...`);
+      const rfceRawXml = this.xmlGenerator.generateRfceXml(item.eNCF, config.rncEmisor, item.montoTotal, totalITBIS, baseSecurityCode);
+
+      logs.push(`[${now()}] 🌐 Transmitiendo Resumen RFCE a la DGII (canal fc.dgii.gov.do)...`);
+      const result: DgiiSendResult = await this.dgiiClient.submitRfce(rfceRawXml, item.eNCF, item.montoTotal);
+
+      logs.push(`[${now()}] 📥 Respuesta DGII recibida: ${result.status} | TrackId: ${result.trackId}`);
+      if (result.validationErrors?.length) {
+        result.validationErrors.forEach((e) => logs.push(`[${now()}] ⛔ XSD: ${e}`));
+      }
+
+      const executed: TestCaseItem = {
         ...item,
-        status: 'ERROR',
+        status: result.status,
+        trackId: result.trackId,
+        securityCode: result.securityCode,
         executedAt: new Date(),
         logs,
       };
+      await this.persistRun(source, executed, result);
+      return executed;
+    } catch (error: any) {
+      logs.push(`[${now()}] ❌ ERROR durante la ejecución del RFCE: ${error.message}`);
+      const failed: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs };
+      await this.persistRun(source, failed, { status: 'ERROR', responseMessage: error.message });
+      return failed;
     }
   }
 
@@ -540,7 +804,7 @@ export class DgiiCertificationService {
     let failed = 0;
 
     for (const item of list) {
-      const executed = await this.runTestCase(item);
+      const executed = await this.runTestCase(item, 'RUN_ALL');
       results.push(executed);
       if (executed.status === 'ACCEPTED') {
         passed++;
@@ -563,6 +827,8 @@ export class DgiiCertificationService {
   async runCommercialApproval(dto: {
     rncEmisorProveedor: string;
     eNcf: string;
+    fechaEmisionEcf: Date;
+    montoTotalEcf: number;
     estadoAprobacion: 1 | 2;
     comentario?: string;
   }) {
@@ -571,6 +837,8 @@ export class DgiiCertificationService {
       rncEmisor: dto.rncEmisorProveedor,
       rncComprador: config.rncEmisor,
       eNcf: dto.eNcf,
+      fechaEmisionEcf: dto.fechaEmisionEcf,
+      montoTotalEcf: dto.montoTotalEcf,
       estadoAprobacion: dto.estadoAprobacion,
       comentario: dto.comentario,
       fechaAprobacion: new Date(),

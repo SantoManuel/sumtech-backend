@@ -1,14 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { DgiiCertificationService, TestCaseItem } from './dgii-certification.service';
 import { DgiiXmlGeneratorService } from './dgii-xml-generator.service';
 import { DgiiClientService } from './dgii-client.service';
 import { DgiiSignerService } from './dgii-signer.service';
+import { DgiiCertificationRun } from './entities/dgii-certification-run.entity';
 
 describe('DgiiCertificationService', () => {
   let service: DgiiCertificationService;
   let xmlGenerator: DgiiXmlGeneratorService;
   let dgiiClient: any;
   let signerService: any;
+  let runRepository: any;
 
   beforeEach(async () => {
     dgiiClient = {
@@ -27,6 +30,15 @@ describe('DgiiCertificationService', () => {
         responseMessage: 'Comprobante Aceptado por DGII en Certificación',
         timestamp: new Date(),
         signedXml: '<ECF></ECF>',
+      }),
+      submitRfce: jest.fn().mockResolvedValue({
+        trackId: 'TRK-RFCE-123456',
+        status: 'ACCEPTED',
+        securityCode: 'B2C3D4',
+        qrCodeUrl: 'https://fc.dgii.gov.do/testecf/consultatimbrefc',
+        responseMessage: 'Resumen RFCE Aceptado por DGII',
+        timestamp: new Date(),
+        signedXml: '<RFCE></RFCE>',
       }),
       submitCommercialApproval: jest.fn().mockResolvedValue({
         trackId: 'TRK-ACE-123',
@@ -53,12 +65,20 @@ describe('DgiiCertificationService', () => {
       }),
     };
 
+    runRepository = {
+      create: jest.fn((data: any) => data),
+      save: jest.fn().mockResolvedValue({}),
+      findOne: jest.fn().mockResolvedValue(null),
+      findAndCount: jest.fn().mockResolvedValue([[], 0]),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DgiiCertificationService,
         DgiiXmlGeneratorService,
         { provide: DgiiClientService, useValue: dgiiClient },
         { provide: DgiiSignerService, useValue: signerService },
+        { provide: getRepositoryToken(DgiiCertificationRun), useValue: runRepository },
       ],
     }).compile();
 
@@ -127,6 +147,8 @@ describe('DgiiCertificationService', () => {
     const result = await service.runCommercialApproval({
       rncEmisorProveedor: '130999999',
       eNcf: 'E3100000050',
+      fechaEmisionEcf: new Date('2026-01-10T00:00:00'),
+      montoTotalEcf: 5074,
       estadoAprobacion: 1,
       comentario: 'Servicio conforme y verificado por soporte técnico',
     });
@@ -145,5 +167,120 @@ describe('DgiiCertificationService', () => {
 
     expect(result.estado).toBe('ACEPTADO');
     expect(dgiiClient.submitSequenceVoiding).toHaveBeenCalled();
+  });
+
+  describe('persistencia del historial de certificación', () => {
+    const rfceCase: TestCaseItem = {
+      id: 'rfce-1',
+      casoNumero: 1,
+      nombreCaso: 'Resumen RFCE de prueba',
+      tipoeCF: 'E32',
+      eNCF: 'E3200000099',
+      rncComprador: '131880681',
+      razonSocialComprador: 'CLIENTE PRUEBA RFCE',
+      montoTotal: 4130,
+      itemsCount: 1,
+      descripcion: 'Plan Residencial 50 Mbps',
+      status: 'PENDING',
+      logs: [],
+      esRfce: true,
+    };
+
+    it('un caso RFCE se firma localmente y se transmite por submitRfce, NO por submitEcf', async () => {
+      const result = await service.runTestCase(rfceCase);
+
+      expect(dgiiClient.submitRfce).toHaveBeenCalledWith(expect.any(String), 'E3200000099', 4130);
+      expect(dgiiClient.submitEcf).not.toHaveBeenCalled();
+      expect(signerService.signXml).toHaveBeenCalled(); // firma local del e-CF de consumo subyacente
+      expect(result.status).toBe('ACCEPTED');
+      expect(result.trackId).toBe('TRK-RFCE-123456');
+    });
+
+    it('cada corrida se persiste en el repositorio de historial (dgii_certification_runs)', async () => {
+      const caseItem: TestCaseItem = {
+        id: 'tc-persist-1', casoNumero: 1, nombreCaso: 'Prueba persistencia', tipoeCF: 'E31',
+        eNCF: 'E3100000077', rncComprador: '130000001', razonSocialComprador: 'EMPRESA X',
+        montoTotal: 5000, itemsCount: 1, descripcion: 'Servicio', status: 'PENDING', logs: [],
+      };
+
+      await service.runTestCase(caseItem);
+
+      expect(runRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ eNcf: 'E3100000077', status: 'ACCEPTED', trackId: 'TRK-CERT-123456' }),
+      );
+      expect(runRepository.save).toHaveBeenCalled();
+    });
+
+    it('bloquea una nota de crédito/débito si su e-CF base no está aceptado en el historial (evita el error 615 de la DGII)', async () => {
+      runRepository.findOne.mockResolvedValueOnce(null); // sin ninguna corrida registrada para el e-CF base
+
+      const nota: TestCaseItem = {
+        id: 'nota-1', casoNumero: 1, nombreCaso: 'Nota de crédito', tipoeCF: 'E34',
+        eNCF: 'E3400000077', razonSocialComprador: 'EMPRESA X', montoTotal: 500,
+        itemsCount: 1, descripcion: 'Ajuste', status: 'PENDING', logs: [],
+        eNCFModificado: 'E3100000001',
+      };
+
+      const result = await service.runTestCase(nota);
+
+      expect(result.status).toBe('ERROR');
+      expect(result.logs.some((l) => l.includes('bloqueada'))).toBe(true);
+      expect(dgiiClient.submitEcf).not.toHaveBeenCalled();
+    });
+
+    it('bloquea una nota si el e-CF base existe pero NO fue aceptado (ej. quedó REJECTED)', async () => {
+      runRepository.findOne.mockResolvedValueOnce({ status: 'REJECTED', eNcf: 'E3100000001' });
+
+      const nota: TestCaseItem = {
+        id: 'nota-2', casoNumero: 1, nombreCaso: 'Nota de crédito', tipoeCF: 'E34',
+        eNCF: 'E3400000078', razonSocialComprador: 'EMPRESA X', montoTotal: 500,
+        itemsCount: 1, descripcion: 'Ajuste', status: 'PENDING', logs: [],
+        eNCFModificado: 'E3100000001',
+      };
+
+      const result = await service.runTestCase(nota);
+
+      expect(result.status).toBe('ERROR');
+      expect(dgiiClient.submitEcf).not.toHaveBeenCalled();
+    });
+
+    it('permite emitir la nota cuando el e-CF base SÍ está ACCEPTED en el historial', async () => {
+      runRepository.findOne.mockResolvedValueOnce({ status: 'ACCEPTED', eNcf: 'E3100000001' });
+
+      const nota: TestCaseItem = {
+        id: 'nota-3', casoNumero: 1, nombreCaso: 'Nota de crédito', tipoeCF: 'E34',
+        eNCF: 'E3400000079', razonSocialComprador: 'EMPRESA X', montoTotal: 500,
+        itemsCount: 1, descripcion: 'Ajuste', status: 'PENDING', logs: [],
+        eNCFModificado: 'E3100000001',
+      };
+
+      const result = await service.runTestCase(nota);
+
+      expect(result.status).toBe('ACCEPTED');
+      expect(dgiiClient.submitEcf).toHaveBeenCalled();
+    });
+
+    it('getCertificationHistory devuelve el historial paginado del repositorio', async () => {
+      runRepository.findAndCount.mockResolvedValueOnce([
+        [{ id: 'run-1', eNcf: 'E3100000001', status: 'ACCEPTED' }],
+        1,
+      ]);
+
+      const history = await service.getCertificationHistory(1, 20);
+
+      expect(history.total).toBe(1);
+      expect(history.runs).toHaveLength(1);
+      expect(runRepository.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { executedAt: 'DESC' }, skip: 0, take: 20 }),
+      );
+    });
+
+    it('getCertificationHistory limita page/limit a valores seguros (page>=1, limit<=100)', async () => {
+      await service.getCertificationHistory(0, 500);
+
+      expect(runRepository.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 0, take: 100 }),
+      );
+    });
   });
 });
