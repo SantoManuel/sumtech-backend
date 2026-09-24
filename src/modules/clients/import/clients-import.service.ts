@@ -12,11 +12,19 @@ import { MinioStorageService } from '../../storage/minio-storage.service';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { SubmitLocationMappingDto } from '../dto/submit-location-mapping.dto';
 import { parseLegacyClientFile } from './legacy-client-parser';
-import { buildLocationKey, parsePlanInternet } from './legacy-field-mappers';
+import { buildLocationKey, matchPlanByName, normalizeGeoName, parsePlanInternet } from './legacy-field-mappers';
 import { LegacyClientRow } from './legacy-client-row.types';
 import { ClientImportAnalysisResult, DistinctLocationSummary, DistinctPlanSummary } from './client-import-analysis.types';
 
 export const CLIENTS_IMPORT_QUEUE = 'clients-import';
+
+interface AutoResolvedLocation {
+  target: LocationMappingTarget;
+  provinceName: string;
+  municipalityName: string;
+  sectorName: string;
+  sectorIsNew: boolean;
+}
 
 @Injectable()
 export class ClientsImportService {
@@ -49,19 +57,26 @@ export class ClientsImportService {
 
     const objectKey = await this.minioStorage.uploadBuffer(file.buffer, file.originalname, 'client-imports', file.mimetype);
 
-    const distinctLocations = this.summarizeLocations(rows, {});
+    const autoResolved = await this.autoResolveLocations(rows);
+    const distinctLocations = this.summarizeLocations(rows, autoResolved);
     const distinctPlans = await this.summarizePlans(rows);
     const rowsMissingRequiredFields = rows.filter((row) => !row.nombre.trim() || !row.docNumber.trim()).length;
 
+    const locationMapping: Record<string, LocationMappingTarget> = {};
+    for (const [key, value] of autoResolved) {
+      locationMapping[key] = value.target;
+    }
+    const unresolvedCount = distinctLocations.filter((loc) => !loc.resolved).length;
+
     const batch = await this.batchRepository.save(
       this.batchRepository.create({
-        status: distinctLocations.length === 0 ? 'MAPPED' : 'ANALYZED',
+        status: unresolvedCount === 0 ? 'MAPPED' : 'ANALYZED',
         format,
         originalFilename: file.originalname,
         minioObjectKey: objectKey,
         totalRows: rows.length,
         uploadedBy: uploadedByUserId,
-        locationMapping: {},
+        locationMapping,
       }),
     );
 
@@ -207,7 +222,7 @@ export class ClientsImportService {
 
   private summarizeLocations(
     rows: LegacyClientRow[],
-    existingMapping: Record<string, LocationMappingTarget>,
+    autoResolved: Map<string, AutoResolvedLocation>,
   ): DistinctLocationSummary[] {
     const byKey = new Map<string, { barrio: string; ciudadMunicipio: string; occurrences: number }>();
 
@@ -223,14 +238,121 @@ export class ClientsImportService {
     }
 
     return [...byKey.entries()]
-      .map(([legacyLocationKey, value]) => ({
-        legacyLocationKey,
-        barrio: value.barrio,
-        ciudadMunicipio: value.ciudadMunicipio,
-        occurrences: value.occurrences,
-        resolved: Boolean(existingMapping[legacyLocationKey]),
-      }))
+      .map(([legacyLocationKey, value]) => {
+        const auto = autoResolved.get(legacyLocationKey);
+        return {
+          legacyLocationKey,
+          barrio: value.barrio,
+          ciudadMunicipio: value.ciudadMunicipio,
+          occurrences: value.occurrences,
+          resolved: Boolean(auto),
+          autoMatch: auto
+            ? {
+                provinceName: auto.provinceName,
+                municipalityName: auto.municipalityName,
+                sectorName: auto.sectorName,
+                sectorIsNew: auto.sectorIsNew,
+              }
+            : undefined,
+        };
+      })
       .sort((a, b) => b.occurrences - a.occurrences);
+  }
+
+  /**
+   * Intenta resolver cada ubicación distinta (Barrio + Ciudad/Municipio) del
+   * archivo contra el catálogo geográfico ya existente, sin intervención del
+   * admin:
+   * - Ciudad/Municipio se compara (sin tildes/mayúsculas) contra
+   *   MunicipalityEntity.name. Si hay exactamente un match, se usa esa
+   *   provincia/municipio (nunca se inventa una provincia: el archivo legado
+   *   no trae esa columna, así que un municipio sin match ambiguo o
+   *   inexistente queda para resolución manual — más seguro que adivinar).
+   * - Barrio/Localidad se compara contra SectorEntity.name dentro de ese
+   *   municipio. Si existe, se reutiliza; si no, se marca createNew (el
+   *   sector se crea recién al confirmar — ver ClientsImportProcessor -
+   *   resolveSector()), así una importación cancelada no deja sectores
+   *   huérfanos en el catálogo.
+   */
+  private async autoResolveLocations(rows: LegacyClientRow[]): Promise<Map<string, AutoResolvedLocation>> {
+    const distinctByKey = new Map<string, { barrio: string; ciudadMunicipio: string }>();
+    for (const row of rows) {
+      const key = buildLocationKey(row.barrio, row.ciudadMunicipio);
+      if (key === '||' || distinctByKey.has(key)) continue;
+      distinctByKey.set(key, { barrio: row.barrio.trim(), ciudadMunicipio: row.ciudadMunicipio.trim() });
+    }
+
+    const result = new Map<string, AutoResolvedLocation>();
+    if (distinctByKey.size === 0) return result;
+
+    const municipalities = await this.municipalityRepository.find({
+      where: { isActive: true },
+      relations: ['province'],
+    });
+    const municipalitiesByName = new Map<string, MunicipalityEntity[]>();
+    for (const municipality of municipalities) {
+      const key = normalizeGeoName(municipality.name);
+      const bucket = municipalitiesByName.get(key) || [];
+      bucket.push(municipality);
+      municipalitiesByName.set(key, bucket);
+    }
+
+    const sectorsByMunicipality = new Map<string, SectorEntity[]>();
+
+    for (const [key, { barrio, ciudadMunicipio }] of distinctByKey) {
+      if (!barrio || !ciudadMunicipio) continue;
+
+      const municipality = this.findMunicipalityMatch(ciudadMunicipio, municipalitiesByName, municipalities);
+      if (!municipality) continue;
+
+      let sectors = sectorsByMunicipality.get(municipality.id);
+      if (!sectors) {
+        sectors = await this.sectorRepository.find({ where: { municipalityId: municipality.id, isActive: true } });
+        sectorsByMunicipality.set(municipality.id, sectors);
+      }
+      const normalizedBarrio = normalizeGeoName(barrio);
+      const existingSector = sectors.find((s) => normalizeGeoName(s.name) === normalizedBarrio);
+
+      result.set(key, {
+        target: existingSector ? { sectorId: existingSector.id } : { createNew: { name: barrio, municipalityId: municipality.id } },
+        provinceName: municipality.province?.name || '',
+        municipalityName: municipality.name,
+        sectorName: existingSector ? existingSector.name : barrio,
+        sectorIsNew: !existingSector,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Resuelve el municipio de una fila legada contra el catálogo, tolerando el
+   * caso frecuente en RD de que el export legado use el nombre corto/coloquial
+   * ("Azua") mientras el catálogo oficial usa el nombre largo ("Azua de
+   * Compostela", "San Juan de la Maguana", etc.):
+   * 1. Match exacto (normalizado) primero — es el caso más común y el más barato.
+   * 2. Si no hay exacto, empareja por prefijo con borde de palabra en ambas
+   *    direcciones ("azua" vs "azua de compostela"). Nunca por substring
+   *    libre — evitaría falsos positivos tipo "San Juan" vs "San Juan Bautista".
+   * Si el resultado es ambiguo (más de un municipio candidato) o no hay
+   * ninguno, devuelve null y esa ubicación queda para resolución manual.
+   */
+  private findMunicipalityMatch(
+    ciudadMunicipio: string,
+    municipalitiesByName: Map<string, MunicipalityEntity[]>,
+    allMunicipalities: MunicipalityEntity[],
+  ): MunicipalityEntity | null {
+    const normalizedCiudad = normalizeGeoName(ciudadMunicipio);
+
+    const exactMatches = municipalitiesByName.get(normalizedCiudad) || [];
+    if (exactMatches.length === 1) return exactMatches[0];
+    if (exactMatches.length > 1) return null;
+
+    const prefixMatches = allMunicipalities.filter((m) => {
+      const normalizedName = normalizeGeoName(m.name);
+      return normalizedName.startsWith(`${normalizedCiudad} `) || normalizedCiudad.startsWith(`${normalizedName} `);
+    });
+    return prefixMatches.length === 1 ? prefixMatches[0] : null;
   }
 
   private async summarizePlans(rows: LegacyClientRow[]): Promise<DistinctPlanSummary[]> {
@@ -241,16 +363,33 @@ export class ClientsImportService {
       byRaw.set(raw, (byRaw.get(raw) || 0) + 1);
     }
 
+    // Solo se pide el catálogo completo si hace falta (hay algún texto que
+    // parsePlanInternet no supo interpretar) — evita la query cuando el
+    // archivo trae únicamente el formato "<velocidad> Mbps <precio>".
+    const needsNameMatch = [...byRaw.keys()].some((raw) => !parsePlanInternet(raw));
+    const existingPlans = needsNameMatch ? await this.planRepository.find({ where: { isActive: true } }) : [];
+
     const results: DistinctPlanSummary[] = [];
     for (const [raw, occurrences] of byRaw.entries()) {
-      const parsed = parsePlanInternet(raw);
+      let parsed = parsePlanInternet(raw);
       let matchesExistingPlan = false;
+
       if (parsed) {
         const existing = await this.planRepository.findOne({
           where: { speedMbps: parsed.speedMbps, monthlyPrice: parsed.monthlyPrice as any },
         });
         matchesExistingPlan = Boolean(existing);
+      } else {
+        // Formato "<nombre comercial> <precio>" sin velocidad explícita (ej.
+        // "PYME Basico 2800.00") — se busca por nombre+precio exactos contra
+        // el catálogo en vez de dejarlo sin contrato (ver matchPlanByName()).
+        const namedMatch = matchPlanByName(raw, existingPlans);
+        if (namedMatch) {
+          parsed = { speedMbps: namedMatch.speedMbps, monthlyPrice: Number(namedMatch.monthlyPrice) };
+          matchesExistingPlan = true;
+        }
       }
+
       results.push({
         raw,
         speedMbps: parsed?.speedMbps ?? null,

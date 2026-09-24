@@ -3,8 +3,16 @@ export interface DistinctLocationSummary {
   barrio: string;
   ciudadMunicipio: string;
   occurrences: number;
-  /** Si ya viene resuelta (ej. reintento tras un análisis previo del mismo batch). */
+  /** true si ya quedó resuelta (auto-match contra el catálogo, o reintento tras un análisis previo). */
   resolved: boolean;
+  /** Presente solo si resolved=true por auto-match — para mostrarle al admin qué se asignó sin pedirle nada. */
+  autoMatch?: {
+    provinceName: string;
+    municipalityName: string;
+    sectorName: string;
+    /** true si el sector no existía y se creará al confirmar la importación. */
+    sectorIsNew: boolean;
+  };
 }
 
 export interface DistinctPlanSummary {

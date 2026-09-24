@@ -79,9 +79,11 @@ describe('ClientsImportService', () => {
     };
     sectorRepo = {
       findOneBy: jest.fn().mockResolvedValue({ id: 'sector-1', name: 'Las Yayas' }),
+      find: jest.fn().mockResolvedValue([]),
     };
     municipalityRepo = {
       findOneBy: jest.fn().mockResolvedValue({ id: 'muni-1', name: 'Azua' }),
+      find: jest.fn().mockResolvedValue([]),
     };
     minioStorage = {
       uploadBuffer: jest.fn().mockResolvedValue('client-imports/clientes.csv'),
@@ -164,10 +166,97 @@ describe('ClientsImportService', () => {
       expect(result.distinctPlans[0].matchesExistingPlan).toBe(true);
     });
 
+    it('un plan sin velocidad explícita ("PYME Basico 2800.00") se resuelve por nombre+precio, no queda "Sin contrato"', async () => {
+      planRepo.find = jest.fn().mockResolvedValue([{ id: 'plan-1', name: 'PYME Básico 50 Mbps', speedMbps: 50, monthlyPrice: 2800 }]);
+      const content = `${LEGACY_HEADER}\n${csvRow({ plan: 'PYME Basico 2800.00' })}`;
+      const result = await service.analyze(makeFile(content), 'user-1');
+
+      expect(result.distinctPlans[0]).toMatchObject({
+        raw: 'PYME Basico 2800.00',
+        speedMbps: 50,
+        monthlyPrice: 2800,
+        parseable: true,
+        matchesExistingPlan: true,
+      });
+    });
+
+    it('un plan sin velocidad y sin match en el catálogo queda parseable=false (no se inventa una velocidad)', async () => {
+      planRepo.find = jest.fn().mockResolvedValue([]);
+      const content = `${LEGACY_HEADER}\n${csvRow({ plan: 'Plan Corporativo Especial 3000.00' })}`;
+      const result = await service.analyze(makeFile(content), 'user-1');
+
+      expect(result.distinctPlans[0]).toMatchObject({ parseable: false, matchesExistingPlan: false });
+    });
+
     it('cuenta filas sin nombre o sin documento como rowsMissingRequiredFields', async () => {
       const content = `${LEGACY_HEADER}\n${csvRow({ nombre: '' })}\n${csvRow({ dni: '', nombre: 'Cliente 2' })}`;
       const result = await service.analyze(makeFile(content), 'user-1');
       expect(result.rowsMissingRequiredFields).toBe(2);
+    });
+
+    it('auto-resuelve el municipio por nombre (sin tildes/mayúsculas) y crea el sector nuevo al confirmar si no existe', async () => {
+      municipalityRepo.find.mockResolvedValue([{ id: 'muni-1', name: 'Azúa', province: { name: 'Azua' } }]);
+      sectorRepo.find.mockResolvedValue([]); // el barrio "Las Yayas" no existe todavía como sector
+
+      const content = `${LEGACY_HEADER}\n${csvRow({ barrio: 'Las Yayas', ciudad: 'azua' })}`; // minúscula, sin tilde
+      const result = await service.analyze(makeFile(content), 'user-1');
+
+      expect(result.distinctLocations).toHaveLength(1);
+      expect(result.distinctLocations[0]).toMatchObject({
+        resolved: true,
+        autoMatch: { provinceName: 'Azua', municipalityName: 'Azúa', sectorName: 'Las Yayas', sectorIsNew: true },
+      });
+
+      const batch = await batchRepo.findOneBy({ id: result.batchId });
+      expect(batch.status).toBe('MAPPED'); // ya no requiere pasar por el paso manual de mapeo
+      expect(batch.locationMapping['LAS YAYAS||AZUA']).toEqual({
+        createNew: { name: 'Las Yayas', municipalityId: 'muni-1' },
+      });
+    });
+
+    it('auto-resuelve al sector existente (por nombre) en vez de crear uno duplicado', async () => {
+      municipalityRepo.find.mockResolvedValue([{ id: 'muni-1', name: 'Azua', province: { name: 'Azua' } }]);
+      sectorRepo.find.mockResolvedValue([{ id: 'sector-9', name: 'Las Yayas', municipalityId: 'muni-1' }]);
+
+      const content = `${LEGACY_HEADER}\n${csvRow({ barrio: 'las yayas', ciudad: 'Azua' })}`;
+      const result = await service.analyze(makeFile(content), 'user-1');
+
+      expect(result.distinctLocations[0]).toMatchObject({
+        resolved: true,
+        autoMatch: { sectorName: 'Las Yayas', sectorIsNew: false },
+      });
+
+      const batch = await batchRepo.findOneBy({ id: result.batchId });
+      expect(batch.locationMapping['LAS YAYAS||AZUA']).toEqual({ sectorId: 'sector-9' });
+    });
+
+    it('auto-resuelve "Azua" contra el municipio oficial "Azua de Compostela" (nombre corto vs. largo, caso real de RD)', async () => {
+      municipalityRepo.find.mockResolvedValue([{ id: 'muni-azua', name: 'Azua de Compostela', province: { name: 'Azua' } }]);
+      sectorRepo.find.mockResolvedValue([{ id: 'sector-guanabanas', name: 'Las Guanábanas', municipalityId: 'muni-azua' }]);
+
+      const content = `${LEGACY_HEADER}\n${csvRow({ barrio: 'Las Guanabanas', ciudad: 'Azua' })}`;
+      const result = await service.analyze(makeFile(content), 'user-1');
+
+      expect(result.distinctLocations[0]).toMatchObject({
+        resolved: true,
+        autoMatch: { municipalityName: 'Azua de Compostela', sectorName: 'Las Guanábanas', sectorIsNew: false },
+      });
+      const batch = await batchRepo.findOneBy({ id: result.batchId });
+      expect(batch.locationMapping['LAS GUANABANAS||AZUA']).toEqual({ sectorId: 'sector-guanabanas' });
+    });
+
+    it('municipio ambiguo (mismo nombre en más de una provincia) no se auto-resuelve, queda para revisión manual', async () => {
+      municipalityRepo.find.mockResolvedValue([
+        { id: 'muni-1', name: 'Villa González', province: { name: 'Santiago' } },
+        { id: 'muni-2', name: 'Villa González', province: { name: 'Otra Provincia' } },
+      ]);
+
+      const content = `${LEGACY_HEADER}\n${csvRow({ barrio: 'Centro', ciudad: 'Villa González' })}`;
+      const result = await service.analyze(makeFile(content), 'user-1');
+
+      expect(result.distinctLocations[0].resolved).toBe(false);
+      const batch = await batchRepo.findOneBy({ id: result.batchId });
+      expect(batch.status).toBe('ANALYZED');
     });
   });
 

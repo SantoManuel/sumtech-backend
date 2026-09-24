@@ -23,6 +23,7 @@ import {
   buildLocationKey,
   inferDocType,
   mapEstadoToContractStatus,
+  matchPlanByName,
   normalizeDocNumber,
   parseGpsCoordinates,
   parseInstallDate,
@@ -107,6 +108,10 @@ export class ClientsImportProcessor extends WorkerHost {
       const { rows } = await parseLegacyClientFile(buffer, batch.originalFilename);
 
       const clientsByNormalizedDoc = await this.buildClientLookup();
+      // Catálogo completo de planes: además de la búsqueda exacta por
+      // velocidad+precio (planCache), sirve para matchPlanByName() cuando el
+      // texto legado no trae velocidad explícita (ej. "PYME Basico 2800.00").
+      const existingPlans = await this.planRepository.find({ where: { isActive: true } });
       const planCache = new Map<string, PlanEntity>();
       const sectorCache = new Map<string, SectorEntity>();
       const credentialsCollected: ImportedClientCredentials[] = [];
@@ -119,7 +124,7 @@ export class ClientsImportProcessor extends WorkerHost {
       for (const chunk of chunkArray(rows, CHUNK_SIZE)) {
         for (const row of chunk) {
           try {
-            const outcome = await this.processRow(row, batch, clientsByNormalizedDoc, planCache, sectorCache, credentialsCollected);
+            const outcome = await this.processRow(row, batch, clientsByNormalizedDoc, existingPlans, planCache, sectorCache, credentialsCollected);
             if (outcome === 'created') createdCount++;
             else updatedCount++;
           } catch (error: any) {
@@ -179,6 +184,7 @@ export class ClientsImportProcessor extends WorkerHost {
     row: LegacyClientRow,
     batch: ClientImportBatchEntity,
     clientsByNormalizedDoc: Map<string, ClientEntity>,
+    existingPlans: PlanEntity[],
     planCache: Map<string, PlanEntity>,
     sectorCache: Map<string, SectorEntity>,
     credentialsCollected: ImportedClientCredentials[],
@@ -248,7 +254,10 @@ export class ClientsImportProcessor extends WorkerHost {
     }
     address = await this.addressRepository.save(address);
 
-    const parsedPlan = parsePlanInternet(row.planInternet);
+    // "20.0 Mbps 850.00" se parsea directo; "PYME Basico 2800.00" (tiers
+    // empresariales sin velocidad explícita en el texto) se resuelve por
+    // nombre+precio contra el catálogo — ver matchPlanByName().
+    const parsedPlan = this.resolveParsedPlan(row.planInternet, existingPlans);
     if (parsedPlan) {
       const plan = await this.resolvePlan(parsedPlan, planCache);
       const { status } = mapEstadoToContractStatus(row.estado);
@@ -389,6 +398,22 @@ export class ClientsImportProcessor extends WorkerHost {
     if (!sector) throw new Error(`No se pudo resolver el sector para "${locationKey}".`);
     sectorCache.set(locationKey, sector);
     return sector;
+  }
+
+  /**
+   * "20.0 Mbps 850.00" se resuelve directo vía parsePlanInternet(). Los tiers
+   * empresariales legados (ej. "PYME Basico 2800.00") no traen velocidad en
+   * el texto, así que se buscan por nombre+precio exactos contra el
+   * catálogo — si el nombre+precio no coincide con ningún PlanEntity, no hay
+   * forma segura de inventar una velocidad, así que la fila queda sin
+   * contrato (igual que antes) en vez de crear un plan con datos incorrectos.
+   */
+  private resolveParsedPlan(raw: string, existingPlans: PlanEntity[]): { speedMbps: number; monthlyPrice: number } | null {
+    const parsed = parsePlanInternet(raw);
+    if (parsed) return parsed;
+
+    const namedMatch = matchPlanByName(raw, existingPlans);
+    return namedMatch ? { speedMbps: namedMatch.speedMbps, monthlyPrice: Number(namedMatch.monthlyPrice) } : null;
   }
 
   private async resolvePlan(parsed: { speedMbps: number; monthlyPrice: number }, planCache: Map<string, PlanEntity>): Promise<PlanEntity> {

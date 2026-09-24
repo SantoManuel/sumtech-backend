@@ -9,6 +9,7 @@ import { AuditLogEntity } from '../modules/users/entities/audit-log.entity';
 import { RefreshTokenEntity } from '../modules/auth/entities/refresh-token.entity';
 import { EmployeeEntity } from '../modules/employees/entities/employee.entity';
 import { PlanEntity } from '../modules/plans/entities/plan.entity';
+import { ServiceFeeEntity } from '../modules/plans/entities/service-fee.entity';
 import { ClientEntity } from '../modules/clients/entities/client.entity';
 import { AddressEntity } from '../modules/clients/entities/address.entity';
 import { AddressGpsRequestEntity } from '../modules/clients/entities/address-gps-request.entity';
@@ -84,6 +85,7 @@ export const entities = [
   TenantConfigEntity,
   // com
   PlanEntity,
+  ServiceFeeEntity,
   ClientEntity,
   AddressEntity,
   AddressGpsRequestEntity,

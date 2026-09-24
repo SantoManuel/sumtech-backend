@@ -3,6 +3,9 @@ import {
   inferDocType,
   mapEstadoToContractStatus,
   parsePlanInternet,
+  extractPlanNamePrice,
+  stripMbpsSuffix,
+  matchPlanByName,
   parseInstallDate,
   parseGpsCoordinates,
   parseSaldo,
@@ -75,6 +78,59 @@ describe('parsePlanInternet', () => {
 
   it('vacío -> null', () => {
     expect(parsePlanInternet('')).toBeNull();
+  });
+});
+
+describe('extractPlanNamePrice', () => {
+  it('separa el nombre comercial del precio final ("PYME Basico 2800.00")', () => {
+    expect(extractPlanNamePrice('PYME Basico 2800.00')).toEqual({ namePart: 'PYME Basico', price: 2800 });
+  });
+
+  it('tolera separador de miles en el precio', () => {
+    expect(extractPlanNamePrice('Plan Oro 1,600.00')).toEqual({ namePart: 'Plan Oro', price: 1600 });
+  });
+
+  it('sin precio decimal al final -> null', () => {
+    expect(extractPlanNamePrice('PYME Basico')).toBeNull();
+  });
+
+  it('vacío -> null', () => {
+    expect(extractPlanNamePrice('')).toBeNull();
+  });
+});
+
+describe('stripMbpsSuffix', () => {
+  it('quita el sufijo de velocidad del nombre del catálogo', () => {
+    expect(stripMbpsSuffix('PYME Básico 50 Mbps')).toBe('PYME Básico');
+    expect(stripMbpsSuffix('PYME Pro 100 Mbps')).toBe('PYME Pro');
+  });
+
+  it('sin sufijo de Mbps, devuelve el nombre tal cual (trim)', () => {
+    expect(stripMbpsSuffix('  Plan Oro  ')).toBe('Plan Oro');
+  });
+});
+
+describe('matchPlanByName', () => {
+  const catalog = [
+    { name: 'PYME Básico 50 Mbps', monthlyPrice: 2800 },
+    { name: 'PYME Pro 100 Mbps', monthlyPrice: 4500 },
+  ];
+
+  it('empareja por nombre (sin tildes/mayúsculas) + precio exacto', () => {
+    expect(matchPlanByName('PYME Basico 2800.00', catalog)).toBe(catalog[0]);
+    expect(matchPlanByName('pyme pro 4500.00', catalog)).toBe(catalog[1]);
+  });
+
+  it('mismo nombre pero precio distinto -> null (no asume el plan homónimo)', () => {
+    expect(matchPlanByName('PYME Basico 3000.00', catalog)).toBeNull();
+  });
+
+  it('nombre sin ningún plan parecido en el catálogo -> null', () => {
+    expect(matchPlanByName('Plan Corporativo Especial 3000.00', catalog)).toBeNull();
+  });
+
+  it('formato "Mbps" reconocible por parsePlanInternet -> null (no es su formato, no debe interferir)', () => {
+    expect(matchPlanByName('50.0 Mbps 1600.00', catalog)).toBeNull();
   });
 });
 

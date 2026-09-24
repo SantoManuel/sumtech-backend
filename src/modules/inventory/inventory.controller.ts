@@ -57,6 +57,17 @@ export class InventoryController {
     return !!roles?.some((r) => ADMIN_ROLES.includes(r as Role));
   }
 
+  /**
+   * Solo un TÉCNICO de campo debe quedar restringido a su propio inventario:
+   * es la única de las READ_ROLES cuyo trabajo es "cargar equipo consigo", por
+   * lo que ver el de otro compañero sería una fuga real. CAJERO/AGENTE_CRM no
+   * cargan equipo propio — necesitan poder consultar libremente (ej. filtrar
+   * por clientId desde la vista 360 del cliente, reusada en /cajero y /crm).
+   */
+  private isFieldTechnicianOnly(roles: string[] | undefined): boolean {
+    return !!roles?.includes(Role.TECNICO) && !this.isAdminRole(roles);
+  }
+
   /** Un técnico solo puede consultar SU PROPIO inventario/despachos, nunca los de otro compañero. */
   private assertOwnEmployeeIdOrAdmin(targetEmployeeId: string, currentEmployeeId: string, roles: string[]): void {
     if (this.isAdminRole(roles)) return;
@@ -209,9 +220,11 @@ export class InventoryController {
     @CurrentUser('employeeId') currentEmployeeId: string,
     @CurrentUser('roles') roles: string[],
   ) {
-    // Un no-admin nunca puede listar el equipo de otro empleado ni el de todo el
-    // almacén: se fuerza su propio employeeId sin importar qué haya enviado.
-    if (!this.isAdminRole(roles)) {
+    // Un técnico de campo nunca puede listar el equipo de otro compañero ni el
+    // de todo el almacén: se fuerza su propio employeeId sin importar qué haya
+    // enviado. CAJERO/GERENTE/ADMIN sí pueden filtrar libremente (ej. por
+    // clientId, para ver el equipo instalado en la ficha 360 del cliente).
+    if (this.isFieldTechnicianOnly(roles)) {
       filterDto.employeeId = currentEmployeeId;
     }
     return this.equipmentMovementService.findEquipment(filterDto);

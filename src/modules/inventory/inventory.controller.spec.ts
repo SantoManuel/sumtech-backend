@@ -50,7 +50,7 @@ describe('InventoryController — control de acceso por propiedad', () => {
   });
 
   describe('findEquipment', () => {
-    it('fuerza employeeId al del llamante cuando no es admin, sin importar lo enviado', async () => {
+    it('un TÉCNICO siempre queda forzado a su propio employeeId, sin importar lo enviado', async () => {
       const filterDto: any = { employeeId: 'tech-B' };
       await controller.findEquipment(filterDto, 'tech-A', [Role.TECNICO]);
       expect(filterDto.employeeId).toBe('tech-A');
@@ -60,6 +60,27 @@ describe('InventoryController — control de acceso por propiedad', () => {
     it('respeta el filtro enviado cuando el llamante es admin', async () => {
       const filterDto: any = { employeeId: 'tech-B' };
       await controller.findEquipment(filterDto, 'admin-1', [Role.ADMIN]);
+      expect(filterDto.employeeId).toBe('tech-B');
+    });
+
+    it('respeta el filtro enviado cuando el llamante es GERENTE (también es rol admin)', async () => {
+      const filterDto: any = { clientId: 'client-1' };
+      await controller.findEquipment(filterDto, 'gerente-1', [Role.GERENTE]);
+      expect(filterDto.employeeId).toBeUndefined();
+      expect(filterDto.clientId).toBe('client-1');
+    });
+
+    it('un CAJERO puede filtrar por clientId libremente — no se le fuerza employeeId (no carga equipo propio, solo consulta la ficha del cliente)', async () => {
+      const filterDto: any = { clientId: 'client-1' };
+      await controller.findEquipment(filterDto, 'cajero-1', [Role.CAJERO]);
+      expect(filterDto.employeeId).toBeUndefined();
+      expect(filterDto.clientId).toBe('client-1');
+      expect(equipmentMovementService.findEquipment).toHaveBeenCalledWith(filterDto);
+    });
+
+    it('un usuario con roles TECNICO Y ADMIN a la vez no queda restringido (el rol admin manda)', async () => {
+      const filterDto: any = { employeeId: 'tech-B' };
+      await controller.findEquipment(filterDto, 'multi-1', [Role.TECNICO, Role.ADMIN]);
       expect(filterDto.employeeId).toBe('tech-B');
     });
   });

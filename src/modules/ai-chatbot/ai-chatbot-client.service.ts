@@ -26,29 +26,46 @@ export interface AiChatbotConversation {
 
 /**
  * Cliente HTTP hacia `Chatbot_sumtech` (proyecto NestJS separado con RAG +
- * Gemini/Ollama). Encapsula la comunicación server-to-server para que sus
- * consumidores (PortalService para clientes autenticados, PublicChatService
- * para visitantes anónimos del landing) no conozcan detalles de transporte/
- * autenticación — solo piden "responde este mensaje" y reciben la respuesta
- * ya tipada.
+ * Gemini/Ollama, ahora SaaS multi-tenant). Encapsula la comunicación
+ * server-to-server para que sus consumidores (PortalService para clientes
+ * autenticados, PublicChatService para visitantes anónimos del landing) no
+ * conozcan detalles de transporte/autenticación — solo piden "responde este
+ * mensaje" y reciben la respuesta ya tipada.
  *
- * `Chatbot_sumtech` expone `POST /chat/web/message` como único endpoint
- * genérico de texto (el resto de sus controllers están acoplados a webhooks
- * de WhatsApp/Meta/Twilio). Protegido con ApiKeyGuard del lado del chatbot.
+ * Sumtech es "un tenant más" del SaaS (slug `sumtech`, plan PRO) — por eso el
+ * mensaje conversacional viaja por el endpoint multi-tenant genérico
+ * `POST /chat/widget/message` con la TenantApiKey SECRET del tenant, en vez
+ * del endpoint legacy `/chat/web/message` (que no resuelve tenant y usaba la
+ * key maestra de administración). Las otras dos llamadas (`/whatsapp/send` y
+ * `/admin/conversations/...`) siguen usando esa key maestra a propósito: son
+ * endpoints administrativos que `TenantApiKeyGuard` no protege.
  */
 @Injectable()
 export class AiChatbotClientService {
   private readonly logger = new Logger(AiChatbotClientService.name);
   private readonly http: AxiosInstance;
+  private readonly tenantApiKey: string;
+  private readonly tenantId: string;
 
   constructor() {
+    this.tenantApiKey = process.env.CHATBOT_TENANT_API_KEY || '';
+    this.tenantId = process.env.CHATBOT_TENANT_ID || '';
+
     this.http = axios.create({
       baseURL: process.env.CHATBOT_URL || 'http://localhost:4001/api/v1',
-      // Medido en vivo: la latencia real de Chatbot_sumtech (RAG + Gemini)
-      // varía entre ~3s y ~42s según la consulta — un timeout corto (8s)
-      // provocaba fallbacks espurios al ERP aunque la IA sí iba a responder.
-      timeout: 45000,
+      // Medido en vivo: con el proveedor local (Ollama, sin GPU dedicada) la
+      // latencia real de Chatbot_sumtech (RAG + LLM) llegó a 31s en una sola
+      // consulta y el propio timeout interno de Chatbot_sumtech hacia Ollama
+      // es de 120s (ver AiProviderProfile.config.timeoutMs) — un timeout aquí
+      // por debajo de eso cortaría respuestas que sí iban a completarse.
+      // Configurable por env porque Sumtech piensa seguir en modelo local
+      // (más lento que un proveedor en la nube) y este valor puede necesitar
+      // ajuste sin redeploy si la latencia real cambia.
+      timeout: Number(process.env.CHATBOT_TIMEOUT_MS) || 150000,
       headers: {
+        // Key maestra de administración — solo para /whatsapp/send y
+        // /admin/*. sendMessage() pisa este header con la TenantApiKey en
+        // cada request porque /chat/widget/* no acepta la key maestra.
         'x-api-key': process.env.CHATBOT_API_KEY || '',
       },
     });
@@ -61,11 +78,11 @@ export class AiChatbotClientService {
    * landing usa el `id` del Lead creado para el visitante anónimo.
    */
   async sendMessage(sessionId: string, message: string, userName?: string): Promise<AiChatbotResponse> {
-    const { data } = await this.http.post<AiChatbotResponse>('/chat/web/message', {
-      sessionId,
-      message,
-      userName,
-    });
+    const { data } = await this.http.post<AiChatbotResponse>(
+      '/chat/widget/message',
+      { sessionId, message, userName },
+      { headers: { 'x-api-key': this.tenantApiKey } },
+    );
     return data;
   }
 
@@ -96,8 +113,25 @@ export class AiChatbotClientService {
    * `PublicChatService.sendMessage` como `sessionId`. Devuelve `null` si no
    * hay conversación registrada (404), en vez de lanzar — es un caso
    * esperado, no un error.
+   *
+   * `WidgetChatController` (multi-tenant) guarda el externalId con prefijo
+   * `${tenantId}_${sessionId}` — se intenta primero así, y si no aparece se
+   * reintenta sin prefijo por compatibilidad con conversaciones creadas antes
+   * de migrar a `/chat/widget/message` (donde el externalId viajaba crudo).
    */
   async getConversationByExternalId(externalId: string): Promise<AiChatbotConversation | null> {
+    const prefixedId = this.tenantId ? `${this.tenantId}_${externalId}` : externalId;
+    const prefixedResult = await this.fetchConversationByExternalId(prefixedId);
+    if (prefixedResult !== null) {
+      return prefixedResult;
+    }
+    if (prefixedId === externalId) {
+      return null;
+    }
+    return this.fetchConversationByExternalId(externalId);
+  }
+
+  private async fetchConversationByExternalId(externalId: string): Promise<AiChatbotConversation | null> {
     try {
       const { data } = await this.http.get<AiChatbotConversation>(`/admin/conversations/by-external-id/${externalId}`);
       return data;

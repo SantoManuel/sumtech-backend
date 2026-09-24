@@ -81,6 +81,50 @@ export function parsePlanInternet(raw: string): { speedMbps: number; monthlyPric
   return { speedMbps, monthlyPrice };
 }
 
+/**
+ * Extrae nombre + precio de un "Plan Internet" legado que NO trae velocidad
+ * explícita, solo un nombre comercial y el precio al final (ej. "PYME
+ * Basico 2800.00" -> { namePart: "PYME Basico", price: 2800 }). Este es el
+ * formato de los planes empresariales por tier — parsePlanInternet() no lo
+ * reconoce porque no hay ningún "Mbps" en el texto.
+ */
+export function extractPlanNamePrice(raw: string): { namePart: string; price: number } | null {
+  if (!raw) return null;
+  const match = raw.trim().match(/^(.*?)\s+([\d,]+\.\d{1,2})\s*$/);
+  if (!match) return null;
+  const namePart = match[1].trim();
+  const price = parseFloat(match[2].replace(/,/g, ''));
+  if (!namePart || !Number.isFinite(price) || price <= 0) return null;
+  return { namePart, price };
+}
+
+/** Quita el sufijo "<velocidad> Mbps" de un nombre de plan del catálogo, para poder compararlo contra el nombre comercial de extractPlanNamePrice() (ej. "PYME Básico 50 Mbps" -> "PYME Básico"). */
+export function stripMbpsSuffix(name: string): string {
+  return (name || '').replace(/\s*[\d.]+\s*mbps\s*$/i, '').trim();
+}
+
+/**
+ * Empareja un "Plan Internet" legado sin velocidad explícita (ej. "PYME
+ * Basico 2800.00") contra el catálogo de planes existente, comparando el
+ * nombre comercial (sin tildes/mayúsculas, sin el sufijo "Mbps") Y el precio
+ * exacto — las dos condiciones a la vez, para no asignarle a un cliente un
+ * plan homónimo con otro precio. Sin match único -> null (el llamador decide
+ * qué hacer; nunca se inventa una velocidad).
+ */
+export function matchPlanByName<T extends { name: string; monthlyPrice: number | string }>(
+  raw: string,
+  existingPlans: T[],
+): T | null {
+  const extracted = extractPlanNamePrice(raw);
+  if (!extracted) return null;
+
+  const normalizedNamePart = normalizeGeoName(extracted.namePart);
+  const candidates = existingPlans.filter(
+    (plan) => normalizeGeoName(stripMbpsSuffix(plan.name)) === normalizedNamePart && Number(plan.monthlyPrice) === extracted.price,
+  );
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 /** Parsea "20/01/2024 12:55" (o solo la fecha) -> "2024-01-20". Null si no calza el patrón. */
 export function parseInstallDate(raw: string): string | null {
   if (!raw) return null;
@@ -126,4 +170,18 @@ export function parseSaldo(raw: string): number {
 /** Clave estable para agrupar filas por ubicación legacy (Barrio + Ciudad/Municipio). */
 export function buildLocationKey(barrio: string, ciudadMunicipio: string): string {
   return `${(barrio || '').trim().toUpperCase()}||${(ciudadMunicipio || '').trim().toUpperCase()}`;
+}
+
+/**
+ * Normaliza un nombre geográfico (Municipio/Sector) para compararlo contra el
+ * catálogo sin que tildes, mayúsculas o espacios repetidos generen falsos
+ * negativos — mismo criterio que normalizeHeader() en legacy-client-parser.ts.
+ */
+export function normalizeGeoName(value: string): string {
+  return (value || '')
+    .normalize('NFD')
+    .replace(new RegExp('[\\u0300-\\u036f]', 'g'), '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
 }

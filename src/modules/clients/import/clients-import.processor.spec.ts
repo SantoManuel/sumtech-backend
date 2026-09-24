@@ -266,6 +266,35 @@ describe('ClientsImportProcessor', () => {
     expect(contractRepo.rows).toHaveLength(2);
   });
 
+  it('resuelve un plan sin velocidad explícita ("PYME Basico 2800.00") por nombre+precio contra un plan ya existente, sin duplicarlo', async () => {
+    planRepo.rows.push({
+      id: 'plan-pyme-basico',
+      name: 'PYME Básico 50 Mbps',
+      serviceType: 'INTERNET',
+      speedMbps: 50,
+      monthlyPrice: 2800,
+      isActive: true,
+    } as any);
+
+    const content = `${LEGACY_HEADER}\n${csvRow({ plan: 'PYME Basico 2800.00' })}`;
+    await processor.process(makeJob(content));
+
+    expect(planRepo.rows).toHaveLength(1); // no se creó un plan nuevo/duplicado
+    expect(contractRepo.rows).toHaveLength(1);
+    expect(contractRepo.rows[0]).toMatchObject({ planId: 'plan-pyme-basico', status: 'ACTIVE' });
+    expect(batch.errorCount).toBe(0);
+  });
+
+  it('un plan sin velocidad y sin match por nombre+precio en el catálogo se importa sin contrato (no se inventa una velocidad)', async () => {
+    const content = `${LEGACY_HEADER}\n${csvRow({ plan: 'Plan Corporativo Especial 3000.00' })}`;
+    await processor.process(makeJob(content));
+
+    expect(planRepo.rows).toHaveLength(0);
+    expect(contractRepo.rows).toHaveLength(0);
+    expect(clientRepo.rows).toHaveLength(1); // el cliente sí se crea, solo queda sin contrato
+    expect(batch.errorCount).toBe(0);
+  });
+
   it('no duplica la factura de Saldo Inicial si el cliente ya tiene una PENDING_PAYMENT con ese concepto', async () => {
     clientRepo.rows.push({
       id: 'existing-client',
