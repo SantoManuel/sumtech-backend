@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { BullModule } from '@nestjs/bullmq';
 import { ClientsService } from './clients.service';
@@ -24,15 +24,17 @@ import { PrintingModule } from '../printing/printing.module';
 import { DgiiModule } from '../invoicing/dgii/dgii.module';
 import { ContractSignaturesModule } from '../contract-signatures/contract-signatures.module';
 import { CompanyModule } from '../company/company.module';
+import { BillingModule } from '../billing/billing.module';
 import { AiChatbotClientModule } from '../ai-chatbot/ai-chatbot-client.module';
 import { StorageModule } from '../storage/storage.module';
+import { NetworkModule } from '../network/network.module';
 import { ClientsExportService } from './export/clients-export.service';
 import { ClientsImportService, CLIENTS_IMPORT_QUEUE } from './import/clients-import.service';
 import { ClientsImportProcessor } from './import/clients-import.processor';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
+    TenantTypeOrmModule.forFeature([
       ClientEntity,
       AddressEntity,
       AddressGpsRequestEntity,
@@ -56,6 +58,8 @@ import { ClientsImportProcessor } from './import/clients-import.processor';
     CompanyModule,
     AiChatbotClientModule,
     StorageModule,
+    BillingModule,
+    NetworkModule,
     JwtModule.register({}),
   ],
   // ClientsImportController DEBE ir antes que ClientsController: registra

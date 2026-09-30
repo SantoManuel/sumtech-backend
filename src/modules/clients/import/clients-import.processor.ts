@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Job } from 'bullmq';
 import * as bcrypt from 'bcrypt';
 import { ClientImportBatchEntity, LocationMappingTarget } from '../entities/client-import-batch.entity';
@@ -12,6 +12,7 @@ import { ContractEntity } from '../entities/contract.entity';
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { SectorEntity } from '../../geography/entities/sector.entity';
 import { InvoiceEntity } from '../../invoicing/entities/invoice.entity';
+import { OPEN_INVOICE_STATUSES } from '../../invoicing/invoice-status.util';
 import { UserEntity } from '../../users/entities/user.entity';
 import { RoleEntity } from '../../users/entities/role.entity';
 import { Role } from '../../../common/enums/role.enum';
@@ -32,6 +33,8 @@ import {
 } from './legacy-field-mappers';
 import { CLIENTS_IMPORT_QUEUE } from './clients-import.service';
 import { buildCredentialsReportCsv, ImportedClientCredentials } from './credentials-report';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
+import { TenantConnectionManagerService } from '../../../common/tenancy/tenant-connection-manager.service';
 
 const CHUNK_SIZE = 300;
 const SALDO_INICIAL_CONCEPT = 'Saldo Inicial (Migración Sistema Anterior)';
@@ -89,11 +92,38 @@ export class ClientsImportProcessor extends WorkerHost {
     @InjectRepository(RoleEntity)
     private readonly roleRepository: Repository<RoleEntity>,
     private readonly minioStorage: MinioStorageService,
+    private readonly tenantContext: TenantContextService,
+    private readonly connectionManager: TenantConnectionManagerService,
   ) {
     super();
   }
 
-  async process(job: Job<{ batchId: string }>): Promise<void> {
+  /**
+   * BullMQ ejecuta este worker en su propio ciclo async, sin el contexto de
+   * AsyncLocalStorage del request que encoló el job (ClientsImportService.confirm())
+   * — cualquier repositorio inyectado aquí es un Proxy que necesita un tenant
+   * activo para resolver la DataSource real (ver TenantContextService). Por
+   * eso el trabajo real vive en processInTenantContext() y este método solo
+   * resuelve el tenant desde job.data.tenantSlug y abre el contexto.
+   */
+  async process(job: Job<{ batchId: string; tenantSlug: string }>): Promise<void> {
+    if (!job.data.tenantSlug) {
+      throw new Error(`Job de importación ${job.id} no trae tenantSlug — no se puede resolver la DB del tenant.`);
+    }
+
+    const tenant = await this.connectionManager.resolveTenantBySlug(job.data.tenantSlug);
+    if (!tenant) {
+      throw new Error(`Tenant '${job.data.tenantSlug}' no existe (job ${job.id}).`);
+    }
+
+    const dataSource = await this.connectionManager.getDataSourceForTenant(tenant);
+
+    await this.tenantContext.run({ tenantId: tenant.id, slug: tenant.slug, dataSource }, () =>
+      this.processInTenantContext(job),
+    );
+  }
+
+  private async processInTenantContext(job: Job<{ batchId: string; tenantSlug: string }>): Promise<void> {
     const batch = await this.batchRepository.findOneBy({ id: job.data.batchId });
     if (!batch) {
       this.logger.error(`Batch ${job.data.batchId} no encontrado; se descarta el job.`);
@@ -284,7 +314,7 @@ export class ClientsImportProcessor extends WorkerHost {
       const saldo = parseSaldo(row.saldo);
       if (saldo > 0) {
         const existingSaldoInvoice = await this.invoiceRepository.findOne({
-          where: { clientId: client.id, concept: SALDO_INICIAL_CONCEPT, status: 'PENDING_PAYMENT' },
+          where: { clientId: client.id, concept: SALDO_INICIAL_CONCEPT, status: In(OPEN_INVOICE_STATUSES) },
         });
         if (!existingSaldoInvoice) {
           await this.invoiceRepository.save(

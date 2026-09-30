@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { DgiiSignerService } from './dgii-signer.service';
 import { DgiiXsdValidatorService } from './dgii-xsd-validator.service';
@@ -22,7 +22,7 @@ import { CompanyModule } from '../../company/company.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([DgiiReceivedInvoice, DgiiCertificationRun]),
+    TenantTypeOrmModule.forFeature([DgiiReceivedInvoice, DgiiCertificationRun]),
     UsersModule,
     CompanyModule,
     JwtModule.register({}),

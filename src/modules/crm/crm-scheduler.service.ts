@@ -10,6 +10,7 @@ import { NEXT_ACTION_CODE } from './entities/next-action.entity';
 import { SUBSCRIPTION_STATUS_CODE } from './entities/subscription-status.entity';
 import { CrmService } from './crm.service';
 import { MailService } from '../mail/mail.service';
+import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
 
 const ROUND_ROBIN_ROLE = 'AGENTE_CRM';
 const SURVEY_EXPIRY_DAYS = 7;
@@ -33,6 +34,7 @@ export class CrmSchedulerService {
     private readonly surveyRepository: Repository<SatisfactionSurveyEntity>,
     private readonly crmService: CrmService,
     private readonly mailService: MailService,
+    private readonly tenantIterator: TenantIteratorService,
   ) {}
 
   private async getActiveCrmAgents(): Promise<UserEntity[]> {
@@ -54,6 +56,12 @@ export class CrmSchedulerService {
    */
   @Cron('0 8 * * *')
   async sendDailyReminders(): Promise<void> {
+    await this.tenantIterator.runForEachActiveTenant('crm-daily-reminders', (tenant) =>
+      this.sendDailyRemindersForTenant(tenant.slug),
+    );
+  }
+
+  private async sendDailyRemindersForTenant(tenantSlug: string): Promise<void> {
     const agents = await this.getActiveCrmAgents();
     for (const agent of agents) {
       if (!agent.email) continue;
@@ -90,7 +98,7 @@ export class CrmSchedulerService {
       });
 
       this.logger.log(
-        `Recordatorio diario para ${agent.username}: ${opportunities.length} oportunidad(es), correo ${sent ? 'enviado' : 'NO enviado (ver log anterior)'}`,
+        `[tenant '${tenantSlug}'] Recordatorio diario para ${agent.username}: ${opportunities.length} oportunidad(es), correo ${sent ? 'enviado' : 'NO enviado (ver log anterior)'}`,
       );
     }
   }
@@ -98,6 +106,12 @@ export class CrmSchedulerService {
   /** Alerta de SLA en riesgo 9:00am — a cada agente activo, sus oportunidades que exceden el SLA de su estado. */
   @Cron('0 9 * * *')
   async sendSlaBreachAlerts(): Promise<void> {
+    await this.tenantIterator.runForEachActiveTenant('crm-sla-breach-alerts', (tenant) =>
+      this.sendSlaBreachAlertsForTenant(tenant.slug),
+    );
+  }
+
+  private async sendSlaBreachAlertsForTenant(tenantSlug: string): Promise<void> {
     const breaches = await this.crmService.findSlaBreaches();
     if (breaches.length === 0) return;
 
@@ -132,7 +146,7 @@ export class CrmSchedulerService {
       });
 
       this.logger.log(
-        `Alerta de SLA para ${agent.username}: ${agentBreaches.length} oportunidad(es), correo ${sent ? 'enviado' : 'NO enviado (ver log anterior)'}`,
+        `[tenant '${tenantSlug}'] Alerta de SLA para ${agent.username}: ${agentBreaches.length} oportunidad(es), correo ${sent ? 'enviado' : 'NO enviado (ver log anterior)'}`,
       );
     }
   }
@@ -145,6 +159,12 @@ export class CrmSchedulerService {
    */
   @Cron('0 10 * * *')
   async sendSatisfactionSurveys(): Promise<void> {
+    await this.tenantIterator.runForEachActiveTenant('crm-satisfaction-surveys', (tenant) =>
+      this.sendSatisfactionSurveysForTenant(tenant.slug),
+    );
+  }
+
+  private async sendSatisfactionSurveysForTenant(tenantSlug: string): Promise<void> {
     const dueOpportunities = await this.opportunityRepository
       .createQueryBuilder('o')
       .leftJoinAndSelect('o.nextAction', 'nextAction')
@@ -186,7 +206,7 @@ export class CrmSchedulerService {
       // deseado (el agente puede reenviar el enlace manualmente si hace falta).
       await this.opportunityRepository.update(opportunity.id, { nextActionId: null, nextActionDate: null });
 
-      this.logger.log(`Encuesta de satisfacción para "${opportunity.name}": correo ${sent ? 'enviado' : 'NO enviado (ver log anterior)'}`);
+      this.logger.log(`[tenant '${tenantSlug}'] Encuesta de satisfacción para "${opportunity.name}": correo ${sent ? 'enviado' : 'NO enviado (ver log anterior)'}`);
     }
   }
 }

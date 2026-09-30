@@ -43,6 +43,9 @@ export class ContractEntity {
   @Column({ name: 'billing_day', type: 'int', default: 15 })
   billingDay: number;
 
+  @Column({ name: 'grace_days_override', type: 'int', nullable: true })
+  graceDaysOverride?: number | null;
+
   @Column({ 
     type: 'enum', 
     enum: ['PENDING_INSTALL', 'ACTIVE', 'SUSPENDED', 'TERMINATED'], 

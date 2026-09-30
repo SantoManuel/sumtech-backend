@@ -1,6 +1,7 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
+import { DataSource } from 'typeorm';
 import { AppDataSource } from '../../config/database.config';
 import { CountryEntity } from '../../modules/geography/entities/country.entity';
 import { ProvinceEntity } from '../../modules/geography/entities/province.entity';
@@ -787,20 +788,24 @@ export const DOMINICAN_REPUBLIC_GEO_DATA: ProvinceSeed[] = [
   },
 ];
 
-export async function runGeographySeed() {
+// dataSource es opcional (default AppDataSource) para que el script standalone
+// (`npm run seed:geo`) siga funcionando sin cambios, mientras que el
+// aprovisionamiento de tenants (Fase 3) puede pasarle el DataSource recién
+// creado de un tenant nuevo en vez de sembrar sobre la DB de desarrollo.
+export async function runGeographySeed(dataSource: DataSource = AppDataSource) {
   console.log('🇩🇴 ==============================================================================');
   console.log('🇩🇴 INICIANDO SEMILLERO GEOGRÁFICO NACIONAL DE LA REPÚBLICA DOMINICANA');
   console.log('🇩🇴 Cobertura: 32 Provincias oficiales, municipios y sectores estratégicos');
   console.log('🇩🇴 ==============================================================================');
 
-  if (!AppDataSource.isInitialized) {
-    await AppDataSource.initialize();
+  if (!dataSource.isInitialized) {
+    await dataSource.initialize();
   }
 
-  const countryRepo = AppDataSource.getRepository(CountryEntity);
-  const provinceRepo = AppDataSource.getRepository(ProvinceEntity);
-  const municipalityRepo = AppDataSource.getRepository(MunicipalityEntity);
-  const sectorRepo = AppDataSource.getRepository(SectorEntity);
+  const countryRepo = dataSource.getRepository(CountryEntity);
+  const provinceRepo = dataSource.getRepository(ProvinceEntity);
+  const municipalityRepo = dataSource.getRepository(MunicipalityEntity);
+  const sectorRepo = dataSource.getRepository(SectorEntity);
 
   // 1. País: República Dominicana
   let country = await countryRepo.findOneBy({ code: 'DOM' });

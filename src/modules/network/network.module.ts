@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ZonesService } from './zones.service';
 import { ZonesController } from './zones.controller';
@@ -21,28 +21,57 @@ import { ZoneEntity } from './entities/zone.entity';
 import { NetworkNodeEntity } from './entities/network-node.entity';
 import { NetworkAccessEntity } from './entities/network-access.entity';
 import { ProvisioningAuditLogEntity } from './entities/provisioning-audit-log.entity';
+import { DeviceLogEntity } from './entities/device-log.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
+import { PlanEntity } from '../plans/entities/plan.entity';
+import { PppManagementService } from './services/ppp-management.service';
+import { NetworkAccessManagementController } from './network-access-management.controller';
 import { UsersModule } from '../users/users.module';
+import { NetworkConnectivityModule } from '../network-connectivity/network-connectivity.module';
+import { OltModule } from '../olt/olt.module';
+import { OltNativeProvisioningAdapter } from './olt-native-provisioning.adapter';
+import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
+
+import { BullModule } from '@nestjs/bullmq';
+import { NETWORK_OPS_QUEUE } from './network-ops.constants';
+import { ServiceControlService } from './service-control.service';
+import { NetworkOpsProcessor } from './network-ops.processor';
+import { PendingOperationsController } from './pending-operations.controller';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
+    TenantTypeOrmModule.forFeature([
       ZoneEntity,
       NetworkNodeEntity,
       NetworkAccessEntity,
       ProvisioningAuditLogEntity,
+      DeviceLogEntity,
       ContractEntity,
+      PlanEntity,
     ]),
+    BullModule.registerQueue({ name: NETWORK_OPS_QUEUE }),
+    NetworkConnectivityModule,
     UsersModule,
     JwtModule.register({}),
+    OltModule,
   ],
-  controllers: [ZonesController, NetworkNodesController, NetworkAccessController, NetworkAuditLogController],
+  controllers: [
+    ZonesController,
+    NetworkNodesController,
+    NetworkAccessController,
+    NetworkAccessManagementController,
+    NetworkAuditLogController,
+    PendingOperationsController,
+  ],
   providers: [
     ZonesService,
     NetworkNodesService,
     NetworkProvisioningService,
+    ServiceControlService,
+    NetworkOpsProcessor,
     ManualProvisioningAdapter,
     RouterOsProvisioningAdapter,
+    OltNativeProvisioningAdapter,
     NetworkProvisioningPortRegistry,
     routerOsClientFactoryProvider,
     NetworkContractCreatedListener,
@@ -50,7 +79,18 @@ import { UsersModule } from '../users/users.module';
     NetworkContractPlanChangedListener,
     NetworkPlanSpeedChangedListener,
     RouterOsShadowSyncService,
+    PppManagementService,
+    SuspensionPortalManagerService,
   ],
-  exports: [ZonesService, NetworkNodesService, NetworkProvisioningService, RouterOsShadowSyncService],
+  exports: [
+    ZonesService,
+    NetworkNodesService,
+    NetworkProvisioningService,
+    ServiceControlService,
+    NetworkProvisioningPortRegistry,
+    RouterOsShadowSyncService,
+    PppManagementService,
+    SuspensionPortalManagerService,
+  ],
 })
 export class NetworkModule {}

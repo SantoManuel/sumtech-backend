@@ -47,6 +47,15 @@ export class ProvisioningAuditLogEntity {
   @Column({ name: 'reason', type: 'text', nullable: true })
   reason?: string;
 
+  @Column({ name: 'actor_user_id', type: 'uuid', nullable: true })
+  actorUserId?: string | null;
+
+  @Column({ name: 'error_code', type: 'varchar', length: 50, nullable: true })
+  errorCode?: string | null;
+
+  @Column({ name: 'node_id', type: 'uuid', nullable: true })
+  nodeId?: string | null;
+
   @Column({ type: 'varchar', length: 100, default: 'SYSTEM' })
   actor: string;
 

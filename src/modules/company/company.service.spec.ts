@@ -1,20 +1,20 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { ConflictException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { DataSource } from 'typeorm';
+import { TENANT_DATA_SOURCE } from '../../common/tenancy/tenant-datasource.provider';
 import { CompanyService } from './company.service';
-import { TenantConfigEntity } from './entities/tenant-config.entity';
+import { CompanyProfileEntity } from './entities/company-profile.entity';
+import { MinioStorageService } from '../storage/minio-storage.service';
 
 describe('CompanyService', () => {
   let service: CompanyService;
-  let tenantRepo: any;
+  let profileRepo: any;
   let dataSource: any;
   let eventEmitter: any;
+  let minioStorage: any;
 
-  const mockTenant: Partial<TenantConfigEntity> = {
+  const mockProfile: Partial<CompanyProfileEntity> = {
     id: '11111111-1111-1111-1111-111111111111',
-    tenantCode: 'DEFAULT',
     name: 'Sumtech Telecom',
     companyName: 'SUMTECH TELECOM S.R.L.',
     commercialName: 'SUMTECH FIBRA & TV',
@@ -27,41 +27,41 @@ describe('CompanyService', () => {
     currency: 'DOP',
     timezone: 'America/Santo_Domingo',
     isActive: true,
-    isDefault: true,
     municipality: { code: '010100' } as any,
     province: { code: '010000' } as any,
+    siteContent: {},
     settings: {},
     createdAt: new Date(),
     updatedAt: new Date(),
   };
 
   beforeEach(async () => {
-    tenantRepo = {
-      find: jest.fn(),
+    profileRepo = {
       findOne: jest.fn(),
       create: jest.fn().mockImplementation((dto) => ({ ...dto, id: 'new-uuid' })),
       save: jest.fn().mockImplementation((entity) => Promise.resolve({ ...entity, id: entity.id || 'new-uuid' })),
-      update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
 
     dataSource = {
       transaction: jest.fn().mockImplementation(async (cb) => {
-        return cb({
-          getRepository: () => tenantRepo,
-        });
+        return cb({ getRepository: () => profileRepo });
       }),
     };
 
-    eventEmitter = {
-      emit: jest.fn(),
+    eventEmitter = { emit: jest.fn() };
+
+    minioStorage = {
+      uploadBuffer: jest.fn().mockResolvedValue('dgii-certs/uuid_cert.p12'),
+      getObjectBuffer: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CompanyService,
-        { provide: getRepositoryToken(TenantConfigEntity), useValue: tenantRepo },
-        { provide: DataSource, useValue: dataSource },
+        { provide: getRepositoryToken(CompanyProfileEntity), useValue: profileRepo },
+        { provide: TENANT_DATA_SOURCE, useValue: dataSource },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: MinioStorageService, useValue: minioStorage },
       ],
     }).compile();
 
@@ -72,156 +72,162 @@ describe('CompanyService', () => {
     expect(service).toBeDefined();
   });
 
-  describe('getDefaultTenant', () => {
-    it('debe retornar el tenant marcado como isDefault = true', async () => {
-      tenantRepo.findOne.mockResolvedValueOnce(mockTenant);
+  describe('getProfile', () => {
+    it('debe retornar el perfil existente de este tenant', async () => {
+      profileRepo.findOne.mockResolvedValueOnce(mockProfile);
 
-      const result = await service.getDefaultTenant();
+      const result = await service.getProfile();
 
-      expect(result).toEqual(mockTenant);
-      expect(tenantRepo.findOne).toHaveBeenCalledWith({
-        where: { isDefault: true },
+      expect(result).toEqual(mockProfile);
+      expect(profileRepo.findOne).toHaveBeenCalledWith({
+        where: {},
         relations: ['country', 'province', 'municipality', 'sector'],
+        order: { createdAt: 'ASC' },
       });
     });
 
-    it('si no hay isDefault, debe buscar el primer tenant activo', async () => {
-      tenantRepo.findOne
-        .mockResolvedValueOnce(null) // no default
-        .mockResolvedValueOnce(mockTenant); // first active
+    it('si no existe ningún perfil en la BD de este tenant, debe sembrar uno mínimo', async () => {
+      profileRepo.findOne.mockResolvedValueOnce(null);
 
-      const result = await service.getDefaultTenant();
+      const result = await service.getProfile();
 
-      expect(result).toEqual(mockTenant);
-    });
-
-    it('si no existe ningún tenant en la BD, debe inicializar el tenant por defecto de Sumtech', async () => {
-      tenantRepo.findOne
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce(null);
-
-      const result = await service.getDefaultTenant();
-
-      expect(tenantRepo.create).toHaveBeenCalled();
-      expect(tenantRepo.save).toHaveBeenCalled();
-      expect(result.tenantCode).toBe('DEFAULT');
-      expect(result.companyName).toBe('SUMTECH TELECOM S.R.L.');
+      expect(profileRepo.create).toHaveBeenCalled();
+      expect(profileRepo.save).toHaveBeenCalled();
+      expect(result.name).toBe('Mi Empresa');
     });
   });
 
   describe('findById', () => {
-    it('debe retornar el tenant cuando existe', async () => {
-      tenantRepo.findOne.mockResolvedValue(mockTenant);
+    it('debe retornar el perfil cuando existe', async () => {
+      profileRepo.findOne.mockResolvedValue(mockProfile);
 
       const result = await service.findById('11111111-1111-1111-1111-111111111111');
-      expect(result).toEqual(mockTenant);
+      expect(result).toEqual(mockProfile);
     });
 
-    it('debe lanzar NotFoundException cuando no existe el ID', async () => {
-      tenantRepo.findOne.mockResolvedValue(null);
+    it('si el id no existe, cae de vuelta al get-or-create en vez de lanzar 404', async () => {
+      profileRepo.findOne.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
 
-      await expect(service.findById('non-existing-id')).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('findByCode', () => {
-    it('debe retornar el tenant cuando existe el código', async () => {
-      tenantRepo.findOne.mockResolvedValue(mockTenant);
-
-      const result = await service.findByCode('DEFAULT');
-      expect(result).toEqual(mockTenant);
-    });
-
-    it('debe lanzar NotFoundException cuando no existe el código', async () => {
-      tenantRepo.findOne.mockResolvedValue(null);
-
-      await expect(service.findByCode('INEXISTENTE')).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('create', () => {
-    it('debe lanzar ConflictException si el tenantCode ya existe', async () => {
-      tenantRepo.findOne.mockResolvedValue(mockTenant);
-
-      await expect(
-        service.create({
-          tenantCode: 'DEFAULT',
-          name: 'Duplicado',
-          companyName: 'Empresa',
-          rnc: '131000000',
-        }),
-      ).rejects.toThrow(ConflictException);
-    });
-
-    it('debe crear un nuevo tenant exitosamente y emitir evento', async () => {
-      tenantRepo.findOne
-        .mockResolvedValueOnce(null) // no duplicate
-        .mockResolvedValueOnce({ ...mockTenant, tenantCode: 'NEW-TENANT' }); // findById after save
-
-      const result = await service.create({
-        tenantCode: 'NEW-TENANT',
-        name: 'Nueva Sucursal',
-        companyName: 'Nueva SRL',
-        rnc: '132000000',
-        isDefault: true,
-      });
-
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
-        'company.tenant.created',
-        expect.objectContaining({ tenantCode: 'NEW-TENANT' }),
-      );
-      expect(result.tenantCode).toBe('NEW-TENANT');
+      const result = await service.findById('non-existing-id');
+      expect(result.name).toBe('Mi Empresa');
     });
   });
 
   describe('update', () => {
-    it('debe actualizar los campos del tenant y emitir evento', async () => {
-      const updatedMock = { ...mockTenant, companyName: 'SUMTECH DOMINICANA SRL' };
-      tenantRepo.findOne
-        .mockResolvedValueOnce({ ...mockTenant }) // findById in update
-        .mockResolvedValueOnce(updatedMock); // findById after save
+    it('debe actualizar los campos del perfil y emitir evento', async () => {
+      profileRepo.findOne.mockResolvedValueOnce({ ...mockProfile });
 
-      const result = await service.update(mockTenant.id!, {
-        companyName: 'SUMTECH DOMINICANA SRL',
-      });
+      const result = await service.update({ companyName: 'SUMTECH DOMINICANA SRL' });
 
       expect(eventEmitter.emit).toHaveBeenCalledWith(
-        'company.tenant.updated',
-        expect.objectContaining({ tenantId: mockTenant.id }),
+        'company.profile.updated',
+        expect.objectContaining({ profileId: mockProfile.id }),
       );
       expect(result.companyName).toBe('SUMTECH DOMINICANA SRL');
     });
+  });
 
-    it('debe lanzar ConflictException si intenta cambiar a un tenantCode que pertenece a otro tenant', async () => {
-      tenantRepo.findOne
-        .mockResolvedValueOnce({ ...mockTenant, id: 'id-1', tenantCode: 'TENANT-1' })
-        .mockResolvedValueOnce({ ...mockTenant, id: 'id-2', tenantCode: 'TENANT-2' }); // duplicate check
+  describe('uploadDgiiCertificate', () => {
+    it('debe subir el certificado a MinIO y guardarlo en el perfil', async () => {
+      profileRepo.findOne.mockResolvedValueOnce({ ...mockProfile });
 
-      await expect(
-        service.update('id-1', { tenantCode: 'TENANT-2' }),
-      ).rejects.toThrow(ConflictException);
+      const result = await service.uploadDgiiCertificate(Buffer.from('cert-bytes'), 'cert.p12');
+
+      expect(minioStorage.uploadBuffer).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'cert.p12',
+        'dgii-certs',
+        'application/x-pkcs12',
+      );
+      expect(result.dgiiCertObjectKey).toBe('dgii-certs/uuid_cert.p12');
     });
   });
 
-  describe('setDefault', () => {
-    it('debe marcar el tenant objetivo como isDefault = true y los demás en false', async () => {
-      tenantRepo.findOne.mockResolvedValue({ ...mockTenant, id: 'target-id', isDefault: true });
+  describe('getDgiiSettings', () => {
+    it('debe retornar la configuración DGII persistida en el perfil', async () => {
+      profileRepo.findOne.mockResolvedValueOnce({
+        ...mockProfile,
+        dgiiEnvironment: 'testecf',
+        dgiiAuthUrl: 'https://ecf.dgii.gov.do/testecf/',
+        dgiiCertObjectKey: 'dgii-certs/x.p12',
+        dgiiCertPassword: 'secret',
+      });
 
-      const result = await service.setDefault('target-id');
+      const result = await service.getDgiiSettings();
 
-      expect(tenantRepo.update).toHaveBeenCalledWith({ isDefault: true }, { isDefault: false });
-      expect(tenantRepo.update).toHaveBeenCalledWith({ id: 'target-id' }, { isDefault: true });
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
-        'company.tenant.default_changed',
-        expect.objectContaining({ tenantId: 'target-id' }),
+      expect(result).toEqual({
+        environment: 'testecf',
+        authUrl: 'https://ecf.dgii.gov.do/testecf/',
+        certObjectKey: 'dgii-certs/x.p12',
+        certPassword: 'secret',
+      });
+    });
+  });
+
+  describe('uploadCompanyLogo', () => {
+    it('debe subir el logo a MinIO y actualizar settings y logoUrl', async () => {
+      profileRepo.findOne.mockResolvedValueOnce({ ...mockProfile, settings: {} });
+      minioStorage.uploadBuffer.mockResolvedValueOnce('company-logos/uuid_logo.png');
+
+      const result = await service.uploadCompanyLogo(
+        Buffer.from('fake-logo'),
+        'logo.png',
+        'image/png',
       );
-      expect(result.isDefault).toBe(true);
+
+      expect(minioStorage.uploadBuffer).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'logo.png',
+        'company-logos',
+        'image/png',
+      );
+      expect(result.logoUrl).toBe('/api/v1/company/logo');
+      expect(result.settings.logoObjectKey).toBe('company-logos/uuid_logo.png');
+      expect(result.settings.logoMimeType).toBe('image/png');
+      expect(eventEmitter.emit).toHaveBeenCalledWith('company.profile.updated', expect.any(Object));
+    });
+  });
+
+  describe('deleteCompanyLogo', () => {
+    it('debe limpiar logoUrl y settings del logo', async () => {
+      profileRepo.findOne.mockResolvedValueOnce({
+        ...mockProfile,
+        logoUrl: '/api/v1/company/logo',
+        settings: { logoObjectKey: 'company-logos/old.png', logoMimeType: 'image/png' },
+      });
+
+      const result = await service.deleteCompanyLogo();
+
+      expect(result.logoUrl).toBeNull();
+      expect(result.settings.logoObjectKey).toBeUndefined();
+      expect(result.settings.logoMimeType).toBeUndefined();
+      expect(eventEmitter.emit).toHaveBeenCalledWith('company.profile.updated', expect.any(Object));
+    });
+  });
+
+  describe('getCompanyLogo', () => {
+    it('debe retornar null si no hay logo configurado', async () => {
+      profileRepo.findOne.mockResolvedValueOnce({ ...mockProfile, settings: {} });
+
+      const result = await service.getCompanyLogo();
+      expect(result).toBeNull();
+    });
+
+    it('debe retornar buffer y mimeType cuando existe logo en MinIO', async () => {
+      profileRepo.findOne.mockResolvedValueOnce({
+        ...mockProfile,
+        settings: { logoObjectKey: 'company-logos/uuid.png', logoMimeType: 'image/png' },
+      });
+      minioStorage.getObjectBuffer.mockResolvedValueOnce(Buffer.from('minio-bytes'));
+
+      const result = await service.getCompanyLogo();
+      expect(result).toEqual({ buffer: Buffer.from('minio-bytes'), mimeType: 'image/png' });
     });
   });
 
   describe('getCompanyFiscalInfo', () => {
     it('debe retornar la proyección adecuada para facturas y DGII', async () => {
-      tenantRepo.findOne.mockResolvedValue(mockTenant);
+      profileRepo.findOne.mockResolvedValue(mockProfile);
 
       const fiscal = await service.getCompanyFiscalInfo();
 
@@ -239,3 +245,4 @@ describe('CompanyService', () => {
     });
   });
 });
+

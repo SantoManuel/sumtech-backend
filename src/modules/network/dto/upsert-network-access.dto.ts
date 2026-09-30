@@ -1,9 +1,17 @@
-import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsOptional, IsString, IsUUID, IsIn, MaxLength } from 'class-validator';
 
 export class UpsertNetworkAccessDto {
   @IsOptional()
   @IsUUID('4', { message: 'nodeId debe ser un UUID válido' })
   nodeId?: string;
+
+  @IsOptional()
+  @IsUUID('4', { message: 'onuId debe ser un UUID válido' })
+  onuId?: string;
+
+  @IsOptional()
+  @IsIn(['PPPOE', 'OLT_NATIVE'], { message: 'suspensionMediumOverride debe ser PPPOE u OLT_NATIVE' })
+  suspensionMediumOverride?: 'PPPOE' | 'OLT_NATIVE';
 
   @IsOptional()
   @IsString()

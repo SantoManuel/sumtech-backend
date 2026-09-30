@@ -33,10 +33,10 @@ export class InvoiceEntity {
 
   @Column({
     type: 'enum',
-    enum: ['PENDING_PAYMENT', 'ISSUED', 'VOIDED'],
+    enum: ['PENDING_PAYMENT', 'EN_GRACIA', 'VENCIDA', 'ISSUED', 'VOIDED'],
     default: 'ISSUED',
   })
-  status: 'PENDING_PAYMENT' | 'ISSUED' | 'VOIDED';
+  status: 'PENDING_PAYMENT' | 'EN_GRACIA' | 'VENCIDA' | 'ISSUED' | 'VOIDED';
 
   // Nulos mientras status = PENDING_PAYMENT; se asignan solo al timbrar ante la DGII.
   @Column({ name: 'ncf_number', type: 'varchar', length: 20, unique: true, nullable: true })
@@ -170,4 +170,32 @@ export class InvoiceEntity {
 
   @CreateDateColumn({ name: 'issued_at', type: 'timestamp with time zone' })
   issuedAt: Date;
+
+  // Metadatos de prorrateo (sección 9 del spec de facturación) — solo poblados
+  // cuando esta es la primera factura de un contrato activado a mitad de
+  // período. Ver BillingCycleService.generateInitialProratedInvoiceIfNeeded.
+  @Column({ name: 'is_prorated', type: 'boolean', default: false })
+  isProrated: boolean;
+
+  @Column({ name: 'prorated_days', type: 'int', nullable: true })
+  proratedDays?: number;
+
+  @Column({ name: 'proration_day_count_policy', type: 'varchar', length: 20, nullable: true })
+  prorationDayCountPolicy?: 'FIXED_30' | 'ACTUAL_MONTH_DAYS' | 'CYCLE_DAYS';
+
+  @Column({ name: 'cycle_days', type: 'int', nullable: true })
+  cycleDays?: number;
+
+  // Máquina de estados de vencimiento (sección 12-13 del spec de facturación) —
+  // pobladas por MorosidadService.runMorosidadCycle() a medida que la factura
+  // envejece sin pagarse. Se congelan (no se sobreescriben) una vez pagada, como
+  // registro histórico de qué tan tarde se pagó.
+  @Column({ name: 'grace_period_started_at', type: 'date', nullable: true })
+  gracePeriodStartedAt?: string;
+
+  @Column({ name: 'grace_period_ends_at', type: 'date', nullable: true })
+  gracePeriodEndsAt?: string;
+
+  @Column({ name: 'days_overdue', type: 'int', default: 0 })
+  daysOverdue: number;
 }

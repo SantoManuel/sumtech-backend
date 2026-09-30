@@ -17,6 +17,9 @@ import { ContractSignaturesService } from '../contract-signatures/contract-signa
 import { SectorEntity } from '../geography/entities/sector.entity';
 import { AddressGpsRequestEntity } from './entities/address-gps-request.entity';
 import { AiChatbotClientService } from '../ai-chatbot/ai-chatbot-client.service';
+import { BillingCycleService } from '../billing/billing-cycle.service';
+import { BillingSettingsService } from '../billing/billing-settings.service';
+import { SuspensionHistoryService } from '../billing/suspension-history.service';
 
 describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
   let service: ClientsService;
@@ -28,6 +31,9 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
   let pdfGenerator: any;
   let dgiiClient: any;
   let contractSignatures: any;
+  let billingCycleService: any;
+  let billingSettingsService: any;
+  let suspensionHistoryService: any;
 
   let userRepo: any;
   let roleRepo: any;
@@ -75,6 +81,7 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       create: jest.fn((dto: any) => dto),
       save: jest.fn((entity: any) => Promise.resolve({ id: 'contract-1', ...entity })),
       findOne: jest.fn(),
+      find: jest.fn(),
       createQueryBuilder: jest.fn(() => contractQueryBuilder),
     };
     invoiceRepo = {
@@ -113,6 +120,17 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       sendWhatsAppMessage: jest.fn().mockResolvedValue(true),
       getConversationByExternalId: jest.fn(),
     };
+    billingCycleService = {
+      generateInitialProratedInvoiceIfNeeded: jest.fn().mockResolvedValue({ id: 'invoice-generated' }),
+    };
+    billingSettingsService = {
+      getSettings: jest.fn().mockResolvedValue({ prorationDayCountPolicy: 'FIXED_30' }),
+    };
+    suspensionHistoryService = {
+      openSuspension: jest.fn().mockResolvedValue({ id: 'susp-1' }),
+      closeSuspension: jest.fn().mockResolvedValue({ id: 'susp-1' }),
+      findHistoryForClient: jest.fn().mockResolvedValue([]),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -131,6 +149,9 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
         { provide: PdfGeneratorService, useValue: pdfGenerator },
         { provide: DgiiClientService, useValue: dgiiClient },
         { provide: ContractSignaturesService, useValue: contractSignatures },
+        { provide: BillingCycleService, useValue: billingCycleService },
+        { provide: BillingSettingsService, useValue: billingSettingsService },
+        { provide: SuspensionHistoryService, useValue: suspensionHistoryService },
       ],
     }).compile();
 
@@ -423,6 +444,34 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
 
       await expect(service.addContract('client-1', 'plan-1', 'addr-1')).rejects.toThrow(ConflictException);
     });
+
+    it('genera la factura inicial (prorrateada) llamando a BillingCycleService con el contrato (con plan cargado) y la configuración vigente', async () => {
+      const contract = await service.addContract('client-1', 'plan-1', 'addr-1');
+
+      expect(billingSettingsService.getSettings).toHaveBeenCalled();
+      expect(billingCycleService.generateInitialProratedInvoiceIfNeeded).toHaveBeenCalledWith(
+        expect.objectContaining({ id: contract.id, plan: expect.objectContaining({ id: 'plan-1' }) }),
+        expect.objectContaining({ prorationDayCountPolicy: 'FIXED_30' }),
+      );
+    });
+
+    it('un fallo generando la factura inicial NO revierte la creación del contrato (mismo patrón de resiliencia que el cron)', async () => {
+      billingCycleService.generateInitialProratedInvoiceIfNeeded.mockRejectedValueOnce(new Error('DB caída'));
+
+      const contract = await service.addContract('client-1', 'plan-1', 'addr-1');
+
+      expect(contract).toBeDefined();
+      expect(contract.status).toBe('ACTIVE');
+    });
+
+    it('un fallo obteniendo BillingSettings tampoco revierte la creación del contrato', async () => {
+      billingSettingsService.getSettings.mockRejectedValueOnce(new Error('DB caída'));
+
+      const contract = await service.addContract('client-1', 'plan-1', 'addr-1');
+
+      expect(contract).toBeDefined();
+      expect(billingCycleService.generateInitialProratedInvoiceIfNeeded).not.toHaveBeenCalled();
+    });
   });
 
   describe('findAllContracts', () => {
@@ -576,6 +625,50 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
 
       await expect(service.reactivateContract('client-1', 'contract-1')).rejects.toThrow(ConflictException);
     });
+
+    it('suspendContract abre un episodio de historial con triggeredByProcess=MANUAL, el admin solicitante y la observación', async () => {
+      contractRepo.findOne.mockResolvedValue({ id: 'contract-1', clientId: 'client-1', contractNumber: 'CTR-0001', status: 'ACTIVE' });
+
+      await service.suspendContract('client-1', 'contract-1', 'user-admin-1', 'Cliente pidió pausa temporal.');
+
+      expect(suspensionHistoryService.openSuspension).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contractId: 'contract-1',
+          clientId: 'client-1',
+          triggeredByUserId: 'user-admin-1',
+          triggeredByProcess: 'MANUAL',
+          observation: 'Cliente pidió pausa temporal.',
+          reason: 'Suspensión manual por administrador.',
+        }),
+      );
+    });
+
+    it('reactivateContract cierra el historial de suspensión con el admin solicitante', async () => {
+      contractRepo.findOne.mockResolvedValue({ id: 'contract-1', clientId: 'client-1', contractNumber: 'CTR-0001', status: 'SUSPENDED' });
+
+      await service.reactivateContract('client-1', 'contract-1', 'user-admin-2');
+
+      expect(suspensionHistoryService.closeSuspension).toHaveBeenCalledWith('contract-1', {
+        reconnectedByUserId: 'user-admin-2',
+      });
+    });
+  });
+
+  describe('getSuspensionHistory', () => {
+    it('lanza NotFoundException si el cliente no existe', async () => {
+      clientRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.getSuspensionHistory('client-x')).rejects.toThrow(NotFoundException);
+    });
+
+    it('delega en SuspensionHistoryService.findHistoryForClient', async () => {
+      suspensionHistoryService.findHistoryForClient.mockResolvedValue([{ id: 'susp-1' }]);
+
+      const result = await service.getSuspensionHistory('client-1');
+
+      expect(suspensionHistoryService.findHistoryForClient).toHaveBeenCalledWith('client-1');
+      expect(result).toEqual([{ id: 'susp-1' }]);
+    });
   });
 
   describe('terminateContract', () => {
@@ -637,6 +730,22 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       expect(invoiceRepo.find).toHaveBeenCalledWith(
         expect.objectContaining({ where: { clientId: 'client-1', status: 'PENDING_PAYMENT' } }),
       );
+    });
+
+    it('openOnly=true filtra por los 3 estados abiertos, no por un único status (Estado de Cuenta del POS/Cobro Exprés)', async () => {
+      await service.getClientInvoices('client-1', undefined, true);
+
+      const call = invoiceRepo.find.mock.calls[0][0];
+      expect(call.where.clientId).toBe('client-1');
+      expect(call.where.status.type).toBe('in');
+      expect(call.where.status.value).toEqual(['PENDING_PAYMENT', 'EN_GRACIA', 'VENCIDA']);
+    });
+
+    it('openOnly=true tiene prioridad sobre status si ambos vienen presentes', async () => {
+      await service.getClientInvoices('client-1', 'ISSUED', true);
+
+      const call = invoiceRepo.find.mock.calls[0][0];
+      expect(call.where.status).not.toBe('ISSUED');
     });
   });
 
@@ -790,6 +899,83 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
         expect.objectContaining({ portalCredentials: undefined }),
       );
       expect(clientRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getClientServices (RF-PPPOE-002 y RF-RED-001/002)', () => {
+    it('retorna la cadena visible completa del servicio resolviendo el medio efectivo', async () => {
+      clientRepo.findOne.mockResolvedValueOnce({ id: 'client-1', firstName: 'Juan', lastName: 'Perez' });
+      contractRepo.find.mockResolvedValueOnce([
+        {
+          id: 'contract-1',
+          contractNumber: 'CTR-0001',
+          status: 'ACTIVE',
+          startDate: '2026-01-01',
+          plan: {
+            id: 'plan-1',
+            name: 'Plan 100M',
+            speedMbps: 100,
+            monthlyPrice: 1500,
+            pppProfileId: 'PPPOE-100M',
+            oltSpeedProfileId: 'olt-prof-1',
+            oltSpeedProfile: { name: 'ZTE-100M-UP' },
+          },
+          networkAccess: {
+            id: 'acc-1',
+            username: 'juan_perez',
+            serviceAlias: 'WAN-1',
+            ipAddress: '10.0.1.10',
+            connectionStatus: 'ACTIVE',
+            lastCallerId: '00:11:22:33:44:55',
+            macAddress: '00:11:22:33:44:55',
+            nodeId: 'node-1',
+            node: { id: 'node-1', name: 'MikroTik Central', suspensionMedium: 'PPPOE' },
+            onuId: 'onu-1',
+            onu: {
+              id: 'onu-1',
+              serialNumber: 'ZTEGC0123456',
+              vendor: 'ZTE',
+              status: 'ACTIVE',
+              onuIndex: 'gpon-onu_1/1/1:1',
+              oltId: 'olt-1',
+              olt: { name: 'OLT Central' },
+              rxPowerDbm: -19.5,
+              txPowerDbm: 2.1,
+            },
+            suspensionMediumOverride: null,
+          },
+        },
+      ]);
+
+      const result = await service.getClientServices('client-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].contractNumber).toBe('CTR-0001');
+      expect(result[0].plan?.name).toBe('Plan 100M');
+      expect(result[0].secret?.username).toBe('juan_perez');
+      expect(result[0].onu?.serialNumber).toBe('ZTEGC0123456');
+      expect(result[0].effectiveSuspensionMedium).toBe('PPPOE');
+    });
+
+    it('respeta suspensionMediumOverride: OLT_NATIVE sobre el nodo', async () => {
+      clientRepo.findOne.mockResolvedValueOnce({ id: 'client-1' });
+      contractRepo.find.mockResolvedValueOnce([
+        {
+          id: 'contract-2',
+          contractNumber: 'CTR-0002',
+          status: 'ACTIVE',
+          networkAccess: {
+            id: 'acc-2',
+            nodeId: 'node-1',
+            node: { suspensionMedium: 'PPPOE' },
+            onuId: 'onu-2',
+            suspensionMediumOverride: 'OLT_NATIVE',
+          },
+        },
+      ]);
+
+      const result = await service.getClientServices('client-1');
+      expect(result[0].effectiveSuspensionMedium).toBe('OLT_NATIVE');
     });
   });
 });

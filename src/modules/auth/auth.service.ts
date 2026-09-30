@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, UnauthorizedException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { LessThan, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
@@ -13,6 +13,8 @@ import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { RefreshTokenEntity } from './entities/refresh-token.entity';
 import { getJwtSecret, getJwtRefreshSecret } from '../../common/utils/required-env.util';
 import { parseDurationToMs } from './utils/refresh-cookie.util';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
 
 const REFRESH_TOKEN_RETENTION_DAYS = 30;
 
@@ -31,6 +33,8 @@ export class AuthService {
     private readonly configService: ConfigService,
     @InjectRepository(RefreshTokenEntity)
     private readonly refreshTokenRepository: Repository<RefreshTokenEntity>,
+    private readonly tenantContext: TenantContextService,
+    private readonly tenantIterator: TenantIteratorService,
   ) {}
 
   private buildAccessPayload(user: UserEntity): JwtPayload {
@@ -41,6 +45,12 @@ export class AuthService {
       roles: user.roles ? user.roles.map((r) => r.name) : [],
       employeeId: user.employee?.id,
       clientId: user.client?.id,
+      // Tenant resuelto por TenantResolutionMiddleware antes de llegar aquí
+      // (login también pasa por el middleware, ya que solo /platform/* está
+      // excluido) — queda embebido en el JWT para que AuthGuard pueda cruzarlo
+      // contra el tenant del subdominio en cada request posterior.
+      tenantId: this.tenantContext.getTenantId(),
+      tenantSlug: this.tenantContext.getSlug(),
     };
   }
 
@@ -207,10 +217,48 @@ export class AuthService {
    */
   @Cron(CronExpression.EVERY_DAY_AT_4AM)
   async cleanupExpiredRefreshTokens(): Promise<void> {
-    const cutoff = new Date(Date.now() - REFRESH_TOKEN_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-    const result = await this.refreshTokenRepository.delete({ expiresAt: LessThan(cutoff) });
-    if (result.affected) {
-      this.logger.log(`Limpieza de refresh tokens: ${result.affected} fila(s) expirada(s) hace más de ${REFRESH_TOKEN_RETENTION_DAYS} días eliminadas.`);
+    await this.tenantIterator.runForEachActiveTenant('cleanup-refresh-tokens', async (tenant) => {
+      const cutoff = new Date(Date.now() - REFRESH_TOKEN_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+      const result = await this.refreshTokenRepository.delete({ expiresAt: LessThan(cutoff) });
+      if (result.affected) {
+        this.logger.log(
+          `Limpieza de refresh tokens (tenant '${tenant.slug}'): ${result.affected} fila(s) expirada(s) hace más de ${REFRESH_TOKEN_RETENTION_DAYS} días eliminadas.`,
+        );
+      }
+    });
+  }
+
+  /**
+   * Verifica credenciales de un supervisor (ADMIN o GERENTE) sin emitir un token JWT ni alterar la sesión actual.
+   * Utilizado para autorización puntual de excepciones, descuentos sobre el tope o acciones restringidas.
+   */
+  async verifySupervisorCredentials(
+    identifier: string,
+    password: string,
+  ): Promise<{ id: string; username: string; email: string }> {
+    if (!identifier || !password) {
+      throw new BadRequestException('El usuario/correo y contraseña del supervisor son requeridos');
     }
+
+    const user = await this.usersService.findByUsernameOrEmail(identifier);
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Credenciales de supervisor inválidas o usuario inactivo');
+    }
+
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
+    if (!isMatch) {
+      throw new UnauthorizedException('Credenciales de supervisor inválidas');
+    }
+
+    const isSupervisor = user.roles?.some((r) => ['ADMIN', 'GERENTE'].includes(r.name));
+    if (!isSupervisor) {
+      throw new ForbiddenException('El usuario no posee rol de supervisor (ADMIN o GERENTE) para autorizar esta operación');
+    }
+
+    return {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+    };
   }
 }

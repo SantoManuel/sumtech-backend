@@ -6,26 +6,24 @@ import {
   UpdateDateColumn,
   ManyToOne,
   JoinColumn,
-  Index,
 } from 'typeorm';
 import { CountryEntity } from '../../geography/entities/country.entity';
 import { ProvinceEntity } from '../../geography/entities/province.entity';
 import { MunicipalityEntity } from '../../geography/entities/municipality.entity';
 import { SectorEntity } from '../../geography/entities/sector.entity';
+import { encryptSecret, decryptSecretSafe } from '../../../common/utils/secret-crypto.util';
 
 /**
- * Entidad de Configuración Corporativa y Multi-Tenant.
- * Almacena los datos fiscales, operativos e institucionales de la empresa o sucursal (tenant),
- * vinculados de forma normalizada con el catálogo geográfico (país, provincia, municipio, sector).
+ * Perfil fiscal/institucional/de marca de ESTE tenant — una sola fila por DB
+ * de tenant (Fase 4 del plan multi-tenant). Antes se llamaba `TenantConfigEntity`
+ * y soportaba varias filas ("multi-empresa" dentro de una sola DB); ese picker
+ * ya no tiene sentido una vez que cada ISP tiene su propia base de datos
+ * aislada — ver `sec.company_profile` (migración 054).
  */
-@Entity({ schema: 'sec', name: 'tenant_configs' })
-export class TenantConfigEntity {
+@Entity({ schema: 'sec', name: 'company_profile' })
+export class CompanyProfileEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
-
-  @Index('idx_tenant_configs_code', { unique: true })
-  @Column({ name: 'tenant_code', type: 'varchar', length: 50, unique: true })
-  tenantCode: string;
 
   @Column({ type: 'varchar', length: 200 })
   name: string;
@@ -94,9 +92,49 @@ export class TenantConfigEntity {
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
-  @Index('idx_tenant_configs_is_default')
-  @Column({ name: 'is_default', type: 'boolean', default: false })
-  isDefault: boolean;
+  // --- DGII (Fase 4: antes env vars globales, ahora por tenant) ---
+  @Column({ name: 'dgii_environment', type: 'varchar', length: 20, nullable: true })
+  dgiiEnvironment?: string;
+
+  @Column({ name: 'dgii_auth_url', type: 'text', nullable: true })
+  dgiiAuthUrl?: string;
+
+  // Object key en MinIO (bucket de `storage`), no un path de disco local — ver
+  // CompanyService.uploadDgiiCertificate / DgiiClientService.resolveConfig.
+  @Column({ name: 'dgii_cert_object_key', type: 'text', nullable: true })
+  dgiiCertObjectKey?: string;
+
+  // Cifrado en reposo (AES-256-GCM) vía transformer de columna — `text` en vez
+  // de `varchar(200)` porque el ciphertext+IV+authTag en base64 es más largo
+  // que la contraseña original. Ver src/common/utils/secret-crypto.util.ts.
+  @Column({
+    name: 'dgii_cert_password',
+    type: 'text',
+    nullable: true,
+    transformer: { to: encryptSecret, from: decryptSecretSafe },
+  })
+  dgiiCertPassword?: string;
+
+  // Contenido del sitio público del tenant (Fase 5/7 lo consumen vía
+  // GET /public/site-content) — hero/about/FAQ/oficinas/equipos/logos de
+  // clientes. Deliberadamente flexible (jsonb), no una tabla por sección.
+  @Column({ name: 'site_content', type: 'jsonb', default: {} })
+  siteContent: Record<string, any>;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  whatsapp?: string;
+
+  @Column({ name: 'suspension_portal', type: 'jsonb', default: {} })
+  suspensionPortal: Record<string, any>;
+
+  @Column({ name: 'telegram_bot_token', type: 'varchar', length: 200, nullable: true })
+  telegramBotToken?: string;
+
+  @Column({ name: 'telegram_chat_id', type: 'varchar', length: 100, nullable: true })
+  telegramChatId?: string;
+
+  @Column({ name: 'telegram_alerts_enabled', type: 'boolean', default: false })
+  telegramAlertsEnabled: boolean;
 
   @Column({ type: 'jsonb', default: {} })
   settings: Record<string, any>;

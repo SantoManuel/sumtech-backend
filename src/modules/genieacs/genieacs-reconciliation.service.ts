@@ -10,6 +10,7 @@ import { CreateTicketDto } from '../tickets/dto/ticket.dto';
 import { GenieAcsClient } from './genieacs-client';
 import { GENIEACS_CLIENT } from './genieacs-client-factory';
 import { computeOnlineStatus, isOpticalPowerCritical, ONU_OPTICAL_ALERT_THRESHOLD_DBM } from './genieacs-online-status.util';
+import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
 
 /** Título exacto usado para detectar si ya existe una alerta abierta y no duplicarla — nunca cambiar sin migrar los tickets ya creados con este título. */
 const OPTICAL_ALERT_TICKET_TITLE = '[Alerta GenieACS] Potencia óptica degradada';
@@ -42,11 +43,20 @@ export class GenieAcsReconciliationService {
     private readonly ticketsService: TicketsService,
     @Inject(GENIEACS_CLIENT)
     private readonly client: GenieAcsClient | null,
+    private readonly tenantIterator: TenantIteratorService,
   ) {}
 
+  // NOTA: el cliente GenieACS sigue configurado por env vars globales
+  // (GENIEACS_NBI_BASE_URL/GENIEACS_NBI_API_KEY), no por tenant — cada tenant
+  // real necesitará su propia instancia/credenciales de GenieACS, igual que
+  // DGII (ver Fase 4 del plan). Fuera de alcance de esta fase: aquí solo se
+  // asegura que el ciclo corra contra la DB de cada tenant activo.
   @Cron(CronExpression.EVERY_10_MINUTES)
   async handleReconciliation(): Promise<void> {
-    await this.reconcileAll();
+    await this.tenantIterator.runForEachActiveTenant('genieacs-reconciliation', async (tenant) => {
+      this.logger.log(`Reconciliación GenieACS — tenant '${tenant.slug}'`);
+      await this.reconcileAll();
+    });
   }
 
   async reconcileAll(): Promise<ReconciliationResult> {

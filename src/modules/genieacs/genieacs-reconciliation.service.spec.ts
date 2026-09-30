@@ -6,6 +6,11 @@ import { TicketEntity } from '../tickets/entities/ticket.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { TicketsService } from '../tickets/tickets.service';
 import { GENIEACS_CLIENT } from './genieacs-client-factory';
+import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
+
+const tenantIteratorMock = {
+  runForEachActiveTenant: jest.fn((_label: string, fn: (t: any) => Promise<void>) => fn({ slug: 'tenant-test' })),
+};
 
 describe('GenieAcsReconciliationService', () => {
   let service: GenieAcsReconciliationService;
@@ -40,6 +45,7 @@ describe('GenieAcsReconciliationService', () => {
         { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
         { provide: TicketsService, useValue: ticketsService },
         { provide: GENIEACS_CLIENT, useValue: client },
+        { provide: TenantIteratorService, useValue: tenantIteratorMock },
       ],
     }).compile();
 
@@ -56,6 +62,7 @@ describe('GenieAcsReconciliationService', () => {
           { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
           { provide: TicketsService, useValue: ticketsService },
           { provide: GENIEACS_CLIENT, useValue: null },
+          { provide: TenantIteratorService, useValue: tenantIteratorMock },
         ],
       }).compile();
       const unconfigured = module.get<GenieAcsReconciliationService>(GenieAcsReconciliationService);

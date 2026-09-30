@@ -9,6 +9,7 @@ import { PlanEntity } from '../../plans/entities/plan.entity';
 import { SectorEntity } from '../../geography/entities/sector.entity';
 import { MunicipalityEntity } from '../../geography/entities/municipality.entity';
 import { MinioStorageService } from '../../storage/minio-storage.service';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { SubmitLocationMappingDto } from '../dto/submit-location-mapping.dto';
 import { parseLegacyClientFile } from './legacy-client-parser';
@@ -42,6 +43,7 @@ export class ClientsImportService {
     private readonly minioStorage: MinioStorageService,
     @InjectQueue(CLIENTS_IMPORT_QUEUE)
     private readonly importQueue: Queue,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   async analyze(file: Express.Multer.File | undefined, uploadedByUserId: string): Promise<ClientImportAnalysisResult> {
@@ -149,7 +151,16 @@ export class ClientsImportService {
 
     batch.status = 'QUEUED';
     await this.batchRepository.save(batch);
-    await this.importQueue.add('process-batch', { batchId: batch.id }, { removeOnComplete: true, removeOnFail: false });
+    // El worker de BullMQ corre en su propio ciclo async, desconectado del
+    // AsyncLocalStorage de este request — no hereda el tenant resuelto por
+    // TenantResolutionMiddleware. Por eso el slug viaja explícito en el
+    // payload del job; ver ClientsImportProcessor.process().
+    const tenantSlug = this.tenantContext.getSlug();
+    await this.importQueue.add(
+      'process-batch',
+      { batchId: batch.id, tenantSlug },
+      { removeOnComplete: true, removeOnFail: false },
+    );
   }
 
   async getStatus(batchId: string): Promise<ClientImportBatchEntity> {

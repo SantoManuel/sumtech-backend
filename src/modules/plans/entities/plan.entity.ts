@@ -1,5 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany, ManyToOne, JoinColumn } from 'typeorm';
 import { ContractEntity } from '../../clients/entities/contract.entity';
+import { OltSpeedProfileEntity } from '../../olt/entities/olt-speed-profile.entity';
 
 @Entity({ schema: 'com', name: 'plans' })
 export class PlanEntity {
@@ -35,6 +36,16 @@ export class PlanEntity {
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
+
+  @Column({ name: 'ppp_profile_id', type: 'varchar', length: 100, nullable: true })
+  pppProfileId?: string;
+
+  @Column({ name: 'olt_speed_profile_id', type: 'uuid', nullable: true })
+  oltSpeedProfileId?: string;
+
+  @ManyToOne(() => OltSpeedProfileEntity, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'olt_speed_profile_id' })
+  oltSpeedProfile?: OltSpeedProfileEntity;
 
   @OneToMany(() => ContractEntity, (contract) => contract.plan)
   contracts?: ContractEntity[];

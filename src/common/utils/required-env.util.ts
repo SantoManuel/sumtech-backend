@@ -39,3 +39,16 @@ export function getJwtRefreshSecret(configService: ConfigService): string {
   }
   return secret;
 }
+
+/**
+ * Secreto del JWT de plataforma (SuperAdmin/Support) — deliberadamente
+ * distinto de JWT_SECRET para que un token de tenant nunca sea válido en
+ * /platform/* ni viceversa (ver PlatformAuthGuard).
+ */
+export function getPlatformJwtSecret(configService: ConfigService): string {
+  const secret = configService.get<string>('PLATFORM_JWT_SECRET');
+  if (!secret) {
+    throw new Error('PLATFORM_JWT_SECRET no está configurado.');
+  }
+  return secret;
+}

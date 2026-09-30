@@ -22,7 +22,7 @@ export const DEFAULT_DGII_CONFIG: DgiiConfig = {
   baseUrl: 'https://ecf.dgii.gov.do/testecf/',
   baseUrlRfce: 'https://fc.dgii.gov.do/testecf/',
   certPath: './certs/22817887_identity.p12',
-  certPassword: 'hagmauhig1255',
+  certPassword: '',
   rncEmisor: '131000000',
   razonSocialEmisor: 'SUMTECH TELECOM S.R.L.',
   nombreComercial: 'SUMTECH FIBRA & TV',

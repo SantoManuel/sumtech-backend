@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { BillingSettingsService } from './billing-settings.service';
-import { MorosidadService } from './morosidad.service';
+import { MorosidadService, GetDelinquentsQueryDto } from './morosidad.service';
 import { BillingCycleService } from './billing-cycle.service';
 import { UpdateBillingSettingsDto } from './dto/update-billing-settings.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -18,7 +18,12 @@ export class BillingController {
     private readonly billingCycleService: BillingCycleService,
   ) {}
 
+  // Lectura abierta también a CAJERO/TECNICO: necesitan conocer el monto del
+  // cargo de reconexión (y, en el futuro, el tope de descuento) para informar
+  // al cliente en el POS/Cobro Exprés antes de cobrar — la edición (PATCH)
+  // sigue restringida a ADMIN/GERENTE vía el @Roles de clase.
   @Get('settings')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO)
   async getSettings() {
     return this.billingSettingsService.getSettings();
   }
@@ -31,6 +36,12 @@ export class BillingController {
   @Get('cartera-vencida')
   async getCarteraVencida() {
     return this.morosidadService.getCarteraVencida();
+  }
+
+  @Get('delinquents')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
+  async getDelinquents(@Query() query: GetDelinquentsQueryDto) {
+    return this.morosidadService.getDelinquents(query);
   }
 
   @Post('run-cycle')

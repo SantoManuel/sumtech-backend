@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { ClientsController } from './clients.controller';
 import { ClientsService } from './clients.service';
 import { ClientsExportService } from './export/clients-export.service';
@@ -45,6 +46,7 @@ describe('ClientsController - firmas de contrato y export', () => {
         { provide: ContractSignaturesService, useValue: contractSignaturesService },
         { provide: JwtService, useValue: { verify: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: TenantContextService, useValue: { hasContext: jest.fn().mockReturnValue(false), getTenantId: jest.fn(), getSlug: jest.fn() } },
       ],
     }).compile();
 

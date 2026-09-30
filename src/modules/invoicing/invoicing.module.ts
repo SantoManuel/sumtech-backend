@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { InvoicingService } from './invoicing.service';
 import { InvoicingController } from './invoicing.controller';
@@ -19,7 +19,7 @@ import { CompanyModule } from '../company/company.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
+    TenantTypeOrmModule.forFeature([
       InvoiceEntity,
       EcfSequenceEntity,
       SaleEntity,

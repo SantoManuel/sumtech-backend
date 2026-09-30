@@ -7,6 +7,8 @@
  * - email: string
  * - roles: string[]
  * - employeeId?: string
+ * - tenantId: string (tenant resuelto por subdominio al momento del login — Fase 2 multitenant)
+ * - tenantSlug: string
  * - iat?: number
  * - exp?: number
  */
@@ -17,6 +19,8 @@ export interface JwtPayload {
   roles: string[];
   employeeId?: string;
   clientId?: string;
+  tenantId: string;
+  tenantSlug: string;
   iat?: number;
   exp?: number;
 }

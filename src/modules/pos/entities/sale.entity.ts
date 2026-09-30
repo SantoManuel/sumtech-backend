@@ -60,6 +60,33 @@ export class SaleEntity {
   @Column({ name: 'discount_amount', type: 'decimal', precision: 12, scale: 2, default: 0.00 })
   discountAmount: number;
 
+  @Column({
+    name: 'discount_type',
+    type: 'varchar',
+    length: 20,
+    default: 'FIXED',
+  })
+  discountType: 'FIXED' | 'PERCENTAGE';
+
+  @Column({
+    name: 'discount_percentage',
+    type: 'decimal',
+    precision: 5,
+    scale: 2,
+    nullable: true,
+  })
+  discountPercentage?: number;
+
+  @Column({ name: 'discount_reason', type: 'text', nullable: true })
+  discountReason?: string;
+
+  @Column({ name: 'discount_authorized_by', type: 'uuid', nullable: true })
+  discountAuthorizedById?: string;
+
+  @ManyToOne(() => UserEntity, { nullable: true })
+  @JoinColumn({ name: 'discount_authorized_by' })
+  discountAuthorizedBy?: UserEntity;
+
   @Column({ name: 'itbis_total', type: 'decimal', precision: 12, scale: 2 })
   itbisTotal: number;
 

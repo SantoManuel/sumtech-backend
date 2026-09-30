@@ -235,7 +235,7 @@ export class ClientsExportService {
         correo: fiscal.correo,
       };
     }
-    const config = this.dgiiClient.getConfig();
+    const config = await this.dgiiClient.getConfig();
     return {
       rnc: config.rncEmisor,
       razonSocial: config.razonSocialEmisor,

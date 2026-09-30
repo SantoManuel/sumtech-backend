@@ -5,6 +5,7 @@ import { BillingCycleService } from './billing-cycle.service';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { SystemEvents } from '../../common/enums/system-events.enum';
+import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
 
 describe('BillingCycleService', () => {
   let service: BillingCycleService;
@@ -49,6 +50,10 @@ describe('BillingCycleService', () => {
         { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
         { provide: getRepositoryToken(InvoiceEntity), useValue: invoiceRepo },
         { provide: EventEmitter2, useValue: eventEmitter },
+        {
+          provide: TenantIteratorService,
+          useValue: { runForEachActiveTenant: jest.fn((_label: string, fn: (t: any) => Promise<void>) => fn({ slug: 'tenant-test' })) },
+        },
       ],
     }).compile();
 
@@ -217,5 +222,108 @@ describe('BillingCycleService', () => {
     expect(contractRepo.find).toHaveBeenCalledWith(
       expect.objectContaining({ where: { status: 'ACTIVE' } }),
     );
+  });
+
+  describe('generateInitialProratedInvoiceIfNeeded (prorrateo)', () => {
+    const makeSettings = (overrides: Partial<{ prorationDayCountPolicy: string }> = {}) =>
+      ({ prorationDayCountPolicy: 'FIXED_30', ...overrides }) as any;
+
+    it('prorratea con política FIXED_30: contrato activado el 20/09 (11 días de 30) en septiembre (30 días reales)', async () => {
+      const contract = makeContract({ startDate: '2026-09-20' });
+
+      const invoice = await service.generateInitialProratedInvoiceIfNeeded(contract, makeSettings());
+
+      expect(invoice).not.toBeNull();
+      const created = invoiceRepo.create.mock.calls[0][0];
+      expect(created.isProrated).toBe(true);
+      expect(created.proratedDays).toBe(11); // 20..30 de septiembre = 11 días
+      expect(created.cycleDays).toBe(30);
+      expect(created.subtotal).toBe(733.33); // round(2000/30*11, 2)
+      expect(created.dueDate).toBe('2026-09-20');
+      expect(created.billingPeriodStart).toBe('2026-09-01');
+      expect(created.billingPeriodEnd).toBe('2026-09-30');
+      expect(created.prorationDayCountPolicy).toBe('FIXED_30');
+    });
+
+    it('prorratea con política ACTUAL_MONTH_DAYS: mismo caso pero usando los días reales del mes (30 en septiembre, igual que FIXED_30 aquí)', async () => {
+      const contract = makeContract({ startDate: '2026-09-20' });
+
+      await service.generateInitialProratedInvoiceIfNeeded(contract, makeSettings({ prorationDayCountPolicy: 'ACTUAL_MONTH_DAYS' }));
+
+      const created = invoiceRepo.create.mock.calls[0][0];
+      expect(created.cycleDays).toBe(30);
+      expect(created.subtotal).toBe(733.33);
+    });
+
+    it('ACTUAL_MONTH_DAYS difiere de FIXED_30 en un mes de 31 días (ej. octubre)', async () => {
+      const contract = makeContract({ startDate: '2026-10-20' }); // octubre tiene 31 días, quedan 12 (20..31)
+
+      await service.generateInitialProratedInvoiceIfNeeded(contract, makeSettings({ prorationDayCountPolicy: 'ACTUAL_MONTH_DAYS' }));
+
+      const created = invoiceRepo.create.mock.calls[0][0];
+      expect(created.cycleDays).toBe(31);
+      expect(created.proratedDays).toBe(12);
+      expect(created.subtotal).toBe(774.19); // round(2000/31*12, 2)
+    });
+
+    it('activación el día 1 del mes: no prorratea, cobra el precio completo (caso borde, sin caso especial en el código)', async () => {
+      const contract = makeContract({ startDate: '2026-09-01' });
+
+      await service.generateInitialProratedInvoiceIfNeeded(contract, makeSettings());
+
+      const created = invoiceRepo.create.mock.calls[0][0];
+      expect(created.isProrated).toBe(false);
+      expect(created.proratedDays).toBe(30);
+      expect(created.subtotal).toBe(2000);
+      expect(created.grandTotal).toBe(2400);
+    });
+
+    it('activación el día 1 en un mes de 31 días con FIXED_30: nunca cobra de más (se limita a cycleDays, no a los días reales)', async () => {
+      const contract = makeContract({ startDate: '2026-10-01' }); // octubre = 31 días reales, FIXED_30 = 30
+
+      await service.generateInitialProratedInvoiceIfNeeded(contract, makeSettings());
+
+      const created = invoiceRepo.create.mock.calls[0][0];
+      expect(created.isProrated).toBe(false); // efectivamente el mes completo, no se cobra de más
+      expect(created.proratedDays).toBe(30);
+      expect(created.subtotal).toBe(2000); // nunca 2066.67 (31/30 * 2000)
+    });
+
+    it('es idempotente: devuelve null si ya existe una factura para ese (contrato, período) — condición de carrera 23505', async () => {
+      const contract = makeContract({ startDate: '2026-09-20' });
+      invoiceRepo.save.mockRejectedValueOnce({ code: '23505', message: 'duplicate key' });
+
+      const invoice = await service.generateInitialProratedInvoiceIfNeeded(contract, makeSettings());
+
+      expect(invoice).toBeNull();
+    });
+
+    it('propaga un error real (no 23505) en vez de tragárselo', async () => {
+      const contract = makeContract({ startDate: '2026-09-20' });
+      invoiceRepo.save.mockRejectedValueOnce(new Error('DB connection lost'));
+
+      await expect(
+        service.generateInitialProratedInvoiceIfNeeded(contract, makeSettings()),
+      ).rejects.toThrow('DB connection lost');
+    });
+
+    it('lanza si contract.plan no viene cargado (precondición documentada del método)', async () => {
+      const contract = makeContract({ startDate: '2026-09-20', plan: undefined as any });
+
+      await expect(
+        service.generateInitialProratedInvoiceIfNeeded(contract, makeSettings()),
+      ).rejects.toThrow('contract.plan');
+    });
+
+    it('emite INVOICE_GENERATED con los datos de la factura prorrateada', async () => {
+      const contract = makeContract({ startDate: '2026-09-20' });
+
+      await service.generateInitialProratedInvoiceIfNeeded(contract, makeSettings());
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        SystemEvents.INVOICE_GENERATED,
+        expect.objectContaining({ clientId: 'client-1', contractId: 'contract-1', dueDate: '2026-09-20' }),
+      );
+    });
   });
 });

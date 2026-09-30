@@ -11,18 +11,55 @@ async function bootstrap() {
 
   // Falla rápido si faltan secretos críticos, en vez de arrancar con
   // fallbacks hardcodeados inseguros (ver required-env.util.ts)
-  assertRequiredEnvVars(app.get(ConfigService), ['JWT_SECRET', 'JWT_REFRESH_SECRET']);
+  assertRequiredEnvVars(app.get(ConfigService), ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'PLATFORM_JWT_SECRET']);
 
-  const allowedOrigins = process.env.CORS_ORIGINS?.split(',') || [
+  const configuredOrigins = (process.env.CORS_ORIGINS?.split(',') || [
     'http://localhost:3000',
-  ];
+    'http://localhost:3001',
+  ]).map((o) => o.trim());
 
   app.use(cookieParser());
 
-  // Habilitar CORS
+  // Habilitar CORS multi-tenant (soporta *.localhost:3000, *.localhost:3001, IPs locales y dominios SaaS)
   app.enableCors({
-    origin: allowedOrigins,
+    origin: (requestOrigin, callback) => {
+      // Permitir peticiones sin origen (curl, server-to-server, Postman)
+      if (!requestOrigin) {
+        return callback(null, true);
+      }
+
+      // 1. Orígenes configurados explícitamente en variables de entorno
+      if (configuredOrigins.includes(requestOrigin)) {
+        return callback(null, true);
+      }
+
+      // 2. Subdominios dinámicos de desarrollo: *.localhost:3000 y *.localhost:3001
+      // Ej: http://sumtech.localhost:3000, http://admin.localhost:3000, http://ispazua.localhost:3001
+      const isLocalhostSubdomain = /^https?:\/\/([a-z0-9-]+\.)*localhost:(3000|3001)$/i.test(requestOrigin);
+      if (isLocalhostSubdomain) {
+        return callback(null, true);
+      }
+
+      // 3. Subdominios de producción: *.app.sumtech.com, *.sumtech.com
+      const isSumtechDomain = /^https:\/\/([a-z0-9-]+\.)*sumtech\.com$/i.test(requestOrigin);
+      if (isSumtechDomain) {
+        return callback(null, true);
+      }
+
+      logger.warn(`Petición bloqueada por política CORS desde origen no autorizado: ${requestOrigin}`);
+      return callback(new Error(`Origen CORS no permitido: ${requestOrigin}`), false);
+    },
     credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Origin',
+      'X-Requested-With',
+      'Content-Type',
+      'Accept',
+      'Authorization',
+      'X-Tenant-Slug',
+      'X-Is-Superadmin',
+    ],
   });
 
   // Prefijo Global de API

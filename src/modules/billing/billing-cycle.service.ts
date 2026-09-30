@@ -7,6 +7,15 @@ import { ContractEntity } from '../clients/entities/contract.entity';
 import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { SystemEvents } from '../../common/enums/system-events.enum';
 import { InvoiceGeneratedEvent } from './events/invoice-generated.event';
+import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
+import { BillingSettingsEntity } from './entities/billing-settings.entity';
+import {
+  daysBetween,
+  daysInMonth,
+  resolveBillingDayForMonth,
+  resolveProrationDayCount,
+  toDateString,
+} from './billing-date.util';
 
 export interface BillingCycleResult {
   generated: number;
@@ -30,11 +39,22 @@ export class BillingCycleService {
     @InjectRepository(InvoiceEntity)
     private readonly invoiceRepository: Repository<InvoiceEntity>,
     private readonly eventEmitter: EventEmitter2,
+    private readonly tenantIterator: TenantIteratorService,
   ) {}
 
+  // Este cron corre en background, sin request/tenant asociado — a diferencia
+  // de runBillingCycle() cuando se invoca desde POST /billing/run-cycle (ahí
+  // el tenant ya está resuelto por TenantResolutionMiddleware). Por eso el
+  // punto de entrada del @Cron itera cada tenant ACTIVE, uno a la vez, y
+  // corre el mismo runBillingCycle() sin cambios dentro del contexto de cada
+  // uno — la lógica de negocio no se toca.
   @Cron(CronExpression.EVERY_DAY_AT_2AM)
   async handleDailyBillingCycle(): Promise<void> {
-    await this.runBillingCycle(new Date());
+    const referenceDate = new Date();
+    await this.tenantIterator.runForEachActiveTenant('billing-cycle', async (tenant) => {
+      this.logger.log(`Ciclo de facturación recurrente — tenant '${tenant.slug}'`);
+      await this.runBillingCycle(referenceDate);
+    });
   }
 
   /**
@@ -83,15 +103,15 @@ export class BillingCycleService {
   ): Promise<boolean> {
     const year = referenceDate.getFullYear();
     const month = referenceDate.getMonth();
-    const targetDay = this.resolveBillingDayForMonth(year, month, contract.billingDay);
+    const targetDay = resolveBillingDayForMonth(year, month, contract.billingDay);
 
     if (referenceDate.getDate() !== targetDay) {
       return false;
     }
 
-    const periodStartStr = this.toDateString(year, month, 1);
-    const periodEndStr = this.toDateString(year, month, this.daysInMonth(year, month));
-    const dueDateStr = this.toDateString(year, month, targetDay);
+    const periodStartStr = toDateString(year, month, 1);
+    const periodEndStr = toDateString(year, month, daysInMonth(year, month));
+    const dueDateStr = toDateString(year, month, targetDay);
 
     const existing = await this.invoiceRepository.findOne({
       where: { contractId: contract.id, billingPeriodStart: periodStartStr },
@@ -154,17 +174,95 @@ export class BillingCycleService {
     }
   }
 
-  private resolveBillingDayForMonth(year: number, month: number, billingDay: number): number {
-    return Math.min(billingDay, this.daysInMonth(year, month));
-  }
+  /**
+   * Genera la primera factura de un contrato recién activado, prorrateada si la
+   * activación (`contract.startDate`) no coincide con el inicio del mes
+   * calendario que le corresponde facturar (sección 9 del spec de facturación).
+   * Se invoca una sola vez, al crear el contrato (`ClientsService.addContract`)
+   * — nunca desde el cron: `generateInvoiceForContractIfDue` ya no vuelve a
+   * generar una factura para este mismo período gracias al índice único
+   * `(contractId, billingPeriodStart)`, así que no hay caso especial que
+   * mantener ahí. Devuelve `null` si ya existe una factura para ese período
+   * (idempotente) o si `contract.plan` no viene cargado.
+   */
+  async generateInitialProratedInvoiceIfNeeded(
+    contract: ContractEntity,
+    settings: BillingSettingsEntity,
+  ): Promise<InvoiceEntity | null> {
+    const plan = contract.plan;
+    if (!plan) {
+      throw new Error('generateInitialProratedInvoiceIfNeeded requiere contract.plan cargado');
+    }
 
-  private daysInMonth(year: number, month: number): number {
-    return new Date(year, month + 1, 0).getDate();
-  }
+    const [startYear, startMonth] = contract.startDate.split('-').map(Number);
+    const year = startYear;
+    const month = startMonth - 1; // 0-indexado, igual que Date.getMonth()
 
-  private toDateString(year: number, month: number, day: number): string {
-    const mm = String(month + 1).padStart(2, '0');
-    const dd = String(day).padStart(2, '0');
-    return `${year}-${mm}-${dd}`;
+    const periodStartStr = toDateString(year, month, 1);
+    const periodEndStr = toDateString(year, month, daysInMonth(year, month));
+
+    const cycleDays = resolveProrationDayCount(settings.prorationDayCountPolicy, periodStartStr, periodEndStr);
+    const rawDaysUsed = daysBetween(periodEndStr, contract.startDate) + 1;
+    // Nunca se cobra más que un mes completo por la política de días elegida
+    // (ej. FIXED_30 en un mes de 31 días activado el día 1: 31 días de uso,
+    // pero el tope es el propio cycleDays -> precio completo, no 31/30 de más).
+    const effectiveDaysUsed = Math.min(rawDaysUsed, cycleDays);
+    const isProrated = effectiveDaysUsed < cycleDays;
+
+    const monthlyPrice = Number(plan.monthlyPrice);
+    const subtotal = Number(((monthlyPrice / cycleDays) * effectiveDaysUsed).toFixed(2));
+    const itbisTotal = Number((subtotal * Number(plan.itbisRate)).toFixed(2));
+    const cdtAmount = Number((subtotal * Number(plan.cdtRate)).toFixed(2));
+    const grandTotal = Number((subtotal + itbisTotal + cdtAmount).toFixed(2));
+    const periodLabel = new Date(year, month, 1).toLocaleDateString('es-DO', {
+      month: 'long',
+      year: 'numeric',
+    });
+    const concept = isProrated
+      ? `${plan.name} - Servicio prorrateado de ${periodLabel} (${effectiveDaysUsed} de ${cycleDays} días)`
+      : `${plan.name} - Servicio de ${periodLabel}`;
+
+    try {
+      const invoice = this.invoiceRepository.create({
+        clientId: contract.clientId,
+        contractId: contract.id,
+        status: 'PENDING_PAYMENT',
+        subtotal,
+        itbisTotal,
+        cdtAmount,
+        grandTotal,
+        dueDate: contract.startDate,
+        billingPeriodStart: periodStartStr,
+        billingPeriodEnd: periodEndStr,
+        concept,
+        isProrated,
+        proratedDays: effectiveDaysUsed,
+        prorationDayCountPolicy: settings.prorationDayCountPolicy,
+        cycleDays,
+      });
+      const saved = await this.invoiceRepository.save(invoice);
+
+      const event: InvoiceGeneratedEvent = {
+        invoiceId: saved.id,
+        clientId: contract.clientId,
+        contractId: contract.id,
+        concept,
+        grandTotal,
+        dueDate: contract.startDate,
+        occurredOn: new Date(),
+      };
+      this.eventEmitter.emit(SystemEvents.INVOICE_GENERATED, event);
+
+      return saved;
+    } catch (error) {
+      // Mismo manejo de condición de carrera que generateInvoiceForContractIfDue.
+      if (error?.code === '23505') {
+        this.logger.warn(
+          `Factura inicial ya existente para el contrato ${contract.contractNumber} y período ${periodStartStr}; se omite.`,
+        );
+        return null;
+      }
+      throw error;
+    }
   }
 }

@@ -15,8 +15,8 @@ import {
 import { Type } from 'class-transformer';
 
 export class CheckoutItemDto {
-  @IsEnum(['PLAN_SUBSCRIPTION', 'PLAN_ACTIVATION', 'PRODUCT_HARDWARE', 'INSTALLATION_FEE', 'REPAIR_FEE'])
-  itemType: 'PLAN_SUBSCRIPTION' | 'PLAN_ACTIVATION' | 'PRODUCT_HARDWARE' | 'INSTALLATION_FEE' | 'REPAIR_FEE';
+  @IsEnum(['PLAN_SUBSCRIPTION', 'PLAN_ACTIVATION', 'PRODUCT_HARDWARE', 'INSTALLATION_FEE', 'REPAIR_FEE', 'RECONNECTION_FEE'])
+  itemType: 'PLAN_SUBSCRIPTION' | 'PLAN_ACTIVATION' | 'PRODUCT_HARDWARE' | 'INSTALLATION_FEE' | 'REPAIR_FEE' | 'RECONNECTION_FEE';
 
   @IsOptional()
   @IsUUID('4')
@@ -78,6 +78,28 @@ export class CheckoutDto {
   @IsOptional()
   @IsNumber()
   discountAmount?: number;
+
+  @IsOptional()
+  @IsEnum(['FIXED', 'PERCENTAGE'])
+  discountType?: 'FIXED' | 'PERCENTAGE';
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  discountPercentage?: number;
+
+  @IsOptional()
+  @IsString()
+  discountReason?: string;
+
+  @IsOptional()
+  @IsString()
+  supervisorEmail?: string;
+
+  @IsOptional()
+  @IsString()
+  supervisorPassword?: string;
 
   @IsOptional()
   @IsString()

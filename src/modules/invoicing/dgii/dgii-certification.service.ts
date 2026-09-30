@@ -72,7 +72,7 @@ export class DgiiCertificationService {
     },
   ): Promise<void> {
     try {
-      const config = this.dgiiClient.getConfig();
+      const config = await this.dgiiClient.getConfig();
       const run = this.runRepository.create({
         runSource: source,
         casoNumero: item.casoNumero,
@@ -642,7 +642,7 @@ export class DgiiCertificationService {
     }
 
     try {
-      const config = this.dgiiClient.getConfig();
+      const config = await this.dgiiClient.getConfig();
       logs.push(`[${now()}] ⚙️ Entorno: ${config.environment.toUpperCase()} | Emisor: ${config.rncEmisor}`);
 
       // Caso especial: Nota de Crédito Informativa / Corrección de texto (MontoTotal = 0)
@@ -739,7 +739,7 @@ export class DgiiCertificationService {
     const now = () => new Date().toLocaleTimeString('es-DO', { hour12: false });
 
     try {
-      const config = this.dgiiClient.getConfig();
+      const config = await this.dgiiClient.getConfig();
       logs.push(`[${now()}] ⚙️ Entorno: ${config.environment.toUpperCase()} | Emisor: ${config.rncEmisor}`);
 
       const montoGravado = Number((item.montoTotal / 1.18).toFixed(2));
@@ -832,7 +832,7 @@ export class DgiiCertificationService {
     estadoAprobacion: 1 | 2;
     comentario?: string;
   }) {
-    const config = this.dgiiClient.getConfig();
+    const config = await this.dgiiClient.getConfig();
     const acecfInput: AcecfGenerationInput = {
       rncEmisor: dto.rncEmisorProveedor,
       rncComprador: config.rncEmisor,
@@ -857,7 +857,7 @@ export class DgiiCertificationService {
     secuenciaHasta: string;
     motivo?: string;
   }) {
-    const config = this.dgiiClient.getConfig();
+    const config = await this.dgiiClient.getConfig();
     const anecfInput: AnecfGenerationInput = {
       rncEmisor: config.rncEmisor,
       tipoComprobante: dto.tipoComprobante,

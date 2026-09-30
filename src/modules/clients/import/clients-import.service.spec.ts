@@ -9,6 +9,7 @@ import { PlanEntity } from '../../plans/entities/plan.entity';
 import { SectorEntity } from '../../geography/entities/sector.entity';
 import { MunicipalityEntity } from '../../geography/entities/municipality.entity';
 import { MinioStorageService } from '../../storage/minio-storage.service';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 
 const LEGACY_HEADER =
   'Nombre,DNI/C.I./C.C./IFE,Telefono,Direccion,Barrio/Localidad,Ciudad/Municipio,Coordenadas,Estado,Plan Internet,Fecha Instalacion,Saldo';
@@ -103,6 +104,7 @@ describe('ClientsImportService', () => {
         { provide: getRepositoryToken(MunicipalityEntity), useValue: municipalityRepo },
         { provide: MinioStorageService, useValue: minioStorage },
         { provide: getQueueToken(CLIENTS_IMPORT_QUEUE), useValue: importQueue },
+        { provide: TenantContextService, useValue: { getSlug: jest.fn().mockReturnValue('tenant-test') } },
       ],
     }).compile();
 
@@ -347,7 +349,7 @@ describe('ClientsImportService', () => {
       expect(batch.status).toBe('QUEUED');
       expect(importQueue.add).toHaveBeenCalledWith(
         'process-batch',
-        { batchId: result.batchId },
+        { batchId: result.batchId, tenantSlug: 'tenant-test' },
         expect.objectContaining({ removeOnComplete: true }),
       );
     });

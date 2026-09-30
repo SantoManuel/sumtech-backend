@@ -194,8 +194,123 @@ export class GenieAcsClient {
     }
   }
 
+  /** Consulta lista de dispositivos con filtro opcional de GenieACS */
+  async getDevices(options?: { query?: any; limit?: number }): Promise<any[]> {
+    try {
+      const params: any = {};
+      if (options?.query) {
+        params.query = typeof options.query === 'string' ? options.query : JSON.stringify(options.query);
+      }
+      if (options?.limit) {
+        params.limit = options.limit;
+      }
+      const response = await this.http.get(this.buildUrl('devices'), {
+        ...this.buildRequestConfig(),
+        params,
+      });
+      return Array.isArray(response.data) ? response.data : [];
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Aplica un conjunto arbitrario de parámetros TR-069 via setParameterValues */
+  async setParameterValues(deviceId: string, parameterValues: Array<[string, string, string]>): Promise<void> {
+    try {
+      await this.http.post(
+        `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
+        { name: 'setParameterValues', parameterValues },
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Consulta y verifica valores de parámetros TR-069 del CPE */
+  async getParameterValues(deviceId: string, parameterNames: string[]): Promise<Record<string, string | undefined>> {
+    try {
+      // 1. Obtener documento actual del dispositivo
+      const response = await this.http.get(this.buildUrl('devices'), {
+        ...this.buildRequestConfig(),
+        params: { query: JSON.stringify({ _id: deviceId }) },
+      });
+      const results = Array.isArray(response.data) ? response.data : [];
+      if (results.length === 0) {
+        throw new Error(`GenieACS no tiene ningún dispositivo con el id "${deviceId}".`);
+      }
+      const doc = results[0];
+      const result: Record<string, string | undefined> = {};
+      for (const name of parameterNames) {
+        result[name] = getParamValue(doc, name);
+      }
+      return result;
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Refresca un objeto o parámetro en el CPE vía getParameterValues task */
+  async refreshObject(deviceId: string, objectPath: string = ''): Promise<void> {
+    try {
+      const parameterNames = objectPath ? [objectPath] : ['Device.', 'InternetGatewayDevice.'];
+      await this.http.post(
+        `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
+        { name: 'getParameterValues', parameterNames },
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Restablece los valores de fábrica del CPE (FactoryReset TR-069) */
+  async factoryReset(deviceId: string): Promise<void> {
+    try {
+      await this.http.post(
+        `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
+        { name: 'factoryReset' },
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Asigna un tag al dispositivo en GenieACS */
+  async setDeviceTag(deviceId: string, tagName: string): Promise<void> {
+    try {
+      await this.http.post(
+        this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tags/${encodeURIComponent(tagName)}`),
+        {},
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Remueve un tag del dispositivo en GenieACS */
+  async deleteDeviceTag(deviceId: string, tagName: string): Promise<void> {
+    try {
+      await this.http.delete(
+        this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tags/${encodeURIComponent(tagName)}`),
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
   private buildUrl(resourcePath: string): string {
-    return `${this.config.baseUrl}/api/v1/${resourcePath}/`;
+    const base = this.config.baseUrl.replace(/\/+$/, '');
+    if (base.includes(':7557')) {
+      return `${base}/${resourcePath}/`;
+    }
+    if (base.endsWith('/api/v1')) {
+      return `${base}/${resourcePath}/`;
+    }
+    return `${base}/api/v1/${resourcePath}/`;
   }
 
   private buildRequestConfig() {

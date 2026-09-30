@@ -17,7 +17,9 @@ import { DgiiClientService } from './dgii/dgii-client.service';
 import { DgiiSignerService } from './dgii/dgii-signer.service';
 import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { DataSource } from 'typeorm';
+import { TENANT_DATA_SOURCE } from '../../common/tenancy/tenant-datasource.provider';
 import { Role } from '../../common/enums/role.enum';
+import { BillingSettingsEntity } from '../billing/entities/billing-settings.entity';
 
 describe('InvoicingService', () => {
   let service: InvoicingService;
@@ -29,6 +31,7 @@ describe('InvoicingService', () => {
   let qrInvoiceRepo: any;
   let queryRunnerMock: any;
   let dataSourceMock: any;
+  let billingSettingsRepoMock: any;
 
   beforeEach(async () => {
     sequenceRepo = {
@@ -88,7 +91,16 @@ describe('InvoicingService', () => {
         }),
       },
     };
-    dataSourceMock = { createQueryRunner: jest.fn(() => queryRunnerMock) };
+    billingSettingsRepoMock = {
+      findOne: jest.fn().mockResolvedValue(null),
+    };
+    dataSourceMock = {
+      createQueryRunner: jest.fn(() => queryRunnerMock),
+      getRepository: jest.fn((entity: any) => {
+        if (entity === BillingSettingsEntity) return billingSettingsRepoMock;
+        return {};
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -128,7 +140,7 @@ describe('InvoicingService', () => {
             generateInvoiceA4Pdf: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4 fake')),
           },
         },
-        { provide: DataSource, useValue: dataSourceMock },
+        { provide: TENANT_DATA_SOURCE, useValue: dataSourceMock },
       ],
     }).compile();
 
@@ -218,6 +230,23 @@ describe('InvoicingService', () => {
       expect(qb.andWhere).toHaveBeenCalledWith('invoice.clientId = :clientId', { clientId: 'client-1' });
       expect(qb.skip).toHaveBeenCalledWith(10);
       expect(qb.take).toHaveBeenCalledWith(10);
+    });
+
+    it('openOnly=true filtra por los 3 estados abiertos (PENDING_PAYMENT/EN_GRACIA/VENCIDA), no por un único status', async () => {
+      const qb = invoiceRepo.createQueryBuilder();
+      await service.findAll({ openOnly: true });
+
+      expect(qb.andWhere).toHaveBeenCalledWith('invoice.status IN (:...openStatuses)', {
+        openStatuses: ['PENDING_PAYMENT', 'EN_GRACIA', 'VENCIDA'],
+      });
+    });
+
+    it('openOnly=true tiene prioridad sobre status si ambos vienen presentes', async () => {
+      const qb = invoiceRepo.createQueryBuilder();
+      await service.findAll({ openOnly: true, status: 'ISSUED' });
+
+      expect(qb.andWhere).toHaveBeenCalledWith('invoice.status IN (:...openStatuses)', expect.anything());
+      expect(qb.andWhere).not.toHaveBeenCalledWith('invoice.status = :status', { status: 'ISSUED' });
     });
 
     it('sin sortBy/sortDir mantiene el orden actual (issuedAt DESC) usado por /dashboard/facturas', async () => {
@@ -441,6 +470,56 @@ describe('InvoicingService', () => {
       await expect(service.settleInvoice('inv-1', {} as any, 'E32')).rejects.toThrow(ConflictException);
     });
 
+    it('SÍ liquida una factura EN_GRACIA (regresión: no debe volverse incobrable al envejecer)', async () => {
+      invoiceRepo.findOne.mockResolvedValue({
+        id: 'inv-1',
+        status: 'EN_GRACIA',
+        subtotal: 2195,
+        itbisTotal: 395.1,
+        cdtAmount: 0,
+        grandTotal: 2590.1,
+      });
+      sequenceRepo.findOne.mockResolvedValue({ id: 'seq-e32', ncfType: 'E32', currentSequence: 1, endSequence: 1000 });
+
+      const sale = {
+        id: 'sale-200',
+        clientId: 'client-1',
+        subtotal: 2195,
+        itbisTotal: 395.1,
+        grandTotal: 2590.1,
+        client: { docType: 'CEDULA', docNumber: '00112223334', name: 'Juan Perez' },
+        details: [],
+      };
+
+      const invoice = await service.settleInvoice('inv-1', sale as any, 'E32');
+      expect(invoice.status).toBe('ISSUED');
+    });
+
+    it('SÍ liquida una factura VENCIDA (regresión: no debe volverse incobrable al envejecer)', async () => {
+      invoiceRepo.findOne.mockResolvedValue({
+        id: 'inv-1',
+        status: 'VENCIDA',
+        subtotal: 2195,
+        itbisTotal: 395.1,
+        cdtAmount: 0,
+        grandTotal: 2590.1,
+      });
+      sequenceRepo.findOne.mockResolvedValue({ id: 'seq-e32', ncfType: 'E32', currentSequence: 1, endSequence: 1000 });
+
+      const sale = {
+        id: 'sale-200',
+        clientId: 'client-1',
+        subtotal: 2195,
+        itbisTotal: 395.1,
+        grandTotal: 2590.1,
+        client: { docType: 'CEDULA', docNumber: '00112223334', name: 'Juan Perez' },
+        details: [],
+      };
+
+      const invoice = await service.settleInvoice('inv-1', sale as any, 'E32');
+      expect(invoice.status).toBe('ISSUED');
+    });
+
     it('timbra y liquida una factura PENDING_PAYMENT, asignando NCF y marcándola ISSUED', async () => {
       invoiceRepo.findOne.mockResolvedValue({
         id: 'inv-1',
@@ -574,6 +653,22 @@ describe('InvoicingService', () => {
       expect(invoiceRepo.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'VOIDED' }));
     });
 
+    it('anula una factura EN_GRACIA (regresión: sigue sin NCF, sigue siendo anulable)', async () => {
+      invoiceRepo.findOne.mockResolvedValue({ id: 'inv-1', status: 'EN_GRACIA' });
+
+      const result = await service.voidInvoice('inv-1');
+
+      expect(result.status).toBe('VOIDED');
+    });
+
+    it('anula una factura VENCIDA (regresión: sigue sin NCF, sigue siendo anulable)', async () => {
+      invoiceRepo.findOne.mockResolvedValue({ id: 'inv-1', status: 'VENCIDA' });
+
+      const result = await service.voidInvoice('inv-1');
+
+      expect(result.status).toBe('VOIDED');
+    });
+
     it('lanza ConflictException si la factura ya está ISSUED (requiere Nota de Crédito)', async () => {
       invoiceRepo.findOne.mockResolvedValue({ id: 'inv-1', status: 'ISSUED' });
 
@@ -677,6 +772,30 @@ describe('InvoicingService', () => {
       expect(result.originalInvoiceId).toBe('inv-original');
       expect(result.ncfModificado).toBe('E310000001701');
       expect(result.grandTotal).toBe(1180);
+    });
+
+    it('CAJERO respeta la ventana configurada dinámicamente en BillingSettingsEntity (ej. 24 horas)', async () => {
+      billingSettingsRepoMock.findOne.mockResolvedValue({ cashierVoidWindowHours: 24 });
+      const issued25HoursAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      invoiceRepo.findOne
+        .mockResolvedValueOnce(makeIssuedInvoice({ issuedAt: issued25HoursAgo, sale: { userId: 'user-cajero-1', details: [] } }))
+        .mockResolvedValueOnce(null);
+
+      await expect(
+        service.createCreditNote('inv-original', 'Motivo', 'user-cajero-1', [Role.CAJERO]),
+      ).rejects.toThrow('Esta factura tiene más de 24 horas desde su emisión');
+    });
+
+    it('CAJERO sí puede anular si está dentro de la ventana configurada dinámicamente (ej. 72 horas)', async () => {
+      billingSettingsRepoMock.findOne.mockResolvedValue({ cashierVoidWindowHours: 72 });
+      const issued50HoursAgo = new Date(Date.now() - 50 * 60 * 60 * 1000);
+      invoiceRepo.findOne
+        .mockResolvedValueOnce(makeIssuedInvoice({ issuedAt: issued50HoursAgo, sale: { userId: 'user-cajero-1', details: [] } }))
+        .mockResolvedValueOnce(null);
+
+      const result = await service.createCreditNote('inv-original', 'Anulación dentro de 72h', 'user-cajero-1', [Role.CAJERO]);
+      expect(result.ncfType).toBe('E34');
+      expect(result.originalInvoiceId).toBe('inv-original');
     });
 
     it('ADMIN puede anular cualquier factura sin restricción de autoría/tiempo', async () => {

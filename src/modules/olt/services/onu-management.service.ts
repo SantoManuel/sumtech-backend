@@ -1,0 +1,437 @@
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { OnuEntity } from '../entities/onu.entity';
+import { OnuServiceConfigEntity } from '../entities/onu-service-config.entity';
+import { OltEntity } from '../entities/olt.entity';
+import { OltInterfaceEntity } from '../entities/olt-interface.entity';
+import { OnuTypeEntity } from '../entities/onu-type.entity';
+import { VlanEntity } from '../entities/vlan.entity';
+import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
+import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
+import { ContractEntity } from '../../clients/entities/contract.entity';
+import { ZteC320Driver } from '../drivers/zte-c320.driver';
+import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
+import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
+import { OltConnectionParams, AuthorizeOnuParams } from '../ports/olt-driver.port';
+
+@Injectable()
+export class OnuManagementService {
+  private readonly logger = new Logger(OnuManagementService.name);
+
+  constructor(
+    @InjectRepository(OnuEntity)
+    private readonly onuRepository: Repository<OnuEntity>,
+    @InjectRepository(OnuServiceConfigEntity)
+    private readonly configRepository: Repository<OnuServiceConfigEntity>,
+    @InjectRepository(OltEntity)
+    private readonly oltRepository: Repository<OltEntity>,
+    @InjectRepository(OltInterfaceEntity)
+    private readonly ifaceRepository: Repository<OltInterfaceEntity>,
+    @InjectRepository(OnuTypeEntity)
+    private readonly onuTypeRepository: Repository<OnuTypeEntity>,
+    @InjectRepository(VlanEntity)
+    private readonly vlanRepository: Repository<VlanEntity>,
+    @InjectRepository(Tr069NetworkEntity)
+    private readonly tr069Repository: Repository<Tr069NetworkEntity>,
+    @InjectRepository(NetworkNodeEntity)
+    private readonly nodeRepository: Repository<NetworkNodeEntity>,
+    @InjectRepository(ContractEntity)
+    private readonly contractRepository: Repository<ContractEntity>,
+    private readonly zteDriver: ZteC320Driver,
+    private readonly reachabilityResolver: ReachabilityResolver,
+    private readonly deviceOperationLogger: DeviceOperationLogger,
+  ) {}
+
+  /**
+   * Consulta ONUs sin configurar descubiertas por OLT o por ACS (RF-OLT-014).
+   */
+  async findUnconfigured(oltId?: string) {
+    const where: any = { status: 'UNCONFIGURED' };
+    if (oltId) where.oltId = oltId;
+
+    return this.onuRepository.find({
+      where,
+      relations: ['olt', 'ponInterface'],
+      order: { detectedAt: 'DESC' },
+    });
+  }
+
+  /**
+   * Listado general de ONUs con filtros opcionales.
+   */
+  async findAll(options?: { oltId?: string; status?: string; search?: string }) {
+    const qb = this.onuRepository
+      .createQueryBuilder('onu')
+      .leftJoinAndSelect('onu.olt', 'olt')
+      .leftJoinAndSelect('onu.ponInterface', 'ponInterface')
+      .leftJoinAndSelect('onu.onuType', 'onuType')
+      .leftJoinAndSelect('onu.contract', 'contract')
+      .leftJoinAndSelect('contract.client', 'client')
+      .leftJoinAndSelect('onu.serviceConfig', 'serviceConfig')
+      .orderBy('onu.updatedAt', 'DESC');
+
+    if (options?.oltId) {
+      qb.andWhere('onu.oltId = :oltId', { oltId: options.oltId });
+    }
+    if (options?.status) {
+      qb.andWhere('onu.status = :status', { status: options.status });
+    }
+    if (options?.search) {
+      const q = `%${options.search}%`;
+      qb.andWhere(
+        '(onu.serialNumber ILIKE :q OR onu.mac ILIKE :q OR client.firstName ILIKE :q OR client.lastName ILIKE :q)',
+        { q },
+      );
+    }
+
+    return qb.getMany();
+  }
+
+  async findById(id: string) {
+    const onu = await this.onuRepository.findOne({
+      where: { id },
+      relations: [
+        'olt',
+        'ponInterface',
+        'onuType',
+        'contract',
+        'contract.client',
+        'serviceConfig',
+        'serviceConfig.serviceVlan',
+        'serviceConfig.tr069Vlan',
+        'serviceConfig.tr069Network',
+        'serviceConfig.speedProfile',
+      ],
+    });
+    if (!onu) {
+      throw new NotFoundException(`ONU no encontrada: ${id}`);
+    }
+    return onu;
+  }
+
+  /**
+   * Escanea ONUs no configuradas en una OLT (RF-OLT-014).
+   */
+  async scanUnconfiguredOnus(oltId: string, actorUserId?: string) {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException(`OLT no encontrada: ${oltId}`);
+
+    const connParams = await this.resolveOltConnectionParams(olt);
+    const discovered = await this.zteDriver.getUnconfiguredOnus(connParams);
+
+    const savedOnus: OnuEntity[] = [];
+
+    for (const item of discovered) {
+      let existing = await this.onuRepository.findOneBy({
+        oltId: olt.id,
+        serialNumber: item.serialNumber,
+      });
+
+      // Buscar interfaz PON correspondiente en la base de datos
+      const ponIface = await this.ifaceRepository.findOneBy({
+        oltId: olt.id,
+        name: item.ponInterface,
+      });
+
+      if (!existing) {
+        existing = this.onuRepository.create({
+          oltId: olt.id,
+          ponInterfaceId: ponIface?.id,
+          onuIndex: item.onuIndex,
+          serialNumber: item.serialNumber,
+          vendor: item.vendor,
+          status: 'UNCONFIGURED',
+          detectedBy: 'OLT_POLL',
+          detectedAt: new Date(),
+        });
+      } else {
+        existing.onuIndex = item.onuIndex;
+        if (ponIface) existing.ponInterfaceId = ponIface.id;
+        existing.lastSeenAt = new Date();
+      }
+
+      savedOnus.push(await this.onuRepository.save(existing));
+    }
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Escaneo de ONUs sin configurar en OLT "${olt.name}": ${discovered.length} detectadas.`,
+      actorUserId,
+    });
+
+    return savedOnus;
+  }
+
+  /**
+   * Obtiene la telemetría de potencia óptica en vivo (RF-OLT-015).
+   */
+  async getOpticalTelemetry(id: string) {
+    const onu = await this.findById(id);
+    const connParams = await this.resolveOltConnectionParams(onu.olt);
+
+    const onuTarget = onu.onuIndex.startsWith('gpon-onu_')
+      ? onu.onuIndex
+      : `${onu.ponInterface?.name || 'gpon-olt_1/1/1'}:${onu.onuIndex}`;
+
+    const power = await this.zteDriver.getOnuOpticalPower(connParams, onuTarget);
+
+    if (power.rxDbm !== undefined) {
+      onu.rxPowerDbm = power.rxDbm;
+    }
+    if (power.txDbm !== undefined) {
+      onu.txPowerDbm = power.txDbm;
+    }
+    onu.lastSeenAt = new Date();
+    await this.onuRepository.save(onu);
+
+    return {
+      onuId: onu.id,
+      serialNumber: onu.serialNumber,
+      onuIndex: onu.onuIndex,
+      rxPowerDbm: onu.rxPowerDbm,
+      txPowerDbm: onu.txPowerDbm,
+      downRxDbm: power.downRxDbm,
+      upRxDbm: power.upRxDbm,
+      attenuationDb: power.attenuationDb,
+      lastSeenAt: onu.lastSeenAt,
+      signalStatus:
+        onu.rxPowerDbm && onu.rxPowerDbm < -27
+          ? 'CRITICAL_LOW'
+          : onu.rxPowerDbm && onu.rxPowerDbm < -24
+          ? 'WARNING'
+          : 'OPTIMAL',
+    };
+  }
+
+  /**
+   * Genera el script de comandos Telnet para previsualizar antes de ejecutar (RF-OLT-018 dry-run).
+   */
+  async previewAuthorizationScript(id: string, dto: any) {
+    const onu = await this.findById(id);
+    const config = await this.buildAuthorizeParams(onu, dto);
+    const commands = this.zteDriver.generateAuthorizationScript(config);
+
+    return {
+      onuId: onu.id,
+      serialNumber: onu.serialNumber,
+      commands,
+      totalCommands: commands.length,
+    };
+  }
+
+  /**
+   * Autoriza y provisiona la ONU en la OLT (RF-OLT-016 / RF-ONU-001 a 007).
+   */
+  async authorizeOnu(id: string, dto: any, actorUserId?: string) {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+    const connParams = await this.resolveOltConnectionParams(olt);
+
+    const authParams = await this.buildAuthorizeParams(onu, dto);
+
+    // 1. Provisión en la OLT vía Telnet
+    const result = await this.zteDriver.authorizeOnu(connParams, authParams);
+    if (!result.ok) {
+      throw new BadRequestException(`Fallo aprovisionando ONU en OLT: ${result.error}`);
+    }
+
+    // 2. Persistir configuración de servicio en net.onu_service_config
+    let config = await this.configRepository.findOneBy({ onuId: onu.id });
+    if (!config) {
+      config = this.configRepository.create({
+        onuId: onu.id,
+        serviceVlanId: dto.serviceVlanId,
+        mgmtVlanId: dto.mgmtVlanId,
+        tr069VlanId: dto.tr069VlanId,
+        tr069NetworkId: dto.tr069NetworkId,
+        managementMethod: dto.managementMethod || 'TR069',
+        operationMode: dto.operationMode || 'ROUTER',
+        wanMode: dto.wanMode || 'PPPOE',
+        speedProfileId: dto.speedProfileId,
+        desiredVersion: 1,
+        appliedVersion: 1,
+        applyStatus: 'APPLIED',
+      });
+    } else {
+      config.serviceVlanId = dto.serviceVlanId;
+      config.mgmtVlanId = dto.mgmtVlanId;
+      config.tr069VlanId = dto.tr069VlanId;
+      config.tr069NetworkId = dto.tr069NetworkId;
+      config.managementMethod = dto.managementMethod || config.managementMethod;
+      config.operationMode = dto.operationMode || config.operationMode;
+      config.wanMode = dto.wanMode || config.wanMode;
+      config.speedProfileId = dto.speedProfileId;
+      config.appliedVersion += 1;
+      config.desiredVersion = config.appliedVersion;
+      config.applyStatus = 'APPLIED';
+    }
+    await this.configRepository.save(config);
+
+    // 3. Actualizar estado de la ONU en net.onus
+    onu.status = 'ACTIVE';
+    onu.authorizedAt = new Date();
+    onu.authorizedByUserId = actorUserId;
+    onu.contractId = dto.contractId || onu.contractId;
+    onu.onuTypeId = dto.onuTypeId || onu.onuTypeId;
+    if (dto.onuIndex) onu.onuIndex = dto.onuIndex;
+
+    await this.onuRepository.save(onu);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'PROVISION',
+      status: 'SUCCESS',
+      message: `ONU ${onu.serialNumber} autorizada con éxito en ${authParams.ponInterface}:${authParams.onuId}`,
+      actorUserId,
+      rawDetails: { onuId: onu.id, serialNumber: onu.serialNumber },
+    });
+
+    return this.findById(onu.id);
+  }
+
+  /**
+   * Bloquea el tráfico óptico de la ONU (RF-OLT-017).
+   */
+  async blockOnu(id: string, actorUserId?: string) {
+    const onu = await this.findById(id);
+    const connParams = await this.resolveOltConnectionParams(onu.olt);
+
+    const target = this.buildOnuTarget(onu);
+    const result = await this.zteDriver.setOnuAdminState(connParams, target, 'BLOCKED');
+    if (!result.ok) {
+      throw new BadRequestException(`No se pudo bloquear la ONU: ${result.error}`);
+    }
+
+    onu.status = 'BLOCKED';
+    await this.onuRepository.save(onu);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: onu.olt.viaNodeId || onu.olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `ONU ${onu.serialNumber} bloqueada (shutdown) en ${target}.`,
+      actorUserId,
+    });
+
+    return { success: true, status: 'BLOCKED', message: 'ONU bloqueada correctamente en la OLT.' };
+  }
+
+  /**
+   * Desbloquea / reactiva el tráfico de la ONU (RF-OLT-017).
+   */
+  async unblockOnu(id: string, actorUserId?: string) {
+    const onu = await this.findById(id);
+    const connParams = await this.resolveOltConnectionParams(onu.olt);
+
+    const target = this.buildOnuTarget(onu);
+    const result = await this.zteDriver.setOnuAdminState(connParams, target, 'ACTIVE');
+    if (!result.ok) {
+      throw new BadRequestException(`No se pudo reactivar la ONU: ${result.error}`);
+    }
+
+    onu.status = 'ACTIVE';
+    await this.onuRepository.save(onu);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: onu.olt.viaNodeId || onu.olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `ONU ${onu.serialNumber} reactivada (no shutdown) en ${target}.`,
+      actorUserId,
+    });
+
+    return { success: true, status: 'ACTIVE', message: 'ONU reactivada correctamente en la OLT.' };
+  }
+
+  private buildOnuTarget(onu: OnuEntity): string {
+    if (onu.onuIndex.startsWith('gpon-onu_')) {
+      return onu.onuIndex;
+    }
+    const ifaceName = onu.ponInterface?.name || 'gpon-olt_1/1/1';
+    return `${ifaceName}:${onu.onuIndex}`;
+  }
+
+  private async buildAuthorizeParams(onu: OnuEntity, dto: any): Promise<AuthorizeOnuParams> {
+    const ponInterface = onu.ponInterface?.name || dto.ponInterface || 'gpon-olt_1/1/1';
+
+    // Extraer número de ONU desde onuIndex o usar el asignado
+    let onuId = parseInt(dto.onuId, 10);
+    if (!onuId) {
+      const parts = onu.onuIndex.split(':');
+      onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
+    }
+
+    // Tipo / modelo técnico
+    let modelTypeName = 'ZTE-F660';
+    if (dto.onuTypeId) {
+      const type = await this.onuTypeRepository.findOneBy({ id: dto.onuTypeId });
+      if (type) modelTypeName = type.vendorTypeName || type.model;
+    }
+
+    // VLAN de servicio
+    let serviceVlan = 100;
+    if (dto.serviceVlanId) {
+      const v = await this.vlanRepository.findOneBy({ id: dto.serviceVlanId });
+      if (v) serviceVlan = v.vlanId;
+    }
+
+    // TR-069
+    let tr069Url: string | undefined;
+    let tr069Vlan: number | undefined;
+    if (dto.tr069NetworkId) {
+      const net = await this.tr069Repository.findOne({
+        where: { id: dto.tr069NetworkId },
+        relations: ['vlan'],
+      });
+      if (net) {
+        tr069Url = net.acsUrl;
+        if (net.vlan) tr069Vlan = net.vlan.vlanId;
+      }
+    }
+
+    return {
+      ponInterface,
+      onuId,
+      modelTypeName,
+      serialNumber: onu.serialNumber,
+      clientName: dto.clientName || undefined,
+      serviceVlan,
+      managementMethod: dto.managementMethod || 'TR069',
+      operationMode: dto.operationMode || 'ROUTER',
+      tr069Url,
+      tr069Vlan,
+    };
+  }
+
+  private async resolveOltConnectionParams(olt: OltEntity): Promise<OltConnectionParams> {
+    let host = olt.host;
+    let port = olt.port || 23;
+
+    if (olt.connectionMethod === 'VIA_MIKROTIK') {
+      if (!olt.viaNodeId) {
+        throw new BadRequestException(`La OLT "${olt.name}" no tiene router MikroTik de salto configurado.`);
+      }
+      const node = await this.nodeRepository.findOneBy({ id: olt.viaNodeId });
+      if (!node) throw new NotFoundException('Router MikroTik de salto no encontrado.');
+
+      const endpoint = await this.reachabilityResolver.resolveEndpoint(node);
+      host = endpoint.host;
+      port = olt.natPort || 2323;
+    }
+
+    const password = decryptCredential(olt.passwordEnc);
+    const enablePassword = olt.enablePasswordEnc ? decryptCredential(olt.enablePasswordEnc) : undefined;
+
+    return {
+      host,
+      port,
+      username: olt.username,
+      password,
+      enablePassword,
+    };
+  }
+}

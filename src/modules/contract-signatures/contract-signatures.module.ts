@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { ContractSignatureEntity } from './entities/contract-signature.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { TicketEntity } from '../tickets/entities/ticket.entity';
@@ -10,8 +10,8 @@ import { StorageModule } from '../storage/storage.module';
   imports: [
     // ContractEntity y TicketEntity se registran también acá (y no solo en
     // ClientsModule/TicketsModule) porque ninguno de esos dos módulos exporta
-    // TypeOrmModule — mismo patrón que GenieAcsModule.
-    TypeOrmModule.forFeature([ContractSignatureEntity, ContractEntity, TicketEntity]),
+    // TenantTypeOrmModule — mismo patrón que GenieAcsModule.
+    TenantTypeOrmModule.forFeature([ContractSignatureEntity, ContractEntity, TicketEntity]),
     StorageModule,
   ],
   providers: [ContractSignaturesService],

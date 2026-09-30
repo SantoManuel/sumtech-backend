@@ -3,6 +3,7 @@ import { GeographyController } from './geography.controller';
 import { GeographyService } from './geography.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { UsersService } from '../users/users.service';
 
 describe('GeographyController', () => {
@@ -24,6 +25,7 @@ describe('GeographyController', () => {
         { provide: GeographyService, useValue: mockGeographyService },
         { provide: JwtService, useValue: { verify: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: TenantContextService, useValue: { hasContext: jest.fn().mockReturnValue(false), getTenantId: jest.fn(), getSlug: jest.fn() } },
         { provide: UsersService, useValue: { findById: jest.fn() } },
       ],
     }).compile();

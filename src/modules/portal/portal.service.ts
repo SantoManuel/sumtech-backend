@@ -1,10 +1,11 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ClientEntity } from '../clients/entities/client.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { PlanEntity } from '../plans/entities/plan.entity';
 import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
+import { isOpenInvoiceStatus, OPEN_INVOICE_STATUSES } from '../invoicing/invoice-status.util';
 import { SerialNumberEntity } from '../inventory/entities/serial-number.entity';
 import { TicketEntity } from '../tickets/entities/ticket.entity';
 import { EmployeeEntity } from '../employees/entities/employee.entity';
@@ -326,7 +327,7 @@ export class PortalService {
     // PENDING_PAYMENT más antigua del cliente (respeta "solo pago completo",
     // sin aplicar dinero a ciegas cuando el monto no calza con ninguna factura).
     const oldestPending = await this.invoiceRepository.findOne({
-      where: { clientId: proof.clientId, status: 'PENDING_PAYMENT' },
+      where: { clientId: proof.clientId, status: In(OPEN_INVOICE_STATUSES) },
       order: { dueDate: 'ASC' },
     });
 
@@ -408,7 +409,7 @@ export class PortalService {
     if (invoice.clientId !== proof.clientId) {
       throw new BadRequestException('La factura no pertenece al mismo cliente del comprobante');
     }
-    if (invoice.status !== 'PENDING_PAYMENT') {
+    if (!isOpenInvoiceStatus(invoice.status)) {
       throw new BadRequestException(`La factura ${invoiceId} no está pendiente de pago`);
     }
 

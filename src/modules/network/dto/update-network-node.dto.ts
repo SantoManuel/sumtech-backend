@@ -1,4 +1,15 @@
-import { IsOptional, IsString, IsInt, Min, Max, IsUUID, IsEnum, IsBoolean, MaxLength } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsInt,
+  Min,
+  Max,
+  IsUUID,
+  IsEnum,
+  IsBoolean,
+  MaxLength,
+  IsIn,
+} from 'class-validator';
 
 export class UpdateNetworkNodeDto {
   @IsOptional()
@@ -37,4 +48,86 @@ export class UpdateNetworkNodeDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['wireguard', 'ddns', 'public_ip', 'api', 'ssh'], {
+    message: 'connectionMethod debe ser wireguard, ddns, public_ip, api o ssh',
+  })
+  connectionMethod?: 'wireguard' | 'ddns' | 'public_ip' | 'api' | 'ssh';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['REST', 'ROUTEROS_API', 'SSH'], {
+    message: 'transportType debe ser REST, ROUTEROS_API o SSH',
+  })
+  transportType?: 'REST' | 'ROUTEROS_API' | 'SSH';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['ACTIVE', 'UNREACHABLE', 'ERROR_AUTH', 'MAINTENANCE', 'PROVISIONING'], {
+    message: 'status debe ser ACTIVE, UNREACHABLE, ERROR_AUTH, MAINTENANCE o PROVISIONING',
+  })
+  status?: 'ACTIVE' | 'UNREACHABLE' | 'ERROR_AUTH' | 'MAINTENANCE' | 'PROVISIONING';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  ddnsHostname?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  wireguardPublicKey?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  wireguardListenPort?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(45)
+  wireguardIp?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  apiUser?: string;
+
+  @IsOptional()
+  @IsString()
+  apiPassword?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  sshPort?: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['PPPOE', 'OLT_NATIVE'], {
+    message: 'suspensionMedium debe ser PPPOE o OLT_NATIVE',
+  })
+  suspensionMedium?: 'PPPOE' | 'OLT_NATIVE';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['DISABLED', 'DISABLE_SECRET', 'NOTICE_PORTAL'], {
+    message: 'suspensionMode debe ser DISABLED, DISABLE_SECRET o NOTICE_PORTAL',
+  })
+  suspensionMode?: 'DISABLED' | 'DISABLE_SECRET' | 'NOTICE_PORTAL';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(45)
+  portalIp?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  portalPort?: number;
 }

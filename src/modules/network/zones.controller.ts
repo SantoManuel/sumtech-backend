@@ -7,9 +7,13 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { SaasFeatureGuard } from '../../common/guards/saas-feature.guard';
+import { RequireFeature } from '../../common/decorators/require-feature.decorator';
 
+/** Protegido por SaasFeatureGuard: el tenant debe tener contratado el módulo MIKROTIK. */
 @Controller('network/zones')
-@UseGuards(AuthGuard, RolesGuard)
+@UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard)
+@RequireFeature('MIKROTIK')
 export class ZonesController {
   constructor(private readonly zonesService: ZonesService) {}
 

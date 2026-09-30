@@ -1,15 +1,19 @@
-import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import axios, { AxiosInstance } from 'axios';
 import * as https from 'https';
-import { DgiiConfig, DEFAULT_DGII_CONFIG } from './dgii-config.interface';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import * as crypto from 'crypto';
+import { DgiiConfig } from './dgii-config.interface';
 import { DgiiSignerService } from './dgii-signer.service';
 import { DgiiXsdValidatorService } from './dgii-xsd-validator.service';
 import { ecfTipoDoc } from './dgii-xml-generator.service';
 import { DgiiCertificationRun } from './entities/dgii-certification-run.entity';
 import { CompanyService } from '../../company/company.service';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 
 export interface DgiiSendResult {
   trackId: string;
@@ -38,68 +42,40 @@ export interface ConnectionDiagnosticResult {
   message: string;
 }
 
+/**
+ * Cliente DGII — Fase 4 del plan multi-tenant: cada ISP factura bajo su
+ * propio RNC/certificado, así que este servicio ya NO cachea un `DgiiConfig`
+ * mutable como estado de instancia (eso era, además de quedar obsoleto al
+ * primer tenant nuevo, un bug real de correctitud bajo concurrencia: dos
+ * requests de dos tenants distintos en vuelo al mismo tiempo podían pisarse
+ * el `this.config` compartido). `resolveConfig()` arma la configuración
+ * efectiva EN CADA LLAMADA, mezclando los defaults de env var (el tenant
+ * original `sumtech`, que no tiene certificado en MinIO) con las columnas de
+ * `CompanyProfileEntity` del tenant activo en `TenantContextService`. El
+ * token Bearer de la DGII, por el mismo motivo, se cachea en un mapa por
+ * tenant en vez de un solo campo compartido.
+ */
 @Injectable()
-export class DgiiClientService implements OnModuleInit {
+export class DgiiClientService {
   private readonly logger = new Logger(DgiiClientService.name);
-  private config: DgiiConfig = { ...DEFAULT_DGII_CONFIG };
-  private token: string | null = null;
-  private tokenExpiresAt: Date | null = null;
+  private readonly tokenCache = new Map<string, { token: string; expiresAt: Date }>();
 
   constructor(
     private readonly signerService: DgiiSignerService,
     private readonly xsdValidator: DgiiXsdValidatorService,
     @InjectRepository(DgiiCertificationRun)
     private readonly runRepository: Repository<DgiiCertificationRun>,
+    private readonly tenantContext: TenantContextService,
     @Optional() private readonly companyService?: CompanyService,
-  ) {
-    this.initFromEnv();
-  }
+  ) {}
 
-  async onModuleInit() {
-    if (this.companyService) {
-      try {
-        await this.syncFromCompanyService();
-      } catch (err: any) {
-        this.logger.warn(`No se pudo sincronizar configuración corporativa inicial: ${err.message}`);
-      }
-    }
-  }
-
-  @OnEvent('company.tenant.updated')
-  @OnEvent('company.tenant.default_changed')
-  async handleCompanyConfigChanged() {
-    await this.syncFromCompanyService();
-  }
-
-  public async syncFromCompanyService() {
-    if (!this.companyService) return;
-    try {
-      const fiscal = await this.companyService.getCompanyFiscalInfo();
-      this.config = {
-        ...this.config,
-        rncEmisor: fiscal.rnc || this.config.rncEmisor,
-        razonSocialEmisor: fiscal.razonSocial || this.config.razonSocialEmisor,
-        nombreComercial: fiscal.nombreComercial || this.config.nombreComercial,
-        direccionEmisor: fiscal.direccion || this.config.direccionEmisor,
-        municipioEmisor: fiscal.municipio || this.config.municipioEmisor,
-        provinciaEmisor: fiscal.provincia || this.config.provinciaEmisor,
-        correoEmisor: fiscal.correo || this.config.correoEmisor,
-        telefonoEmisor: fiscal.telefono || this.config.telefonoEmisor,
-        webSite: fiscal.website || this.config.webSite,
-      };
-      this.logger.log(`Configuración fiscal sincronizada desde BD para RNC: ${this.config.rncEmisor}`);
-    } catch (err: any) {
-      this.logger.warn(`Error al sincronizar datos fiscales desde CompanyService: ${err.message}`);
-    }
-  }
-
-  private initFromEnv() {
-    this.config = {
+  private buildEnvDefaults(): DgiiConfig {
+    return {
       environment: (process.env.DGII_ENVIRONMENT as any) || 'testecf',
       baseUrl: process.env.DGII_AUTH_URL || 'https://ecf.dgii.gov.do/testecf/',
       baseUrlRfce: 'https://fc.dgii.gov.do/testecf/',
       certPath: process.env.DGII_CERT_PATH || './certs/22817887_identity.p12',
-      certPassword: process.env.DGII_CERT_PASSWORD || 'hagmauhig1255',
+      certPassword: process.env.DGII_CERT_PASSWORD || '',
       rncEmisor: process.env.DGII_RNC_EMISOR || '131000000',
       razonSocialEmisor: 'SUMTECH TELECOM S.R.L.',
       nombreComercial: 'SUMTECH FIBRA & TV',
@@ -110,41 +86,116 @@ export class DgiiClientService implements OnModuleInit {
     };
   }
 
-  public getConfig(): DgiiConfig {
-    return { ...this.config };
-  }
-
-  public async updateConfig(newConfig: Partial<DgiiConfig>) {
-    this.config = { ...this.config, ...newConfig };
-    this.token = null;
-    this.tokenExpiresAt = null;
-
-    if (this.companyService) {
-      try {
-        const defaultTenant = await this.companyService.getDefaultTenant();
-        await this.companyService.update(defaultTenant.id, {
-          rnc: newConfig.rncEmisor,
-          companyName: newConfig.razonSocialEmisor,
-          commercialName: newConfig.nombreComercial,
-          address: newConfig.direccionEmisor,
-          phone: newConfig.telefonoEmisor,
-          email: newConfig.correoEmisor,
-          website: newConfig.webSite,
-        });
-      } catch (err: any) {
-        this.logger.warn(`Error persistiendo datos fiscales en tenant_config: ${err.message}`);
-      }
-    }
+  /**
+   * Descarga el certificado del tenant activo desde MinIO a un archivo
+   * temporal — `DgiiSignerService`/`node-forge` exigen un path de archivo,
+   * no un buffer. Se descarga fresco en cada llamada (sin cache local) para
+   * no tener que invalidar nada si el ISP sube un certificado nuevo — el
+   * volumen de llamadas DGII no es lo bastante alto como para que el costo
+   * de red importe.
+   */
+  private async materializeCertFile(objectKey: string, slug: string): Promise<string> {
+    const buffer = await this.companyService!.getDgiiCertificateBuffer(objectKey);
+    const dir = path.join(os.tmpdir(), 'sumtech-dgii-certs');
+    fs.mkdirSync(dir, { recursive: true });
+    const safeSlug = slug.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const hash = crypto.createHash('sha1').update(objectKey).digest('hex').slice(0, 8);
+    const filePath = path.join(dir, `${safeSlug}_${hash}.p12`);
+    fs.writeFileSync(filePath, buffer);
+    return filePath;
   }
 
   /**
-   * Obtiene un cliente Axios preconfigurado. `baseUrlOverride` se usa para
-   * RFCE, que la DGII expone en un host distinto (`fc.dgii.gov.do`,
-   * `config.baseUrlRfce`) aunque reutiliza el mismo token Bearer emitido
-   * contra el host principal.
+   * Arma la configuración DGII efectiva para el tenant activo (env defaults
+   * + columnas de `CompanyProfileEntity`, si hay contexto de tenant y el
+   * servicio está disponible — `@Optional()` porque algunos consumidores de
+   * este servicio corren en tests/scripts fuera de un módulo con `company`).
    */
-  private getHttpClient(baseUrlOverride?: string): AxiosInstance {
-    let baseUrl = baseUrlOverride || this.config.baseUrl;
+  private async resolveConfig(): Promise<DgiiConfig> {
+    const base = this.buildEnvDefaults();
+
+    if (!this.companyService || !this.tenantContext.hasContext()) {
+      return base;
+    }
+
+    try {
+      const [fiscal, dgii] = await Promise.all([
+        this.companyService.getCompanyFiscalInfo(),
+        this.companyService.getDgiiSettings(),
+      ]);
+
+      let certPath = base.certPath;
+      if (dgii.certObjectKey) {
+        certPath = await this.materializeCertFile(dgii.certObjectKey, this.tenantContext.getSlug());
+      }
+
+      return {
+        ...base,
+        environment: (dgii.environment as any) || base.environment,
+        baseUrl: dgii.authUrl || base.baseUrl,
+        certPath,
+        certPassword: dgii.certPassword || base.certPassword,
+        rncEmisor: fiscal.rnc || base.rncEmisor,
+        razonSocialEmisor: fiscal.razonSocial || base.razonSocialEmisor,
+        nombreComercial: fiscal.nombreComercial || base.nombreComercial,
+        direccionEmisor: fiscal.direccion || base.direccionEmisor,
+        municipioEmisor: fiscal.municipio || base.municipioEmisor,
+        provinciaEmisor: fiscal.provincia || base.provinciaEmisor,
+        correoEmisor: fiscal.correo || base.correoEmisor,
+        telefonoEmisor: fiscal.telefono || base.telefonoEmisor,
+        webSite: fiscal.website || base.webSite,
+      };
+    } catch (err: any) {
+      this.logger.warn(`No se pudo resolver la configuración DGII del tenant activo, usando defaults de env var: ${err.message}`);
+      return base;
+    }
+  }
+
+  public async getConfig(): Promise<DgiiConfig> {
+    return this.resolveConfig();
+  }
+
+  /**
+   * Persiste cambios de configuración DGII directamente en el perfil del
+   * tenant activo — ya no hay `this.config` en memoria que mutar, así que
+   * la próxima llamada a cualquier método de este servicio ve el cambio de
+   * inmediato vía `resolveConfig()`.
+   */
+  public async updateConfig(newConfig: Partial<DgiiConfig>): Promise<void> {
+    if (!this.companyService) return;
+
+    const patch: Record<string, unknown> = {
+      rnc: newConfig.rncEmisor,
+      companyName: newConfig.razonSocialEmisor,
+      commercialName: newConfig.nombreComercial,
+      address: newConfig.direccionEmisor,
+      phone: newConfig.telefonoEmisor,
+      email: newConfig.correoEmisor,
+      website: newConfig.webSite,
+      dgiiEnvironment: newConfig.environment,
+      dgiiAuthUrl: newConfig.baseUrl,
+    };
+
+    // Un `certPassword` vacío/no provisto significa "no tocar la contraseña
+    // actual" — nunca se incluye en el patch, porque `CompanyService.update()`
+    // hace `Object.assign` sin filtrar campos vacíos y borraría en silencio
+    // la contraseña real del certificado de firma del tenant.
+    if (newConfig.certPassword) {
+      patch.dgiiCertPassword = newConfig.certPassword;
+    }
+
+    await this.companyService.update(patch as any);
+
+    // El token cacheado del tenant activo pudo haber quedado firmado con un
+    // RNC/certificado que ya no aplica — se invalida para forzar una nueva
+    // autenticación en la próxima llamada.
+    if (this.tenantContext.hasContext()) {
+      this.tokenCache.delete(this.tenantContext.getSlug());
+    }
+  }
+
+  private getHttpClient(config: DgiiConfig, baseUrlOverride?: string): AxiosInstance {
+    let baseUrl = baseUrlOverride || config.baseUrl;
     if (!baseUrl.endsWith('/')) baseUrl += '/';
 
     // Aplica SOLO a este cliente HTTP hacia la DGII (nunca globalmente): un
@@ -163,36 +214,43 @@ export class DgiiClientService implements OnModuleInit {
       timeout: 30000,
       headers: {
         Accept: 'application/json',
-        'X-RncEmisor': this.config.rncEmisor,
+        'X-RncEmisor': config.rncEmisor,
       },
       httpsAgent: insecure ? new https.Agent({ rejectUnauthorized: false }) : undefined,
     });
   }
 
   /**
-   * Garantiza la obtención y vigencia de un Token Bearer autenticado por la DGII
+   * Garantiza la obtención y vigencia de un Token Bearer autenticado por la
+   * DGII — cacheado por tenant (`tokenCache`), nunca en un solo campo
+   * compartido: un token autenticado con el RNC/certificado de un tenant no
+   * es válido para timbrar documentos de otro.
    */
-  async ensureToken(): Promise<string> {
-    if (this.token && this.tokenExpiresAt && new Date() < this.tokenExpiresAt) {
-      return this.token;
+  async ensureToken(configOverride?: DgiiConfig): Promise<string> {
+    const config = configOverride || (await this.resolveConfig());
+    const cacheKey = this.tenantContext.hasContext() ? this.tenantContext.getSlug() : '__global__';
+    const cached = this.tokenCache.get(cacheKey);
+    if (cached && new Date() < cached.expiresAt) {
+      return cached.token;
     }
 
-    if (this.config.environment === 'sandbox') {
-      this.token = `SBX_TOKEN_${Date.now()}`;
-      this.tokenExpiresAt = new Date(Date.now() + 3600 * 1000);
-      return this.token;
+    if (config.environment === 'sandbox') {
+      const token = `SBX_TOKEN_${Date.now()}`;
+      const expiresAt = new Date(Date.now() + 3600 * 1000);
+      this.tokenCache.set(cacheKey, { token, expiresAt });
+      return token;
     }
 
     try {
-      const client = this.getHttpClient();
-      this.logger.log(`Solicitando semilla de autenticación a la DGII (${this.config.baseUrl})...`);
-      
+      const client = this.getHttpClient(config);
+      this.logger.log(`Solicitando semilla de autenticación a la DGII (${config.baseUrl})...`);
+
       // 1. Obtener Semilla
       const seedResponse = await client.get('Autenticacion/api/Autenticacion/Semilla');
       const seedXml = seedResponse.data;
 
       // 2. Firmar Semilla con Certificado Digital
-      const { signedXml } = this.signerService.signXml(seedXml, this.config.certPath, this.config.certPassword);
+      const { signedXml } = this.signerService.signXml(seedXml, config.certPath, config.certPassword);
 
       // 3. Validar Semilla y obtener Token
       const FormData = require('form-data');
@@ -211,15 +269,17 @@ export class DgiiClientService implements OnModuleInit {
         throw new Error('La DGII no devolvió un token de sesión válido.');
       }
 
-      this.token = data.token as string;
-      this.tokenExpiresAt = data.expira ? new Date(data.expira) : new Date(Date.now() + 3500 * 1000);
-      this.logger.log(`Autenticación DGII exitosa. Token obtenido válido hasta: ${this.tokenExpiresAt.toISOString()}`);
-      return this.token;
+      const token = data.token as string;
+      const expiresAt = data.expira ? new Date(data.expira) : new Date(Date.now() + 3500 * 1000);
+      this.tokenCache.set(cacheKey, { token, expiresAt });
+      this.logger.log(`Autenticación DGII exitosa. Token obtenido válido hasta: ${expiresAt.toISOString()}`);
+      return token;
     } catch (error: any) {
       this.logger.warn(`No fue posible autenticar con los servidores web de la DGII: ${error.message}. Activando modo sandbox/contingencia.`);
-      this.token = `SBX_FALLBACK_${Date.now()}`;
-      this.tokenExpiresAt = new Date(Date.now() + 3600 * 1000);
-      return this.token;
+      const token = `SBX_FALLBACK_${Date.now()}`;
+      const expiresAt = new Date(Date.now() + 3600 * 1000);
+      this.tokenCache.set(cacheKey, { token, expiresAt });
+      return token;
     }
   }
 
@@ -227,6 +287,7 @@ export class DgiiClientService implements OnModuleInit {
    * Ejecuta un diagnóstico integral de conexión, latencia, certificado y semilla con los servidores DGII
    */
   async testConnectionDiagnostic(): Promise<ConnectionDiagnosticResult> {
+    const config = await this.resolveConfig();
     const startTime = Date.now();
     let dnsResolution = false;
     let tlsHandshake = false;
@@ -239,14 +300,14 @@ export class DgiiClientService implements OnModuleInit {
 
     try {
       // 1. Validar carga del certificado
-      const cert = this.signerService.loadCertificate(this.config.certPath, this.config.certPassword || '');
+      const cert = this.signerService.loadCertificate(config.certPath, config.certPassword || '');
       certificateLoaded = !!(cert.privateKeyPem && cert.certificateBase64);
 
-      if (this.config.environment === 'sandbox') {
+      if (config.environment === 'sandbox') {
         const latency = Date.now() - startTime;
         return {
-          environment: this.config.environment,
-          baseUrl: this.config.baseUrl,
+          environment: config.environment,
+          baseUrl: config.baseUrl,
           dnsResolution: true,
           latencyMs: Math.max(12, latency),
           tlsHandshake: true,
@@ -260,8 +321,8 @@ export class DgiiClientService implements OnModuleInit {
         };
       }
 
-      const client = this.getHttpClient();
-      
+      const client = this.getHttpClient(config);
+
       // 2. Solicitud Semilla
       dnsResolution = true;
       const seedResponse = await client.get('Autenticacion/api/Autenticacion/Semilla');
@@ -270,7 +331,7 @@ export class DgiiClientService implements OnModuleInit {
       seedRetrieved = typeof seedXml === 'string' && seedXml.includes('<SemillaModel');
 
       // 3. Firma Semilla
-      const { signedXml } = this.signerService.signXml(seedXml, this.config.certPath, this.config.certPassword);
+      const { signedXml } = this.signerService.signXml(seedXml, config.certPath, config.certPassword);
       signatureVerified = !!signedXml && signedXml.includes('<Signature');
 
       // 4. Token DGII
@@ -293,8 +354,8 @@ export class DgiiClientService implements OnModuleInit {
       const latencyMs = Date.now() - startTime;
 
       return {
-        environment: this.config.environment,
-        baseUrl: this.config.baseUrl,
+        environment: config.environment,
+        baseUrl: config.baseUrl,
         dnsResolution,
         latencyMs,
         tlsHandshake,
@@ -306,14 +367,14 @@ export class DgiiClientService implements OnModuleInit {
         rawResponse,
         status: tokenObtained ? 'ONLINE' : 'DEGRADED',
         message: tokenObtained
-          ? `Conexión oficial establecida exitosamente con DGII (${this.config.environment.toUpperCase()}) en ${latencyMs}ms`
+          ? `Conexión oficial establecida exitosamente con DGII (${config.environment.toUpperCase()}) en ${latencyMs}ms`
           : 'Conectividad parcial: Semilla obtenida pero fallo en validación de token',
       };
     } catch (err: any) {
       const latencyMs = Date.now() - startTime;
       return {
-        environment: this.config.environment,
-        baseUrl: this.config.baseUrl,
+        environment: config.environment,
+        baseUrl: config.baseUrl,
         dnsResolution,
         latencyMs,
         tlsHandshake,
@@ -332,13 +393,14 @@ export class DgiiClientService implements OnModuleInit {
    * Construye la URL del Código QR según las normativas oficiales de la DGII
    */
   generateQrCodeUrl(
+    config: DgiiConfig,
     eNcf: string,
     montoTotal: number,
     securityCode: string,
     fechaEmision: Date = new Date(),
     rncComprador?: string,
   ): string {
-    const env = this.config.environment === 'ecf' ? 'ecf' : this.config.environment === 'certecf' ? 'certecf' : 'testecf';
+    const env = config.environment === 'ecf' ? 'ecf' : config.environment === 'certecf' ? 'certecf' : 'testecf';
     const fechaEmiStr = `${String(fechaEmision.getDate()).padStart(2, '0')}-${String(fechaEmision.getMonth() + 1).padStart(2, '0')}-${fechaEmision.getFullYear()}`;
     const fechaFirStr = `${fechaEmiStr} ${String(fechaEmision.getHours()).padStart(2, '0')}:${String(fechaEmision.getMinutes()).padStart(2, '0')}:${String(fechaEmision.getSeconds()).padStart(2, '0')}`;
     const montoStr = Number(montoTotal || 0).toFixed(2);
@@ -346,7 +408,7 @@ export class DgiiClientService implements OnModuleInit {
     const isConsumoMenor = eNcf.startsWith('E32') && montoTotal < 250000;
 
     if (isConsumoMenor) {
-      return `https://fc.dgii.gov.do/${env}/consultatimbrefc?rncemisor=${encodeURIComponent(this.config.rncEmisor)}&encf=${encodeURIComponent(eNcf)}&montototal=${encodeURIComponent(montoStr)}&codigoseguridad=${encodeURIComponent(securityCode)}`;
+      return `https://fc.dgii.gov.do/${env}/consultatimbrefc?rncemisor=${encodeURIComponent(config.rncEmisor)}&encf=${encodeURIComponent(eNcf)}&montototal=${encodeURIComponent(montoStr)}&codigoseguridad=${encodeURIComponent(securityCode)}`;
     }
 
     let compradorQuery = '';
@@ -355,7 +417,7 @@ export class DgiiClientService implements OnModuleInit {
       compradorQuery = `&rnccomprador=${encodeURIComponent(cleanRnc)}`;
     }
 
-    return `https://ecf.dgii.gov.do/${env}/consultatimbre?rncemisor=${encodeURIComponent(this.config.rncEmisor)}${compradorQuery}&encf=${encodeURIComponent(eNcf)}&fechaemision=${encodeURIComponent(fechaEmiStr)}&montototal=${encodeURIComponent(montoStr)}&fechafirma=${encodeURIComponent(fechaFirStr)}&codigoseguridad=${encodeURIComponent(securityCode)}`;
+    return `https://ecf.dgii.gov.do/${env}/consultatimbre?rncemisor=${encodeURIComponent(config.rncEmisor)}${compradorQuery}&encf=${encodeURIComponent(eNcf)}&fechaemision=${encodeURIComponent(fechaEmiStr)}&montototal=${encodeURIComponent(montoStr)}&fechafirma=${encodeURIComponent(fechaFirStr)}&codigoseguridad=${encodeURIComponent(securityCode)}`;
   }
 
   /**
@@ -371,8 +433,10 @@ export class DgiiClientService implements OnModuleInit {
     ncfType: string,
     rncComprador?: string,
   ): Promise<DgiiSendResult> {
+    const config = await this.resolveConfig();
+
     // 1. Firmar el documento XML
-    const { signedXml, securityCode } = this.signerService.signXml(rawXml, this.config.certPath, this.config.certPassword);
+    const { signedXml, securityCode } = this.signerService.signXml(rawXml, config.certPath, config.certPassword);
 
     // 1.b Validar contra el XSD oficial de la DGII — un documento mal armado
     // no debe siquiera intentar enviarse (ni consumir un intento de red/e-NCF).
@@ -384,7 +448,7 @@ export class DgiiClientService implements OnModuleInit {
         trackId: `TRK-XSD-ERR-${Date.now()}`,
         status: 'REJECTED',
         securityCode,
-        qrCodeUrl: this.generateQrCodeUrl(eNcf, montoTotal, securityCode, new Date(), rncComprador),
+        qrCodeUrl: this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, new Date(), rncComprador),
         responseMessage: 'El documento no cumple el esquema XSD oficial de la DGII — no fue enviado.',
         timestamp: new Date(),
         signedXml,
@@ -393,16 +457,16 @@ export class DgiiClientService implements OnModuleInit {
     }
 
     // 2. Generar URL QR
-    const qrCodeUrl = this.generateQrCodeUrl(eNcf, montoTotal, securityCode, new Date(), rncComprador);
+    const qrCodeUrl = this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, new Date(), rncComprador);
 
     // 3. Enviar a DGII si no estamos en sandbox puro
-    if (this.config.environment !== 'sandbox') {
+    if (config.environment !== 'sandbox') {
       try {
-        const token = await this.ensureToken();
-        const client = this.getHttpClient();
+        const token = await this.ensureToken(config);
+        const client = this.getHttpClient(config);
         const FormData = require('form-data');
         const form = new FormData();
-        const fileName = `${this.config.rncEmisor}${eNcf}.xml`;
+        const fileName = `${config.rncEmisor}${eNcf}.xml`;
 
         form.append('xml', Buffer.from(signedXml, 'utf8'), {
           filename: fileName,
@@ -461,12 +525,10 @@ export class DgiiClientService implements OnModuleInit {
    * < RD$250,000) — la DGII lo recibe en un HOST DISTINTO al del resto de
    * documentos (`fc.dgii.gov.do`, `config.baseUrlRfce`, ruta
    * `recepcionfc/api/recepcion/ecf`), aunque reutiliza el mismo token Bearer.
-   * Antes de este método, las pruebas de RFCE se enviaban por error a través
-   * de `submitEcf` (el host y la ruta de `ecf.dgii.gov.do` para e-CF regular),
-   * algo que la DGII real habría rechazado.
    */
   async submitRfce(rawXml: string, eNcf: string, montoTotal: number): Promise<DgiiSendResult> {
-    const { signedXml, securityCode } = this.signerService.signXml(rawXml, this.config.certPath, this.config.certPassword);
+    const config = await this.resolveConfig();
+    const { signedXml, securityCode } = this.signerService.signXml(rawXml, config.certPath, config.certPassword);
 
     const validation = this.xsdValidator.validateRfce(signedXml);
     if (!validation.valid) {
@@ -475,7 +537,7 @@ export class DgiiClientService implements OnModuleInit {
         trackId: `TRK-XSD-ERR-${Date.now()}`,
         status: 'REJECTED',
         securityCode,
-        qrCodeUrl: this.generateQrCodeUrl(eNcf, montoTotal, securityCode, new Date()),
+        qrCodeUrl: this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, new Date()),
         responseMessage: 'El resumen RFCE no cumple el esquema XSD oficial de la DGII — no fue enviado.',
         timestamp: new Date(),
         signedXml,
@@ -483,16 +545,16 @@ export class DgiiClientService implements OnModuleInit {
       };
     }
 
-    const qrCodeUrl = this.generateQrCodeUrl(eNcf, montoTotal, securityCode, new Date());
+    const qrCodeUrl = this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, new Date());
 
-    if (this.config.environment !== 'sandbox') {
+    if (config.environment !== 'sandbox') {
       try {
-        const token = await this.ensureToken();
-        const client = this.getHttpClient(this.config.baseUrlRfce);
+        const token = await this.ensureToken(config);
+        const client = this.getHttpClient(config, config.baseUrlRfce);
         const FormData = require('form-data');
         const form = new FormData();
         form.append('xml', Buffer.from(signedXml, 'utf8'), {
-          filename: `${this.config.rncEmisor}${eNcf}.xml`,
+          filename: `${config.rncEmisor}${eNcf}.xml`,
           contentType: 'text/xml',
         });
 
@@ -552,9 +614,10 @@ export class DgiiClientService implements OnModuleInit {
       };
     }
 
-    const { signedXml } = this.signerService.signXml(rawXml, this.config.certPath, this.config.certPassword);
+    const config = await this.resolveConfig();
+    const { signedXml } = this.signerService.signXml(rawXml, config.certPath, config.certPassword);
 
-    if (this.config.environment === 'sandbox') {
+    if (config.environment === 'sandbox') {
       return {
         trackId: `TRK-ACE-SBX-${Date.now()}`,
         estado: 'ACEPTADO',
@@ -564,12 +627,12 @@ export class DgiiClientService implements OnModuleInit {
     }
 
     try {
-      const token = await this.ensureToken();
-      const client = this.getHttpClient();
+      const token = await this.ensureToken(config);
+      const client = this.getHttpClient(config);
       const FormData = require('form-data');
       const form = new FormData();
       form.append('xml', Buffer.from(signedXml, 'utf8'), {
-        filename: `ACECF_${this.config.rncEmisor}_${eNcf}.xml`,
+        filename: `ACECF_${config.rncEmisor}_${eNcf}.xml`,
         contentType: 'text/xml',
       });
 
@@ -601,9 +664,10 @@ export class DgiiClientService implements OnModuleInit {
    * Envía una Anulación de Secuencias (ANECF) firmada digitalmente a la DGII
    */
   async submitSequenceVoiding(rawXml: string): Promise<any> {
-    const { signedXml } = this.signerService.signXml(rawXml, this.config.certPath, this.config.certPassword);
+    const config = await this.resolveConfig();
+    const { signedXml } = this.signerService.signXml(rawXml, config.certPath, config.certPassword);
 
-    if (this.config.environment === 'sandbox') {
+    if (config.environment === 'sandbox') {
       return {
         trackId: `TRK-ANU-SBX-${Date.now()}`,
         estado: 'ACEPTADO',
@@ -613,12 +677,12 @@ export class DgiiClientService implements OnModuleInit {
     }
 
     try {
-      const token = await this.ensureToken();
-      const client = this.getHttpClient();
+      const token = await this.ensureToken(config);
+      const client = this.getHttpClient(config);
       const FormData = require('form-data');
       const form = new FormData();
       form.append('xml', Buffer.from(signedXml, 'utf8'), {
-        filename: `ANECF_${this.config.rncEmisor}_${Date.now()}.xml`,
+        filename: `ANECF_${config.rncEmisor}_${Date.now()}.xml`,
         contentType: 'text/xml',
       });
 
@@ -650,7 +714,9 @@ export class DgiiClientService implements OnModuleInit {
    * Consulta el estado de procesamiento de un TrackId en la DGII
    */
   async queryTrackIdStatus(trackId: string): Promise<any> {
-    if (this.config.environment === 'sandbox' || trackId.startsWith('TRK-SBX') || trackId.startsWith('TRK-CONTINGENCY')) {
+    const config = await this.resolveConfig();
+
+    if (config.environment === 'sandbox' || trackId.startsWith('TRK-SBX') || trackId.startsWith('TRK-CONTINGENCY')) {
       // El resultado ya no se inventa como "ACEPTADO" fijo: se consulta el
       // historial persistido (DgiiCertificationRun) para devolver el estado
       // que REALMENTE se guardó al ejecutar ese caso — un caso rechazado en
@@ -673,8 +739,8 @@ export class DgiiClientService implements OnModuleInit {
     }
 
     try {
-      const token = await this.ensureToken();
-      const client = this.getHttpClient();
+      const token = await this.ensureToken(config);
+      const client = this.getHttpClient(config);
       const response = await client.get(`consultaresultado/api/consultas/estado?trackid=${encodeURIComponent(trackId)}`, {
         headers: { Authorization: `Bearer ${token}` },
       });

@@ -1,11 +1,11 @@
 import { RouterOsClient } from './routeros-client';
 
 describe('RouterOsClient', () => {
-  let http: { get: jest.Mock; put: jest.Mock; patch: jest.Mock };
+  let http: { get: jest.Mock; put: jest.Mock; patch: jest.Mock; delete: jest.Mock };
   let client: RouterOsClient;
 
   beforeEach(() => {
-    http = { get: jest.fn(), put: jest.fn(), patch: jest.fn() };
+    http = { get: jest.fn(), put: jest.fn(), patch: jest.fn(), delete: jest.fn() };
     client = new RouterOsClient(
       { managementIp: '10.10.0.1', apiPort: 8729, username: 'api-readonly', password: 'secret' },
       http,
@@ -204,11 +204,11 @@ describe('RouterOsClient', () => {
     });
   });
 
-  describe('updateProfileRateLimit', () => {
+  describe('updateProfile', () => {
     it('hace PATCH sobre el .id del perfil con el rate-limit nuevo', async () => {
       http.patch.mockResolvedValue({ data: {} });
 
-      await client.updateProfileRateLimit('*7', '100M/100M');
+      await client.updateProfile('*7', '100M/100M');
 
       expect(http.patch).toHaveBeenCalledWith(
         'https://10.10.0.1:8729/rest/ppp/profile/*7',
@@ -220,7 +220,7 @@ describe('RouterOsClient', () => {
     it('lanza un error legible si el PATCH falla', async () => {
       http.patch.mockRejectedValue({ response: { status: 403, data: {} } });
 
-      await expect(client.updateProfileRateLimit('*7', '100M/100M')).rejects.toThrow(/403/);
+      await expect(client.updateProfile('*7', '100M/100M')).rejects.toThrow(/403/);
     });
   });
 

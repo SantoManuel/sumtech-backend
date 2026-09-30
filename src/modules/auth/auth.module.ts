@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { UsersModule } from '../users/users.module';
@@ -12,7 +12,7 @@ import { RefreshTokenEntity } from './entities/refresh-token.entity';
     UsersModule,
     ConfigModule,
     JwtModule.register({}),
-    TypeOrmModule.forFeature([RefreshTokenEntity]),
+    TenantTypeOrmModule.forFeature([RefreshTokenEntity]),
   ],
   controllers: [AuthController],
   providers: [AuthService],

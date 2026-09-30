@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
+import { TENANT_DATA_SOURCE } from '../../common/tenancy/tenant-datasource.provider';
 import { EmployeeEntity } from './entities/employee.entity';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
@@ -14,7 +15,7 @@ export class EmployeesService {
     @InjectRepository(EmployeeEntity)
     private readonly employeeRepository: Repository<EmployeeEntity>,
     private readonly usersService: UsersService,
-    private readonly dataSource: DataSource,
+    @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
   ) {}
 
   async findAll(paginationDto: PaginationDto, roleFilter?: string) {
@@ -26,6 +27,8 @@ export class EmployeesService {
       .createQueryBuilder('employee')
       .leftJoinAndSelect('employee.user', 'user')
       .leftJoinAndSelect('user.roles', 'roles')
+      .leftJoinAndSelect('employee.branch', 'branch')
+      .leftJoinAndSelect('employee.defaultCashStation', 'defaultCashStation')
       .skip(skip)
       .take(limit)
       .orderBy('employee.createdAt', 'DESC');
@@ -55,12 +58,22 @@ export class EmployeesService {
   async findById(id: string): Promise<EmployeeEntity> {
     const employee = await this.employeeRepository.findOne({
       where: { id },
-      relations: ['user', 'user.roles'],
+      relations: ['user', 'user.roles', 'branch', 'defaultCashStation'],
     });
     if (!employee) {
       throw new NotFoundException(`Empleado con ID ${id} no encontrado`);
     }
     return employee;
+  }
+
+  /** Perfil operativo del usuario autenticado — usado por el POS para preseleccionar
+   * sucursal/caja al abrir turno. Null si el usuario no tiene perfil de empleado
+   * (no debería ocurrir para roles de staff, pero se tolera sin lanzar 404). */
+  async findByUserId(userId: string): Promise<EmployeeEntity | null> {
+    return this.employeeRepository.findOne({
+      where: { userId },
+      relations: ['branch', 'defaultCashStation', 'defaultCashStation.branch'],
+    });
   }
 
   async create(dto: CreateEmployeeDto): Promise<EmployeeEntity> {

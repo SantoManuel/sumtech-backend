@@ -46,4 +46,5 @@ export enum SystemEvents {
   CONTRACT_CREATED = 'contract.created',
   CONTRACT_PLAN_CHANGED = 'contract.plan_changed',
   PLAN_SPEED_CHANGED = 'plan.speed_changed',
+  INVOICE_PAID = 'invoice.paid',
 }

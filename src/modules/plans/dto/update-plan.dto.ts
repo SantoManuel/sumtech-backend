@@ -47,4 +47,12 @@ export class UpdatePlanDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  pppProfileId?: string;
+
+  @IsOptional()
+  @IsString()
+  oltSpeedProfileId?: string;
 }

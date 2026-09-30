@@ -30,41 +30,6 @@ describe('NetworkContractStatusListener', () => {
     expect(listener).toBeDefined();
   });
 
-  it('suspende el acceso de red al recibir CONTRACT_SUSPENDED, propagando el motivo de negocio', async () => {
-    const event: ContractSuspendedEvent = {
-      contractId: 'contract-1',
-      clientId: 'client-1',
-      contractNumber: 'CTR-0001',
-      daysOverdue: 6,
-      reason: 'Suspensión automática por morosidad: 6 día(s) de atraso.',
-      occurredOn: new Date(),
-    };
-
-    await listener.handleContractSuspended(event);
-
-    expect(provisioningService.suspend).toHaveBeenCalledWith(
-      'contract-1',
-      'Suspensión automática por morosidad: 6 día(s) de atraso.',
-    );
-  });
-
-  it('restaura el acceso de red al recibir CONTRACT_REACTIVATED, propagando el motivo de negocio', async () => {
-    const event: ContractReactivatedEvent = {
-      contractId: 'contract-1',
-      clientId: 'client-1',
-      contractNumber: 'CTR-0001',
-      reason: 'Reactivación automática: facturas vencidas liquidadas.',
-      occurredOn: new Date(),
-    };
-
-    await listener.handleContractReactivated(event);
-
-    expect(provisioningService.restore).toHaveBeenCalledWith(
-      'contract-1',
-      'Reactivación automática: facturas vencidas liquidadas.',
-    );
-  });
-
   it('corta el acceso de red al recibir CONTRACT_TERMINATED, propagando el motivo de negocio', async () => {
     const event: ContractTerminatedEvent = {
       contractId: 'contract-1',
@@ -77,33 +42,6 @@ describe('NetworkContractStatusListener', () => {
     await listener.handleContractTerminated(event);
 
     expect(provisioningService.deprovision).toHaveBeenCalledWith('contract-1', 'Terminación manual por administrador.');
-  });
-
-  it('no propaga el error si falla la suspensión del acceso de red', async () => {
-    provisioningService.suspend.mockRejectedValueOnce(new Error('DB down'));
-    const event: ContractSuspendedEvent = {
-      contractId: 'contract-1',
-      clientId: 'client-1',
-      contractNumber: 'CTR-0001',
-      daysOverdue: 6,
-      reason: 'Suspensión automática por morosidad: 6 día(s) de atraso.',
-      occurredOn: new Date(),
-    };
-
-    await expect(listener.handleContractSuspended(event)).resolves.not.toThrow();
-  });
-
-  it('no propaga el error si falla la restauración del acceso de red', async () => {
-    provisioningService.restore.mockRejectedValueOnce(new Error('DB down'));
-    const event: ContractReactivatedEvent = {
-      contractId: 'contract-1',
-      clientId: 'client-1',
-      contractNumber: 'CTR-0001',
-      reason: 'Reactivación automática: facturas vencidas liquidadas.',
-      occurredOn: new Date(),
-    };
-
-    await expect(listener.handleContractReactivated(event)).resolves.not.toThrow();
   });
 
   it('no propaga el error si falla el corte del acceso de red', async () => {

@@ -4,6 +4,11 @@ import { NotFoundException, ConflictException } from '@nestjs/common';
 import { NetworkNodesService } from './network-nodes.service';
 import { NetworkNodeEntity } from './entities/network-node.entity';
 import { ZoneEntity } from './entities/zone.entity';
+import { NetworkAccessEntity } from './entities/network-access.entity';
+import { ConnectionTestService } from '../network-connectivity/services/connection-test.service';
+import { WireguardManagerService } from '../network-connectivity/services/wireguard-manager.service';
+import { DeviceHealthService } from '../network-connectivity/services/device-health.service';
+import { DeviceOperationLogger } from '../network-connectivity/services/device-operation-logger.service';
 
 describe('NetworkNodesService', () => {
   let service: NetworkNodesService;
@@ -33,6 +38,7 @@ describe('NetworkNodesService', () => {
   beforeEach(async () => {
     queryBuilder = {
       leftJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
@@ -52,11 +58,38 @@ describe('NetworkNodesService', () => {
       findOneBy: jest.fn(),
     };
 
+    const accessRepo = {
+      count: jest.fn().mockResolvedValue(0),
+    };
+
+    const connectionTestService = {
+      executePreflight: jest.fn().mockResolvedValue({ success: true, latencyMs: 12 }),
+      testNode: jest.fn().mockResolvedValue({ success: true, latencyMs: 15 }),
+    };
+
+    const wireguardManagerService = {
+      generateRouterOsScript: jest.fn().mockReturnValue({ routerosScript: '/interface wireguard...' }),
+    };
+
+    const deviceHealthService = {
+      checkNodeHealth: jest.fn().mockResolvedValue({ success: true }),
+    };
+
+    const deviceOperationLogger = {
+      getLogs: jest.fn().mockResolvedValue({ data: [], total: 0 }),
+      logEvent: jest.fn().mockResolvedValue({}),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         NetworkNodesService,
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
         { provide: getRepositoryToken(ZoneEntity), useValue: zoneRepo },
+        { provide: getRepositoryToken(NetworkAccessEntity), useValue: accessRepo },
+        { provide: ConnectionTestService, useValue: connectionTestService },
+        { provide: WireguardManagerService, useValue: wireguardManagerService },
+        { provide: DeviceHealthService, useValue: deviceHealthService },
+        { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
       ],
     }).compile();
 
@@ -96,10 +129,13 @@ describe('NetworkNodesService', () => {
       expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('zoneId'), expect.anything());
     });
 
-    it('filtra por nombre cuando se provee search', async () => {
+    it('filtra por nombre o IP cuando se provee search', async () => {
       await service.findAll({ search: 'Yayas' });
 
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('node.name ILIKE :search', { search: '%Yayas%' });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        '(node.name ILIKE :search OR node.managementIp ILIKE :search OR node.wireguardIp ILIKE :search)',
+        { search: '%Yayas%' },
+      );
     });
   });
 
@@ -243,6 +279,32 @@ describe('NetworkNodesService', () => {
 
       expect(result.isActive).toBe(true);
       expect(nodeRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('delete', () => {
+    it('elimina el nodo suavemente si no tiene accesos asignados', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1', isActive: true }));
+      const result = await service.delete('node-1');
+
+      expect(result.success).toBe(true);
+      expect(nodeRepo.save).toHaveBeenCalled();
+    });
+  });
+
+  describe('testConnection', () => {
+    it('invoca el servicio de pruebas pre-flight correctamente', async () => {
+      const result = await service.testConnection({ host: '192.168.88.1' });
+      expect(result.success).toBe(true);
+      expect(result.latencyMs).toBe(12);
+    });
+  });
+
+  describe('getWireguardScript', () => {
+    it('genera el script si el nodo tiene método wireguard', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardIp: '10.254.1.2' }));
+      const result = await service.getWireguardScript('node-1');
+      expect(result.routerosScript).toBeDefined();
     });
   });
 });

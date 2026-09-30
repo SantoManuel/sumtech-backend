@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToMany, CreateDateColumn } from 'typeorm';
 import { UserEntity } from '../../users/entities/user.entity';
 import { SaleEntity } from './sale.entity';
+import { CashStationEntity } from './cash-station.entity';
 
 @Entity({ schema: 'pos', name: 'cash_registers' })
 export class CashRegisterEntity {
@@ -31,6 +32,15 @@ export class CashRegisterEntity {
 
   @Column({ name: 'notes', type: 'text', nullable: true })
   notes?: string;
+
+  // Nullable: turnos históricos previos a la migración 053 y roles que operan
+  // sin sucursal/caja asignada (ej. ADMIN cobrando desde "caja administrativa").
+  @Column({ name: 'cash_station_id', type: 'uuid', nullable: true })
+  cashStationId?: string;
+
+  @ManyToOne(() => CashStationEntity, { nullable: true })
+  @JoinColumn({ name: 'cash_station_id' })
+  cashStation?: CashStationEntity;
 
   @OneToMany(() => SaleEntity, (sale) => sale.cashRegister)
   sales?: SaleEntity[];

@@ -13,13 +13,13 @@ export class SaleDetailEntity {
   @JoinColumn({ name: 'sale_id' })
   sale: SaleEntity;
 
-  @Column({ 
-    name: 'item_type', 
-    type: 'enum', 
-    enum: ['PLAN_SUBSCRIPTION', 'PLAN_ACTIVATION', 'PRODUCT_HARDWARE', 'INSTALLATION_FEE', 'REPAIR_FEE'], 
-    default: 'PLAN_SUBSCRIPTION' 
+  @Column({
+    name: 'item_type',
+    type: 'enum',
+    enum: ['PLAN_SUBSCRIPTION', 'PLAN_ACTIVATION', 'PRODUCT_HARDWARE', 'INSTALLATION_FEE', 'REPAIR_FEE', 'RECONNECTION_FEE'],
+    default: 'PLAN_SUBSCRIPTION'
   })
-  itemType: 'PLAN_SUBSCRIPTION' | 'PLAN_ACTIVATION' | 'PRODUCT_HARDWARE' | 'INSTALLATION_FEE' | 'REPAIR_FEE';
+  itemType: 'PLAN_SUBSCRIPTION' | 'PLAN_ACTIVATION' | 'PRODUCT_HARDWARE' | 'INSTALLATION_FEE' | 'REPAIR_FEE' | 'RECONNECTION_FEE';
 
   @Column({ name: 'item_id', type: 'uuid', nullable: true })
   itemId?: string; // ID de Plan o Producto

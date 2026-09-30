@@ -1,13 +1,16 @@
-import { 
-  Entity, 
-  PrimaryGeneratedColumn, 
-  Column, 
-  OneToOne, 
-  JoinColumn, 
-  CreateDateColumn, 
-  UpdateDateColumn 
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  OneToOne,
+  ManyToOne,
+  JoinColumn,
+  CreateDateColumn,
+  UpdateDateColumn
 } from 'typeorm';
 import { UserEntity } from '../../users/entities/user.entity';
+import { BranchEntity } from '../../branches/entities/branch.entity';
+import { CashStationEntity } from '../../pos/entities/cash-station.entity';
 
 @Entity({ schema: 'sec', name: 'employees' })
 export class EmployeeEntity {
@@ -44,6 +47,24 @@ export class EmployeeEntity {
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
+
+  // Sucursal y caja por defecto — relevante sobre todo para CAJERO (se
+  // preselecciona al abrir turno en el POS), pero disponible para cualquier
+  // rol asignado a una sucursal física. Ambos opcionales: ADMIN/GERENTE y
+  // roles 100% remotos (AGENTE_CRM) pueden no tener ninguno.
+  @Column({ name: 'branch_id', type: 'uuid', nullable: true })
+  branchId?: string;
+
+  @ManyToOne(() => BranchEntity, { nullable: true })
+  @JoinColumn({ name: 'branch_id' })
+  branch?: BranchEntity;
+
+  @Column({ name: 'default_cash_station_id', type: 'uuid', nullable: true })
+  defaultCashStationId?: string;
+
+  @ManyToOne(() => CashStationEntity, { nullable: true })
+  @JoinColumn({ name: 'default_cash_station_id' })
+  defaultCashStation?: CashStationEntity;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamp with time zone' })
   createdAt: Date;

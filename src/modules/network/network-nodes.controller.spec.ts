@@ -2,8 +2,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { NetworkNodesController } from './network-nodes.controller';
 import { NetworkNodesService } from './network-nodes.service';
+import { PppManagementService } from './services/ppp-management.service';
+import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
 import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
 import { Role } from '../../common/enums/role.enum';
@@ -23,12 +26,25 @@ describe('NetworkNodesController', () => {
       reactivate: jest.fn().mockResolvedValue({ id: 'node-1', isActive: true }),
     };
 
+    const pppManagementService = {
+      getNodeActiveSessions: jest.fn().mockResolvedValue([{ name: 'user1', callerId: 'AA:BB:CC:DD:EE:FF', uptime: '1h' }]),
+      syncCatalogProfilesToNode: jest.fn().mockResolvedValue({ nodeId: 'node-1', syncedProfiles: [] }),
+    };
+
+    const suspensionPortalService = {
+      installPortalRules: jest.fn().mockResolvedValue({ success: true, message: 'Portal instalado' }),
+      getPortalStatus: jest.fn().mockResolvedValue({ portalInstalled: true, portalRulesStatus: 'INSTALLED' }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [NetworkNodesController],
       providers: [
         { provide: NetworkNodesService, useValue: service },
+        { provide: PppManagementService, useValue: pppManagementService },
+        { provide: SuspensionPortalManagerService, useValue: suspensionPortalService },
         { provide: JwtService, useValue: { verify: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: TenantContextService, useValue: { hasContext: jest.fn().mockReturnValue(false), getTenantId: jest.fn(), getSlug: jest.fn() } },
       ],
     }).compile();
 

@@ -23,9 +23,11 @@ export interface AuditLogEntry {
   nodeName?: string;
   action: string;
   result: 'OK' | 'ERROR';
+  errorCode?: string | null;
   errorMessage?: string;
   reason?: string;
   actor: string;
+  actorUserId?: string | null;
   createdAt: Date;
 }
 
@@ -131,6 +133,7 @@ export class NetworkProvisioningService {
     clientId: string,
     contractId: string,
     dto: UpsertNetworkAccessDto,
+    actorUserId?: string,
   ): Promise<NetworkAccessEntity> {
     await this.assertContractBelongsToClient(clientId, contractId);
 
@@ -143,14 +146,17 @@ export class NetworkProvisioningService {
     const wasPending = access.connectionStatus === 'PENDING';
 
     if (dto.nodeId !== undefined) access.nodeId = dto.nodeId;
+    if (dto.onuId !== undefined) access.onuId = dto.onuId;
+    if (dto.suspensionMediumOverride !== undefined) access.suspensionMediumOverride = dto.suspensionMediumOverride;
     if (dto.username !== undefined) access.username = dto.username;
     if (dto.serviceAlias !== undefined) access.serviceAlias = dto.serviceAlias;
     if (dto.ipAddress !== undefined) access.ipAddress = dto.ipAddress;
 
     const saved = await this.accessRepository.save(access);
 
-    if (wasPending && saved.nodeId && saved.username) {
-      await this.transition(saved, 'PROVISION', 'ACTIVE', (port, acc) => port.provision(acc));
+    if (wasPending && ((saved.nodeId && saved.username) || saved.onuId)) {
+      const actor = actorUserId ? `USER:${actorUserId}` : 'ADMIN';
+      await this.transition(saved, 'PROVISION', 'ACTIVE', (port, acc) => port.provision(acc), undefined, actor, actorUserId);
     }
 
     // Cada vez que se configura/edita el acceso (nodo o usuario nuevos), se
@@ -185,13 +191,14 @@ export class NetworkProvisioningService {
     if (!access) {
       return null;
     }
-    if (!access.nodeId || !access.username) {
-      // Todavía no hay nada configurado en el nodo para este acceso.
+    if (!access.nodeId && !access.onuId) {
+      // Todavía no hay nada configurado en el nodo o en la OLT para este acceso.
       return access;
     }
 
     const port = await this.resolvePort(access);
-    const result = await port.syncProfile(access, { name: buildRouterProfileName(speedMbps), rateLimitMbps: speedMbps });
+    const profileName = contract.plan.pppProfileId || buildRouterProfileName(speedMbps);
+    const result = await port.syncProfile(access, { name: profileName, rateLimitMbps: speedMbps });
 
     access.lastSyncAt = new Date();
     access.lastSyncError = result.ok ? null : result.error || 'Error desconocido sincronizando el perfil de velocidad.';
@@ -202,7 +209,12 @@ export class NetworkProvisioningService {
   }
 
   /** Disparado por CONTRACT_SUSPENDED. Idempotente si ya estaba SUSPENDED/CUT. */
-  async suspend(contractId: string, reason?: string): Promise<NetworkAccessEntity | null> {
+  async suspend(
+    contractId: string,
+    reason?: string,
+    actor: string = 'SYSTEM',
+    actorUserId?: string,
+  ): Promise<NetworkAccessEntity | null> {
     const access = await this.accessRepository.findOneBy({ contractId });
     if (!access) {
       this.logger.warn(`No hay acceso de red para el contrato ${contractId}; se ignora la suspensión.`);
@@ -211,11 +223,16 @@ export class NetworkProvisioningService {
     if (access.connectionStatus === 'SUSPENDED' || access.connectionStatus === 'CUT') {
       return access;
     }
-    return this.transition(access, 'SUSPEND', 'SUSPENDED', (port, acc) => port.suspend(acc), reason);
+    return this.transition(access, 'SUSPEND', 'SUSPENDED', (port, acc) => port.suspend(acc), reason, actor, actorUserId);
   }
 
   /** Disparado por CONTRACT_REACTIVATED. Idempotente si ya estaba ACTIVE/CUT. */
-  async restore(contractId: string, reason?: string): Promise<NetworkAccessEntity | null> {
+  async restore(
+    contractId: string,
+    reason?: string,
+    actor: string = 'SYSTEM',
+    actorUserId?: string,
+  ): Promise<NetworkAccessEntity | null> {
     const access = await this.accessRepository.findOneBy({ contractId });
     if (!access) {
       this.logger.warn(`No hay acceso de red para el contrato ${contractId}; se ignora la restauración.`);
@@ -224,11 +241,16 @@ export class NetworkProvisioningService {
     if (access.connectionStatus === 'ACTIVE' || access.connectionStatus === 'CUT') {
       return access;
     }
-    return this.transition(access, 'RESTORE', 'ACTIVE', (port, acc) => port.restore(acc), reason);
+    return this.transition(access, 'RESTORE', 'ACTIVE', (port, acc) => port.restore(acc), reason, actor, actorUserId);
   }
 
   /** Disparado por CONTRACT_TERMINATED. CUT es terminal; idempotente si ya estaba CUT. */
-  async deprovision(contractId: string, reason?: string): Promise<NetworkAccessEntity | null> {
+  async deprovision(
+    contractId: string,
+    reason?: string,
+    actor: string = 'SYSTEM',
+    actorUserId?: string,
+  ): Promise<NetworkAccessEntity | null> {
     const access = await this.accessRepository.findOneBy({ contractId });
     if (!access) {
       this.logger.warn(`No hay acceso de red para el contrato ${contractId}; se ignora el corte.`);
@@ -237,7 +259,7 @@ export class NetworkProvisioningService {
     if (access.connectionStatus === 'CUT') {
       return access;
     }
-    return this.transition(access, 'DEPROVISION', 'CUT', (port, acc) => port.deprovision(acc), reason);
+    return this.transition(access, 'DEPROVISION', 'CUT', (port, acc) => port.deprovision(acc), reason, actor, actorUserId);
   }
 
   /**
@@ -285,13 +307,15 @@ export class NetworkProvisioningService {
       contractNumber: entry.access?.contract?.contractNumber,
       clientId: entry.access?.contract?.client?.id,
       clientName: entry.access?.contract?.client?.name,
-      nodeId: entry.access?.node?.id,
+      nodeId: entry.nodeId || entry.access?.node?.id,
       nodeName: entry.access?.node?.name,
       action: entry.action,
       result: entry.result,
+      errorCode: entry.errorCode,
       errorMessage: entry.errorMessage,
       reason: entry.reason,
       actor: entry.actor,
+      actorUserId: entry.actorUserId,
       createdAt: entry.createdAt,
     }));
 
@@ -304,6 +328,8 @@ export class NetworkProvisioningService {
     nextStatusOnSuccess: NetworkAccessEntity['connectionStatus'],
     invoke: (port: NetworkProvisioningPort, access: NetworkAccessEntity) => Promise<ProvisioningResult>,
     reason?: string,
+    actor: string = 'SYSTEM',
+    actorUserId?: string,
   ): Promise<NetworkAccessEntity> {
     const port = await this.resolvePort(access);
     const result = await invoke(port, access);
@@ -317,17 +343,16 @@ export class NetworkProvisioningService {
     }
 
     const saved = await this.accessRepository.save(access);
-    await this.recordAudit(saved, action, result, 'SYSTEM', reason);
+    await this.recordAudit(saved, action, result, actor, reason, actorUserId, access.nodeId);
     return saved;
   }
 
-  /** El adaptador se elige por el nodo del acceso (provisioningMode), no globalmente — ver NetworkProvisioningPortRegistry. */
+  /** El adaptador se elige por el medio de suspensión o nodo del acceso — ver NetworkProvisioningPortRegistry. */
   private async resolvePort(access: NetworkAccessEntity): Promise<NetworkProvisioningPort> {
-    if (!access.nodeId) {
-      return this.portRegistry.resolve('MANUAL');
+    if (!access.node && access.nodeId) {
+      access.node = (await this.nodeRepository.findOneBy({ id: access.nodeId })) || undefined;
     }
-    const node = await this.nodeRepository.findOneBy({ id: access.nodeId });
-    return this.portRegistry.resolve(node?.provisioningMode);
+    return this.portRegistry.resolveForAccess(access);
   }
 
   private async recordAudit(
@@ -336,15 +361,21 @@ export class NetworkProvisioningService {
     result: ProvisioningResult,
     actor: string = 'SYSTEM',
     reason?: string,
+    actorUserId?: string,
+    nodeId?: string,
+    errorCode?: string,
   ): Promise<void> {
     await this.auditRepository.save(
       this.auditRepository.create({
         accessId: access.id,
         contractId: access.contractId,
+        nodeId: nodeId || access.nodeId || undefined,
         action,
         result: result.ok ? 'OK' : 'ERROR',
+        errorCode: errorCode || (result.ok ? undefined : 'PROVISIONING_ERROR'),
         errorMessage: result.ok ? undefined : result.error,
         actor,
+        actorUserId: actorUserId || undefined,
         reason,
       }),
     );

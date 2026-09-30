@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
@@ -9,7 +9,7 @@ import { AuditLogEntity } from './entities/audit-log.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UserEntity, RoleEntity, AuditLogEntity]),
+    TenantTypeOrmModule.forFeature([UserEntity, RoleEntity, AuditLogEntity]),
     JwtModule.register({}),
   ],
   controllers: [UsersController],

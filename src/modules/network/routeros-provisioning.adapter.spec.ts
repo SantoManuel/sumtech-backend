@@ -4,11 +4,14 @@ import { RouterOsProvisioningAdapter } from './routeros-provisioning.adapter';
 import { NetworkNodeEntity } from './entities/network-node.entity';
 import { NetworkAccessEntity } from './entities/network-access.entity';
 import { ROUTEROS_CLIENT_FACTORY } from './routeros/routeros-client-factory';
+import { ReachabilityResolver } from '../network-connectivity/services/reachability-resolver.service';
 
 describe('RouterOsProvisioningAdapter', () => {
   let adapter: RouterOsProvisioningAdapter;
   let nodeRepo: any;
+  let accessRepo: any;
   let clientFactory: jest.Mock;
+  let reachabilityResolver: any;
 
   const makeNode = (overrides: Partial<NetworkNodeEntity> = {}): NetworkNodeEntity =>
     ({ id: 'node-1', name: 'RB Las Yayas', managementIp: '10.10.0.1', apiPort: 8729, ...overrides }) as NetworkNodeEntity;
@@ -18,13 +21,19 @@ describe('RouterOsProvisioningAdapter', () => {
 
   beforeEach(async () => {
     nodeRepo = { findOneBy: jest.fn() };
+    accessRepo = { update: jest.fn().mockResolvedValue(undefined) };
     clientFactory = jest.fn();
+    reachabilityResolver = {
+      resolveEndpoint: jest.fn().mockResolvedValue({ host: '10.10.0.1', port: 8729, useHttps: false, method: 'API' }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RouterOsProvisioningAdapter,
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
+        { provide: getRepositoryToken(NetworkAccessEntity), useValue: accessRepo },
         { provide: ROUTEROS_CLIENT_FACTORY, useValue: clientFactory },
+        { provide: ReachabilityResolver, useValue: reachabilityResolver },
       ],
     }).compile();
 
@@ -40,18 +49,23 @@ describe('RouterOsProvisioningAdapter', () => {
     expect(adapter).toBeDefined();
   });
 
-  it('suspend hace PATCH disabled=true sobre el secreto existente', async () => {
+  it('suspend hace PATCH disabled=true sobre el secreto existente y tumba sesión activa', async () => {
     nodeRepo.findOneBy.mockResolvedValue(makeNode());
     const setPppSecretDisabled = jest.fn().mockResolvedValue(undefined);
+    const killActiveSession = jest.fn().mockResolvedValue(true);
+    const findActiveSessionByName = jest.fn().mockResolvedValue({ id: '*10', name: 't1@tecmas' });
     clientFactory.mockReturnValue({
       findPppSecretByName: jest.fn().mockResolvedValue({ id: '*1', name: 't1@tecmas', disabled: false }),
       setPppSecretDisabled,
+      findActiveSessionByName,
+      killActiveSession,
     });
 
     const result = await adapter.suspend(makeAccess());
 
     expect(result).toEqual({ ok: true });
     expect(setPppSecretDisabled).toHaveBeenCalledWith('*1', true);
+    expect(killActiveSession).toHaveBeenCalledWith('t1@tecmas');
   });
 
   it('restore hace PATCH disabled=false sobre el secreto existente', async () => {
@@ -60,6 +74,7 @@ describe('RouterOsProvisioningAdapter', () => {
     clientFactory.mockReturnValue({
       findPppSecretByName: jest.fn().mockResolvedValue({ id: '*1', name: 't1@tecmas', disabled: true }),
       setPppSecretDisabled,
+      findActiveSessionByName: jest.fn().mockResolvedValue(null),
     });
 
     const result = await adapter.restore(makeAccess());
@@ -68,18 +83,22 @@ describe('RouterOsProvisioningAdapter', () => {
     expect(setPppSecretDisabled).toHaveBeenCalledWith('*1', false);
   });
 
-  it('deprovision deshabilita el secreto (nunca lo borra)', async () => {
+  it('deprovision deshabilita el secreto (nunca lo borra) y tumba la sesión', async () => {
     nodeRepo.findOneBy.mockResolvedValue(makeNode());
     const setPppSecretDisabled = jest.fn().mockResolvedValue(undefined);
+    const killActiveSession = jest.fn().mockResolvedValue(true);
     clientFactory.mockReturnValue({
       findPppSecretByName: jest.fn().mockResolvedValue({ id: '*1', name: 't1@tecmas', disabled: false }),
       setPppSecretDisabled,
+      findActiveSessionByName: jest.fn().mockResolvedValue({ id: '*10', name: 't1@tecmas' }),
+      killActiveSession,
     });
 
     const result = await adapter.deprovision(makeAccess());
 
     expect(result).toEqual({ ok: true });
     expect(setPppSecretDisabled).toHaveBeenCalledWith('*1', true);
+    expect(killActiveSession).toHaveBeenCalledWith('t1@tecmas');
   });
 
   it('es idempotente: si el secreto ya está en el estado deseado, no hace PATCH', async () => {
@@ -88,6 +107,7 @@ describe('RouterOsProvisioningAdapter', () => {
     clientFactory.mockReturnValue({
       findPppSecretByName: jest.fn().mockResolvedValue({ id: '*1', name: 't1@tecmas', disabled: true }),
       setPppSecretDisabled,
+      findActiveSessionByName: jest.fn().mockResolvedValue(null),
     });
 
     const result = await adapter.suspend(makeAccess());
@@ -96,15 +116,23 @@ describe('RouterOsProvisioningAdapter', () => {
     expect(setPppSecretDisabled).not.toHaveBeenCalled();
   });
 
-  it('provision falla con un mensaje claro (no crea el secreto) si todavía no existe en el nodo', async () => {
+  it('provision crea el secreto en el router de forma automatizada (RF-PPP-004)', async () => {
     nodeRepo.findOneBy.mockResolvedValue(makeNode());
-    clientFactory.mockReturnValue({ findPppSecretByName: jest.fn().mockResolvedValue(null), setPppSecretDisabled: jest.fn() });
+    const ensurePppSecret = jest.fn().mockResolvedValue({ id: '*5', name: 't1@tecmas' });
+    clientFactory.mockReturnValue({
+      ensurePppSecret,
+      findActiveSessionByName: jest.fn().mockResolvedValue(null),
+    });
 
-    const result = await adapter.provision(makeAccess());
+    const result = await adapter.provision(makeAccess({ ipAddress: '10.20.0.50' }));
 
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain('No existe el secreto PPP');
-    expect(result.error).toContain('crearse manualmente');
+    expect(result.ok).toBe(true);
+    expect(ensurePppSecret).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 't1@tecmas',
+        remoteAddress: '10.20.0.50',
+      }),
+    );
   });
 
   it('falla sin llamar al nodo si el acceso no tiene usuario configurado', async () => {
@@ -132,6 +160,7 @@ describe('RouterOsProvisioningAdapter', () => {
 
   it('falla si el nodo no tiene IP de gestión configurada', async () => {
     nodeRepo.findOneBy.mockResolvedValue(makeNode({ managementIp: undefined }));
+    reachabilityResolver.resolveEndpoint.mockRejectedValue(new Error('Sin IP de gestión'));
 
     const result = await adapter.suspend(makeAccess());
 
@@ -171,12 +200,17 @@ describe('RouterOsProvisioningAdapter', () => {
         findPppSecretByName: jest.fn().mockResolvedValue({ id: '*1', name: 't1@tecmas', disabled: false, profile: 'default' }),
         ensureProfile,
         setPppSecretProfile,
+        findActiveSessionByName: jest.fn().mockResolvedValue(null),
       });
 
       const result = await adapter.syncProfile(makeAccess(), { name: 'Sumtech-50Mbps', rateLimitMbps: 50 });
 
       expect(result).toEqual({ ok: true });
-      expect(ensureProfile).toHaveBeenCalledWith('Sumtech-50Mbps', '50M/50M');
+      expect(ensureProfile).toHaveBeenCalledWith(
+        'Sumtech-50Mbps',
+        '50M/50M',
+        expect.objectContaining({ onlyOne: true }),
+      );
       expect(setPppSecretProfile).toHaveBeenCalledWith('*1', 'Sumtech-50Mbps');
     });
 
@@ -188,12 +222,17 @@ describe('RouterOsProvisioningAdapter', () => {
         findPppSecretByName: jest.fn().mockResolvedValue({ id: '*1', name: 't1@tecmas', disabled: false, profile: 'Sumtech-50Mbps' }),
         ensureProfile,
         setPppSecretProfile,
+        findActiveSessionByName: jest.fn().mockResolvedValue(null),
       });
 
       const result = await adapter.syncProfile(makeAccess(), { name: 'Sumtech-50Mbps', rateLimitMbps: 50 });
 
       expect(result).toEqual({ ok: true });
-      expect(ensureProfile).toHaveBeenCalledWith('Sumtech-50Mbps', '50M/50M');
+      expect(ensureProfile).toHaveBeenCalledWith(
+        'Sumtech-50Mbps',
+        '50M/50M',
+        expect.objectContaining({ onlyOne: true }),
+      );
       expect(setPppSecretProfile).not.toHaveBeenCalled();
     });
 

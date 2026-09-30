@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { PublicService } from './public.service';
 import { PublicChatService } from './public-chat.service';
@@ -26,9 +26,31 @@ export class PublicController {
     return this.publicService.getPublicPlans();
   }
 
+  // Branding + contenido del sitio público del tenant resuelto por
+  // subdominio — Fase 4/5 del plan multi-tenant.
+  @Get('site-content')
+  async getSiteContent() {
+    return this.publicService.getSiteContent();
+  }
+
   @Get('plans/featured')
   async getFeatured() {
     return this.publicService.getFeaturedPlans();
+  }
+
+  // Zonas de cobertura pública de la red del tenant resuelto por subdominio (Fase 4/5)
+  @Get('coverage/zones')
+  async getCoverageZones() {
+    return this.publicService.getPublicCoverageZones();
+  }
+
+  // Sectores geográficos del tenant resuelto para autocompletado y validación de cobertura
+  @Get('geography/sectors')
+  async getPublicSectors(
+    @Query('municipalityId') municipalityId?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.publicService.getPublicSectors(municipalityId, search);
   }
 
   // Formulario "Solicitar Instalación" del landing — mismo patrón de rate

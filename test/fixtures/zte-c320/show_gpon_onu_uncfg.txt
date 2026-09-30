@@ -1,0 +1,6 @@
+ZXAN#show gpon onu uncfg gpon-olt_1/1/1
+OnuIndex               Sn
+---------------------------------------------------------------------
+gpon-onu_1/1/1:1       ZTEGC0123456
+gpon-onu_1/1/1:2       HWTCA9876543
+ZXAN#

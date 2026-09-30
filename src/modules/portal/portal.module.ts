@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { PortalController } from './portal.controller';
 import { PortalService } from './portal.service';
@@ -15,17 +15,19 @@ import { InteractionEntity } from '../crm/entities/interaction.entity';
 import { DepositProofEntity } from './entities/deposit-proof.entity';
 import { PlanChangeRequestEntity } from './entities/plan-change-request.entity';
 import { ClientNotificationEntity } from './entities/client-notification.entity';
+import { NotificationTemplateEntity } from './entities/notification-template.entity';
 import { UsersModule } from '../users/users.module';
 import { PosModule } from '../pos/pos.module';
 import { StorageModule } from '../storage/storage.module';
 import { GenieAcsModule } from '../genieacs/genieacs.module';
+import { CompanyModule } from '../company/company.module';
 import { InvoiceGeneratedListener } from './listeners/invoice-generated.listener';
 import { ContractStatusListener } from './listeners/contract-status.listener';
 import { PaymentReminderListener } from './listeners/payment-reminder.listener';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
+    TenantTypeOrmModule.forFeature([
       ClientEntity,
       ContractEntity,
       PlanEntity,
@@ -37,11 +39,13 @@ import { PaymentReminderListener } from './listeners/payment-reminder.listener';
       DepositProofEntity,
       PlanChangeRequestEntity,
       ClientNotificationEntity,
+      NotificationTemplateEntity,
     ]),
     UsersModule,
     PosModule,
     StorageModule,
     GenieAcsModule,
+    CompanyModule,
     JwtModule.register({}),
     AiChatbotClientModule,
   ],

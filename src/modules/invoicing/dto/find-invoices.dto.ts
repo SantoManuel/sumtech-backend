@@ -1,4 +1,4 @@
-import { IsOptional, IsInt, Min, Max, IsEnum, IsUUID, IsString, IsDateString } from 'class-validator';
+import { IsOptional, IsInt, Min, Max, IsEnum, IsUUID, IsString, IsDateString, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class FindInvoicesDto {
@@ -16,8 +16,17 @@ export class FindInvoicesDto {
   limit?: number;
 
   @IsOptional()
-  @IsEnum(['PENDING_PAYMENT', 'ISSUED', 'VOIDED'])
-  status?: 'PENDING_PAYMENT' | 'ISSUED' | 'VOIDED';
+  @IsEnum(['PENDING_PAYMENT', 'EN_GRACIA', 'VENCIDA', 'ISSUED', 'VOIDED'])
+  status?: 'PENDING_PAYMENT' | 'EN_GRACIA' | 'VENCIDA' | 'ISSUED' | 'VOIDED';
+
+  // Filtro de conveniencia para el listado cross-cliente de facturas
+  // cobrables del POS: "todavía debe pagarse" (PENDING_PAYMENT/EN_GRACIA/
+  // VENCIDA a la vez), a diferencia de `status`, que filtra por un único
+  // estado exacto. Si ambos vienen presentes, `openOnly` tiene prioridad.
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  openOnly?: boolean;
 
   @IsOptional()
   @IsUUID('4')

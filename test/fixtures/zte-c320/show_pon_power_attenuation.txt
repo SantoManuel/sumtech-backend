@@ -1,0 +1,6 @@
+ZXAN#show pon power attenuation gpon-onu_1/1/1:1
+           up   Rx :-21.45(dbm)      Tx:2.15(dbm)
+                attenuation:23.60(dB)
+           down Rx :-19.80(dbm)      Tx:2.50(dbm)
+                attenuation:22.30(dB)
+ZXAN#

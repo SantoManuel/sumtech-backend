@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, FindOptionsWhere } from 'typeorm';
+import { Repository, FindOptionsWhere, In } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
@@ -30,6 +30,11 @@ import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { DgiiClientService } from '../invoicing/dgii/dgii-client.service';
 import { ContractSignaturesService } from '../contract-signatures/contract-signatures.service';
 import { CompanyService } from '../company/company.service';
+import { BillingCycleService } from '../billing/billing-cycle.service';
+import { BillingSettingsService } from '../billing/billing-settings.service';
+import { SuspensionHistoryService } from '../billing/suspension-history.service';
+import { OPEN_INVOICE_STATUSES } from '../invoicing/invoice-status.util';
+import { ServiceControlService } from '../network/service-control.service';
 
 export function generateRandomPassword(length: number = 6): string {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -42,6 +47,8 @@ export function generateRandomPassword(length: number = 6): string {
 
 @Injectable()
 export class ClientsService {
+  private readonly logger = new Logger(ClientsService.name);
+
   constructor(
     @InjectRepository(ClientEntity)
     private readonly clientRepository: Repository<ClientEntity>,
@@ -66,7 +73,11 @@ export class ClientsService {
     private readonly pdfGenerator: PdfGeneratorService,
     private readonly dgiiClient: DgiiClientService,
     private readonly contractSignatures: ContractSignaturesService,
+    private readonly billingCycleService: BillingCycleService,
+    private readonly billingSettingsService: BillingSettingsService,
+    private readonly suspensionHistoryService: SuspensionHistoryService,
     @Optional() private readonly companyService?: CompanyService,
+    @Optional() private readonly serviceControlService?: ServiceControlService,
   ) {}
 
   async findAll(paginationDto: PaginationDto, search?: string) {
@@ -352,6 +363,7 @@ export class ClientsService {
     });
 
     const saved = await this.contractRepository.save(contract);
+    saved.plan = await this.findActivePlanOrFail(planId);
 
     const event: ContractCreatedEvent = {
       contractId: saved.id,
@@ -360,6 +372,20 @@ export class ClientsService {
       occurredOn: new Date(),
     };
     this.eventEmitter.emit(SystemEvents.CONTRACT_CREATED, event);
+
+    // Primera factura (prorrateada si la activación no cae el día 1 del mes),
+    // generada de inmediato en vez de esperar al cron del billingDay — un
+    // fallo aquí no debe impedir que el contrato quede creado (mismo patrón de
+    // resiliencia que BillingCycleService.runBillingCycle usa por-contrato).
+    try {
+      const settings = await this.billingSettingsService.getSettings();
+      await this.billingCycleService.generateInitialProratedInvoiceIfNeeded(saved, settings);
+    } catch (error) {
+      this.logger.error(
+        `Error generando la factura inicial del contrato ${saved.contractNumber}: ${error.message}`,
+        error.stack,
+      );
+    }
 
     return saved;
   }
@@ -425,6 +451,9 @@ export class ClientsService {
     if (dto.billingDay) {
       contract.billingDay = dto.billingDay;
     }
+    if (dto.graceDaysOverride !== undefined) {
+      contract.graceDaysOverride = dto.graceDaysOverride;
+    }
 
     const saved = await this.contractRepository.save(contract);
 
@@ -443,49 +472,103 @@ export class ClientsService {
     return saved;
   }
 
-  async suspendContract(clientId: string, contractId: string): Promise<ContractEntity> {
+  async suspendContract(
+    clientId: string,
+    contractId: string,
+    requestingUserId?: string,
+    observation?: string,
+    reasonParam?: string,
+  ): Promise<any> {
     const contract = await this.findContractOrFail(clientId, contractId);
     if (contract.status !== 'ACTIVE') {
       throw new ConflictException(
         `Solo se pueden suspender contratos ACTIVE (estado actual: ${contract.status})`,
       );
     }
+
+    const reason = reasonParam || 'Suspensión manual por administrador.';
+
+    // 1. Ejecutar y confirmar en el equipo de red primero (§1.5 / RF-PPPOE-005)
+    let networkResult: any = { applied: true, medium: 'NONE', verified: true };
+    if (this.serviceControlService) {
+      networkResult = await this.serviceControlService.suspendService(contract.id, {
+        process: 'MANUAL',
+        userId: requestingUserId,
+        reason,
+      });
+    }
+
+    // 2. Si el equipo respondió o es sin equipo, cambiar estado del contrato
     contract.status = 'SUSPENDED';
     const saved = await this.contractRepository.save(contract);
+
+    await this.suspensionHistoryService.openSuspension({
+      contractId: saved.id,
+      clientId: saved.clientId,
+      reason,
+      triggeredByUserId: requestingUserId,
+      triggeredByProcess: 'MANUAL',
+      observation,
+    });
 
     const event: ContractSuspendedEvent = {
       contractId: saved.id,
       clientId: saved.clientId,
       contractNumber: saved.contractNumber,
       daysOverdue: 0,
-      reason: 'Suspensión manual por administrador.',
+      reason,
+      actor: requestingUserId ? `USER:${requestingUserId}` : 'ADMIN',
+      actorUserId: requestingUserId,
       occurredOn: new Date(),
     };
     this.eventEmitter.emit(SystemEvents.CONTRACT_SUSPENDED, event);
 
-    return saved;
+    return Object.assign(saved, { network: networkResult });
   }
 
-  async reactivateContract(clientId: string, contractId: string): Promise<ContractEntity> {
+  async reactivateContract(clientId: string, contractId: string, requestingUserId?: string): Promise<any> {
     const contract = await this.findContractOrFail(clientId, contractId);
     if (contract.status !== 'SUSPENDED') {
       throw new ConflictException(
         `Solo se pueden reactivar contratos SUSPENDED (estado actual: ${contract.status})`,
       );
     }
+
+    const reason = 'Reactivación manual por administrador.';
+
+    // 1. Ejecutar y confirmar en el equipo de red primero (§1.5 / RF-SUS-001)
+    let networkResult: any = { applied: true, medium: 'NONE', verified: true };
+    if (this.serviceControlService) {
+      networkResult = await this.serviceControlService.restoreService(contract.id, {
+        process: 'MANUAL',
+        userId: requestingUserId,
+        reason,
+      });
+    }
+
+    // 2. Si el equipo respondió o es sin equipo, cambiar estado del contrato
     contract.status = 'ACTIVE';
     const saved = await this.contractRepository.save(contract);
+
+    await this.suspensionHistoryService.closeSuspension(contractId, { reconnectedByUserId: requestingUserId });
 
     const event: ContractReactivatedEvent = {
       contractId: saved.id,
       clientId: saved.clientId,
       contractNumber: saved.contractNumber,
-      reason: 'Reactivación manual por administrador.',
+      reason,
+      actor: requestingUserId ? `USER:${requestingUserId}` : 'ADMIN',
+      actorUserId: requestingUserId,
       occurredOn: new Date(),
     };
     this.eventEmitter.emit(SystemEvents.CONTRACT_REACTIVATED, event);
 
-    return saved;
+    return Object.assign(saved, { network: networkResult });
+  }
+
+  async getSuspensionHistory(clientId: string) {
+    await this.findById(clientId);
+    return this.suspensionHistoryService.findHistoryForClient(clientId);
   }
 
   async terminateContract(clientId: string, contractId: string): Promise<ContractEntity> {
@@ -542,7 +625,7 @@ export class ClientsService {
         correo: fiscal.correo,
       };
     } else {
-      const config = this.dgiiClient.getConfig();
+      const config = await this.dgiiClient.getConfig();
       company = {
         rnc: config.rncEmisor,
         razonSocial: config.razonSocialEmisor,
@@ -625,16 +708,113 @@ export class ClientsService {
     });
   }
 
-  async getClientInvoices(clientId: string, status?: string): Promise<InvoiceEntity[]> {
+  async getClientInvoices(clientId: string, status?: string, openOnly?: boolean): Promise<InvoiceEntity[]> {
     await this.findById(clientId);
     const where: FindOptionsWhere<InvoiceEntity> = { clientId };
-    if (status) {
+    if (openOnly) {
+      // "todavía debe pagarse" — usado por el "Estado de Cuenta" del POS, que
+      // debe seguir mostrando una factura aun cuando envejece de
+      // PENDING_PAYMENT a EN_GRACIA/VENCIDA (ver invoice-status.util.ts).
+      where.status = In(OPEN_INVOICE_STATUSES);
+    } else if (status) {
       where.status = status as InvoiceEntity['status'];
     }
     return this.invoiceRepository.find({
       where,
       relations: ['contract', 'contract.plan'],
       order: { issuedAt: 'DESC' },
+    });
+  }
+
+  /**
+   * Devuelve la cadena visible completa del servicio por contrato (RF-PPPOE-002 y RF-RED-001/002):
+   * Plan comercial → Perfil PPP / OLT → Secret PPPoE → ONU GPON → Medio de suspensión efectivo.
+   */
+  async getClientServices(clientId: string) {
+    await this.findById(clientId);
+
+    const contracts = await this.contractRepository.find({
+      where: { clientId },
+      relations: [
+        'plan',
+        'plan.oltSpeedProfile',
+        'networkAccess',
+        'networkAccess.node',
+        'networkAccess.onu',
+        'networkAccess.onu.olt',
+      ],
+      order: { createdAt: 'DESC' },
+    });
+
+    return contracts.map((c) => {
+      const access = c.networkAccess;
+      const plan = c.plan;
+      const node = access?.node;
+      const onu = access?.onu;
+
+      // Resuelve medio efectivo con precedencia estricta (RF-RED-001/002):
+      // 1. Override en el acceso
+      // 2. Medio configurado en el router/nodo
+      // 3. OLT_NATIVE si hay ONU vinculada y no hay nodo
+      // 4. PPPOE si hay nodo MikroTik
+      // 5. NONE
+      let effectiveSuspensionMedium: 'PPPOE' | 'OLT_NATIVE' | 'NONE' = 'NONE';
+      if (access?.suspensionMediumOverride) {
+        effectiveSuspensionMedium = access.suspensionMediumOverride;
+      } else if (node?.suspensionMedium) {
+        effectiveSuspensionMedium = node.suspensionMedium;
+      } else if (!access?.nodeId && access?.onuId) {
+        effectiveSuspensionMedium = 'OLT_NATIVE';
+      } else if (access?.nodeId) {
+        effectiveSuspensionMedium = 'PPPOE';
+      }
+
+      return {
+        contractId: c.id,
+        contractNumber: c.contractNumber,
+        status: c.status,
+        startDate: c.startDate,
+        plan: plan
+          ? {
+              id: plan.id,
+              name: plan.name,
+              speedMbps: plan.speedMbps,
+              monthlyPrice: plan.monthlyPrice,
+              pppProfileId: plan.pppProfileId,
+              oltSpeedProfileId: plan.oltSpeedProfileId,
+              oltSpeedProfileName: plan.oltSpeedProfile?.name,
+            }
+          : null,
+        secret: access && (access.username || access.nodeId)
+          ? {
+              username: access.username,
+              serviceAlias: access.serviceAlias,
+              ipAddress: access.ipAddress,
+              nodeId: access.nodeId,
+              nodeName: node?.name,
+              status: access.connectionStatus,
+              lastCallerId: access.lastCallerId,
+              macAddress: access.macAddress,
+            }
+          : null,
+        onu: onu
+          ? {
+              id: onu.id,
+              serialNumber: onu.serialNumber,
+              vendor: onu.vendor,
+              status: onu.status,
+              onuIndex: onu.onuIndex,
+              oltId: onu.oltId,
+              oltName: onu.olt?.name,
+              rxPowerDbm: onu.rxPowerDbm,
+              txPowerDbm: onu.txPowerDbm,
+              lastSeenAt: onu.lastSeenAt,
+            }
+          : null,
+        effectiveSuspensionMedium,
+        suspensionMediumOverride: access?.suspensionMediumOverride || null,
+        networkAccessId: access?.id || null,
+      };
     });
   }
 }

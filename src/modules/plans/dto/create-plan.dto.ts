@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsEnum, IsInt, Min, Max, IsPositive, IsOptional, IsBoolean, IsNumber } from 'class-validator';
+import { IsNotEmpty, IsEnum, IsInt, Min, Max, IsPositive, IsOptional, IsBoolean, IsNumber, IsString } from 'class-validator';
 
 export class CreatePlanDto {
   @IsNotEmpty({ message: 'El nombre del plan es requerido' })
@@ -37,4 +37,12 @@ export class CreatePlanDto {
   @IsOptional()
   @IsBoolean()
   isFeatured?: boolean;
+
+  @IsOptional()
+  @IsString()
+  pppProfileId?: string;
+
+  @IsOptional()
+  @IsString()
+  oltSpeedProfileId?: string;
 }

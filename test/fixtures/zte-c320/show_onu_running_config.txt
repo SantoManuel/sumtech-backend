@@ -1,0 +1,12 @@
+ZXAN#show onu running config gpon-onu_1/1/1:1
+onu 1 type HWHG sn ZTEGC0123456
+  name CLI-00123-MariaPerez
+  tcont 1 profile SMARTOLT-100M-UP
+  gemport 1 tcont 1
+  gemport 2 tcont 1
+  switchport mode hybrid vport 1
+  switchport mode hybrid vport 2
+  service-port 1 vport 1 user-vlan 200 vlan 200
+  service-port 2 vport 2 user-vlan 46 vlan 46
+!
+ZXAN#

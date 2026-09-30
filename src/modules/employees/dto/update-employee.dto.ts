@@ -1,4 +1,4 @@
-import { IsOptional, IsPositive, IsBoolean, IsUrl, IsString } from 'class-validator';
+import { IsOptional, IsPositive, IsBoolean, IsUrl, IsString, IsUUID } from 'class-validator';
 
 export class UpdateEmployeeDto {
   @IsOptional()
@@ -16,4 +16,12 @@ export class UpdateEmployeeDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsUUID('4')
+  branchId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  defaultCashStationId?: string;
 }

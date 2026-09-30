@@ -20,7 +20,7 @@ export class DgiiCertificationController {
   @Get('config')
   @Roles(Role.ADMIN, Role.GERENTE)
   async getConfig() {
-    const config = this.dgiiClient.getConfig();
+    const config = await this.dgiiClient.getConfig();
     return {
       environment: config.environment,
       baseUrl: config.baseUrl,
@@ -41,7 +41,7 @@ export class DgiiCertificationController {
   @Post('config')
   @Roles(Role.ADMIN)
   async updateConfig(@Body() newConfig: any) {
-    this.dgiiClient.updateConfig(newConfig);
+    await this.dgiiClient.updateConfig(newConfig);
     return { message: 'Configuración fiscal DGII actualizada correctamente' };
   }
 

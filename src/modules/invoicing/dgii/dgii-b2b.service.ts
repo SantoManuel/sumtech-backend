@@ -68,7 +68,7 @@ export class DgiiB2bService {
    * Valida la estructura, persiste en PostgreSQL, firma el ARECF y lo entrega sincrónicamente
    */
   async procesarEcfRecibido(xmlRawContent: string): Promise<string> {
-    const config = this.dgiiClient.getConfig();
+    const config = await this.dgiiClient.getConfig();
     let rncEmisor = '131880681';
     let razonSocialEmisor = 'PROVEEDOR B2B S.R.L.';
     let rncComprador = config.rncEmisor || '131000000';

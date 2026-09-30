@@ -2,6 +2,7 @@ import { Controller, Post, Body, HttpCode, HttpStatus, Req, Res, UnauthorizedExc
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { VerifySupervisorDto } from './dto/verify-supervisor.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { REFRESH_TOKEN_COOKIE_NAME, buildRefreshCookieOptions, parseDurationToMs } from './utils/refresh-cookie.util';
 
@@ -58,5 +59,15 @@ export class AuthController {
     await this.authService.logout(rawRefreshToken);
     res.clearCookie(REFRESH_TOKEN_COOKIE_NAME, buildRefreshCookieOptions());
     return { success: true, message: 'Sesión cerrada con éxito' };
+  }
+
+  @Post('verify-supervisor')
+  @HttpCode(HttpStatus.OK)
+  async verifySupervisor(@Body() dto: VerifySupervisorDto) {
+    const supervisor = await this.authService.verifySupervisorCredentials(dto.identifier, dto.password);
+    return {
+      valid: true,
+      supervisor,
+    };
   }
 }

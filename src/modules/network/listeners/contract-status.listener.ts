@@ -17,29 +17,8 @@ export class NetworkContractStatusListener {
 
   constructor(private readonly provisioningService: NetworkProvisioningService) {}
 
-  @OnEvent(SystemEvents.CONTRACT_SUSPENDED)
-  async handleContractSuspended(event: ContractSuspendedEvent) {
-    try {
-      await this.provisioningService.suspend(event.contractId, event.reason);
-    } catch (error) {
-      this.logger.error(
-        `Error suspendiendo el acceso de red del contrato ${event.contractNumber}: ${error.message}`,
-        error.stack,
-      );
-    }
-  }
-
-  @OnEvent(SystemEvents.CONTRACT_REACTIVATED)
-  async handleContractReactivated(event: ContractReactivatedEvent) {
-    try {
-      await this.provisioningService.restore(event.contractId, event.reason);
-    } catch (error) {
-      this.logger.error(
-        `Error restaurando el acceso de red del contrato ${event.contractNumber}: ${error.message}`,
-        error.stack,
-      );
-    }
-  }
+  // CONTRACT_SUSPENDED y CONTRACT_REACTIVATED son operados de forma confirmada y previa
+  // por ServiceControlService (§1.5). Este listener conserva exclusivamente el corte por terminación.
 
   @OnEvent(SystemEvents.CONTRACT_TERMINATED)
   async handleContractTerminated(event: ContractTerminatedEvent) {

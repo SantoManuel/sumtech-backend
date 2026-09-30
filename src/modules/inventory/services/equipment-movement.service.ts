@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
+import { TENANT_DATA_SOURCE } from '../../../common/tenancy/tenant-datasource.provider';
 import { SerialNumberEntity } from '../entities/serial-number.entity';
 import { EquipmentMovementEntity } from '../entities/equipment-movement.entity';
 import { ProductEntity } from '../entities/product.entity';
@@ -53,7 +54,7 @@ interface TransitionChanges {
 @Injectable()
 export class EquipmentMovementService {
   constructor(
-    private readonly dataSource: DataSource,
+    @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
     @InjectRepository(SerialNumberEntity)
     private readonly serialRepository: Repository<SerialNumberEntity>,
     @InjectRepository(EquipmentMovementEntity)

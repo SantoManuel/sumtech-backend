@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, GoneException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, GoneException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { TENANT_DATA_SOURCE } from '../../common/tenancy/tenant-datasource.provider';
 import { AddressGpsRequestEntity } from '../clients/entities/address-gps-request.entity';
 import { AddressEntity } from '../clients/entities/address.entity';
 
@@ -23,7 +24,7 @@ export class PublicGpsService {
     private readonly gpsRequestRepository: Repository<AddressGpsRequestEntity>,
     @InjectRepository(AddressEntity)
     private readonly addressRepository: Repository<AddressEntity>,
-    private readonly dataSource: DataSource,
+    @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
   ) {}
 
   private async findValidOrThrow(token: string): Promise<AddressGpsRequestEntity> {

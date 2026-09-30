@@ -1,4 +1,15 @@
-import { IsNotEmpty, IsString, IsOptional, IsInt, IsBoolean, Min, Max, IsUUID, MaxLength } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsString,
+  IsOptional,
+  IsInt,
+  IsBoolean,
+  Min,
+  Max,
+  IsUUID,
+  MaxLength,
+  IsIn,
+} from 'class-validator';
 
 export class CreateNetworkNodeDto {
   @IsNotEmpty({ message: 'El nombre del nodo es requerido' })
@@ -26,15 +37,89 @@ export class CreateNetworkNodeDto {
   @IsUUID('4', { message: 'zoneId debe ser un UUID válido' })
   zoneId?: string;
 
-  // Falso solo para nodos que todavía no tienen www-ssl con certificado
-  // configurado (ej. un CHR de prueba recién instalado) — la REST API se
-  // consulta por HTTP plano en ese caso. Verdadero por defecto.
   @IsOptional()
   @IsBoolean()
   useHttps?: boolean;
 
-  // provisioningMode NO se acepta al crear: todo nodo nuevo nace en MANUAL a
-  // propósito (decisión de negocio — ver Fase 05/06 del plan de integración
-  // con RouterOS). Pasar a ROUTEROS es una acción explícita posterior vía
-  // NetworkNodesService.update, nunca algo que se pueda colar en el alta.
+  @IsOptional()
+  @IsString()
+  @IsIn(['wireguard', 'ddns', 'public_ip', 'api', 'ssh'], {
+    message: 'connectionMethod debe ser wireguard, ddns, public_ip, api o ssh',
+  })
+  connectionMethod?: 'wireguard' | 'ddns' | 'public_ip' | 'api' | 'ssh';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['REST', 'ROUTEROS_API', 'SSH'], {
+    message: 'transportType debe ser REST, ROUTEROS_API o SSH',
+  })
+  transportType?: 'REST' | 'ROUTEROS_API' | 'SSH';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  ddnsHostname?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  wireguardPublicKey?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  wireguardListenPort?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(45)
+  wireguardIp?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  apiUser?: string;
+
+  @IsOptional()
+  @IsString()
+  apiPassword?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  sshPort?: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['PPPOE', 'OLT_NATIVE'], {
+    message: 'suspensionMedium debe ser PPPOE o OLT_NATIVE',
+  })
+  suspensionMedium?: 'PPPOE' | 'OLT_NATIVE';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['DISABLED', 'DISABLE_SECRET', 'NOTICE_PORTAL'], {
+    message: 'suspensionMode debe ser DISABLED, DISABLE_SECRET o NOTICE_PORTAL',
+  })
+  suspensionMode?: 'DISABLED' | 'DISABLE_SECRET' | 'NOTICE_PORTAL';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(45)
+  portalIp?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  portalPort?: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['MANUAL', 'ROUTEROS'], {
+    message: 'provisioningMode debe ser MANUAL o ROUTEROS',
+  })
+  provisioningMode?: 'MANUAL' | 'ROUTEROS';
 }

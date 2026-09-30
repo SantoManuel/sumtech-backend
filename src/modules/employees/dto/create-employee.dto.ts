@@ -33,6 +33,14 @@ export class CreateEmployeeDto {
   @IsOptional()
   @IsUrl()
   photoUrl?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  branchId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  defaultCashStationId?: string;
 }
 
 export class FilterEmployeeDto extends PaginationDto {

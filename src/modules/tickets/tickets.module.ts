@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { TicketsService } from './tickets.service';
 import { TicketsController } from './tickets.controller';
@@ -18,7 +18,7 @@ import { ContractEntity } from '../clients/entities/contract.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
+    TenantTypeOrmModule.forFeature([
       TicketEntity,
       TicketHistoryEntity,
       TicketRepairEntity,

@@ -1,29 +1,24 @@
 import {
   IsString,
-  IsNotEmpty,
   IsOptional,
   IsEmail,
   IsUUID,
   IsBoolean,
   IsObject,
+  IsIn,
   MaxLength,
 } from 'class-validator';
 
-export class CreateTenantConfigDto {
+export class UpdateCompanyProfileDto {
   @IsString()
-  @IsNotEmpty()
-  @MaxLength(50)
-  tenantCode: string;
+  @IsOptional()
+  @MaxLength(200)
+  name?: string;
 
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @MaxLength(200)
-  name: string;
-
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(200)
-  companyName: string;
+  companyName?: string;
 
   @IsString()
   @IsOptional()
@@ -31,9 +26,9 @@ export class CreateTenantConfigDto {
   commercialName?: string;
 
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @MaxLength(20)
-  rnc: string;
+  rnc?: string;
 
   @IsString()
   @IsOptional()
@@ -93,9 +88,21 @@ export class CreateTenantConfigDto {
   @IsOptional()
   isActive?: boolean;
 
-  @IsBoolean()
+  @IsIn(['testecf', 'certecf', 'ecf', 'sandbox'])
   @IsOptional()
-  isDefault?: boolean;
+  dgiiEnvironment?: string;
+
+  @IsString()
+  @IsOptional()
+  dgiiAuthUrl?: string;
+
+  @IsString()
+  @IsOptional()
+  dgiiCertPassword?: string;
+
+  @IsObject()
+  @IsOptional()
+  siteContent?: Record<string, any>;
 
   @IsObject()
   @IsOptional()

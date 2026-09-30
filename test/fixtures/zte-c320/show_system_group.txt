@@ -1,0 +1,8 @@
+ZXAN#show system-group
+System Description: ZTE C320 GPON Optical Line Terminal
+System OID:         1.3.6.1.4.1.3902.1082
+System UpTime:      45 days, 12:34:56
+System Contact:     soporte@sumtech.com.do
+System Name:        OLT-Toros-C320
+System Location:    Azua - Los Toros Hub
+ZXAN#

@@ -17,12 +17,16 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { SaasFeatureGuard } from '../../common/guards/saas-feature.guard';
+import { RequireFeature } from '../../common/decorators/require-feature.decorator';
 
 const CRM_EDIT_ROLES = [Role.ADMIN, Role.GERENTE, Role.AGENTE_CRM];
 const CATALOG_ADMIN_ROLES = [Role.ADMIN, Role.GERENTE];
 
+/** Protegido por SaasFeatureGuard: el tenant debe tener contratado el módulo CRM. */
 @Controller('crm')
-@UseGuards(AuthGuard, RolesGuard)
+@UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard)
+@RequireFeature('CRM')
 export class CrmController {
   constructor(
     private readonly crmService: CrmService,

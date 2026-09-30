@@ -6,6 +6,7 @@ import { UserEntity } from '../users/entities/user.entity';
 import { SatisfactionSurveyEntity } from './entities/satisfaction-survey.entity';
 import { CrmService } from './crm.service';
 import { MailService } from '../mail/mail.service';
+import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
 
 describe('CrmSchedulerService', () => {
   let service: CrmSchedulerService;
@@ -59,6 +60,10 @@ describe('CrmSchedulerService', () => {
         { provide: getRepositoryToken(SatisfactionSurveyEntity), useValue: surveyRepo },
         { provide: CrmService, useValue: crmService },
         { provide: MailService, useValue: mailService },
+        {
+          provide: TenantIteratorService,
+          useValue: { runForEachActiveTenant: jest.fn((_label: string, fn: (t: any) => Promise<void>) => fn({ slug: 'tenant-test' })) },
+        },
       ],
     }).compile();
 

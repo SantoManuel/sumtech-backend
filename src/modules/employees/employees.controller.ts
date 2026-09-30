@@ -3,6 +3,7 @@ import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto, FilterEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { CreateUserDto } from '../users/dto/create-user.dto';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { AuthGuard } from '../../common/guards/auth.guard';
@@ -29,6 +30,17 @@ export class EmployeesController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM, Role.CAJERO)
   async findDirectory() {
     return this.employeesService.findDirectory();
+  }
+
+  /**
+   * Perfil de empleado del usuario autenticado (sucursal/caja asignada) — lo usa
+   * el POS al abrir turno. Debe declararse antes de ':id' por la misma razón que
+   * 'directory' (ver comentario arriba).
+   */
+  @Get('me')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO, Role.AGENTE_CRM)
+  async findMe(@CurrentUser('sub') userId: string) {
+    return this.employeesService.findByUserId(userId);
   }
 
   @Get(':id')

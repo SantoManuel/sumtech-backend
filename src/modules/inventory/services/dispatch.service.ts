@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { TENANT_DATA_SOURCE } from '../../../common/tenancy/tenant-datasource.provider';
 import { DispatchEntity } from '../entities/dispatch.entity';
 import { DispatchLineEntity } from '../entities/dispatch-line.entity';
 import { SerialNumberEntity } from '../entities/serial-number.entity';
@@ -32,7 +33,7 @@ const DISPATCH_RELATIONS = [
 @Injectable()
 export class DispatchService {
   constructor(
-    private readonly dataSource: DataSource,
+    @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
     @InjectRepository(DispatchEntity)
     private readonly dispatchRepository: Repository<DispatchEntity>,
     @InjectRepository(DispatchLineEntity)

@@ -14,4 +14,10 @@ export class UpdateContractDto {
   @Min(1)
   @Max(31)
   billingDay?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(90)
+  graceDaysOverride?: number | null;
 }

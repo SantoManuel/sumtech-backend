@@ -5,5 +5,7 @@ export class ContractSuspendedEvent {
   daysOverdue: number;
   /** Motivo de negocio de la suspensión, para la auditoría de red (ver ProvisioningAuditLogEntity). */
   reason: string;
+  actor?: string;
+  actorUserId?: string;
   occurredOn: Date;
 }

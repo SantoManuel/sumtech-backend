@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { CountryEntity } from './entities/country.entity';
 import { ProvinceEntity } from './entities/province.entity';
@@ -11,7 +11,7 @@ import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
+    TenantTypeOrmModule.forFeature([
       CountryEntity,
       ProvinceEntity,
       MunicipalityEntity,
@@ -22,6 +22,6 @@ import { UsersModule } from '../users/users.module';
   ],
   controllers: [GeographyController],
   providers: [GeographyService],
-  exports: [GeographyService, TypeOrmModule],
+  exports: [GeographyService, TenantTypeOrmModule],
 })
 export class GeographyModule {}

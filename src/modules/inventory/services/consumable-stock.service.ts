@@ -1,6 +1,7 @@
-import { Injectable, BadRequestException, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, Inject, BadRequestException, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
+import { TENANT_DATA_SOURCE } from '../../../common/tenancy/tenant-datasource.provider';
 import { ProductEntity } from '../entities/product.entity';
 import { StockItemEntity } from '../entities/stock-item.entity';
 import { StockMovementEntity } from '../entities/stock-movement.entity';
@@ -24,7 +25,7 @@ const UNIQUE_VIOLATION = '23505';
 @Injectable()
 export class ConsumableStockService {
   constructor(
-    private readonly dataSource: DataSource,
+    @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
     @InjectRepository(StockItemEntity)
     private readonly stockItemRepository: Repository<StockItemEntity>,
   ) {}

@@ -6,6 +6,7 @@ import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
 import { FindContractsDto } from './dto/find-contracts.dto';
+import { SuspendContractDto } from './dto/suspend-contract.dto';
 import { FilterClientDto } from './dto/filter-client.dto';
 import { ExportClientsDto } from './dto/export-clients.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -64,6 +65,12 @@ export class ClientsController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO, Role.AGENTE_CRM)
   async findById(@Param('id') id: string) {
     return this.clientsService.findById(id);
+  }
+
+  @Get(':id/services')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO, Role.AGENTE_CRM)
+  async getClientServices(@Param('id') id: string) {
+    return this.clientsService.getClientServices(id);
   }
 
   @Get('doc/:docNumber')
@@ -135,14 +142,29 @@ export class ClientsController {
 
   @Patch(':clientId/contracts/:id/suspend')
   @Roles(Role.ADMIN, Role.GERENTE)
-  async suspendContract(@Param('clientId') clientId: string, @Param('id') id: string) {
-    return this.clientsService.suspendContract(clientId, id);
+  async suspendContract(
+    @Param('clientId') clientId: string,
+    @Param('id') id: string,
+    @Body() dto: SuspendContractDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.clientsService.suspendContract(clientId, id, userId, dto.observation, dto.reason);
   }
 
   @Patch(':clientId/contracts/:id/reactivate')
   @Roles(Role.ADMIN, Role.GERENTE)
-  async reactivateContract(@Param('clientId') clientId: string, @Param('id') id: string) {
-    return this.clientsService.reactivateContract(clientId, id);
+  async reactivateContract(
+    @Param('clientId') clientId: string,
+    @Param('id') id: string,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.clientsService.reactivateContract(clientId, id, userId);
+  }
+
+  @Get(':clientId/suspension-history')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
+  async getSuspensionHistory(@Param('clientId') clientId: string) {
+    return this.clientsService.getSuspensionHistory(clientId);
   }
 
   @Patch(':clientId/contracts/:id/terminate')
@@ -194,7 +216,11 @@ export class ClientsController {
 
   @Get(':id/invoices')
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.AGENTE_CRM, Role.TECNICO)
-  async getInvoices(@Param('id') id: string, @Query('status') status?: string) {
-    return this.clientsService.getClientInvoices(id, status);
+  async getInvoices(
+    @Param('id') id: string,
+    @Query('status') status?: string,
+    @Query('openOnly') openOnly?: string,
+  ) {
+    return this.clientsService.getClientInvoices(id, status, openOnly === 'true');
   }
 }

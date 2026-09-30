@@ -8,6 +8,8 @@ import { RoleEntity } from '../modules/users/entities/role.entity';
 import { AuditLogEntity } from '../modules/users/entities/audit-log.entity';
 import { RefreshTokenEntity } from '../modules/auth/entities/refresh-token.entity';
 import { EmployeeEntity } from '../modules/employees/entities/employee.entity';
+import { BranchEntity } from '../modules/branches/entities/branch.entity';
+import { CashStationEntity } from '../modules/pos/entities/cash-station.entity';
 import { PlanEntity } from '../modules/plans/entities/plan.entity';
 import { ServiceFeeEntity } from '../modules/plans/entities/service-fee.entity';
 import { ClientEntity } from '../modules/clients/entities/client.entity';
@@ -31,6 +33,7 @@ import { InvoiceEntity } from '../modules/invoicing/entities/invoice.entity';
 import { EcfSequenceEntity } from '../modules/invoicing/entities/ecf-sequence.entity';
 import { DgiiReceivedInvoice } from '../modules/invoicing/entities/dgii-received-invoice.entity';
 import { BillingSettingsEntity } from '../modules/billing/entities/billing-settings.entity';
+import { SuspensionHistoryEntity } from '../modules/billing/entities/suspension-history.entity';
 import { SlaPolicyEntity } from '../modules/tickets/entities/sla-policy.entity';
 import { TicketEntity } from '../modules/tickets/entities/ticket.entity';
 import { TicketHistoryEntity } from '../modules/tickets/entities/ticket-history.entity';
@@ -50,6 +53,7 @@ import { SatisfactionSurveyEntity } from '../modules/crm/entities/satisfaction-s
 import { DepositProofEntity } from '../modules/portal/entities/deposit-proof.entity';
 import { PlanChangeRequestEntity } from '../modules/portal/entities/plan-change-request.entity';
 import { ClientNotificationEntity } from '../modules/portal/entities/client-notification.entity';
+import { NotificationTemplateEntity } from '../modules/portal/entities/notification-template.entity';
 import { CountryEntity } from '../modules/geography/entities/country.entity';
 import { ProvinceEntity } from '../modules/geography/entities/province.entity';
 import { MunicipalityEntity } from '../modules/geography/entities/municipality.entity';
@@ -58,12 +62,26 @@ import { ZoneEntity } from '../modules/network/entities/zone.entity';
 import { NetworkNodeEntity } from '../modules/network/entities/network-node.entity';
 import { NetworkAccessEntity } from '../modules/network/entities/network-access.entity';
 import { ProvisioningAuditLogEntity } from '../modules/network/entities/provisioning-audit-log.entity';
+import { DeviceLogEntity } from '../modules/network/entities/device-log.entity';
 import { GenieAcsDeviceEntity } from '../modules/genieacs/entities/genieacs-device.entity';
 import { GenieAcsAuditLogEntity } from '../modules/genieacs/entities/genieacs-audit-log.entity';
 import { ContractSignatureEntity } from '../modules/contract-signatures/entities/contract-signature.entity';
-import { TenantConfigEntity } from '../modules/company/entities/tenant-config.entity';
+import { CompanyProfileEntity } from '../modules/company/entities/company-profile.entity';
 import { ClientImportBatchEntity } from '../modules/clients/entities/client-import-batch.entity';
 import { ClientImportRowErrorEntity } from '../modules/clients/entities/client-import-row-error.entity';
+
+// OLT & ONU
+import { OltEntity } from '../modules/olt/entities/olt.entity';
+import { OltInterfaceEntity } from '../modules/olt/entities/olt-interface.entity';
+import { OltInterfaceVlanEntity } from '../modules/olt/entities/olt-interface-vlan.entity';
+import { OltSpeedProfileEntity } from '../modules/olt/entities/olt-speed-profile.entity';
+import { OltRolePermissionEntity } from '../modules/olt/entities/olt-role-permission.entity';
+import { OnuEntity } from '../modules/olt/entities/onu.entity';
+import { OnuTypeEntity } from '../modules/olt/entities/onu-type.entity';
+import { OnuServiceConfigEntity } from '../modules/olt/entities/onu-service-config.entity';
+import { Tr069NetworkEntity } from '../modules/olt/entities/tr069-network.entity';
+import { VlanEntity } from '../modules/olt/entities/vlan.entity';
+import { OltMetricEntity } from '../modules/olt/entities/olt-metric.entity';
 
 export const entities = [
   // geo
@@ -82,7 +100,8 @@ export const entities = [
   AuditLogEntity,
   RefreshTokenEntity,
   EmployeeEntity,
-  TenantConfigEntity,
+  CompanyProfileEntity,
+  BranchEntity,
   // com
   PlanEntity,
   ServiceFeeEntity,
@@ -93,7 +112,9 @@ export const entities = [
   ContractSignatureEntity,
   PlanChangeRequestEntity,
   ClientNotificationEntity,
+  NotificationTemplateEntity,
   BillingSettingsEntity,
+  SuspensionHistoryEntity,
   ClientImportBatchEntity,
   ClientImportRowErrorEntity,
   // inv
@@ -108,6 +129,7 @@ export const entities = [
   DispatchEntity,
   DispatchLineEntity,
   // pos
+  CashStationEntity,
   CashRegisterEntity,
   SaleEntity,
   SaleDetailEntity,
@@ -136,6 +158,19 @@ export const entities = [
   // net
   GenieAcsDeviceEntity,
   GenieAcsAuditLogEntity,
+  DeviceLogEntity,
+  // olt & onu
+  OltEntity,
+  OltInterfaceEntity,
+  OltInterfaceVlanEntity,
+  OltSpeedProfileEntity,
+  OltRolePermissionEntity,
+  OnuEntity,
+  OnuTypeEntity,
+  OnuServiceConfigEntity,
+  Tr069NetworkEntity,
+  VlanEntity,
+  OltMetricEntity,
 ];
 
 export const databaseConfig = registerAs(

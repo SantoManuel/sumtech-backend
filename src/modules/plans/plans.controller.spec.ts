@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { PlansController } from './plans.controller';
 import { PlansService } from './plans.service';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
@@ -30,6 +31,7 @@ describe('PlansController', () => {
         { provide: PlansService, useValue: service },
         { provide: JwtService, useValue: { verify: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: TenantContextService, useValue: { hasContext: jest.fn().mockReturnValue(false), getTenantId: jest.fn(), getSlug: jest.fn() } },
       ],
     }).compile();
 

@@ -5,14 +5,18 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { SaasFeatureGuard } from '../../common/guards/saas-feature.guard';
+import { RequireFeature } from '../../common/decorators/require-feature.decorator';
 
 /**
  * Panel de soporte del ERP (Fase 03) — estado en vivo y reinicio remoto de
  * la ONU de un contrato. Uso exclusivo de staff; la autogestión del cliente
  * vive en PortalController (/portal/wifi), no aquí.
+ * Protegido por SaasFeatureGuard: el tenant debe tener contratado el módulo GENIEACS.
  */
 @Controller('genieacs/contracts')
-@UseGuards(AuthGuard, RolesGuard)
+@UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard)
+@RequireFeature('GENIEACS')
 export class GenieAcsController {
   constructor(private readonly monitoringService: GenieAcsMonitoringService) {}
 

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { FindOperator } from 'typeorm';
 import { ClientsImportProcessor } from './clients-import.processor';
 import { ClientImportBatchEntity } from '../entities/client-import-batch.entity';
 import { ClientImportRowErrorEntity } from '../entities/client-import-row-error.entity';
@@ -12,6 +13,8 @@ import { InvoiceEntity } from '../../invoicing/entities/invoice.entity';
 import { UserEntity } from '../../users/entities/user.entity';
 import { RoleEntity } from '../../users/entities/role.entity';
 import { MinioStorageService } from '../../storage/minio-storage.service';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
+import { TenantConnectionManagerService } from '../../../common/tenancy/tenant-connection-manager.service';
 
 const LEGACY_HEADER =
   'Nombre,DNI/C.I./C.C./IFE,Telefono,Direccion,Barrio/Localidad,Ciudad/Municipio,Coordenadas,Estado,Plan Internet,Fecha Instalacion,Saldo';
@@ -49,6 +52,19 @@ function csvRow(overrides: Partial<Record<string, string>> = {}): string {
     .join(',');
 }
 
+/** Compara un valor de fila contra un valor de condición `where`, entendiendo
+ * tanto valores planos (igualdad estricta) como FindOperator de TypeORM
+ * (ej. In([...]) — usado por consultas que aceptan varios estados de factura). */
+function matchesWhereValue(rowValue: any, conditionValue: any): boolean {
+  if (conditionValue instanceof FindOperator) {
+    if (conditionValue.type === 'in') {
+      return (conditionValue.value as any[]).includes(rowValue);
+    }
+    throw new Error(`FindOperator de tipo '${conditionValue.type}' no soportado por este repo en memoria de test`);
+  }
+  return rowValue === conditionValue;
+}
+
 /** Fábrica de un repo en memoria mínimo (find/findOne por predicado, create/save). */
 function makeInMemoryRepo(idPrefix: string) {
   const rows: any[] = [];
@@ -73,12 +89,12 @@ function makeInMemoryRepo(idPrefix: string) {
       // TypeORM: un array de condiciones es OR entre ellas; un objeto plano es AND entre sus campos.
       const whereClauses = Array.isArray(where) ? where : [where];
       const match = rows.find((r: any) =>
-        whereClauses.some((clause) => Object.entries(clause).every(([k, v]) => (r as any)[k] === v)),
+        whereClauses.some((clause) => Object.entries(clause).every(([k, v]) => matchesWhereValue((r as any)[k], v))),
       );
       return Promise.resolve(match || null);
     }),
     findOneBy: jest.fn((where: any) => {
-      const match = rows.find((r: any) => Object.entries(where).every(([k, v]) => (r as any)[k] === v));
+      const match = rows.find((r: any) => Object.entries(where).every(([k, v]) => matchesWhereValue((r as any)[k], v)));
       return Promise.resolve(match || null);
     }),
   };
@@ -101,7 +117,7 @@ describe('ClientsImportProcessor', () => {
 
   function makeJob(fileContent: string) {
     minioStorage.getObjectBuffer.mockResolvedValue(Buffer.from(fileContent, 'utf8'));
-    return { data: { batchId: batch.id }, updateProgress: jest.fn() } as any;
+    return { data: { batchId: batch.id, tenantSlug: 'tenant-test' }, updateProgress: jest.fn() } as any;
   }
 
   beforeEach(async () => {
@@ -142,6 +158,19 @@ describe('ClientsImportProcessor', () => {
       uploadBuffer: jest.fn().mockResolvedValue('client-import-credentials/credenciales_batch-1.csv'),
     };
 
+    // El worker corre fuera de un request HTTP — process() resuelve el
+    // tenant desde job.data.tenantSlug y abre el contexto ALS él mismo (ver
+    // ClientsImportProcessor.process()). Estos mocks simulan ese motor:
+    // tenantContext.run() invoca el callback de verdad para que el resto de
+    // cada test (que asume los repos ya "activos") siga funcionando igual.
+    const tenantContextMock = {
+      run: jest.fn((_ctx: any, fn: () => any) => fn()),
+    };
+    const connectionManagerMock = {
+      resolveTenantBySlug: jest.fn().mockResolvedValue({ id: 'tenant-test-id', slug: 'tenant-test' }),
+      getDataSourceForTenant: jest.fn().mockResolvedValue({}),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ClientsImportProcessor,
@@ -156,6 +185,8 @@ describe('ClientsImportProcessor', () => {
         { provide: getRepositoryToken(UserEntity), useValue: userRepo },
         { provide: getRepositoryToken(RoleEntity), useValue: roleRepo },
         { provide: MinioStorageService, useValue: minioStorage },
+        { provide: TenantContextService, useValue: tenantContextMock },
+        { provide: TenantConnectionManagerService, useValue: connectionManagerMock },
       ],
     }).compile();
 
@@ -348,7 +379,7 @@ describe('ClientsImportProcessor', () => {
 
   it('si falla la lectura del archivo desde MinIO, el batch queda FAILED con failureReason y el error se propaga (para que BullMQ pueda reintentar)', async () => {
     minioStorage.getObjectBuffer.mockRejectedValue(new Error('MinIO no disponible'));
-    const job = { data: { batchId: batch.id }, updateProgress: jest.fn() } as any;
+    const job = { data: { batchId: batch.id, tenantSlug: 'tenant-test' }, updateProgress: jest.fn() } as any;
 
     await expect(processor.process(job)).rejects.toThrow('MinIO no disponible');
     expect(batch.status).toBe('FAILED');
@@ -357,7 +388,7 @@ describe('ClientsImportProcessor', () => {
 
   it('batch inexistente: no revienta, simplemente descarta el job', async () => {
     batchRepo.findOneBy.mockResolvedValue(null);
-    const job = { data: { batchId: 'no-existe' }, updateProgress: jest.fn() } as any;
+    const job = { data: { batchId: 'no-existe', tenantSlug: 'tenant-test' }, updateProgress: jest.fn() } as any;
     await expect(processor.process(job)).resolves.toBeUndefined();
   });
 

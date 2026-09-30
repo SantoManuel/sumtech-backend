@@ -64,7 +64,10 @@ describe('NetworkProvisioningService', () => {
     // El registro elige el adaptador por nodo (Fase 06); estas pruebas no
     // ejercitan esa selección en sí (ver network-provisioning-port.registry.spec.ts),
     // así que devuelve el mismo `port` sin importar el modo pedido.
-    const portRegistry = { resolve: jest.fn().mockReturnValue(port) };
+    const portRegistry = {
+      resolve: jest.fn().mockReturnValue(port),
+      resolveForAccess: jest.fn().mockReturnValue(port),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [

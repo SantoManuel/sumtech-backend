@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, ConflictException, ForbiddenException, BadRequestException, Logger, Optional } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, ConflictException, ForbiddenException, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, QueryRunner, DataSource, Between } from 'typeorm';
+import { TENANT_DATA_SOURCE } from '../../common/tenancy/tenant-datasource.provider';
 import { InvoiceEntity } from './entities/invoice.entity';
 import { EcfSequenceEntity } from './entities/ecf-sequence.entity';
 import { SaleEntity } from '../pos/entities/sale.entity';
@@ -20,6 +21,8 @@ import { DgiiSignerService } from './dgii/dgii-signer.service';
 import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { InvoiceReceiptMetadata } from '../printing/pdf-generator.types';
 import { CompanyService } from '../company/company.service';
+import { isOpenInvoiceStatus, OPEN_INVOICE_STATUSES } from './invoice-status.util';
+import { BillingSettingsEntity } from '../billing/entities/billing-settings.entity';
 
 @Injectable()
 export class InvoicingService {
@@ -48,7 +51,7 @@ export class InvoicingService {
     private readonly dgiiClient: DgiiClientService,
     private readonly signerService: DgiiSignerService,
     private readonly pdfGenerator: PdfGeneratorService,
-    private readonly dataSource: DataSource,
+    @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
     @Optional() private readonly companyService?: CompanyService,
   ) {}
 
@@ -164,7 +167,7 @@ export class InvoicingService {
       ecfItems[0].tiposImpuestoAdicional = ['002'];
     }
 
-    const dgiiCfg = this.dgiiClient.getConfig();
+    const dgiiCfg = await this.dgiiClient.getConfig();
     let effectiveConfig = dgiiCfg;
     if (this.companyService) {
       const fiscal = await this.companyService.getCompanyFiscalInfo();
@@ -303,7 +306,7 @@ export class InvoicingService {
     if (!invoice) {
       throw new NotFoundException(`Factura con ID ${invoiceId} no encontrada`);
     }
-    if (invoice.status !== 'PENDING_PAYMENT') {
+    if (!isOpenInvoiceStatus(invoice.status)) {
       throw new ConflictException(
         `La factura ${invoiceId} no está pendiente de pago (estado actual: ${invoice.status})`,
       );
@@ -335,9 +338,9 @@ export class InvoicingService {
     if (!invoice) {
       throw new NotFoundException(`Factura con ID ${invoiceId} no encontrada`);
     }
-    if (invoice.status !== 'PENDING_PAYMENT') {
+    if (!isOpenInvoiceStatus(invoice.status)) {
       throw new ConflictException(
-        `Solo se pueden anular facturas PENDING_PAYMENT (estado actual: ${invoice.status}). Una factura ISSUED requiere una Nota de Crédito.`,
+        `Solo se pueden anular facturas pendientes de pago (PENDING_PAYMENT/EN_GRACIA/VENCIDA) — estado actual: ${invoice.status}. Una factura ISSUED requiere una Nota de Crédito.`,
       );
     }
     invoice.status = 'VOIDED';
@@ -393,9 +396,20 @@ export class InvoicingService {
         throw new ForbiddenException('Solo puedes anular ante la DGII facturas que tú mismo procesaste.');
       }
       const hoursSinceIssued = (Date.now() - new Date(original.issuedAt).getTime()) / (1000 * 60 * 60);
-      if (hoursSinceIssued > 48) {
+      let voidWindowHours = 48;
+      try {
+        const billingRepo = this.dataSource.getRepository(BillingSettingsEntity);
+        const settings = await billingRepo.findOne({ where: {} });
+        if (settings && typeof settings.cashierVoidWindowHours === 'number') {
+          voidWindowHours = settings.cashierVoidWindowHours;
+        }
+      } catch (err: any) {
+        this.logger.warn(`No se pudo leer cashierVoidWindowHours de BillingSettingsEntity: ${err?.message}`);
+      }
+
+      if (hoursSinceIssued > voidWindowHours) {
         throw new ConflictException(
-          'Esta factura tiene más de 48 horas desde su emisión — solo un ADMIN o GERENTE puede anularla.',
+          `Esta factura tiene más de ${voidWindowHours} horas desde su emisión — solo un ADMIN o GERENTE puede anularla.`,
         );
       }
     }
@@ -499,6 +513,7 @@ export class InvoicingService {
     page?: number;
     limit?: number;
     status?: string;
+    openOnly?: boolean;
     clientId?: string;
     search?: string;
     dueDateFrom?: string;
@@ -525,7 +540,12 @@ export class InvoicingService {
       .skip(skip)
       .take(limit);
 
-    if (dto.status) {
+    if (dto.openOnly) {
+      // "todavía debe pagarse" — usado por el listado cross-cliente de
+      // facturas cobrables del POS, que debe seguir mostrando una factura aun
+      // cuando envejece de PENDING_PAYMENT a EN_GRACIA/VENCIDA.
+      query.andWhere('invoice.status IN (:...openStatuses)', { openStatuses: OPEN_INVOICE_STATUSES });
+    } else if (dto.status) {
       query.andWhere('invoice.status = :status', { status: dto.status });
     }
     if (dto.clientId) {
@@ -669,7 +689,7 @@ export class InvoicingService {
         correo: fiscal.correo,
       };
     } else {
-      const config = this.dgiiClient.getConfig();
+      const config = await this.dgiiClient.getConfig();
       company = {
         rnc: config.rncEmisor,
         razonSocial: config.razonSocialEmisor,

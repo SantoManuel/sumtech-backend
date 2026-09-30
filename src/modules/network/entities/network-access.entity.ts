@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { NetworkNodeEntity } from './network-node.entity';
+import { OnuEntity } from '../../olt/entities/onu.entity';
 
 /**
  * Identidad de red de un contrato (Usuario/Servicio/Ip/Estado del sistema WISP
@@ -31,6 +32,16 @@ export class NetworkAccessEntity {
   @JoinColumn({ name: 'node_id' })
   node?: NetworkNodeEntity;
 
+  @Column({ name: 'onu_id', type: 'uuid', nullable: true })
+  onuId?: string;
+
+  @ManyToOne(() => OnuEntity, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'onu_id' })
+  onu?: OnuEntity;
+
+  @Column({ name: 'suspension_medium_override', type: 'varchar', length: 30, nullable: true })
+  suspensionMediumOverride?: 'PPPOE' | 'OLT_NATIVE';
+
   @Column({ type: 'varchar', length: 150, nullable: true })
   username?: string;
 
@@ -39,6 +50,15 @@ export class NetworkAccessEntity {
 
   @Column({ name: 'ip_address', type: 'varchar', length: 45, nullable: true })
   ipAddress?: string;
+
+  @Column({ name: 'pppoe_password_enc', type: 'text', nullable: true })
+  pppoePasswordEnc?: string;
+
+  @Column({ name: 'mac_address', type: 'varchar', length: 17, nullable: true })
+  macAddress?: string;
+
+  @Column({ name: 'last_caller_id', type: 'varchar', length: 50, nullable: true })
+  lastCallerId?: string;
 
   @Column({
     name: 'connection_status',
@@ -61,6 +81,18 @@ export class NetworkAccessEntity {
 
   @Column({ name: 'last_sync_error', type: 'text', nullable: true })
   lastSyncError?: string | null;
+
+  @Column({ name: 'pending_operation', type: 'varchar', length: 20, nullable: true })
+  pendingOperation?: 'SUSPEND' | 'RESTORE' | 'DEPROVISION' | null;
+
+  @Column({ name: 'pending_since', type: 'timestamp with time zone', nullable: true })
+  pendingSince?: Date | null;
+
+  @Column({ name: 'pending_attempts', type: 'int', default: 0 })
+  pendingAttempts: number;
+
+  @Column({ name: 'last_error_code', type: 'varchar', length: 50, nullable: true })
+  lastErrorCode?: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamp with time zone' })
   createdAt: Date;

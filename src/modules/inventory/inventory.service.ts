@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, QueryRunner, DataSource } from 'typeorm';
+import { TENANT_DATA_SOURCE } from '../../common/tenancy/tenant-datasource.provider';
 import { ProductEntity } from './entities/product.entity';
 import { SerialNumberEntity } from './entities/serial-number.entity';
 import { StockMovementEntity } from './entities/stock-movement.entity';
@@ -22,7 +23,7 @@ import { adjustWarehouseStock } from './services/warehouse-stock.util';
 @Injectable()
 export class InventoryService {
   constructor(
-    private readonly dataSource: DataSource,
+    @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
     private readonly equipmentMovementService: EquipmentMovementService,
     @InjectRepository(ProductEntity)
     private readonly productRepository: Repository<ProductEntity>,

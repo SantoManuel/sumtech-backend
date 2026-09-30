@@ -4,7 +4,23 @@ export const ROUTEROS_CLIENT_FACTORY = 'ROUTEROS_CLIENT_FACTORY';
 
 export type RouterOsClientLike = Pick<
   RouterOsClient,
-  'testConnection' | 'findPppSecretByName' | 'setPppSecretDisabled' | 'setPppSecretProfile' | 'ensureProfile'
+  | 'testConnection'
+  | 'findPppSecretByName'
+  | 'createPppSecret'
+  | 'ensurePppSecret'
+  | 'setPppSecretDisabled'
+  | 'setPppSecretProfile'
+  | 'findProfileByName'
+  | 'createProfile'
+  | 'ensureProfile'
+  | 'ensureSuspensionProfile'
+  | 'findActiveSessionByName'
+  | 'getActiveSessions'
+  | 'killActiveSession'
+  | 'addAddressListEntry'
+  | 'removeAddressListEntry'
+  | 'addFirewallNatRule'
+  | 'addFirewallFilterRule'
 >;
 
 export type RouterOsClientFactory = (config: RouterOsClientConfig) => RouterOsClientLike;
