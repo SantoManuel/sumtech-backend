@@ -46,6 +46,13 @@ async function bootstrap() {
         return callback(null, true);
       }
 
+      // 4. Subdominios dinámicos de tenants en VPS (*.sslip.io)
+      // Ej: http://sumtech.66.94.107.219.sslip.io, http://admin.66.94.107.219.sslip.io
+      const isSslipDomain = /^https?:\/\/([a-z0-9-]+\.)+[0-9.]+\.sslip\.io(:\d+)?$/i.test(requestOrigin);
+      if (isSslipDomain) {
+        return callback(null, true);
+      }
+
       logger.warn(`Petición bloqueada por política CORS desde origen no autorizado: ${requestOrigin}`);
       return callback(new Error(`Origen CORS no permitido: ${requestOrigin}`), false);
     },
