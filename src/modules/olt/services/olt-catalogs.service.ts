@@ -11,6 +11,9 @@ import { OltEntity } from '../entities/olt.entity';
 import { ZteC320Driver } from '../drivers/zte-c320.driver';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 
+import { PlanEntity } from '../../plans/entities/plan.entity';
+import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from '../dto/speed-profile.dto';
+
 @Injectable()
 export class OltCatalogsService {
   constructor(
@@ -28,6 +31,8 @@ export class OltCatalogsService {
     private readonly tr069Repository: Repository<Tr069NetworkEntity>,
     @InjectRepository(OltEntity)
     private readonly oltRepository: Repository<OltEntity>,
+    @InjectRepository(PlanEntity)
+    private readonly planRepository: Repository<PlanEntity>,
     private readonly zteDriver: ZteC320Driver,
   ) {}
 
@@ -144,16 +149,65 @@ export class OltCatalogsService {
     return this.speedProfileRepository.find({ order: { downKbps: 'ASC' } });
   }
 
-  async createSpeedProfile(dto: {
-    code: string;
-    name: string;
-    downKbps: number;
-    upKbps: number;
-    vendorTcontProfile?: string;
-    vendorTrafficProfile?: string;
-  }) {
-    const profile = this.speedProfileRepository.create(dto);
+  async findSpeedProfileById(id: string) {
+    const profile = await this.speedProfileRepository.findOneBy({ id });
+    if (!profile) {
+      throw new NotFoundException(`Perfil de velocidad OLT con ID ${id} no encontrado.`);
+    }
+    return profile;
+  }
+
+  async createSpeedProfile(dto: CreateOltSpeedProfileDto) {
+    const existing = await this.speedProfileRepository.findOneBy({ code: dto.code });
+    if (existing) {
+      throw new BadRequestException(`El código de perfil OLT "${dto.code}" ya está registrado.`);
+    }
+
+    const tcont = dto.vendorTcontProfile?.trim() || `TCONT-${Math.round(dto.downKbps / 1024)}M`;
+    const traffic = dto.vendorTrafficProfile?.trim() || `TRAFFIC-${Math.round(dto.downKbps / 1024)}M`;
+
+    const profile = this.speedProfileRepository.create({
+      ...dto,
+      vendorTcontProfile: tcont,
+      vendorTrafficProfile: traffic,
+    });
     return this.speedProfileRepository.save(profile);
+  }
+
+  async updateSpeedProfile(id: string, dto: UpdateOltSpeedProfileDto) {
+    const profile = await this.findSpeedProfileById(id);
+
+    if (dto.code && dto.code !== profile.code) {
+      const existing = await this.speedProfileRepository.findOneBy({ code: dto.code });
+      if (existing) {
+        throw new BadRequestException(`El código de perfil OLT "${dto.code}" ya está en uso.`);
+      }
+      profile.code = dto.code;
+    }
+
+    if (dto.name !== undefined) profile.name = dto.name;
+    if (dto.downKbps !== undefined) profile.downKbps = dto.downKbps;
+    if (dto.upKbps !== undefined) profile.upKbps = dto.upKbps;
+    if (dto.vendorTcontProfile !== undefined) profile.vendorTcontProfile = dto.vendorTcontProfile;
+    if (dto.vendorTrafficProfile !== undefined) profile.vendorTrafficProfile = dto.vendorTrafficProfile;
+    if (dto.isActive !== undefined) profile.isActive = dto.isActive;
+
+    return this.speedProfileRepository.save(profile);
+  }
+
+  async deleteSpeedProfile(id: string) {
+    const profile = await this.findSpeedProfileById(id);
+
+    // Guardia de integridad: Verificar que ningún plan comercial tenga asignado este perfil
+    const linkedPlans = await this.planRepository.count({ where: { oltSpeedProfileId: id } });
+    if (linkedPlans > 0) {
+      throw new BadRequestException(
+        `No se puede eliminar el perfil OLT "${profile.name}": está asignado a ${linkedPlans} plan(es) comercial(es). Modifique o desvincule los planes primero.`,
+      );
+    }
+
+    await this.speedProfileRepository.delete(id);
+    return { success: true, message: `Perfil OLT "${profile.name}" eliminado correctamente.` };
   }
 
   // ══════════════════════════════════════════════════

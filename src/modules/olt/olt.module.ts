@@ -19,6 +19,7 @@ import { OltMetricEntity } from './entities/olt-metric.entity';
 import { NetworkNodeEntity } from '../network/entities/network-node.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { CompanyProfileEntity } from '../company/entities/company-profile.entity';
+import { PlanEntity } from '../plans/entities/plan.entity';
 
 import { ZteC320Driver } from './drivers/zte-c320.driver';
 import { HuaweiMa5800Driver } from './drivers/huawei-ma5800.driver';
@@ -52,6 +53,7 @@ import { OnuController } from './onu.controller';
       NetworkNodeEntity,
       ContractEntity,
       CompanyProfileEntity,
+      PlanEntity,
     ]),
     NetworkConnectivityModule,
     UsersModule,

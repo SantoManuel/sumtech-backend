@@ -21,6 +21,7 @@ import { OltCatalogsService } from './services/olt-catalogs.service';
 import { OltNatManagerService } from './services/olt-nat-manager.service';
 import { OltMonitoringService } from './services/olt-monitoring.service';
 import { OltPermissionGuard, RequireOltAction } from './guards/olt-permission.guard';
+import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from './dto/speed-profile.dto';
 
 @Controller('olt')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -149,10 +150,28 @@ export class OltController {
     return this.catalogsService.findAllSpeedProfiles();
   }
 
+  @Get('speed-profiles/:id')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
+  async findSpeedProfileById(@Param('id') id: string) {
+    return this.catalogsService.findSpeedProfileById(id);
+  }
+
   @Post('speed-profiles')
   @Roles(Role.ADMIN, Role.GERENTE)
-  async createSpeedProfile(@Body() dto: any) {
+  async createSpeedProfile(@Body() dto: CreateOltSpeedProfileDto) {
     return this.catalogsService.createSpeedProfile(dto);
+  }
+
+  @Patch('speed-profiles/:id')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async updateSpeedProfile(@Param('id') id: string, @Body() dto: UpdateOltSpeedProfileDto) {
+    return this.catalogsService.updateSpeedProfile(id, dto);
+  }
+
+  @Delete('speed-profiles/:id')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async deleteSpeedProfile(@Param('id') id: string) {
+    return this.catalogsService.deleteSpeedProfile(id);
   }
 
   // ══════════════════════════════════════════════════
