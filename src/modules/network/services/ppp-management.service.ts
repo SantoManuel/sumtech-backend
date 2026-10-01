@@ -1,15 +1,33 @@
-import { Injectable, NotFoundException, Inject, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkAccessEntity } from '../entities/network-access.entity';
 import { ROUTEROS_CLIENT_FACTORY, RouterOsClientFactory, RouterOsClientLike } from '../routeros/routeros-client-factory';
+import { RouterOsPppSecret, RouterOsActivePppSession, RouterOsIpPool } from '../routeros/routeros-client';
 import { resolveRouterOsCredentials } from '../routeros/routeros-credentials';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { buildSymmetricRateLimit } from '../routeros/router-profile-name.util';
+import { CreateRouterOsProfileDto, UpdateRouterOsProfileDto } from '../dto/routeros-profile.dto';
+
+export interface EnrichedRouterOsProfile {
+  id: string;
+  name: string;
+  rateLimit?: string;
+  parentQueue?: string;
+  localAddress?: string;
+  remoteAddress?: string;
+  onlyOne?: boolean;
+  secretsCount: number;
+  dynamicIpCount: number;
+  staticIpCount: number;
+  activeSessionsCount: number;
+  associatedPlans: Array<{ id: string; name: string; speedMbps: number }>;
+  isProtected: boolean;
+}
 
 export interface PppSessionDetails {
   isConnected: boolean;
@@ -182,7 +200,7 @@ export class PppManagementService {
     }> = [];
     for (const plan of plans) {
       const speed = plan.speedMbps || 10;
-      const profileName = `Sumtech-${speed}Mbps`;
+      const profileName = plan.pppProfileId?.trim() || `Sumtech-${speed}Mbps`;
       const rateLimit = buildSymmetricRateLimit(speed);
 
       try {
@@ -211,6 +229,212 @@ export class PppManagementService {
       nodeName: node.name,
       syncedProfiles: results,
     };
+  }
+
+  /**
+   * Obtiene la lista completa de perfiles PPP en el router con métricas de uso y jerarquía IP.
+   */
+  async getNodeProfiles(nodeId: string) {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    const client = await this.resolveClient(node);
+    const [profiles, secrets, activeSessions, ipPools, plans] = await Promise.all([
+      client.getProfiles(),
+      client.getPppSecrets().catch((): RouterOsPppSecret[] => []),
+      client.getActiveSessions().catch((): RouterOsActivePppSession[] => []),
+      client.getIpPools().catch((): RouterOsIpPool[] => []),
+      this.planRepository.find({ where: { isActive: true } }),
+    ]);
+
+    const enrichedProfiles: EnrichedRouterOsProfile[] = profiles.map((p) => {
+      const matchingSecrets = secrets.filter((s) => s.profile === p.name);
+      const staticIpCount = matchingSecrets.filter(
+        (s) => s.remoteAddress && s.remoteAddress.trim().length > 0,
+      ).length;
+      const dynamicIpCount = matchingSecrets.length - staticIpCount;
+
+      const matchingSecretNames = new Set(matchingSecrets.map((s) => s.name));
+      const activeSessionsCount = activeSessions.filter((sess) =>
+        matchingSecretNames.has(sess.name),
+      ).length;
+
+      const associatedPlans = plans
+        .filter(
+          (plan) =>
+            plan.pppProfileId?.trim() === p.name ||
+            (!plan.pppProfileId && p.name === `Sumtech-${plan.speedMbps}Mbps`),
+        )
+        .map((plan) => ({
+          id: plan.id,
+          name: plan.name,
+          speedMbps: Number(plan.speedMbps),
+        }));
+
+      const isProtected = ['default', 'default-encryption', 'Sumtech-Corte'].includes(p.name);
+
+      return {
+        id: p.id,
+        name: p.name,
+        rateLimit: p.rateLimit,
+        parentQueue: p.parentQueue,
+        localAddress: p.localAddress,
+        remoteAddress: p.remoteAddress,
+        onlyOne: p.onlyOne,
+        secretsCount: matchingSecrets.length,
+        dynamicIpCount,
+        staticIpCount,
+        activeSessionsCount,
+        associatedPlans,
+        isProtected,
+      };
+    });
+
+    return {
+      nodeId: node.id,
+      nodeName: node.name,
+      profiles: enrichedProfiles,
+      ipPools,
+    };
+  }
+
+  /**
+   * Obtiene la lista de pools de IP (/ip/pool) disponibles en el router.
+   */
+  async getNodeIpPools(nodeId: string) {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    return client.getIpPools();
+  }
+
+  /**
+   * Crea un perfil nuevo en RouterOS.
+   */
+  async createNodeProfile(
+    nodeId: string,
+    dto: CreateRouterOsProfileDto,
+    actorUserId?: string,
+  ) {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    const client = await this.resolveClient(node);
+    const existing = await client.findProfileByName(dto.name);
+    if (existing) {
+      throw new BadRequestException(`Ya existe un perfil con el nombre "${dto.name}" en este router.`);
+    }
+
+    const created = await client.createProfile(dto.name, dto.rateLimit, {
+      parentQueue: dto.parentQueue || undefined,
+      localAddress: dto.localAddress || undefined,
+      remoteAddress: dto.remoteAddress || undefined,
+      onlyOne: dto.onlyOne !== undefined ? dto.onlyOne : true,
+    });
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'PROVISION',
+      status: 'SUCCESS',
+      message: `Perfil PPP "${dto.name}" creado en router "${node.name}" (${dto.rateLimit}).`,
+      actorUserId,
+    });
+
+    return created;
+  }
+
+  /**
+   * Actualiza los atributos de un perfil existente en RouterOS.
+   */
+  async updateNodeProfile(
+    nodeId: string,
+    profileId: string,
+    dto: UpdateRouterOsProfileDto,
+    actorUserId?: string,
+  ) {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    const client = await this.resolveClient(node);
+    await client.updateProfile(profileId, dto.rateLimit, {
+      parentQueue: dto.parentQueue,
+      localAddress: dto.localAddress,
+      remoteAddress: dto.remoteAddress,
+      onlyOne: dto.onlyOne,
+    });
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'PROVISION',
+      status: 'SUCCESS',
+      message: `Perfil PPP "${profileId}" actualizado en router "${node.name}".`,
+      actorUserId,
+    });
+
+    return { success: true, message: 'Perfil actualizado exitosamente en el router.' };
+  }
+
+  /**
+   * Elimina un perfil de RouterOS tras validar protecciones y dependencias.
+   */
+  async deleteNodeProfile(nodeId: string, profileId: string, actorUserId?: string) {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    const client = await this.resolveClient(node);
+    const profiles = await client.getProfiles();
+    const target = profiles.find((p) => p.id === profileId || p.name === profileId);
+    if (!target) {
+      throw new NotFoundException(`Perfil no encontrado en el router: ${profileId}`);
+    }
+
+    if (['default', 'default-encryption', 'Sumtech-Corte'].includes(target.name)) {
+      throw new BadRequestException(
+        `El perfil "${target.name}" es un perfil protegido del sistema y no puede ser eliminado.`,
+      );
+    }
+
+    const secrets = await client.getPppSecrets().catch((): RouterOsPppSecret[] => []);
+    const inUseSecrets = secrets.filter((s) => s.profile === target.name);
+    if (inUseSecrets.length > 0) {
+      throw new BadRequestException(
+        `No se puede eliminar el perfil "${target.name}" porque tiene ${inUseSecrets.length} secretos/clientes asignados en el router.`,
+      );
+    }
+
+    const plans = await this.planRepository.find({ where: { isActive: true } });
+    const linkedPlans = plans.filter(
+      (p) =>
+        p.pppProfileId?.trim() === target.name ||
+        (!p.pppProfileId && target.name === `Sumtech-${p.speedMbps}Mbps`),
+    );
+    if (linkedPlans.length > 0) {
+      throw new BadRequestException(
+        `No se puede eliminar el perfil "${target.name}" porque está vinculado al plan comercial "${linkedPlans[0].name}". Modifique el plan en el módulo de Planes antes de eliminar el perfil.`,
+      );
+    }
+
+    await client.deleteProfile(target.id);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Perfil PPP "${target.name}" eliminado del router "${node.name}".`,
+      actorUserId,
+    });
+
+    return { success: true, message: `Perfil "${target.name}" eliminado exitosamente.` };
   }
 
   private async resolveClient(node: NetworkNodeEntity): Promise<RouterOsClientLike> {

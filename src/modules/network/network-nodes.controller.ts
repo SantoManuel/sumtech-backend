@@ -22,6 +22,7 @@ import { RequireFeature } from '../../common/decorators/require-feature.decorato
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PppManagementService } from './services/ppp-management.service';
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
+import { CreateRouterOsProfileDto, UpdateRouterOsProfileDto } from './dto/routeros-profile.dto';
 
 /** Protegido por SaasFeatureGuard: el tenant debe tener contratado el módulo MIKROTIK. */
 @Controller('network/nodes')
@@ -108,6 +109,49 @@ export class NetworkNodesController {
   @Roles(Role.ADMIN, Role.GERENTE)
   async syncCatalogProfiles(@Param('id') id: string, @CurrentUser('sub') userId?: string) {
     return this.pppManagementService.syncCatalogProfilesToNode(id, userId);
+  }
+
+  @Get(':id/ppp/profiles')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeProfiles(@Param('id') id: string) {
+    return this.pppManagementService.getNodeProfiles(id);
+  }
+
+  @Get(':id/ppp/pools')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeIpPools(@Param('id') id: string) {
+    return this.pppManagementService.getNodeIpPools(id);
+  }
+
+  @Post(':id/ppp/profiles')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async createNodeProfile(
+    @Param('id') id: string,
+    @Body() dto: CreateRouterOsProfileDto,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.pppManagementService.createNodeProfile(id, dto, userId);
+  }
+
+  @Patch(':id/ppp/profiles/:profileId')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async updateNodeProfile(
+    @Param('id') id: string,
+    @Param('profileId') profileId: string,
+    @Body() dto: UpdateRouterOsProfileDto,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.pppManagementService.updateNodeProfile(id, profileId, dto, userId);
+  }
+
+  @Delete(':id/ppp/profiles/:profileId')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async deleteNodeProfile(
+    @Param('id') id: string,
+    @Param('profileId') profileId: string,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.pppManagementService.deleteNodeProfile(id, profileId, userId);
   }
 
   @Post(':id/install-portal')

@@ -261,4 +261,76 @@ describe('RouterOsClient', () => {
       expect(http.patch).not.toHaveBeenCalled();
     });
   });
+
+  describe('getProfiles', () => {
+    it('obtiene la lista completa de perfiles y mapea propiedades', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            '.id': '*1',
+            name: 'default',
+            'rate-limit': '10M/10M',
+            'local-address': '100.64.0.1',
+            'remote-address': 'pool-clientes',
+            'parent-queue': 'total-bandwidth',
+            'only-one': 'yes',
+          },
+        ],
+      });
+
+      const profiles = await client.getProfiles();
+      expect(profiles).toEqual([
+        {
+          id: '*1',
+          name: 'default',
+          rateLimit: '10M/10M',
+          localAddress: '100.64.0.1',
+          remoteAddress: 'pool-clientes',
+          parentQueue: 'total-bandwidth',
+          onlyOne: true,
+        },
+      ]);
+      expect(http.get).toHaveBeenCalledWith('https://10.10.0.1:8729/rest/ppp/profile', expect.anything());
+    });
+  });
+
+  describe('deleteProfile', () => {
+    it('elimina el perfil por id llamando a DELETE /rest/ppp/profile/{id}', async () => {
+      http.delete.mockResolvedValue({ data: {} });
+
+      await client.deleteProfile('*9');
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ppp/profile/*9',
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('getIpPools', () => {
+    it('obtiene la lista de pools de IP de /rest/ip/pool', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*2', name: 'pool-residencial', ranges: '100.64.0.2-100.64.0.254' }],
+      });
+
+      const pools = await client.getIpPools();
+      expect(pools).toEqual([
+        { id: '*2', name: 'pool-residencial', ranges: '100.64.0.2-100.64.0.254', nextPool: undefined },
+      ]);
+      expect(http.get).toHaveBeenCalledWith('https://10.10.0.1:8729/rest/ip/pool', expect.anything());
+    });
+  });
+
+  describe('getPppSecrets', () => {
+    it('obtiene todos los secretos de /rest/ppp/secret', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*3', name: 'user1', profile: 'PLAN-20M', disabled: 'false', 'remote-address': '100.64.0.25' }],
+      });
+
+      const secrets = await client.getPppSecrets();
+      expect(secrets).toEqual([
+        { id: '*3', name: 'user1', profile: 'PLAN-20M', disabled: false, service: undefined, remoteAddress: '100.64.0.25', comment: undefined },
+      ]);
+      expect(http.get).toHaveBeenCalledWith('https://10.10.0.1:8729/rest/ppp/secret', expect.anything());
+    });
+  });
 });

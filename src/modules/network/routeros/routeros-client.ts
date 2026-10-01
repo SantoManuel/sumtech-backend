@@ -31,6 +31,14 @@ export interface RouterOsPppProfile {
   parentQueue?: string;
   localAddress?: string;
   remoteAddress?: string;
+  onlyOne?: boolean;
+}
+
+export interface RouterOsIpPool {
+  id: string;
+  name: string;
+  ranges: string;
+  nextPool?: string;
 }
 
 export interface RouterOsActivePppSession {
@@ -251,7 +259,80 @@ export class RouterOsClient {
       parentQueue: match['parent-queue'],
       localAddress: match['local-address'],
       remoteAddress: match['remote-address'],
+      onlyOne: match['only-one'] !== undefined ? (match['only-one'] === true || match['only-one'] === 'yes') : undefined,
     };
+  }
+
+  /** Devuelve la lista completa de perfiles PPP configurados en el router (/ppp/profile). */
+  async getProfiles(): Promise<RouterOsPppProfile[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ppp/profile'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'],
+      name: entry.name,
+      rateLimit: entry['rate-limit'],
+      parentQueue: entry['parent-queue'],
+      localAddress: entry['local-address'],
+      remoteAddress: entry['remote-address'],
+      onlyOne: entry['only-one'] !== undefined ? (entry['only-one'] === true || entry['only-one'] === 'yes') : undefined,
+    }));
+  }
+
+  /** Elimina un perfil PPP en RouterOS por su .id. */
+  async deleteProfile(profileId: string): Promise<void> {
+    try {
+      await this.http.delete(
+        this.buildUrl(`ppp/profile/${encodeURIComponent(profileId)}`),
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Obtiene la lista de pools de IP configurados en RouterOS (/ip/pool). */
+  async getIpPools(): Promise<RouterOsIpPool[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/pool'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'],
+      name: entry.name,
+      ranges: entry.ranges,
+      nextPool: entry['next-pool'],
+    }));
+  }
+
+  /** Obtiene la lista completa de secretos PPP configurados en RouterOS (/ppp/secret). */
+  async getPppSecrets(): Promise<RouterOsPppSecret[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ppp/secret'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((match: any) => ({
+      id: match['.id'],
+      name: match.name,
+      disabled: match.disabled === true || match.disabled === 'true',
+      profile: match.profile,
+      service: match.service,
+      remoteAddress: match['remote-address'],
+      comment: match.comment,
+    }));
   }
 
   /**
@@ -282,6 +363,7 @@ export class RouterOsClient {
         parentQueue: created?.['parent-queue'] ?? options?.parentQueue,
         localAddress: created?.['local-address'] ?? options?.localAddress,
         remoteAddress: created?.['remote-address'] ?? options?.remoteAddress,
+        onlyOne: options?.onlyOne,
       };
     } catch (error) {
       throw new Error(this.describeError(error));
@@ -291,12 +373,11 @@ export class RouterOsClient {
   /** Actualiza los atributos de un perfil PPP existente. */
   async updateProfile(
     profileId: string,
-    rateLimit: string,
+    rateLimit?: string,
     options?: EnsureProfileOptions,
   ): Promise<void> {
-    const payload: Record<string, string> = {
-      'rate-limit': rateLimit,
-    };
+    const payload: Record<string, string> = {};
+    if (rateLimit) payload['rate-limit'] = rateLimit;
     if (options?.parentQueue !== undefined) payload['parent-queue'] = options.parentQueue;
     if (options?.localAddress !== undefined) payload['local-address'] = options.localAddress;
     if (options?.remoteAddress !== undefined) payload['remote-address'] = options.remoteAddress;

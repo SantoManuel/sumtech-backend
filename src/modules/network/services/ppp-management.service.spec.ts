@@ -212,5 +212,170 @@ describe('PppManagementService', () => {
         }),
       );
     });
+
+    it('respeta plan.pppProfileId personalizado en vez de forzar el autogenerado (Punto B)', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      planRepo.find.mockResolvedValue([
+        { id: 'plan-custom', name: 'Plan Especial', speedMbps: 30, pppProfileId: 'sumtech-especial', isActive: true },
+      ]);
+
+      const ensureSuspensionProfile = jest.fn().mockResolvedValue(undefined);
+      const ensureProfile = jest.fn().mockResolvedValue({ id: '*2', name: 'sumtech-especial' });
+
+      clientFactory.mockReturnValue({
+        ensureSuspensionProfile,
+        ensureProfile,
+      });
+
+      const result = await service.syncCatalogProfilesToNode('node-1');
+
+      expect(result.syncedProfiles[0].profileName).toBe('sumtech-especial');
+      expect(ensureProfile).toHaveBeenCalledWith(
+        'sumtech-especial',
+        '30M/30M',
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('getNodeProfiles', () => {
+    it('devuelve perfiles enriquecidos con métricas de secretos, asignación dinámica/fija y planes asociados', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      planRepo.find.mockResolvedValue([
+        { id: 'plan-20', name: 'Plan 20 Mbps', speedMbps: 20, pppProfileId: 'sumtech-20', isActive: true },
+      ]);
+
+      const mockProfiles = [
+        { id: '*1', name: 'default', rateLimit: '10M/10M', localAddress: '10.0.0.1', remoteAddress: 'pool-default' },
+        { id: '*2', name: 'sumtech-20', rateLimit: '20M/20M', localAddress: '10.0.0.1', remoteAddress: 'pool-clientes' },
+      ];
+      const mockSecrets = [
+        { id: '*s1', name: 'user_dynamic', profile: 'sumtech-20', remoteAddress: '' },
+        { id: '*s2', name: 'user_static', profile: 'sumtech-20', remoteAddress: '100.64.0.25' },
+        { id: '*s3', name: 'user_other', profile: 'default' },
+      ];
+      const mockActiveSessions = [
+        { id: '*a1', name: 'user_dynamic', address: '100.64.0.10' },
+      ];
+      const mockPools = [{ id: '*p1', name: 'pool-clientes', ranges: '100.64.0.2-100.64.0.254' }];
+
+      clientFactory.mockReturnValue({
+        getProfiles: jest.fn().mockResolvedValue(mockProfiles),
+        getPppSecrets: jest.fn().mockResolvedValue(mockSecrets),
+        getActiveSessions: jest.fn().mockResolvedValue(mockActiveSessions),
+        getIpPools: jest.fn().mockResolvedValue(mockPools),
+      });
+
+      const result = await service.getNodeProfiles('node-1');
+
+      expect(result.profiles).toHaveLength(2);
+      const profile20 = result.profiles.find((p) => p.name === 'sumtech-20');
+      expect(profile20).toBeDefined();
+      expect(profile20?.secretsCount).toBe(2);
+      expect(profile20?.dynamicIpCount).toBe(1);
+      expect(profile20?.staticIpCount).toBe(1);
+      expect(profile20?.activeSessionsCount).toBe(1);
+      expect(profile20?.associatedPlans).toEqual([{ id: 'plan-20', name: 'Plan 20 Mbps', speedMbps: 20 }]);
+      expect(profile20?.isProtected).toBe(false);
+
+      const defaultProfile = result.profiles.find((p) => p.name === 'default');
+      expect(defaultProfile?.isProtected).toBe(true);
+    });
+  });
+
+  describe('createNodeProfile', () => {
+    it('crea un perfil nuevo en el router si no existe y registra auditoría', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      const findProfileByName = jest.fn().mockResolvedValue(null);
+      const createProfile = jest.fn().mockResolvedValue({ id: '*10', name: 'Plan-100M', rateLimit: '100M/100M' });
+
+      clientFactory.mockReturnValue({ findProfileByName, createProfile });
+
+      const dto = {
+        name: 'Plan-100M',
+        rateLimit: '100M/100M',
+        parentQueue: 'Total-Bandwidth',
+        localAddress: '100.64.0.1',
+        remoteAddress: 'pool-clientes',
+        onlyOne: true,
+      };
+
+      const result = await service.createNodeProfile('node-1', dto, 'admin-id');
+
+      expect(result.id).toBe('*10');
+      expect(createProfile).toHaveBeenCalledWith('Plan-100M', '100M/100M', expect.objectContaining({
+        parentQueue: 'Total-Bandwidth',
+        localAddress: '100.64.0.1',
+        remoteAddress: 'pool-clientes',
+        onlyOne: true,
+      }));
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'PROVISION', actorUserId: 'admin-id' }),
+      );
+    });
+
+    it('rechaza con BadRequestException si el nombre ya existe', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      clientFactory.mockReturnValue({
+        findProfileByName: jest.fn().mockResolvedValue({ id: '*1', name: 'Plan-100M' }),
+      });
+
+      await expect(
+        service.createNodeProfile('node-1', { name: 'Plan-100M', rateLimit: '100M/100M' }),
+      ).rejects.toThrow(/Ya existe un perfil/);
+    });
+  });
+
+  describe('deleteNodeProfile', () => {
+    it('rechaza borrar perfiles protegidos como default o Sumtech-Corte', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      clientFactory.mockReturnValue({
+        getProfiles: jest.fn().mockResolvedValue([{ id: '*1', name: 'Sumtech-Corte' }]),
+      });
+
+      await expect(service.deleteNodeProfile('node-1', '*1')).rejects.toThrow(/perfil protegido/);
+    });
+
+    it('rechaza borrar perfil si tiene secretos asignados', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      clientFactory.mockReturnValue({
+        getProfiles: jest.fn().mockResolvedValue([{ id: '*2', name: 'sumtech-20' }]),
+        getPppSecrets: jest.fn().mockResolvedValue([{ id: '*s1', name: 'cliente_1', profile: 'sumtech-20' }]),
+      });
+
+      await expect(service.deleteNodeProfile('node-1', '*2')).rejects.toThrow(/secretos\/clientes asignados/);
+    });
+
+    it('rechaza borrar perfil si está vinculado a un plan comercial activo', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      planRepo.find.mockResolvedValue([
+        { id: 'p1', name: 'Plan 20 Mbps', pppProfileId: 'sumtech-20', isActive: true },
+      ]);
+      clientFactory.mockReturnValue({
+        getProfiles: jest.fn().mockResolvedValue([{ id: '*2', name: 'sumtech-20' }]),
+        getPppSecrets: jest.fn().mockResolvedValue([]),
+      });
+
+      await expect(service.deleteNodeProfile('node-1', '*2')).rejects.toThrow(/vinculado al plan comercial/);
+    });
+
+    it('elimina el perfil exitosamente si no tiene dependencias', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      planRepo.find.mockResolvedValue([]);
+      const deleteProfile = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({
+        getProfiles: jest.fn().mockResolvedValue([{ id: '*2', name: 'sumtech-viejo' }]),
+        getPppSecrets: jest.fn().mockResolvedValue([]),
+        deleteProfile,
+      });
+
+      const res = await service.deleteNodeProfile('node-1', '*2', 'admin-id');
+
+      expect(res.success).toBe(true);
+      expect(deleteProfile).toHaveBeenCalledWith('*2');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'COMMAND', actorUserId: 'admin-id' }),
+      );
+    });
   });
 });
