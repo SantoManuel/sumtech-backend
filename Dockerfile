@@ -12,8 +12,12 @@ RUN apk add --no-cache python3 make g++ libxml2-dev
 
 WORKDIR /app
 
+# Forzar NODE_ENV=development para asegurar que npm ci instale las devDependencies
+# (@nestjs/cli, typescript, etc.) incluso si Coolify pasa NODE_ENV=production como build-arg
+ENV NODE_ENV=development
+
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev
 
 COPY . .
 RUN npm run build
