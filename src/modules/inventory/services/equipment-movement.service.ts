@@ -565,9 +565,12 @@ export class EquipmentMovementService {
     if (filter.status) query.andWhere('s.status = :status', { status: filter.status });
     if (filter.articleType) query.andWhere('category.articleType = :articleType', { articleType: filter.articleType });
     if (filter.search) {
-      query.andWhere('(s.serialNumber ILIKE :search OR s.macAddress ILIKE :search)', {
-        search: `%${filter.search}%`,
-      });
+      query.andWhere(
+        '(s.serialNumber ILIKE :search OR s.macAddress ILIKE :search OR product.name ILIKE :search OR product.model ILIKE :search OR product.brand ILIKE :search)',
+        {
+          search: `%${filter.search}%`,
+        },
+      );
     }
 
     const [data, total] = await query.orderBy('s.serialNumber', 'ASC').getManyAndCount();

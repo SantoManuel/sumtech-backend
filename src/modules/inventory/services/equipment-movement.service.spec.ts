@@ -639,4 +639,60 @@ describe('EquipmentMovementService', () => {
       expect(result.data).toHaveLength(1);
     });
   });
+
+  describe('findEquipment', () => {
+    it('retorna equipos paginados y aplica filtros de búsqueda por producto/modelo/serial', async () => {
+      const qb: any = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([
+          [
+            {
+              id: 'eq-1',
+              serialNumber: 'HWTC-1234',
+              macAddress: 'AA:BB:CC:DD',
+              product: { name: 'ONT Huawei Dual Band', model: 'HG8145V5', brand: 'Huawei' },
+            },
+          ],
+          1,
+        ]),
+      };
+
+      serialRepository.createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      const result = await service.findEquipment({
+        page: 1,
+        limit: 15,
+        search: 'HG8145',
+        productId: 'prod-uuid-1',
+      });
+
+      expect(serialRepository.createQueryBuilder).toHaveBeenCalledWith('s');
+      expect(qb.skip).toHaveBeenCalledWith(0);
+      expect(qb.take).toHaveBeenCalledWith(15);
+      expect(qb.andWhere).toHaveBeenCalledWith('s.productId = :productId', { productId: 'prod-uuid-1' });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        '(s.serialNumber ILIKE :search OR s.macAddress ILIKE :search OR product.name ILIKE :search OR product.model ILIKE :search OR product.brand ILIKE :search)',
+        { search: '%HG8145%' },
+      );
+      expect(result).toEqual({
+        data: [
+          {
+            id: 'eq-1',
+            serialNumber: 'HWTC-1234',
+            macAddress: 'AA:BB:CC:DD',
+            product: { name: 'ONT Huawei Dual Band', model: 'HG8145V5', brand: 'Huawei' },
+          },
+        ],
+        total: 1,
+        page: 1,
+        limit: 15,
+        totalPages: 1,
+      });
+    });
+  });
 });
+
