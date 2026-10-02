@@ -1,4 +1,5 @@
 import { IsNotEmpty, IsEnum, IsInt, Min, Max, IsPositive, IsOptional, IsBoolean, IsNumber, IsString } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class CreatePlanDto {
   @IsNotEmpty({ message: 'El nombre del plan es requerido' })
@@ -39,10 +40,12 @@ export class CreatePlanDto {
   isFeatured?: boolean;
 
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? null : value))
   @IsString()
-  pppProfileId?: string;
+  pppProfileId?: string | null;
 
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? null : value))
   @IsString()
-  oltSpeedProfileId?: string;
+  oltSpeedProfileId?: string | null;
 }

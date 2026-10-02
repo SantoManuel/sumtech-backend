@@ -23,6 +23,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PppManagementService } from './services/ppp-management.service';
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
 import { CreateRouterOsProfileDto, UpdateRouterOsProfileDto } from './dto/routeros-profile.dto';
+import { SyncCatalogProfilesDto } from './dto/sync-catalog-profiles.dto';
 
 /** Protegido por SaasFeatureGuard: el tenant debe tener contratado el módulo MIKROTIK. */
 @Controller('network/nodes')
@@ -38,7 +39,13 @@ export class NetworkNodesController {
   @Get()
   @Roles(Role.ADMIN, Role.GERENTE)
   async findAll(@Query() listNetworkNodesDto: ListNetworkNodesDto) {
-    return this.networkNodesService.findAll(listNetworkNodesDto, !listNetworkNodesDto.includeInactive);
+    const activeOnly =
+      listNetworkNodesDto.activeOnly !== undefined
+        ? listNetworkNodesDto.activeOnly
+        : listNetworkNodesDto.isActive !== undefined
+          ? listNetworkNodesDto.isActive
+          : !listNetworkNodesDto.includeInactive;
+    return this.networkNodesService.findAll(listNetworkNodesDto, activeOnly);
   }
 
   @Post('test-connection')
@@ -107,8 +114,12 @@ export class NetworkNodesController {
 
   @Post(':id/ppp/sync-profiles')
   @Roles(Role.ADMIN, Role.GERENTE)
-  async syncCatalogProfiles(@Param('id') id: string, @CurrentUser('sub') userId?: string) {
-    return this.pppManagementService.syncCatalogProfilesToNode(id, userId);
+  async syncCatalogProfiles(
+    @Param('id') id: string,
+    @Body() dto?: SyncCatalogProfilesDto,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.pppManagementService.syncCatalogProfilesToNode(id, dto, userId);
   }
 
   @Get(':id/ppp/profiles')

@@ -7,4 +7,9 @@ export class ListPlansDto extends PaginationDto {
   @Type(() => Boolean)
   @IsBoolean()
   includeInactive?: boolean;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  isActive?: boolean;
 }

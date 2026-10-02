@@ -12,6 +12,7 @@ import { decryptCredential } from '../../network-connectivity/utils/crypto.util'
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { buildSymmetricRateLimit } from '../routeros/router-profile-name.util';
 import { CreateRouterOsProfileDto, UpdateRouterOsProfileDto } from '../dto/routeros-profile.dto';
+import { SyncCatalogProfilesDto } from '../dto/sync-catalog-profiles.dto';
 
 export interface EnrichedRouterOsProfile {
   id: string;
@@ -177,27 +178,50 @@ export class PppManagementService {
   }
 
   /**
-   * Sincroniza todos los perfiles de velocidad del catálogo de planes en el MikroTik (RF-PPP-001/002/003).
+   * Sincroniza perfiles de velocidad del catálogo de planes en el MikroTik (RF-PPP-001/002/003).
+   * Soporta sincronización selectiva de planes específicos y sobrescritura de pools/colas por lote.
    */
-  async syncCatalogProfilesToNode(nodeId: string, actorUserId?: string) {
+  async syncCatalogProfilesToNode(
+    nodeId: string,
+    dto?: SyncCatalogProfilesDto,
+    actorUserId?: string,
+  ) {
     const node = await this.nodeRepository.findOneBy({ id: nodeId });
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const plans = await this.planRepository.find({ where: { isActive: true } });
+    let plans = await this.planRepository.find({ where: { isActive: true } });
+    if (dto?.planIds && dto.planIds.length > 0) {
+      const allowedSet = new Set(dto.planIds);
+      plans = plans.filter((p) => allowedSet.has(p.id));
+    }
+
     const client = await this.resolveClient(node);
 
-    // 1. Asegurar perfil de corte
-    await client.ensureSuspensionProfile('Sumtech-Corte', '256k/256k');
+    // 1. Asegurar perfil de corte (si no se excluyó explícitamente)
+    if (dto?.includeSuspensionProfile !== false) {
+      try {
+        await client.ensureSuspensionProfile('Sumtech-Corte', '256k/256k');
+      } catch (err: any) {
+        this.logger.warn(`No se pudo asegurar el perfil de corte en nodo "${node.name}": ${err.message}`);
+      }
+    }
+
+    const targetPool = dto?.poolOverride?.trim() || node.defaultPppPool || undefined;
+    const targetQueue = dto?.parentQueueOverride?.trim() || node.defaultParentQueue || undefined;
 
     const results: Array<{
       planId: string;
       planName: string;
       profileName: string;
-      status: string;
+      rateLimit: string;
+      pool: string | null;
+      parentQueue: string | null;
+      status: 'OK' | 'ERROR';
       error?: string;
     }> = [];
+
     for (const plan of plans) {
       const speed = plan.speedMbps || 10;
       const profileName = plan.pppProfileId?.trim() || `Sumtech-${speed}Mbps`;
@@ -205,13 +229,30 @@ export class PppManagementService {
 
       try {
         await client.ensureProfile(profileName, rateLimit, {
-          parentQueue: node.defaultParentQueue || undefined,
-          remoteAddress: node.defaultPppPool || undefined,
+          parentQueue: targetQueue,
+          remoteAddress: targetPool,
           onlyOne: true,
         });
-        results.push({ planId: plan.id, planName: plan.name, profileName, status: 'OK' });
+        results.push({
+          planId: plan.id,
+          planName: plan.name,
+          profileName,
+          rateLimit,
+          pool: targetPool || null,
+          parentQueue: targetQueue || null,
+          status: 'OK',
+        });
       } catch (err: any) {
-        results.push({ planId: plan.id, planName: plan.name, profileName, status: 'ERROR', error: err.message });
+        results.push({
+          planId: plan.id,
+          planName: plan.name,
+          profileName,
+          rateLimit,
+          pool: targetPool || null,
+          parentQueue: targetQueue || null,
+          status: 'ERROR',
+          error: err.message,
+        });
       }
     }
 
@@ -219,7 +260,7 @@ export class PppManagementService {
       nodeId: node.id,
       eventType: 'PROVISION',
       status: 'SUCCESS',
-      message: `Sincronizados ${results.length} perfiles de velocidad en nodo "${node.name}"`,
+      message: `Sincronizados ${results.filter((r) => r.status === 'OK').length} perfiles en nodo "${node.name}"`,
       actorUserId,
       rawDetails: { results },
     });
@@ -228,6 +269,8 @@ export class PppManagementService {
       nodeId: node.id,
       nodeName: node.name,
       syncedProfiles: results,
+      totalSuccess: results.filter((r) => r.status === 'OK').length,
+      totalError: results.filter((r) => r.status === 'ERROR').length,
     };
   }
 

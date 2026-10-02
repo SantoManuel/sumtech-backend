@@ -190,7 +190,7 @@ describe('PppManagementService', () => {
         ensureProfile,
       });
 
-      const result = await service.syncCatalogProfilesToNode('node-1', 'admin-user-id');
+      const result = await service.syncCatalogProfilesToNode('node-1', undefined, 'admin-user-id');
 
       expect(result.nodeId).toBe('node-1');
       expect(result.syncedProfiles).toHaveLength(2);
@@ -235,6 +235,59 @@ describe('PppManagementService', () => {
         '30M/30M',
         expect.anything(),
       );
+    });
+
+    it('sincroniza únicamente los planes especificados en planIds (sincronización selectiva)', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      planRepo.find.mockResolvedValue([
+        { id: 'plan-1', name: 'Plan 20M', speedMbps: 20, isActive: true },
+        { id: 'plan-2', name: 'Plan 50M', speedMbps: 50, isActive: true },
+        { id: 'plan-3', name: 'Plan 100M', speedMbps: 100, isActive: true },
+      ]);
+
+      const ensureSuspensionProfile = jest.fn().mockResolvedValue(undefined);
+      const ensureProfile = jest.fn().mockResolvedValue({ id: '*1' });
+
+      clientFactory.mockReturnValue({ ensureSuspensionProfile, ensureProfile });
+
+      const result = await service.syncCatalogProfilesToNode('node-1', {
+        planIds: ['plan-2'],
+      });
+
+      expect(result.syncedProfiles).toHaveLength(1);
+      expect(result.syncedProfiles[0].planId).toBe('plan-2');
+      expect(ensureProfile).toHaveBeenCalledTimes(1);
+      expect(ensureProfile).toHaveBeenCalledWith('Sumtech-50Mbps', '50M/50M', expect.anything());
+    });
+
+    it('aplica poolOverride y parentQueueOverride cuando se especifican en el lote', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      planRepo.find.mockResolvedValue([
+        { id: 'plan-1', name: 'Plan 20M', speedMbps: 20, isActive: true },
+      ]);
+
+      const ensureSuspensionProfile = jest.fn().mockResolvedValue(undefined);
+      const ensureProfile = jest.fn().mockResolvedValue({ id: '*1' });
+
+      clientFactory.mockReturnValue({ ensureSuspensionProfile, ensureProfile });
+
+      const result = await service.syncCatalogProfilesToNode('node-1', {
+        poolOverride: 'pool-empresarial',
+        parentQueueOverride: 'Queue-VIP',
+        includeSuspensionProfile: false,
+      });
+
+      expect(ensureSuspensionProfile).not.toHaveBeenCalled();
+      expect(ensureProfile).toHaveBeenCalledWith(
+        'Sumtech-20Mbps',
+        '20M/20M',
+        expect.objectContaining({
+          remoteAddress: 'pool-empresarial',
+          parentQueue: 'Queue-VIP',
+        }),
+      );
+      expect(result.syncedProfiles[0].pool).toBe('pool-empresarial');
+      expect(result.syncedProfiles[0].parentQueue).toBe('Queue-VIP');
     });
   });
 

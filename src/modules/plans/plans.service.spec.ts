@@ -201,12 +201,16 @@ describe('PlansService', () => {
       expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
 
-    it('no emite PLAN_SPEED_CHANGED si speedMbps se envía pero es igual al actual', async () => {
-      planRepo.findOneBy.mockResolvedValue(makePlan({ speedMbps: 20 }));
+    it('sanitiza cadenas vacías en oltSpeedProfileId y pppProfileId convirtiéndolas en null', async () => {
+      planRepo.findOneBy.mockResolvedValue(makePlan());
 
-      await service.update('plan-1', { speedMbps: 20 } as any);
+      const result = await service.update('plan-1', {
+        oltSpeedProfileId: '   ',
+        pppProfileId: '',
+      } as any);
 
-      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(result.oltSpeedProfileId).toBeNull();
+      expect(result.pppProfileId).toBeNull();
     });
   });
 

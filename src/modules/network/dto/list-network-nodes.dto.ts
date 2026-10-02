@@ -9,6 +9,16 @@ export class ListNetworkNodesDto extends PaginationDto {
   includeInactive?: boolean;
 
   @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  activeOnly?: boolean;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
   @IsUUID('4', { message: 'zoneId debe ser un UUID válido' })
   zoneId?: string;
 

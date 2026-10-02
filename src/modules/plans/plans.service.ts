@@ -52,9 +52,20 @@ export class PlansService {
   }
 
   async create(dto: CreatePlanDto): Promise<PlanEntity> {
+    const sanitizedOlt =
+      typeof dto.oltSpeedProfileId === 'string' && dto.oltSpeedProfileId.trim() !== ''
+        ? dto.oltSpeedProfileId.trim()
+        : null;
+    const sanitizedPpp =
+      typeof dto.pppProfileId === 'string' && dto.pppProfileId.trim() !== ''
+        ? dto.pppProfileId.trim()
+        : null;
+
     const plan = this.planRepository.create({
       ...dto,
       itbisRate: dto.itbisRate !== undefined ? dto.itbisRate : 0.18,
+      oltSpeedProfileId: sanitizedOlt,
+      pppProfileId: sanitizedPpp,
       isActive: true,
     });
     return this.planRepository.save(plan);
@@ -63,7 +74,22 @@ export class PlansService {
   async update(id: string, dto: UpdatePlanDto): Promise<PlanEntity> {
     const plan = await this.findById(id);
     const previousSpeedMbps = Number(plan.speedMbps);
-    Object.assign(plan, dto);
+
+    const sanitizedDto: any = { ...dto };
+    if (dto.oltSpeedProfileId !== undefined) {
+      sanitizedDto.oltSpeedProfileId =
+        typeof dto.oltSpeedProfileId === 'string' && dto.oltSpeedProfileId.trim() !== ''
+          ? dto.oltSpeedProfileId.trim()
+          : null;
+    }
+    if (dto.pppProfileId !== undefined) {
+      sanitizedDto.pppProfileId =
+        typeof dto.pppProfileId === 'string' && dto.pppProfileId.trim() !== ''
+          ? dto.pppProfileId.trim()
+          : null;
+    }
+
+    Object.assign(plan, sanitizedDto);
     const saved = await this.planRepository.save(plan);
 
     if (dto.speedMbps !== undefined && Number(dto.speedMbps) !== previousSpeedMbps) {

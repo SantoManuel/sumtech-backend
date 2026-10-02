@@ -1,4 +1,5 @@
 import { IsOptional, IsPositive, IsInt, Min, Max, IsBoolean, IsString, IsEnum, IsNumber } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class UpdatePlanDto {
   @IsOptional()
@@ -49,10 +50,12 @@ export class UpdatePlanDto {
   isActive?: boolean;
 
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? null : value))
   @IsString()
-  pppProfileId?: string;
+  pppProfileId?: string | null;
 
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? null : value))
   @IsString()
-  oltSpeedProfileId?: string;
+  oltSpeedProfileId?: string | null;
 }

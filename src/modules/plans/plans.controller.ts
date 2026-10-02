@@ -17,7 +17,11 @@ export class PlansController {
   @Public()
   @Get()
   async findAll(@Query() listPlansDto: ListPlansDto) {
-    return this.plansService.findAll(listPlansDto, !listPlansDto.includeInactive);
+    const activeOnly =
+      listPlansDto.isActive !== undefined
+        ? listPlansDto.isActive
+        : !listPlansDto.includeInactive;
+    return this.plansService.findAll(listPlansDto, activeOnly);
   }
 
   @Public()

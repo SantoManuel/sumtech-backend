@@ -66,6 +66,11 @@ describe('NetworkNodesController', () => {
     expect(service.findAll).toHaveBeenCalledWith({ page: 1, limit: 20 }, true);
   });
 
+  it('findAll respeta activeOnly explícito si se provee en la query', async () => {
+    await controller.findAll({ page: 1, limit: 20, activeOnly: true } as any);
+    expect(service.findAll).toHaveBeenCalledWith({ page: 1, limit: 20, activeOnly: true }, true);
+  });
+
   it('findById delega en el servicio con el id', async () => {
     await controller.findById('node-1');
     expect(service.findById).toHaveBeenCalledWith('node-1');

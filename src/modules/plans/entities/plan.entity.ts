@@ -29,7 +29,7 @@ export class PlanEntity {
   cdtRate: number;
 
   @Column({ type: 'text', nullable: true })
-  description?: string;
+  description?: string | null;
 
   @Column({ name: 'is_featured', type: 'boolean', default: false })
   isFeatured: boolean;
@@ -38,10 +38,10 @@ export class PlanEntity {
   isActive: boolean;
 
   @Column({ name: 'ppp_profile_id', type: 'varchar', length: 100, nullable: true })
-  pppProfileId?: string;
+  pppProfileId?: string | null;
 
   @Column({ name: 'olt_speed_profile_id', type: 'uuid', nullable: true })
-  oltSpeedProfileId?: string;
+  oltSpeedProfileId?: string | null;
 
   @ManyToOne(() => OltSpeedProfileEntity, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'olt_speed_profile_id' })
