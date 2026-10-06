@@ -46,6 +46,13 @@ async function bootstrap() {
         return callback(null, true);
       }
 
+      // 3b. Dominio real de producción (nic.do): *.sumtech.com.do
+      // Ej: https://admin.sumtech.com.do, https://erp-api.sumtech.com.do
+      const isSumtechComDoDomain = /^https:\/\/([a-z0-9-]+\.)*sumtech\.com\.do$/i.test(requestOrigin);
+      if (isSumtechComDoDomain) {
+        return callback(null, true);
+      }
+
       // 4. Subdominios dinámicos de tenants en VPS (*.sslip.io)
       // Ej: http://sumtech.66.94.107.219.sslip.io, http://admin.66.94.107.219.sslip.io
       const isSslipDomain = /^https?:\/\/([a-z0-9-]+\.)+[0-9.]+\.sslip\.io(:\d+)?$/i.test(requestOrigin);
