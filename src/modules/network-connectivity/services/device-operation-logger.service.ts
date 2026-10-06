@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DataSource, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { DeviceLogEntity, DeviceLogStatus } from '../../network/entities/device-log.entity';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 
 export interface RecordDeviceLogParams {
   nodeId: string;
@@ -25,10 +26,12 @@ export interface DeviceLogFilter {
 export class DeviceOperationLogger {
   private readonly logger = new Logger(DeviceOperationLogger.name);
 
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(private readonly tenantContext: TenantContextService) {}
 
+  // Ver nota en DeviceHealthService.getNodeRepository() — mismo gap de
+  // DataSource por defecto vs tenant real, mismo fix.
   private getRepository(): Repository<DeviceLogEntity> {
-    return this.dataSource.getRepository(DeviceLogEntity);
+    return this.tenantContext.getDataSource().getRepository(DeviceLogEntity);
   }
 
   /**

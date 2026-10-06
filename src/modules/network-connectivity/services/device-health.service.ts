@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DataSource, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { ReachabilityResolver } from './reachability-resolver.service';
@@ -11,13 +11,16 @@ import { decryptCredential } from '../utils/crypto.util';
 import { classifyDeviceError } from '../utils/device-error-classifier.util';
 import { NetErrorCode } from '../enums/net-error-code.enum';
 import { TransportConnectionTarget } from '../interfaces/routeros-transport.interface';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
+import { TenantIteratorService } from '../../../common/tenancy/tenant-iterator.service';
 
 @Injectable()
 export class DeviceHealthService {
   private readonly logger = new Logger(DeviceHealthService.name);
 
   constructor(
-    private readonly dataSource: DataSource,
+    private readonly tenantContext: TenantContextService,
+    private readonly tenantIterator: TenantIteratorService,
     private readonly reachabilityResolver: ReachabilityResolver,
     private readonly restTransport: RouterOsRestTransport,
     private readonly binaryTransport: RouterOsBinaryTransport,
@@ -25,8 +28,15 @@ export class DeviceHealthService {
     private readonly operationLogger: DeviceOperationLogger,
   ) {}
 
+  // IMPORTANTE: antes este servicio inyectaba el DataSource por defecto
+  // (ver [[sumtech_tenant_datasource_gap]]) — en una plataforma multi-tenant
+  // eso apunta a una base legacy ajena al tenant real, nunca a la BD real del
+  // tenant que hizo la petición. Se resuelve vía TenantContextService, que
+  // exige estar dentro de un contexto de tenant ya establecido (un request
+  // HTTP que pasó por TenantResolutionMiddleware, o un cron envuelto en
+  // TenantIteratorService.runForEachActiveTenant — ver handleScheduledHealthChecks).
   private getNodeRepository(): Repository<NetworkNodeEntity> {
-    return this.dataSource.getRepository(NetworkNodeEntity);
+    return this.tenantContext.getDataSource().getRepository(NetworkNodeEntity);
   }
 
   /**
@@ -138,7 +148,7 @@ export class DeviceHealthService {
    */
   @Cron(CronExpression.EVERY_5_MINUTES)
   async handleScheduledHealthChecks() {
-    try {
+    await this.tenantIterator.runForEachActiveTenant('device-health-check', async () => {
       const repo = this.getNodeRepository();
       const nodes = await repo.find({
         where: {
@@ -153,8 +163,6 @@ export class DeviceHealthService {
       for (const node of nodes) {
         await this.checkNodeHealth(node.id);
       }
-    } catch (err: any) {
-      this.logger.error(`Error en sondeo de salud de nodos: ${err.message}`);
-    }
+    });
   }
 }
