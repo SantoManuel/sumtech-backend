@@ -64,7 +64,7 @@ describe('WireguardManagerService', () => {
     expect(rest.routerosScript).toContain('[get www address]');
   });
 
-  it('no debe sobreescribir el address-list del servicio, solo añadir la subred del tunel', () => {
+  it('no vuelve a tocar el servicio si ya tiene la subred del tunel configurada (idempotente)', () => {
     const res = service.generateRouterOsScript({
       nodeName: 'Router-Azua-Centro',
       nodeId: 'node-123',
@@ -77,7 +77,7 @@ describe('WireguardManagerService', () => {
       allowedIps: '10.254.0.0/16',
     });
 
-    expect(res.routerosScript).toContain('($currentAddr . "," . $tunnelCidr)');
+    expect(res.routerosScript).toContain(':find $currentAddr "10.254.0.0/16"');
     expect(res.routerosScript).toContain('in-interface="wg-sumtech" action=accept');
   });
 
