@@ -71,6 +71,9 @@ export class NetworkNodeEntity {
   @Column({ name: 'wireguard_public_key', type: 'varchar', length: 64, nullable: true })
   wireguardPublicKey?: string;
 
+  @Column({ name: 'wireguard_private_key_enc', type: 'text', nullable: true })
+  wireguardPrivateKeyEnc?: string;
+
   @Column({ name: 'wireguard_listen_port', type: 'int', default: 51820 })
   wireguardListenPort: number;
 

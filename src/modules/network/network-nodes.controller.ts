@@ -96,6 +96,12 @@ export class NetworkNodesController {
     return this.networkNodesService.getWireguardScript(id);
   }
 
+  @Post(':id/wireguard/verify')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async verifyWireguardPeer(@Param('id') id: string) {
+    return this.networkNodesService.verifyWireguardPeer(id);
+  }
+
   @Get(':id/logs')
   @Roles(Role.ADMIN, Role.GERENTE)
   async getNodeLogs(

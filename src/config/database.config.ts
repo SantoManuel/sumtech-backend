@@ -32,6 +32,7 @@ import { SaleDetailEntity } from '../modules/pos/entities/sale-detail.entity';
 import { InvoiceEntity } from '../modules/invoicing/entities/invoice.entity';
 import { EcfSequenceEntity } from '../modules/invoicing/entities/ecf-sequence.entity';
 import { DgiiReceivedInvoice } from '../modules/invoicing/entities/dgii-received-invoice.entity';
+import { DgiiCertificationRun } from '../modules/invoicing/dgii/entities/dgii-certification-run.entity';
 import { BillingSettingsEntity } from '../modules/billing/entities/billing-settings.entity';
 import { SuspensionHistoryEntity } from '../modules/billing/entities/suspension-history.entity';
 import { SlaPolicyEntity } from '../modules/tickets/entities/sla-policy.entity';
@@ -63,6 +64,7 @@ import { NetworkNodeEntity } from '../modules/network/entities/network-node.enti
 import { NetworkAccessEntity } from '../modules/network/entities/network-access.entity';
 import { ProvisioningAuditLogEntity } from '../modules/network/entities/provisioning-audit-log.entity';
 import { DeviceLogEntity } from '../modules/network/entities/device-log.entity';
+import { WireguardPeerEntity } from '../modules/network/entities/wireguard-peer.entity';
 import { GenieAcsDeviceEntity } from '../modules/genieacs/entities/genieacs-device.entity';
 import { GenieAcsAuditLogEntity } from '../modules/genieacs/entities/genieacs-audit-log.entity';
 import { ContractSignatureEntity } from '../modules/contract-signatures/entities/contract-signature.entity';
@@ -136,6 +138,7 @@ export const entities = [
   InvoiceEntity,
   EcfSequenceEntity,
   DgiiReceivedInvoice,
+  DgiiCertificationRun,
   DepositProofEntity,
   // tickets
   SlaPolicyEntity,
@@ -159,6 +162,7 @@ export const entities = [
   GenieAcsDeviceEntity,
   GenieAcsAuditLogEntity,
   DeviceLogEntity,
+  WireguardPeerEntity,
   // olt & onu
   OltEntity,
   OltInterfaceEntity,

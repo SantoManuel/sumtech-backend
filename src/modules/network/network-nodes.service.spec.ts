@@ -5,8 +5,10 @@ import { NetworkNodesService } from './network-nodes.service';
 import { NetworkNodeEntity } from './entities/network-node.entity';
 import { ZoneEntity } from './entities/zone.entity';
 import { NetworkAccessEntity } from './entities/network-access.entity';
+import { WireguardPeerEntity } from './entities/wireguard-peer.entity';
 import { ConnectionTestService } from '../network-connectivity/services/connection-test.service';
 import { WireguardManagerService } from '../network-connectivity/services/wireguard-manager.service';
+import { WireGuardHubClient } from '../network-connectivity/services/wireguard-hub-client.service';
 import { DeviceHealthService } from '../network-connectivity/services/device-health.service';
 import { DeviceOperationLogger } from '../network-connectivity/services/device-operation-logger.service';
 
@@ -15,6 +17,8 @@ describe('NetworkNodesService', () => {
   let nodeRepo: any;
   let zoneRepo: any;
   let queryBuilder: any;
+  let wireguardPeerRepo: any;
+  let wireGuardHubClient: any;
 
   const makeNode = (overrides: Partial<NetworkNodeEntity> = {}): NetworkNodeEntity =>
     ({
@@ -62,13 +66,26 @@ describe('NetworkNodesService', () => {
       count: jest.fn().mockResolvedValue(0),
     };
 
+    wireguardPeerRepo = {
+      upsert: jest.fn().mockResolvedValue({}),
+      findOneBy: jest.fn(),
+      save: jest.fn((entity: any) => Promise.resolve(entity)),
+    };
+
     const connectionTestService = {
       executePreflight: jest.fn().mockResolvedValue({ success: true, latencyMs: 12 }),
       testNode: jest.fn().mockResolvedValue({ success: true, latencyMs: 15 }),
     };
 
     const wireguardManagerService = {
-      generateRouterOsScript: jest.fn().mockReturnValue({ routerosScript: '/interface wireguard...' }),
+      generateRouterOsScript: jest.fn().mockReturnValue({ routerosScript: '/interface wireguard...', hubPeerCommand: 'wg set wg0 peer TEST allowed-ips 10.254.1.2/32' }),
+      generateKeyPair: jest.fn().mockReturnValue({ privateKey: 'test-private-key', publicKey: 'test-public-key' }),
+    };
+
+    wireGuardHubClient = {
+      registerPeer: jest.fn().mockResolvedValue({ success: false, errorMessage: 'sumtech-wg-agent no configurado' }),
+      removePeer: jest.fn().mockResolvedValue({ success: false }),
+      getPeerStatus: jest.fn().mockResolvedValue(null),
     };
 
     const deviceHealthService = {
@@ -86,8 +103,10 @@ describe('NetworkNodesService', () => {
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
         { provide: getRepositoryToken(ZoneEntity), useValue: zoneRepo },
         { provide: getRepositoryToken(NetworkAccessEntity), useValue: accessRepo },
+        { provide: getRepositoryToken(WireguardPeerEntity), useValue: wireguardPeerRepo },
         { provide: ConnectionTestService, useValue: connectionTestService },
         { provide: WireguardManagerService, useValue: wireguardManagerService },
+        { provide: WireGuardHubClient, useValue: wireGuardHubClient },
         { provide: DeviceHealthService, useValue: deviceHealthService },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
       ],
@@ -301,10 +320,117 @@ describe('NetworkNodesService', () => {
   });
 
   describe('getWireguardScript', () => {
+    const originalEnv = process.env;
+
+    beforeEach(() => {
+      process.env = {
+        ...originalEnv,
+        WIREGUARD_SERVER_ENDPOINT: 'vpn.sumtech.com.do',
+        WIREGUARD_SERVER_PUBLIC_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      };
+    });
+
+    afterEach(() => {
+      process.env = originalEnv;
+    });
+
     it('genera el script si el nodo tiene método wireguard', async () => {
       nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardIp: '10.254.1.2' }));
       const result = await service.getWireguardScript('node-1');
       expect(result.routerosScript).toBeDefined();
+    });
+
+    it('rechaza si el hub central no está configurado', async () => {
+      process.env = { ...originalEnv, WIREGUARD_SERVER_ENDPOINT: '', WIREGUARD_SERVER_PUBLIC_KEY: '' };
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardIp: '10.254.1.2' }));
+      await expect(service.getWireguardScript('node-1')).rejects.toThrow();
+    });
+
+    it('genera y persiste un par de llaves si el nodo aún no tiene una', async () => {
+      const node = makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardIp: '10.254.1.2' });
+      nodeRepo.findOne.mockResolvedValue(node);
+      await service.getWireguardScript('node-1');
+      expect(nodeRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ wireguardPublicKey: 'test-public-key' }),
+      );
+    });
+
+    it('marca hubRegistered:false y guarda el peer como PENDING_MANUAL si el agente no responde', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardIp: '10.254.1.2' }));
+      const result = await service.getWireguardScript('node-1');
+      expect(result.hubRegistered).toBe(false);
+      expect(wireguardPeerRepo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'PENDING_MANUAL' }),
+        { conflictPaths: ['nodeId'] },
+      );
+    });
+
+    it('marca hubRegistered:true y guarda el peer como REGISTERED si el agente confirma el alta', async () => {
+      wireGuardHubClient.registerPeer.mockResolvedValue({ success: true });
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardIp: '10.254.1.2' }));
+      const result = await service.getWireguardScript('node-1');
+      expect(result.hubRegistered).toBe(true);
+      expect(wireguardPeerRepo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'REGISTERED' }),
+        { conflictPaths: ['nodeId'] },
+      );
+    });
+  });
+
+  describe('verifyWireguardPeer', () => {
+    it('lanza si el nodo no tiene clave pública WireGuard', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1', connectionMethod: 'wireguard' }));
+      await expect(service.verifyWireguardPeer('node-1')).rejects.toThrow();
+    });
+
+    it('lanza si el nodo aún no generó su peer en la BD', async () => {
+      nodeRepo.findOne.mockResolvedValue(
+        makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardPublicKey: 'pub-key' }),
+      );
+      wireguardPeerRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.verifyWireguardPeer('node-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('marca connected:true si el handshake es reciente', async () => {
+      nodeRepo.findOne.mockResolvedValue(
+        makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardPublicKey: 'pub-key' }),
+      );
+      wireguardPeerRepo.findOneBy.mockResolvedValue({ nodeId: 'node-1', status: 'REGISTERED' });
+      wireGuardHubClient.getPeerStatus.mockResolvedValue({
+        publicKey: 'pub-key',
+        lastHandshakeAt: new Date().toISOString(),
+      });
+
+      const result = await service.verifyWireguardPeer('node-1');
+      expect(result.connected).toBe(true);
+      expect(wireguardPeerRepo.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'CONNECTED' }));
+    });
+
+    it('marca connected:false si el handshake es viejo (>180s)', async () => {
+      nodeRepo.findOne.mockResolvedValue(
+        makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardPublicKey: 'pub-key' }),
+      );
+      wireguardPeerRepo.findOneBy.mockResolvedValue({ nodeId: 'node-1', status: 'CONNECTED' });
+      wireGuardHubClient.getPeerStatus.mockResolvedValue({
+        publicKey: 'pub-key',
+        lastHandshakeAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      });
+
+      const result = await service.verifyWireguardPeer('node-1');
+      expect(result.connected).toBe(false);
+      expect(wireguardPeerRepo.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'DISCONNECTED' }));
+    });
+
+    it('devuelve connected:false sin tocar la BD si el agente no responde', async () => {
+      nodeRepo.findOne.mockResolvedValue(
+        makeNode({ id: 'node-1', connectionMethod: 'wireguard', wireguardPublicKey: 'pub-key' }),
+      );
+      wireguardPeerRepo.findOneBy.mockResolvedValue({ nodeId: 'node-1', status: 'REGISTERED' });
+      wireGuardHubClient.getPeerStatus.mockResolvedValue(null);
+
+      const result = await service.verifyWireguardPeer('node-1');
+      expect(result.connected).toBe(false);
+      expect(wireguardPeerRepo.save).not.toHaveBeenCalled();
     });
   });
 });

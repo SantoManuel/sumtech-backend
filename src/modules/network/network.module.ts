@@ -22,6 +22,7 @@ import { NetworkNodeEntity } from './entities/network-node.entity';
 import { NetworkAccessEntity } from './entities/network-access.entity';
 import { ProvisioningAuditLogEntity } from './entities/provisioning-audit-log.entity';
 import { DeviceLogEntity } from './entities/device-log.entity';
+import { WireguardPeerEntity } from './entities/wireguard-peer.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { PlanEntity } from '../plans/entities/plan.entity';
 import { PppManagementService } from './services/ppp-management.service';
@@ -46,6 +47,7 @@ import { PendingOperationsController } from './pending-operations.controller';
       NetworkAccessEntity,
       ProvisioningAuditLogEntity,
       DeviceLogEntity,
+      WireguardPeerEntity,
       ContractEntity,
       PlanEntity,
     ]),

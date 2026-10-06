@@ -9,10 +9,14 @@ export interface WireguardTunnelParams {
   serverEndpoint: string;
   serverPort?: number;
   serverPublicKey: string;
-  clientPrivateKey?: string;
+  /** Llave privada generada por el backend (ver NetworkNodesService.getWireguardScript) — se incrusta explícita para que el router nunca autogenere una que el ERP desconozca. */
+  clientPrivateKey: string;
   clientPublicKey: string;
   allowedIps?: string;
   keepaliveSeconds?: number;
+  /** Protocolo de gestión configurado para el nodo — decide qué servicio de RouterOS se habilita sobre el túnel. */
+  transportType?: 'REST' | 'ROUTEROS_API' | 'SSH';
+  useHttps?: boolean;
 }
 
 export interface GeneratedWireguardConfig {
@@ -20,6 +24,8 @@ export interface GeneratedWireguardConfig {
   clientIp: string;
   serverEndpoint: string;
   listenPort: number;
+  /** Comando para pegar manualmente en el servidor WireGuard central (Fase A — hasta que exista sumtech-wg-agent). */
+  hubPeerCommand: string;
 }
 
 @Injectable()
@@ -53,22 +59,32 @@ export class WireguardManagerService {
     const keepalive = params.keepaliveSeconds || 25;
     const allowedIps = params.allowedIps || '10.254.0.0/16';
     const cleanNodeName = params.nodeName.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const useHttps = params.useHttps !== false;
+    const transportType = params.transportType || 'REST';
+    const serviceName =
+      transportType === 'SSH' ? 'ssh' : transportType === 'ROUTEROS_API' ? (useHttps ? 'api-ssl' : 'api') : useHttps ? 'www-ssl' : 'www';
+    const hubPeerCommand = `wg set wg0 peer ${params.clientPublicKey} allowed-ips ${params.assignedClientIp}/32`;
 
     const script = [
       `# ==============================================================================`,
       `# SUMTECH TELECOM - SCRIPT DE CONEXION WIREGUARD`,
       `# Nodo: ${params.nodeName} (Tenant: ${params.tenantSlug})`,
       `# Generado el: ${new Date().toISOString()}`,
+      `#`,
+      `# Clave publica de ESTE router (registrarla como peer en el hub central):`,
+      `#   ${params.clientPublicKey}`,
+      `# Comando sugerido para el hub (reemplazar wg0 si la interfaz del hub tiene otro nombre):`,
+      `#   ${hubPeerCommand}`,
       `# ==============================================================================`,
       ``,
       `:log info "Iniciando configuracion de tunel WireGuard para Sumtech..."`,
       ``,
-      `# 1. Crear interfaz WireGuard (si no existe)`,
+      `# 1. Crear interfaz WireGuard (si no existe) con la llave privada asignada por el ERP`,
       `/interface wireguard`,
       `:if ([:len [/interface wireguard find name="wg-sumtech"]] = 0) do={`,
-      `    add name="wg-sumtech" listen-port=${port} comment="Sumtech SaaS Tunnel - ${cleanNodeName}"`,
+      `    add name="wg-sumtech" private-key="${params.clientPrivateKey}" listen-port=${port} comment="Sumtech SaaS Tunnel - ${cleanNodeName}"`,
       `} else={`,
-      `    set [find name="wg-sumtech"] comment="Sumtech SaaS Tunnel - ${cleanNodeName}"`,
+      `    set [find name="wg-sumtech"] private-key="${params.clientPrivateKey}" comment="Sumtech SaaS Tunnel - ${cleanNodeName}"`,
       `}`,
       ``,
       `# 2. Asignar direccion IP en la interfaz WireGuard`,
@@ -98,13 +114,31 @@ export class WireguardManagerService {
       `        persistent-keepalive=${keepalive}s`,
       `}`,
       ``,
-      `# 4. Habilitar servicio API / REST para la interfaz de gestion`,
+      `# 4. Habilitar sobre el tunel el servicio de gestion segun el protocolo configurado`,
+      `#    en Sumtech para este nodo (${transportType}). Se agrega la subred del tunel a la`,
+      `#    lista de direcciones permitidas, sin borrar accesos de gestion existentes.`,
       `/ip service`,
-      `set www-ssl disabled=no address="${allowedIps}"`,
-      `set api disabled=no address="${allowedIps}"`,
+      `:local svcName "${serviceName}"`,
+      `:local tunnelCidr "${allowedIps}"`,
+      `:local currentAddr [get $svcName address]`,
+      `:if ([:len $currentAddr] = 0) do={`,
+      `    set $svcName disabled=no address=$tunnelCidr`,
+      `} else={`,
+      `    :if ([:find $currentAddr $tunnelCidr] = nil) do={`,
+      `        set $svcName disabled=no address=($currentAddr . "," . $tunnelCidr)`,
+      `    } else={`,
+      `        set $svcName disabled=no`,
+      `    }`,
+      `}`,
+      ``,
+      `# 5. Permitir explicitamente el trafico de gestion entrante por el tunel`,
+      `/ip firewall filter`,
+      `:if ([:len [find where in-interface="wg-sumtech" action=accept]] = 0) do={`,
+      `    add chain=input in-interface="wg-sumtech" action=accept place-before=0 comment="Sumtech WG Tunnel - ${cleanNodeName}"`,
+      `}`,
       ``,
       `:log info "Tunel WireGuard Sumtech configurado exitosamente."`,
-      `:put "Configuracion completada exitosamente. La IP del nodo en el tunel es ${params.assignedClientIp}"`,
+      `:put "Configuracion completada. IP del nodo en el tunel: ${params.assignedClientIp}. Clave publica de este router: ${params.clientPublicKey}"`,
       ``,
     ].join('\n');
 
@@ -113,6 +147,7 @@ export class WireguardManagerService {
       clientIp: params.assignedClientIp,
       serverEndpoint: `${params.serverEndpoint}:${port}`,
       listenPort: port,
+      hubPeerCommand,
     };
   }
 

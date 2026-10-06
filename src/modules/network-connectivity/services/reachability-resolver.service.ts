@@ -27,6 +27,23 @@ export class ReachabilityResolver {
    * Resuelve el endpoint de comunicación efectivo para el nodo según su método de conexión.
    */
   async resolveEndpoint(node: NetworkNodeEntity): Promise<ResolvedEndpoint> {
+    const resolved = await this.resolveHost(node);
+
+    // El método de conexión decide el HOST; el transporte decide el PUERTO/protocolo.
+    // Si se habla SSH (aunque se llegue por WireGuard/DDNS/IP pública), siempre se usa
+    // el puerto SSH dedicado del nodo, nunca el apiPort (ver sshPort en network-node.entity.ts).
+    if (node.transportType === 'SSH' && node.connectionMethod !== 'ssh') {
+      return {
+        ...resolved,
+        port: node.sshPort || 22,
+        useHttps: false,
+      };
+    }
+
+    return resolved;
+  }
+
+  private async resolveHost(node: NetworkNodeEntity): Promise<ResolvedEndpoint> {
     const method = node.connectionMethod || 'wireguard';
     const useHttps = node.useHttps !== false;
 
