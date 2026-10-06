@@ -119,6 +119,24 @@ describe('WireguardManagerService', () => {
     expect(res.routerosScript).toContain('add chain=input in-interface="wg-sumtech" action=accept comment=');
   });
 
+  it('agrega una ruta hacia la subred del tunel (el allowed-address del peer no crea una ruta de IP en RouterOS, confirmado en router real: ping/REST sin respuesta porque no habia ruta de vuelta)', () => {
+    const res = service.generateRouterOsScript({
+      nodeName: 'Router-Azua-Centro',
+      nodeId: 'node-123',
+      tenantSlug: 'teleazua',
+      assignedClientIp: '10.254.1.2',
+      serverEndpoint: 'vpn.sumtech.com.do',
+      serverPublicKey: 'SERVER_PUB_KEY_123=',
+      clientPrivateKey: 'CLIENT_PRIV_KEY_789=',
+      clientPublicKey: 'CLIENT_PUB_KEY_456=',
+      allowedIps: '10.254.0.0/16',
+    });
+
+    expect(res.routerosScript).toContain('/ip route');
+    expect(res.routerosScript).toContain('find where dst-address="10.254.0.0/16" gateway="wg-sumtech"');
+    expect(res.routerosScript).toContain('add dst-address="10.254.0.0/16" gateway="wg-sumtech"');
+  });
+
   it('no incluye caracteres acentuados en el contenido del .rsc (riesgo de mojibake en terminales RouterOS)', () => {
     const res = service.generateRouterOsScript({
       nodeName: 'Router-Azua-Centro',
