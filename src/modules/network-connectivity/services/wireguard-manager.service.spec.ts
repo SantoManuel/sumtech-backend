@@ -54,13 +54,14 @@ describe('WireguardManagerService', () => {
     };
 
     const ssh = service.generateRouterOsScript({ ...base, transportType: 'SSH' });
-    expect(ssh.routerosScript).toContain('local svcName "ssh"');
+    expect(ssh.routerosScript).toContain('[get ssh address]');
+    expect(ssh.routerosScript).toContain('set ssh disabled=no');
 
     const binary = service.generateRouterOsScript({ ...base, transportType: 'ROUTEROS_API', useHttps: true });
-    expect(binary.routerosScript).toContain('local svcName "api-ssl"');
+    expect(binary.routerosScript).toContain('[get api-ssl address]');
 
     const rest = service.generateRouterOsScript({ ...base, transportType: 'REST', useHttps: false });
-    expect(rest.routerosScript).toContain('local svcName "www"');
+    expect(rest.routerosScript).toContain('[get www address]');
   });
 
   it('no debe sobreescribir el address-list del servicio, solo añadir la subred del tunel', () => {
@@ -80,7 +81,27 @@ describe('WireguardManagerService', () => {
     expect(res.routerosScript).toContain('in-interface="wg-sumtech" action=accept');
   });
 
-  it('referencia /ip service directamente por nombre, sin "find name=" (RouterOS lo rechaza con "no such item")', () => {
+  it('referencia /ip service con el nombre LITERAL embebido, nunca via variable (RouterOS solo resuelve por nombre si esta escrito directo en el comando; con variable da "no such item", confirmado en router real)', () => {
+    const res = service.generateRouterOsScript({
+      nodeName: 'Router-Azua-Centro',
+      nodeId: 'node-123',
+      tenantSlug: 'teleazua',
+      assignedClientIp: '10.254.1.2',
+      serverEndpoint: 'vpn.sumtech.com.do',
+      serverPublicKey: 'SERVER_PUB_KEY_123=',
+      clientPrivateKey: 'CLIENT_PRIV_KEY_789=',
+      clientPublicKey: 'CLIENT_PUB_KEY_456=',
+      transportType: 'REST',
+      useHttps: false,
+    });
+
+    expect(res.routerosScript).toContain('[get www address]');
+    expect(res.routerosScript).toContain('set www disabled=no');
+    expect(res.routerosScript).not.toContain('find name=$svcName');
+    expect(res.routerosScript).not.toContain('$svcName');
+  });
+
+  it('inserta la regla de firewall antes del primer "drop" existente, o al final si el filtro esta vacio (place-before=0 fijo falla con "no such item" en un filtro vacio, confirmado en router real)', () => {
     const res = service.generateRouterOsScript({
       nodeName: 'Router-Azua-Centro',
       nodeId: 'node-123',
@@ -92,9 +113,10 @@ describe('WireguardManagerService', () => {
       clientPublicKey: 'CLIENT_PUB_KEY_456=',
     });
 
-    expect(res.routerosScript).toContain('[get $svcName address]');
-    expect(res.routerosScript).toContain('set $svcName disabled=no');
-    expect(res.routerosScript).not.toContain('find name=$svcName');
+    expect(res.routerosScript).not.toContain('place-before=0');
+    expect(res.routerosScript).toContain('find where chain="input" action="drop"');
+    expect(res.routerosScript).toContain('place-before=$placeBeforeId');
+    expect(res.routerosScript).toContain('add chain=input in-interface="wg-sumtech" action=accept comment=');
   });
 
   it('no incluye caracteres acentuados en el contenido del .rsc (riesgo de mojibake en terminales RouterOS)', () => {
