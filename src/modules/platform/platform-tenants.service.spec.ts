@@ -25,6 +25,7 @@ describe('PlatformTenantsService', () => {
   beforeEach(async () => {
     tenantRepo = {
       find: jest.fn().mockResolvedValue([mockTenant]),
+      findAndCount: jest.fn().mockResolvedValue([[mockTenant], 1]),
       findOne: jest.fn().mockImplementation(({ where }) => {
         if (where.id === 'tenant-uuid-1') return Promise.resolve({ ...mockTenant });
         return Promise.resolve(null);
@@ -101,6 +102,49 @@ describe('PlatformTenantsService', () => {
       await service.findAll({ search: 'tele' });
       expect(tenantRepo.find).toHaveBeenCalled();
     });
+
+    it('returns paginated response when limit is provided', async () => {
+      const result = (await service.findAll({ limit: 10, page: 1 })) as {
+        items: any[];
+        total: number;
+        limit: number;
+        offset: number;
+      };
+      expect(result.items).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.limit).toBe(10);
+      expect(result.offset).toBe(0);
+      expect(tenantRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 10, skip: 0 }),
+      );
+    });
+  });
+
+  describe('update', () => {
+    it('updates tenant name and rnc and logs audit event', async () => {
+      const result = await service.update(
+        'tenant-uuid-1',
+        { name: 'ISP TeleAzua Actualizado', rnc: '131-00000-0' },
+        'admin-1',
+        '127.0.0.1',
+      );
+
+      expect(tenantRepo.save).toHaveBeenCalled();
+      expect(result.name).toBe('ISP TeleAzua Actualizado');
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'TENANT_UPDATED',
+          entity: 'Tenant',
+          entityId: 'tenant-uuid-1',
+        }),
+      );
+    });
+
+    it('throws NotFoundException if tenant does not exist', async () => {
+      await expect(service.update('invalid-id', { name: 'Fail' })).rejects.toThrow(
+        NotFoundException,
+      );
+    });
   });
 
   describe('findOne', () => {
@@ -162,6 +206,19 @@ describe('PlatformTenantsService', () => {
     it('throws BadRequestException if tenant is CANCELLED', async () => {
       tenantRepo.findOne.mockResolvedValueOnce({ ...mockTenant, status: TenantStatus.CANCELLED });
       await expect(service.reactivate('tenant-uuid-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('activates a TRIAL tenant and logs TENANT_ACTIVATED_FROM_TRIAL instead of TENANT_REACTIVATED', async () => {
+      tenantRepo.findOne.mockResolvedValueOnce({ ...mockTenant, status: TenantStatus.TRIAL });
+      const result = await service.reactivate('tenant-uuid-1', 'admin-1', '127.0.0.1');
+      expect(result.status).toBe(TenantStatus.ACTIVE);
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'TENANT_ACTIVATED_FROM_TRIAL',
+          entity: 'Tenant',
+          entityId: 'tenant-uuid-1',
+        }),
+      );
     });
   });
 

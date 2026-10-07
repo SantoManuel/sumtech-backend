@@ -5,6 +5,7 @@ import { TenantEntity } from './entities/tenant.entity';
 import { TenantStatus } from './enums/tenant-status.enum';
 import { QueryTenantsDto } from './dto/query-tenants.dto';
 import { SuspendTenantDto } from './dto/suspend-tenant.dto';
+import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { PlatformAuditService } from './platform-audit.service';
 import { TenantConnectionManagerService } from '../../common/tenancy/tenant-connection-manager.service';
 import { UserEntity } from '../users/entities/user.entity';
@@ -50,26 +51,75 @@ export class PlatformTenantsService {
       where.status = query.status;
     }
 
-    if (query.search) {
-      const term = `%${query.search.trim()}%`;
-      // Búsqueda en nombre, slug o RNC
-      const items = await this.tenantRepo.find({
-        where: [
-          { ...where, name: ILike(term) },
-          { ...where, slug: ILike(term) },
-          { ...where, rnc: ILike(term) },
-        ],
+    const whereConditions = query.search
+      ? [
+          { ...where, name: ILike(`%${query.search.trim()}%`) },
+          { ...where, slug: ILike(`%${query.search.trim()}%`) },
+          { ...where, rnc: ILike(`%${query.search.trim()}%`) },
+        ]
+      : where;
+
+    if (!query.limit) {
+      return this.tenantRepo.find({
+        where: whereConditions,
         relations: ['plan'],
         order: { createdAt: 'DESC' },
       });
-      return items;
     }
 
-    return this.tenantRepo.find({
-      where,
+    const take = query.limit;
+    const skip = query.offset ?? ((query.page ? query.page - 1 : 0) * take);
+
+    const [items, total] = await this.tenantRepo.findAndCount({
+      where: whereConditions,
       relations: ['plan'],
       order: { createdAt: 'DESC' },
+      take,
+      skip,
     });
+
+    return { items, total, limit: take, offset: skip };
+  }
+
+  async update(id: string, dto: UpdateTenantDto, adminId?: string, ip?: string) {
+    const tenant = await this.tenantRepo.findOne({ where: { id }, relations: ['plan'] });
+
+    if (!tenant) {
+      throw new NotFoundException(`Tenant con ID "${id}" no encontrado`);
+    }
+
+    const changes: Record<string, any> = {};
+
+    if (dto.name && dto.name.trim() !== tenant.name) {
+      changes.oldName = tenant.name;
+      changes.newName = dto.name.trim();
+      tenant.name = dto.name.trim();
+    }
+
+    if (dto.rnc !== undefined && dto.rnc !== tenant.rnc) {
+      changes.oldRnc = tenant.rnc;
+      changes.newRnc = dto.rnc.trim() || null;
+      tenant.rnc = dto.rnc.trim() || undefined;
+    }
+
+    if (dto.planId && dto.planId !== tenant.planId) {
+      changes.oldPlanId = tenant.planId;
+      changes.newPlanId = dto.planId;
+      tenant.planId = dto.planId;
+    }
+
+    const saved = await this.tenantRepo.save(tenant);
+
+    await this.auditService.log({
+      action: 'TENANT_UPDATED',
+      entity: 'Tenant',
+      entityId: saved.id,
+      platformUserId: adminId,
+      metadata: { changes, ...dto },
+      ipAddress: ip,
+    });
+
+    return saved;
   }
 
   async findOne(id: string) {
@@ -235,11 +285,12 @@ export class PlatformTenantsService {
       throw new BadRequestException('Un tenant cancelado no puede reactivarse directamente sin reprovisionamiento');
     }
 
+    const wasTrial = tenant.status === TenantStatus.TRIAL;
     tenant.status = TenantStatus.ACTIVE;
     const saved = await this.tenantRepo.save(tenant);
 
     await this.auditService.log({
-      action: 'TENANT_REACTIVATED',
+      action: wasTrial ? 'TENANT_ACTIVATED_FROM_TRIAL' : 'TENANT_REACTIVATED',
       entity: 'Tenant',
       entityId: tenant.id,
       platformUserId: adminId,
