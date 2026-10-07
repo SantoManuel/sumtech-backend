@@ -76,4 +76,15 @@ describe('PlatformDashboardService', () => {
       expect(metrics.plans.total).toBe(4);
     });
   });
+
+  describe('getTrends', () => {
+    it('returns monthly trends for specified number of months', async () => {
+      const trends = await service.getTrends(6);
+
+      expect(trends).toHaveLength(6);
+      expect(trends[0]).toHaveProperty('month');
+      expect(trends[0]).toHaveProperty('mrrEstimate');
+      expect(trends[0]).toHaveProperty('newTenants');
+    });
+  });
 });

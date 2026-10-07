@@ -6,6 +6,7 @@ import {
   HttpStatus,
   NotFoundException,
   Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -16,6 +17,7 @@ import { PlatformTenantsService } from './platform-tenants.service';
 import { RegisterTenantDto } from './dto/register-tenant.dto';
 import { QueryTenantsDto } from './dto/query-tenants.dto';
 import { SuspendTenantDto } from './dto/suspend-tenant.dto';
+import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { PlatformAuthGuard } from './guards/platform-auth.guard';
 import { PlatformRolesGuard } from './guards/platform-roles.guard';
 import { PlatformRoles } from './decorators/platform-roles.decorator';
@@ -84,6 +86,19 @@ export class TenantsController {
   ) {
     const ip = req.ip || req.connection?.remoteAddress;
     return this.platformTenantsService.reactivate(id, admin.sub, ip);
+  }
+
+  @Patch(':id')
+  @UseGuards(PlatformAuthGuard, PlatformRolesGuard)
+  @PlatformRoles(PlatformRole.SUPERADMIN)
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateTenantDto,
+    @CurrentPlatformUser() admin: PlatformJwtPayload,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.connection?.remoteAddress;
+    return this.platformTenantsService.update(id, dto, admin.sub, ip);
   }
 
   // Público — usado por el sitio de venta del SaaS (Fase 7, "Crear mi empresa").

@@ -55,6 +55,7 @@ describe('DgiiCertificationService', () => {
         latencyMs: 45,
         tokenObtained: true,
       }),
+      generateQrCodeUrl: jest.fn().mockReturnValue('https://ecf.dgii.gov.do/certecf/consultatimbre?encf=E310000000001'),
     };
 
     signerService = {
@@ -68,8 +69,14 @@ describe('DgiiCertificationService', () => {
     runRepository = {
       create: jest.fn((data: any) => data),
       save: jest.fn().mockResolvedValue({}),
+      find: jest.fn().mockResolvedValue([]),
       findOne: jest.fn().mockResolvedValue(null),
       findAndCount: jest.fn().mockResolvedValue([[], 0]),
+    };
+
+    const mockPdfGenerator = {
+      generateInvoiceA4Pdf: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4 Mock A4')),
+      generateInvoiceThermalPdf: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.4 Mock 80mm')),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -79,11 +86,13 @@ describe('DgiiCertificationService', () => {
         { provide: DgiiClientService, useValue: dgiiClient },
         { provide: DgiiSignerService, useValue: signerService },
         { provide: getRepositoryToken(DgiiCertificationRun), useValue: runRepository },
+        { provide: 'PdfGeneratorService', useValue: mockPdfGenerator },
       ],
     }).compile();
 
     service = module.get<DgiiCertificationService>(DgiiCertificationService);
     xmlGenerator = module.get<DgiiXmlGeneratorService>(DgiiXmlGeneratorService);
+    (service as any).pdfGenerator = mockPdfGenerator;
   });
 
   it('debe estar definido', () => {
@@ -104,9 +113,27 @@ describe('DgiiCertificationService', () => {
     expect(dataset.ecfNotas.length).toBe(3);
     expect(dataset.ecfConsumoMenor.length).toBe(4);
 
-    // Verificar formato correlativo con offset
+    // Verificar formato correlativo con offset y eNCFModificado sincronizado
     expect(dataset.ecfGenerales[0].eNCF).toBe('E310000000101');
     expect(dataset.ecfNotas[0].eNCF).toBe('E330000000101');
+    expect(dataset.ecfNotas[0].eNCFModificado).toBe('E310000000101');
+    expect(dataset.ecfNotas[1].eNCFModificado).toBe('E440000000101');
+    expect(dataset.ecfNotas[2].eNCFModificado).toBe('E310000000102');
+  });
+
+  it('debe generar la Representación Impresa (PDF A4 y 80mm) de un comprobante de simulación', async () => {
+    const a4Buffer = await service.generateSimulationPdf('E310000000001', 'a4', 0);
+    expect(Buffer.isBuffer(a4Buffer)).toBe(true);
+    expect(a4Buffer.toString('latin1')).toContain('%PDF-');
+
+    const thermalBuffer = await service.generateSimulationPdf('E310000000001', '80mm', 0);
+    expect(Buffer.isBuffer(thermalBuffer)).toBe(true);
+    expect(thermalBuffer.toString('latin1')).toContain('%PDF-');
+  });
+
+  it('debe listar los XMLs firmados de la simulación para inspección o descarga masiva', async () => {
+    const xmls = await service.getSimulationSignedXmls(0);
+    expect(Array.isArray(xmls)).toBe(true);
   });
 
   it('debe ejecutar la simulación en 5 etapas del Paso 4', async () => {
@@ -157,6 +184,50 @@ describe('DgiiCertificationService', () => {
     expect(dgiiClient.submitCommercialApproval).toHaveBeenCalled();
   });
 
+  it('debe generar y firmar digitalmente una lista de Aprobaciones Comerciales (generateSignedAcecfList)', async () => {
+    const list = await service.generateSignedAcecfList([
+      {
+        id: 'acecf-1',
+        casoNumero: 1,
+        version: '1.0',
+        rncEmisor: '131880681',
+        eNcf: 'E310000000001',
+        tipoeCF: '31',
+        fechaEmision: '01-04-2020',
+        montoTotal: 7080,
+        rncComprador: '131148697',
+        estado: 1,
+        fechaHoraAprobacionComercial: '02-10-2026 18:13:59',
+      },
+    ]);
+
+    expect(list.length).toBe(1);
+    expect(list[0].eNcf).toBe('E310000000001');
+    expect(list[0].filename).toBe('ACECF_131000000_E310000000001.xml');
+    expect(list[0].signedXml).toBeDefined();
+  });
+
+  it('debe ejecutar un caso individual de Aprobación Comercial y persistir en historial (runAcecfCase)', async () => {
+    const result = await service.runAcecfCase({
+      id: 'acecf-1',
+      casoNumero: 1,
+      version: '1.0',
+      rncEmisor: '131880681',
+      eNcf: 'E310000000001',
+      tipoeCF: '31',
+      fechaEmision: '01-04-2020',
+      montoTotal: 7080,
+      rncComprador: '131148697',
+      estado: 1,
+      fechaHoraAprobacionComercial: '02-10-2026 18:13:59',
+    });
+
+    expect(result.status).toBe('ACCEPTED');
+    expect(result.trackId).toBe('TRK-ACE-123');
+    expect(dgiiClient.submitCommercialApproval).toHaveBeenCalled();
+    expect(runRepository.save).toHaveBeenCalled();
+  });
+
   it('debe emitir y transmitir una Anulación de Secuencias (ANECF)', async () => {
     const result = await service.runSequenceVoiding({
       tipoComprobante: '32',
@@ -189,7 +260,7 @@ describe('DgiiCertificationService', () => {
     it('un caso RFCE se firma localmente y se transmite por submitRfce, NO por submitEcf', async () => {
       const result = await service.runTestCase(rfceCase);
 
-      expect(dgiiClient.submitRfce).toHaveBeenCalledWith(expect.any(String), 'E3200000099', 4130);
+      expect(dgiiClient.submitRfce).toHaveBeenCalledWith(expect.any(String), 'E320000000099', 4130);
       expect(dgiiClient.submitEcf).not.toHaveBeenCalled();
       expect(signerService.signXml).toHaveBeenCalled(); // firma local del e-CF de consumo subyacente
       expect(result.status).toBe('ACCEPTED');
@@ -206,7 +277,7 @@ describe('DgiiCertificationService', () => {
       await service.runTestCase(caseItem);
 
       expect(runRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({ eNcf: 'E3100000077', status: 'ACCEPTED', trackId: 'TRK-CERT-123456' }),
+        expect.objectContaining({ eNcf: 'E310000000077', status: 'ACCEPTED', trackId: 'TRK-CERT-123456' }),
       );
       expect(runRepository.save).toHaveBeenCalled();
     });

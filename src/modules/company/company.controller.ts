@@ -128,11 +128,16 @@ export class CompanyController {
   @Post('config/dgii-cert')
   @Roles(Role.ADMIN)
   @UseInterceptors(FileInterceptor('file'))
-  async uploadDgiiCert(@UploadedFile() file: Express.Multer.File) {
+  async uploadDgiiCert(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('certPassword') certPassword?: string,
+  ) {
     if (!file || !file.buffer) {
       throw new BadRequestException('Debes adjuntar el archivo .p12/.pfx del certificado DGII.');
     }
-    return this.companyService.uploadDgiiCertificate(file.buffer, file.originalname);
+    return certPassword
+      ? this.companyService.uploadDgiiCertificate(file.buffer, file.originalname, certPassword)
+      : this.companyService.uploadDgiiCertificate(file.buffer, file.originalname);
   }
 }
 

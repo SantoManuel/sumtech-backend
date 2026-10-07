@@ -31,6 +31,35 @@ export class InvoicingController {
     return this.invoicingService.emitInvoice(emitInvoiceDto);
   }
 
+  @Post('emit-direct')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
+  async emitDirect(
+    @Body() dto: {
+      clientId: string;
+      ncfType: 'E31' | 'E32' | 'B01' | 'B02';
+      concept: string;
+      subtotal: number;
+      itbisAmount?: number;
+      paymentMethod?: string;
+    },
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.invoicingService.emitDirect({ ...dto, userId });
+  }
+
+  @Post(':id/settle')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
+  async settlePendingInvoice(
+    @Param('id') id: string,
+    @Body() dto: {
+      ncfType?: 'E31' | 'E32' | 'B01' | 'B02';
+      paymentMethod?: string;
+    },
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.invoicingService.settlePendingInvoice(id, { ...dto, userId });
+  }
+
   @Get('sale/:saleId')
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
   async findBySaleId(@Param('saleId') saleId: string) {
@@ -47,6 +76,23 @@ export class InvoicingController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
   async queryTrackId(@Param('trackId') trackId: string) {
     return this.dgiiClient.queryTrackIdStatus(trackId);
+  }
+
+  @Patch(':id/sync-dgii')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
+  async syncDgiiStatus(@Param('id') id: string) {
+    return this.invoicingService.syncDgiiStatus(id);
+  }
+
+  @Get(':id/xml')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
+  async getInvoiceXml(@Param('id') id: string, @Res() res: Response) {
+    const { filename, xmlContent } = await this.invoicingService.getInvoiceXml(id);
+    res.set({
+      'Content-Type': 'application/xml; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    });
+    res.send(xmlContent);
   }
 
   @Patch(':id/void')

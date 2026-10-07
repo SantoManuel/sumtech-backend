@@ -13,7 +13,7 @@ export class DgiiCertificationRun {
   id: string;
 
   @Column({ name: 'run_source', type: 'varchar', length: 20 })
-  runSource: 'TEST_CASE' | 'RUN_ALL' | 'SIMULATION';
+  runSource: 'TEST_CASE' | 'RUN_ALL' | 'SIMULATION' | 'ACECF';
 
   @Column({ name: 'caso_numero', type: 'int', nullable: true })
   casoNumero?: number;
@@ -65,8 +65,30 @@ export class DgiiCertificationRun {
   @Column({ name: 'signed_xml', type: 'text', nullable: true })
   signedXml?: string;
 
+  @Column({ name: 'raw_response', type: 'jsonb', nullable: true })
+  rawResponse?: Record<string, any>;
+
   @Column({ name: 'environment', type: 'varchar', length: 20 })
   environment: string;
+
+  /**
+   * Instante en que se firmó digitalmente el e-CF — el valor que la DGII exige
+   * como parámetro `fechafirma` del QR oficial.
+   *
+   * POR QUÉ ES UNA COLUMNA APARTE DE `executedAt`: `executedAt` es un
+   * @CreateDateColumn, o sea el reloj del servidor PostgreSQL en el momento del
+   * INSERT, y ese INSERT ocurre DESPUÉS del round-trip con la DGII (firmar ->
+   * enviar -> esperar respuesta -> guardar). Usar `executedAt` como `fechafirma`
+   * producía un desfase de segundos (caso real E330000000161: la DGII registró
+   * 22:26:44 y el QR impreso decía 22:26:46), suficiente para que
+   * `certecf/consultatimbre` no reconociera el comprobante.
+   *
+   * NULL cuando la corrida nunca llegó a firmar (rechazo XSD previo, error de
+   * red, caso bloqueado). Quien arme el QR debe usar `signedAt ?? executedAt`
+   * para no romper las corridas anteriores a esta columna.
+   */
+  @Column({ name: 'signed_at', type: 'timestamptz', nullable: true })
+  signedAt?: Date;
 
   @CreateDateColumn({ name: 'executed_at' })
   executedAt: Date;

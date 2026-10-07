@@ -1,37 +1,53 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import * as forge from 'node-forge';
-import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
+import { Signature, P12Reader } from 'dgii-ecf';
 
 @Injectable()
 export class DgiiSignerService {
   private readonly logger = new Logger(DgiiSignerService.name);
 
   /**
-   * Carga y parsea un certificado PKCS#12 (.p12 / .pfx) usando node-forge y extrae la clave privada RSA y el certificado X.509
+   * Carga y parsea un certificado PKCS#12 (.p12 / .pfx) usando P12Reader de dgii-ecf
+   * o node-forge como respaldo, extrayendo la clave privada RSA y el certificado X.509
    */
-  loadCertificate(certPath: string, certPassword: string): { privateKeyPem: string; certificateBase64: string } {
+  loadCertificate(certPath: string, certPassword: string = ''): { privateKeyPem: string; certificateBase64: string; certPem: string } {
+    const trimmedPassword = (certPassword || '').trim();
     try {
-      const resolvedPath = path.isAbsolute(certPath)
+      const resolvedPath = certPath && (path.isAbsolute(certPath)
         ? certPath
-        : path.resolve(process.cwd(), certPath);
+        : path.resolve(process.cwd(), certPath));
 
-      if (!fs.existsSync(resolvedPath)) {
+      if (!resolvedPath || !fs.existsSync(resolvedPath)) {
         this.logger.warn(`Certificado PKCS#12 no encontrado en ruta: ${resolvedPath}. Se utilizará clave criptográfica RSA generada para desarrollo/sandbox.`);
         return this.generateDevelopmentKeyPair();
       }
 
+      // 1. Intentar con P12Reader de dgii-ecf
+      try {
+        const reader = new P12Reader(trimmedPassword);
+        const certData = reader.getKeyFromFile(resolvedPath);
+        if (certData && certData.key && certData.cert) {
+          const privateKeyPem = certData.key;
+          const certPem = certData.cert;
+          const cleanCertBase64 = certPem
+            .replace(/-----BEGIN CERTIFICATE-----/g, '')
+            .replace(/-----END CERTIFICATE-----/g, '')
+            .replace(/\s+/g, '');
+          return { privateKeyPem, certificateBase64: cleanCertBase64, certPem };
+        }
+      } catch (readerError: any) {
+        this.logger.warn(`P12Reader falló (${readerError.message}), reintentando con node-forge.`);
+      }
+
+      // 2. Respaldo con node-forge
       const p12Buffer = fs.readFileSync(resolvedPath);
       const p12Asn1 = forge.asn1.fromDer(p12Buffer.toString('binary'));
-      const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, certPassword);
+      const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, trimmedPassword);
 
-      // Extraer bolsas de claves privadas
       const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[forge.pki.oids.pkcs8ShroudedKeyBag] ||
                      p12.getBags({ bagType: forge.pki.oids.keyBag })[forge.pki.oids.keyBag] || [];
-
-      // Extraer bolsas de certificados
       const certBags = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag] || [];
 
       if (!keyBags.length || !certBags.length) {
@@ -47,10 +63,11 @@ export class DgiiSignerService {
       }
 
       const privateKeyPem = forge.pki.privateKeyToPem(privateKey);
+      const certPem = forge.pki.certificateToPem(certificate);
       const certDer = forge.asn1.toDer(forge.pki.certificateToAsn1(certificate)).getBytes();
       const certificateBase64 = Buffer.from(certDer, 'binary').toString('base64');
 
-      return { privateKeyPem, certificateBase64 };
+      return { privateKeyPem, certificateBase64, certPem };
     } catch (error: any) {
       this.logger.error(`Error al cargar certificado PKCS#12: ${error.message}. Empleando fallback criptográfico.`, error.stack);
       return this.generateDevelopmentKeyPair();
@@ -60,7 +77,7 @@ export class DgiiSignerService {
   /**
    * Genera un par de claves RSA 2048-bit y un certificado autofirmado en memoria para entornos de prueba / fallback
    */
-  private generateDevelopmentKeyPair(): { privateKeyPem: string; certificateBase64: string } {
+  private generateDevelopmentKeyPair(): { privateKeyPem: string; certificateBase64: string; certPem: string } {
     const keypair = forge.pki.rsa.generateKeyPair({ bits: 2048, e: 0x10001 });
     const cert = forge.pki.createCertificate();
     cert.publicKey = keypair.publicKey;
@@ -83,106 +100,58 @@ export class DgiiSignerService {
     cert.sign(keypair.privateKey, forge.md.sha256.create());
 
     const privateKeyPem = forge.pki.privateKeyToPem(keypair.privateKey);
+    const certPem = forge.pki.certificateToPem(cert);
     const certDer = forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes();
     const certificateBase64 = Buffer.from(certDer, 'binary').toString('base64');
 
-    return { privateKeyPem, certificateBase64 };
+    return { privateKeyPem, certificateBase64, certPem };
   }
 
   /**
-   * Implementación de Canonicalización XML C14N (Rec-xml-c14n-20010315)
-   */
-  canonicalize(node: any): string {
-    const serializer = new XMLSerializer();
-    let xml = serializer.serializeToString(node);
-    
-    // Normalizar saltos de línea y espacios redundantes
-    xml = xml.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    return xml;
-  }
-
-  /**
-   * Firma un documento XML (ECF o Semilla) conforme a la especificación oficial XMLDSig de la DGII
-   * RSA-SHA256, Digest SHA256, Canonicalization C14N y Enveloped Signature.
+   * Firma un documento XML (ECF, Semilla, RFCE, etc.) conforme a la especificación oficial XMLDSig de la DGII
+   * utilizando la clase Signature de dgii-ecf para garantizar canonicalización C14N y digest conforme a la DGII.
    */
   signXml(xmlString: string, certPath: string, certPassword: string = ''): { signedXml: string; securityCode: string; signatureValue: string } {
-    const { privateKeyPem, certificateBase64 } = this.loadCertificate(certPath, certPassword);
+    const cert = this.loadCertificate(certPath, certPassword);
 
-    // Parsear XML
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xmlString, 'text/xml');
-    const rootElement = doc.documentElement;
+    try {
+      const signature = new Signature(cert.privateKeyPem, cert.certPem);
+      const signedXml = signature.signXml(xmlString);
+      const signatureValue = this.extractSignatureValue(signedXml);
+      const securityCode = this.extractSecurityCodeFromSignedXml(signedXml);
 
-    if (!rootElement) {
-      throw new Error('El documento XML no contiene un elemento raíz válido.');
+      return {
+        signedXml,
+        securityCode,
+        signatureValue,
+      };
+    } catch (error: any) {
+      this.logger.error(`Error al firmar documento XML con dgii-ecf: ${error.message}`, error.stack);
+      throw error;
     }
-
-    // 1. Calcular Digest SHA-256 del contenido raíz
-    const rootCanonical = this.canonicalize(rootElement);
-    const digestValue = crypto.createHash('sha256').update(rootCanonical, 'utf8').digest('base64');
-
-    // 2. Construir elemento <SignedInfo>
-    const signedInfoXml = 
-      `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#">` +
-        `<CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>` +
-        `<SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>` +
-        `<Reference URI="">` +
-          `<Transforms>` +
-            `<Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>` +
-          `</Transforms>` +
-          `<DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>` +
-          `<DigestValue>${digestValue}</DigestValue>` +
-        `</Reference>` +
-      `</SignedInfo>`;
-
-    // 3. Firmar el <SignedInfo> con la clave privada RSA usando SHA-256
-    const signer = crypto.createSign('RSA-SHA256');
-    signer.update(signedInfoXml, 'utf8');
-    const signatureValue = signer.sign(privateKeyPem, 'base64');
-
-    // 4. Extraer el Código de Seguridad DGII (Primeros 6 caracteres del SignatureValue)
-    const securityCode = signatureValue.replace(/[^a-zA-Z0-9]/g, '').substring(0, 6).toUpperCase();
-
-    // 5. Construir bloque completo <ds:Signature>
-    const signatureElementXml = 
-      `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">` +
-        signedInfoXml +
-        `<SignatureValue>${signatureValue}</SignatureValue>` +
-        `<KeyInfo>` +
-          `<X509Data>` +
-            `<X509Certificate>${certificateBase64}</X509Certificate>` +
-          `</X509Data>` +
-        `</KeyInfo>` +
-      `</Signature>`;
-
-    const signatureDoc = parser.parseFromString(signatureElementXml, 'text/xml');
-    if (signatureDoc.documentElement) {
-      const importedSignatureNode = doc.importNode(signatureDoc.documentElement, true);
-      rootElement.appendChild(importedSignatureNode);
-    }
-
-    const serializer = new XMLSerializer();
-    let finalSignedXml = serializer.serializeToString(doc);
-
-    if (!finalSignedXml.startsWith('<?xml')) {
-      finalSignedXml = `<?xml version="1.0" encoding="utf-8"?>\n` + finalSignedXml;
-    }
-
-    return {
-      signedXml: finalSignedXml,
-      securityCode,
-      signatureValue,
-    };
   }
 
   /**
-   * Extrae el código de seguridad de 6 dígitos de un documento XML ya firmado
+   * Extrae el SignatureValue del bloque de firma XMLDSig
+   */
+  extractSignatureValue(signedXml: string): string {
+    const match = signedXml.match(/<SignatureValue[^>]*>([\s\S]*?)<\/SignatureValue>/i);
+    return match && match[1] ? match[1].trim() : '';
+  }
+
+  /**
+   * Extrae el código de seguridad de 6 dígitos alfanuméricos de un documento XML ya firmado
    */
   extractSecurityCodeFromSignedXml(signedXml: string): string {
-    const match = signedXml.match(/<SignatureValue[^>]*>([\s\S]*?)<\/SignatureValue>/i);
-    if (match && match[1]) {
-      const cleanSig = match[1].trim().replace(/[^a-zA-Z0-9]/g, '');
-      return cleanSig.substring(0, 6).toUpperCase();
+    const sigValue = this.extractSignatureValue(signedXml);
+    if (sigValue) {
+      // IMPORTANTE: NO convertir a uppercase — la DGII compara los 6 primeros
+      // caracteres del SignatureValue del e-CF base contra el CodigoSeguridadeCF
+      // declarado en el RFCE de forma CASE-SENSITIVE.
+      const cleanSig = sigValue.replace(/[^a-zA-Z0-9]/g, '');
+      if (cleanSig.length >= 6) {
+        return cleanSig.substring(0, 6);
+      }
     }
     return Math.random().toString(36).substring(2, 8).toUpperCase();
   }

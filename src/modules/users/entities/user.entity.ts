@@ -28,6 +28,12 @@ export class UserEntity {
   @Column({ name: 'password_hash', type: 'varchar', length: 255, select: false })
   passwordHash: string;
 
+  @Column({ name: 'reset_password_token_hash', type: 'varchar', length: 128, nullable: true, select: false })
+  resetPasswordTokenHash?: string | null;
+
+  @Column({ name: 'reset_password_expires_at', type: 'timestamp with time zone', nullable: true, select: false })
+  resetPasswordExpiresAt?: Date | null;
+
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 

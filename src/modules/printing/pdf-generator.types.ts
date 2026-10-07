@@ -11,6 +11,7 @@ export interface CompanyPdfInfo {
   direccion?: string;
   telefono?: string;
   correo?: string;
+  contractClauses?: string[];
 }
 
 export interface InvoiceReceiptMetadata {
@@ -32,6 +33,8 @@ export interface InvoiceReceiptMetadata {
     // Impresa los muestre de forma destacada.
     ncfModificado?: string;
     razonModificacion?: string;
+    // true cuando la factura está pendiente de pago (PENDING_PAYMENT / aviso de cobro / proforma)
+    isProforma?: boolean;
   };
   client: {
     name: string;

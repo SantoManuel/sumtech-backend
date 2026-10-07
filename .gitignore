@@ -25,3 +25,6 @@ certs/*.pem
 # OS
 .DS_Store
 Thumbs.db
+
+# Almacenamiento local de respaldo (MinIO fallback)
+storage-fallback/

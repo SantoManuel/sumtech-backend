@@ -10,7 +10,7 @@ import * as crypto from 'crypto';
 import { DgiiConfig } from './dgii-config.interface';
 import { DgiiSignerService } from './dgii-signer.service';
 import { DgiiXsdValidatorService } from './dgii-xsd-validator.service';
-import { ecfTipoDoc } from './dgii-xml-generator.service';
+import { ecfTipoDoc, sanitizeRnc } from './dgii-xml-generator.service';
 import { DgiiCertificationRun } from './entities/dgii-certification-run.entity';
 import { CompanyService } from '../../company/company.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
@@ -22,8 +22,15 @@ export interface DgiiSendResult {
   qrCodeUrl: string;
   responseMessage: string;
   timestamp: Date;
+  /**
+   * Instante de la firma digital (`signerService.signXml`), NO el de la
+   * respuesta de la DGII. Es el valor que debe ir como `fechafirma` en el QR y
+   * el que se persiste en `dgii_certification_runs.signed_at`.
+   */
+  signedAt?: Date;
   signedXml: string;
   validationErrors?: string[];
+  rawResponse?: any;
 }
 
 export interface ConnectionDiagnosticResult {
@@ -42,6 +49,25 @@ export interface ConnectionDiagnosticResult {
   message: string;
 }
 
+export const DGII_CANONICAL_URLS: Record<string, { baseUrl: string; baseUrlRfce: string }> = {
+  testecf: {
+    baseUrl: 'https://ecf.dgii.gov.do/testecf/',
+    baseUrlRfce: 'https://fc.dgii.gov.do/testecf/',
+  },
+  certecf: {
+    baseUrl: 'https://ecf.dgii.gov.do/certecf/',
+    baseUrlRfce: 'https://fc.dgii.gov.do/certecf/',
+  },
+  ecf: {
+    baseUrl: 'https://ecf.dgii.gov.do/ecf/',
+    baseUrlRfce: 'https://fc.dgii.gov.do/ecf/',
+  },
+  sandbox: {
+    baseUrl: 'http://localhost:4000/api/v1/invoicing/dgii/mock/',
+    baseUrlRfce: 'http://localhost:4000/api/v1/invoicing/dgii/mock-fc/',
+  },
+};
+
 /**
  * Cliente DGII — Fase 4 del plan multi-tenant: cada ISP factura bajo su
  * propio RNC/certificado, así que este servicio ya NO cachea un `DgiiConfig`
@@ -49,8 +75,7 @@ export interface ConnectionDiagnosticResult {
  * primer tenant nuevo, un bug real de correctitud bajo concurrencia: dos
  * requests de dos tenants distintos en vuelo al mismo tiempo podían pisarse
  * el `this.config` compartido). `resolveConfig()` arma la configuración
- * efectiva EN CADA LLAMADA, mezclando los defaults de env var (el tenant
- * original `sumtech`, que no tiene certificado en MinIO) con las columnas de
+ * efectiva EN CADA LLAMADA, mezclando los defaults de env var con las columnas de
  * `CompanyProfileEntity` del tenant activo en `TenantContextService`. El
  * token Bearer de la DGII, por el mismo motivo, se cachea en un mapa por
  * tenant en vez de un solo campo compartido.
@@ -76,7 +101,7 @@ export class DgiiClientService {
       baseUrlRfce: 'https://fc.dgii.gov.do/testecf/',
       certPath: process.env.DGII_CERT_PATH || './certs/22817887_identity.p12',
       certPassword: process.env.DGII_CERT_PASSWORD || '',
-      rncEmisor: process.env.DGII_RNC_EMISOR || '131000000',
+      rncEmisor: sanitizeRnc(process.env.DGII_RNC_EMISOR || '131000000'),
       razonSocialEmisor: 'SUMTECH TELECOM S.R.L.',
       nombreComercial: 'SUMTECH FIBRA & TV',
       direccionEmisor: 'Av. 27 de Febrero esq. Winston Churchill, Santo Domingo, D.N.',
@@ -106,10 +131,9 @@ export class DgiiClientService {
   }
 
   /**
-   * Arma la configuración DGII efectiva para el tenant activo (env defaults
-   * + columnas de `CompanyProfileEntity`, si hay contexto de tenant y el
-   * servicio está disponible — `@Optional()` porque algunos consumidores de
-   * este servicio corren en tests/scripts fuera de un módulo con `company`).
+   * Arma la configuración DGII efectiva para el tenant activo:
+   * Consulta la ÚNICA FUENTE DE VERDAD (`CompanyProfileEntity` de la BD del tenant),
+   * y deriva automáticamente las URLs canónicas del entorno DGII seleccionado.
    */
   private async resolveConfig(): Promise<DgiiConfig> {
     const base = this.buildEnvDefaults();
@@ -124,18 +148,26 @@ export class DgiiClientService {
         this.companyService.getDgiiSettings(),
       ]);
 
-      let certPath = base.certPath;
+      const environment = (dgii.environment as any) || base.environment;
+      const canonical = DGII_CANONICAL_URLS[environment] || DGII_CANONICAL_URLS.testecf;
+
+      let certPath = '';
       if (dgii.certObjectKey) {
         certPath = await this.materializeCertFile(dgii.certObjectKey, this.tenantContext.getSlug());
+      } else if (environment === 'sandbox') {
+        certPath = base.certPath;
       }
 
+      const effectiveBaseUrl = dgii.authUrl || canonical.baseUrl;
+      const effectiveBaseUrlRfce = canonical.baseUrlRfce;
+
       return {
-        ...base,
-        environment: (dgii.environment as any) || base.environment,
-        baseUrl: dgii.authUrl || base.baseUrl,
+        environment,
+        baseUrl: effectiveBaseUrl,
+        baseUrlRfce: effectiveBaseUrlRfce,
         certPath,
-        certPassword: dgii.certPassword || base.certPassword,
-        rncEmisor: fiscal.rnc || base.rncEmisor,
+        certPassword: (dgii.certPassword || '').trim(),
+        rncEmisor: sanitizeRnc(fiscal.rnc || base.rncEmisor),
         razonSocialEmisor: fiscal.razonSocial || base.razonSocialEmisor,
         nombreComercial: fiscal.nombreComercial || base.nombreComercial,
         direccionEmisor: fiscal.direccion || base.direccionEmisor,
@@ -157,38 +189,34 @@ export class DgiiClientService {
 
   /**
    * Persiste cambios de configuración DGII directamente en el perfil del
-   * tenant activo — ya no hay `this.config` en memoria que mutar, así que
-   * la próxima llamada a cualquier método de este servicio ve el cambio de
-   * inmediato vía `resolveConfig()`.
+   * tenant activo (`sec.company_profile`) — Única fuente de verdad.
    */
   public async updateConfig(newConfig: Partial<DgiiConfig>): Promise<void> {
     if (!this.companyService) return;
 
+    const env = newConfig.environment || 'testecf';
+    const canonical = DGII_CANONICAL_URLS[env] || DGII_CANONICAL_URLS.testecf;
+
     const patch: Record<string, unknown> = {
-      rnc: newConfig.rncEmisor,
+      rnc: newConfig.rncEmisor ? sanitizeRnc(newConfig.rncEmisor) : undefined,
       companyName: newConfig.razonSocialEmisor,
       commercialName: newConfig.nombreComercial,
       address: newConfig.direccionEmisor,
       phone: newConfig.telefonoEmisor,
       email: newConfig.correoEmisor,
       website: newConfig.webSite,
-      dgiiEnvironment: newConfig.environment,
-      dgiiAuthUrl: newConfig.baseUrl,
+      dgiiEnvironment: env,
+      dgiiAuthUrl: newConfig.baseUrl || canonical.baseUrl,
     };
 
-    // Un `certPassword` vacío/no provisto significa "no tocar la contraseña
-    // actual" — nunca se incluye en el patch, porque `CompanyService.update()`
-    // hace `Object.assign` sin filtrar campos vacíos y borraría en silencio
-    // la contraseña real del certificado de firma del tenant.
+    Object.keys(patch).forEach((key) => patch[key] === undefined && delete patch[key]);
+
     if (newConfig.certPassword) {
-      patch.dgiiCertPassword = newConfig.certPassword;
+      patch.dgiiCertPassword = newConfig.certPassword.trim();
     }
 
     await this.companyService.update(patch as any);
 
-    // El token cacheado del tenant activo pudo haber quedado firmado con un
-    // RNC/certificado que ya no aplica — se invalida para forzar una nueva
-    // autenticación en la próxima llamada.
     if (this.tenantContext.hasContext()) {
       this.tokenCache.delete(this.tenantContext.getSlug());
     }
@@ -372,6 +400,10 @@ export class DgiiClientService {
       };
     } catch (err: any) {
       const latencyMs = Date.now() - startTime;
+      const errorData = err.response?.data;
+      const errorDetail = errorData
+        ? (typeof errorData === 'string' ? errorData : JSON.stringify(errorData))
+        : err.message;
       return {
         environment: config.environment,
         baseUrl: config.baseUrl,
@@ -382,9 +414,9 @@ export class DgiiClientService {
         seedRetrieved,
         signatureVerified,
         tokenObtained: false,
-        rawResponse: err.message,
+        rawResponse: errorDetail,
         status: 'OFFLINE',
-        message: `Fallo de conexión con DGII: ${err.message}`,
+        message: `Fallo de conexión con DGII: ${err.message}${errorData ? ` - ${typeof errorData === 'string' ? errorData : JSON.stringify(errorData)}` : ''}`,
       };
     }
   }
@@ -407,9 +439,13 @@ export class DgiiClientService {
 
     const isConsumoMenor = eNcf.startsWith('E32') && montoTotal < 250000;
 
-    if (isConsumoMenor) {
-      return `https://fc.dgii.gov.do/${env}/consultatimbrefc?rncemisor=${encodeURIComponent(config.rncEmisor)}&encf=${encodeURIComponent(eNcf)}&montototal=${encodeURIComponent(montoStr)}&codigoseguridad=${encodeURIComponent(securityCode)}`;
-    }
+if (isConsumoMenor) {
+    // Según especificación DGII: QR del Resumen de Factura de Consumo (RFCE)
+    // tipo 32 < RD$250,000 en ambiente de certificación/pre-certificación/producción
+    // usa host `fc.dgii.gov.do`, ruta `/consultatimbrefc` y parámetros:
+    // RNCEmisor, ENCF, MontoTotal, CodigoSeguridad.
+    return `https://fc.dgii.gov.do/${env}/consultatimbrefc?rncemisor=${encodeURIComponent(config.rncEmisor)}&encf=${encodeURIComponent(eNcf)}&montototal=${encodeURIComponent(montoStr)}&codigoseguridad=${encodeURIComponent(securityCode)}`;
+  }
 
     let compradorQuery = '';
     const cleanRnc = (rncComprador || '').replace(/\D/g, '');
@@ -437,6 +473,11 @@ export class DgiiClientService {
 
     // 1. Firmar el documento XML
     const { signedXml, securityCode } = this.signerService.signXml(rawXml, config.certPath, config.certPassword);
+    // `signedAt` se toma AQUÍ, no antes de enviar: el round-trip con la DGII puede
+    // tardar segundos, y el parámetro `fechafirma` del QR debe reflejar el
+    // instante de la firma que realmente recibió la DGII. Es además la misma
+    // firma de la que se deriva el `securityCode` de arriba.
+    const signedAt = new Date();
 
     // 1.b Validar contra el XSD oficial de la DGII — un documento mal armado
     // no debe siquiera intentar enviarse (ni consumir un intento de red/e-NCF).
@@ -448,16 +489,18 @@ export class DgiiClientService {
         trackId: `TRK-XSD-ERR-${Date.now()}`,
         status: 'REJECTED',
         securityCode,
-        qrCodeUrl: this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, new Date(), rncComprador),
+        qrCodeUrl: this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, signedAt, rncComprador),
         responseMessage: 'El documento no cumple el esquema XSD oficial de la DGII — no fue enviado.',
         timestamp: new Date(),
+        signedAt,
         signedXml,
         validationErrors: validation.errors,
       };
     }
 
-    // 2. Generar URL QR
-    const qrCodeUrl = this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, new Date(), rncComprador);
+    // 2. Generar URL QR — se pasa `signedAt` (no `new Date()`) para que `fechaemision`
+    // y `fechafirma` del QR sean el instante real de la firma, no el de este punto.
+    const qrCodeUrl = this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, signedAt, rncComprador);
 
     // 3. Enviar a DGII si no estamos en sandbox puro
     if (config.environment !== 'sandbox') {
@@ -492,7 +535,9 @@ export class DgiiClientService {
           qrCodeUrl,
           responseMessage,
           timestamp: new Date(),
+        signedAt,
           signedXml,
+          rawResponse: data,
         };
       } catch (err: any) {
         this.logger.warn(`Fallo en el envío online a DGII (${err.message}). Registrando factura en modo CONTINGENCIA.`);
@@ -503,6 +548,7 @@ export class DgiiClientService {
           qrCodeUrl,
           responseMessage: 'Comprobante emitido en Contingencia por indisponibilidad de enlace DGII',
           timestamp: new Date(),
+        signedAt,
           signedXml,
         };
       }
@@ -516,6 +562,7 @@ export class DgiiClientService {
       qrCodeUrl,
       responseMessage: 'Comprobante Fiscal Electrónico Simulado y Certificado en Sandbox DGII',
       timestamp: new Date(),
+        signedAt,
       signedXml,
     };
   }
@@ -529,6 +576,7 @@ export class DgiiClientService {
   async submitRfce(rawXml: string, eNcf: string, montoTotal: number): Promise<DgiiSendResult> {
     const config = await this.resolveConfig();
     const { signedXml, securityCode } = this.signerService.signXml(rawXml, config.certPath, config.certPassword);
+    const signedAt = new Date();
 
     const validation = this.xsdValidator.validateRfce(signedXml);
     if (!validation.valid) {
@@ -540,6 +588,7 @@ export class DgiiClientService {
         qrCodeUrl: this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, new Date()),
         responseMessage: 'El resumen RFCE no cumple el esquema XSD oficial de la DGII — no fue enviado.',
         timestamp: new Date(),
+        signedAt,
         signedXml,
         validationErrors: validation.errors,
       };
@@ -548,41 +597,81 @@ export class DgiiClientService {
     const qrCodeUrl = this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, new Date());
 
     if (config.environment !== 'sandbox') {
-      try {
-        const token = await this.ensureToken(config);
-        const client = this.getHttpClient(config, config.baseUrlRfce);
-        const FormData = require('form-data');
-        const form = new FormData();
-        form.append('xml', Buffer.from(signedXml, 'utf8'), {
-          filename: `${config.rncEmisor}${eNcf}.xml`,
-          contentType: 'text/xml',
-        });
+      const MAX_RFCE_RETRIES = 3;
+      const RFCE_BASE_DELAY_MS = 3000;
+      let lastError: any = null;
 
-        const sendRes = await client.post('recepcionfc/api/recepcion/ecf', form, {
-          headers: {
-            ...form.getHeaders(),
-            Authorization: `Bearer ${token}`,
-          },
-        });
+      for (let attempt = 1; attempt <= MAX_RFCE_RETRIES; attempt++) {
+        try {
+          const token = await this.ensureToken(config);
+          const client = this.getHttpClient(config, config.baseUrlRfce);
+          const FormData = require('form-data');
+          const form = new FormData();
+          form.append('xml', Buffer.from(signedXml, 'utf8'), {
+            filename: `${config.rncEmisor}${eNcf}.xml`,
+            contentType: 'text/xml',
+          });
 
-        const data = sendRes.data;
-        const trackId = data?.trackId || `TRK-RFCE-${Date.now()}`;
-        const status = data?.estado === 'RECHAZADO' ? 'REJECTED' : 'ACCEPTED';
-        const responseMessage = data?.mensaje || 'Resumen RFCE recibido y aceptado por DGII';
+          const sendRes = await client.post('recepcionfc/api/recepcion/ecf', form, {
+            headers: {
+              ...form.getHeaders(),
+              Authorization: `Bearer ${token}`,
+              'Content-Length': form.getLengthSync(),
+            },
+          });
 
-        return { trackId, status, securityCode, qrCodeUrl, responseMessage, timestamp: new Date(), signedXml };
-      } catch (err: any) {
-        this.logger.warn(`Fallo en el envío online de RFCE a DGII (${err.message}). Registrando en modo CONTINGENCIA.`);
-        return {
-          trackId: `TRK-CONTINGENCY-RFCE-${Date.now()}`,
-          status: 'CONTINGENCY',
-          securityCode,
-          qrCodeUrl,
-          responseMessage: 'Resumen RFCE emitido en Contingencia por indisponibilidad de enlace DGII',
-          timestamp: new Date(),
-          signedXml,
-        };
+          const data = sendRes.data;
+          const trackId = data?.trackId || `TRK-RFCE-${Date.now()}`;
+          const isRejected = data?.estado === 'RECHAZADO' || data?.estado === 'Rechazado';
+          const status = isRejected ? 'REJECTED' : 'ACCEPTED';
+          const responseMessage = data?.mensaje || (data?.estado ? `Resumen RFCE ${data.estado} por DGII` : 'Resumen RFCE recibido y aceptado por DGII');
+
+          return { trackId, status, securityCode, qrCodeUrl, responseMessage, timestamp: new Date(),
+        signedAt, signedXml, rawResponse: data };
+        } catch (err: any) {
+          const errorData = err.response?.data;
+          const isDgiiReject = err.response?.status === 400 || errorData?.estado === 'Rechazado' || errorData?.estado === 'RECHAZADO';
+          if (isDgiiReject) {
+            // Un rechazo explícito de la DGII NO se reintenta — es un error de datos, no de red.
+            const msgVal = errorData?.mensajes?.[0]?.valor || errorData?.mensaje || (typeof errorData === 'string' ? errorData : JSON.stringify(errorData));
+            this.logger.warn(`RFCE ${eNcf} rechazado por DGII: ${msgVal}`);
+            return {
+              trackId: errorData?.trackId || `TRK-RFCE-REJ-${Date.now()}`,
+              status: 'REJECTED',
+              securityCode,
+              qrCodeUrl,
+              responseMessage: `Rechazado por DGII: ${msgVal}`,
+              timestamp: new Date(),
+        signedAt,
+              signedXml,
+            };
+          }
+
+          lastError = err;
+          if (attempt < MAX_RFCE_RETRIES) {
+            const delayMs = RFCE_BASE_DELAY_MS * Math.pow(2, attempt - 1); // 3s, 6s, 12s
+            this.logger.warn(
+              `RFCE ${eNcf}: intento ${attempt}/${MAX_RFCE_RETRIES} falló (${err.message}). Reintentando en ${delayMs / 1000}s...`,
+            );
+            await new Promise((r) => setTimeout(r, delayMs));
+          }
+        }
       }
+
+      // Todos los reintentos agotados — modo CONTINGENCIA
+      this.logger.warn(
+        `RFCE ${eNcf}: ${MAX_RFCE_RETRIES} intentos agotados (${lastError?.message}). Registrando en modo CONTINGENCIA.`,
+      );
+      return {
+        trackId: `TRK-CONTINGENCY-RFCE-${Date.now()}`,
+        status: 'CONTINGENCY',
+        securityCode,
+        qrCodeUrl,
+        responseMessage: 'Resumen RFCE emitido en Contingencia por indisponibilidad de enlace DGII',
+        timestamp: new Date(),
+        signedAt,
+        signedXml,
+      };
     }
 
     return {
@@ -592,6 +681,7 @@ export class DgiiClientService {
       qrCodeUrl,
       responseMessage: 'Resumen RFCE Simulado y Certificado en Sandbox DGII',
       timestamp: new Date(),
+        signedAt,
       signedXml,
     };
   }
@@ -636,17 +726,27 @@ export class DgiiClientService {
         contentType: 'text/xml',
       });
 
-      const response = await client.post('recepcion/api/aprobacioncomercial', form, {
+      const response = await client.post('aprobacioncomercial/api/aprobacioncomercial', form, {
         headers: {
           ...form.getHeaders(),
           Authorization: `Bearer ${token}`,
         },
       });
 
+      const data = response.data;
+      const estado = data?.estado || data?.codigo || 'ACEPTADO';
+      const trackId = data?.trackId || data?.TrackId || `TRK-ACE-${Date.now()}`;
+      const mensaje =
+        typeof data?.mensaje === 'string'
+          ? data.mensaje
+          : typeof data?.message === 'string'
+            ? data.message
+            : data?.estadoDescripcion || 'Aprobación Comercial enviada y aceptada por DGII';
+
       return {
-        trackId: response.data?.trackId || `TRK-ACE-${Date.now()}`,
-        estado: response.data?.estado || 'PROCESADO',
-        mensaje: response.data?.mensaje || 'Aprobación Comercial enviada y aceptada por DGII',
+        trackId,
+        estado,
+        mensaje,
         signedXml,
       };
     } catch (err: any) {

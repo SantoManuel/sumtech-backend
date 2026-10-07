@@ -15,6 +15,7 @@ export interface DgiiConfig {
   correoEmisor?: string;
   telefonoEmisor?: string;
   webSite?: string;
+  fechaVencimientoSecuencias?: string;
 }
 
 export const DEFAULT_DGII_CONFIG: DgiiConfig = {
@@ -32,4 +33,5 @@ export const DEFAULT_DGII_CONFIG: DgiiConfig = {
   correoEmisor: 'facturacion@sumtech.com.do',
   telefonoEmisor: '809-555-0199',
   webSite: 'https://sumtech.com.do',
+  fechaVencimientoSecuencias: '31-12-2028',
 };

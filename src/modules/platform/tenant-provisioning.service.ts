@@ -8,6 +8,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { TenantEntity } from './entities/tenant.entity';
 import { TenantStatus } from './enums/tenant-status.enum';
+import { SaasSubscriptionEntity } from './entities/saas-subscription.entity';
+import { SaasSubscriptionStatus } from './enums/saas-subscription-status.enum';
 import { RegisterTenantDto } from './dto/register-tenant.dto';
 import { entities as tenantEntities } from '../../config/database.config';
 import { runGeographySeed } from '../../database/seeds/geography-seed';
@@ -46,6 +48,8 @@ export class TenantProvisioningService {
   constructor(
     @InjectRepository(TenantEntity, 'platform')
     private readonly tenantRepository: Repository<TenantEntity>,
+    @InjectRepository(SaasSubscriptionEntity, 'platform')
+    private readonly subscriptionRepository: Repository<SaasSubscriptionEntity>,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
@@ -98,6 +102,24 @@ export class TenantProvisioningService {
           planId: input.planId,
         }),
       );
+
+      // Crear automáticamente la suscripción inicial en estado TRIALING (14 días de prueba)
+      if (input.planId) {
+        const trialDays = 14;
+        const periodEnd = new Date();
+        periodEnd.setDate(periodEnd.getDate() + trialDays);
+
+        await this.subscriptionRepository.save(
+          this.subscriptionRepository.create({
+            tenantId: tenant.id,
+            planId: input.planId,
+            status: SaasSubscriptionStatus.TRIALING,
+            currentPeriodEnd: periodEnd,
+            trialEndsAt: periodEnd,
+            billingNotes: 'Suscripción inicial creada durante el registro del tenant.',
+          }),
+        );
+      }
 
       await this.mailService.sendTemplatedMail({
         to: input.adminEmail,

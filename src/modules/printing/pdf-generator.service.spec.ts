@@ -223,6 +223,18 @@ describe('PdfGeneratorService', () => {
       expect(text).not.toContain('Fecha Vencimiento');
     });
 
+    it('no muestra "Fecha Vencimiento" para E32 incluso si ncfExpiryDate fue provisto (exento por normativa DGII)', async () => {
+      const e32WithAccidentalExpiry: InvoiceReceiptMetadata = {
+        ...metadata,
+        invoice: { ...metadata.invoice, ncfType: 'E32', ncfNumber: 'E3200000010', ncfExpiryDate: '31-12-2028' },
+      };
+      const textA4 = extractPdfText(await service.generateInvoiceA4Pdf(e32WithAccidentalExpiry));
+      expect(textA4).not.toContain('Fecha Vencimiento');
+
+      const text80 = extractPdfText(await service.generateInvoiceThermalPdf(e32WithAccidentalExpiry));
+      expect(text80).not.toContain('Fecha Vencimiento Secuencia');
+    });
+
     it('muestra "Fecha Vencimiento" con el vencimiento real de la secuencia de NCF (no la fecha de cobro)', async () => {
       const e31WithExpiry: InvoiceReceiptMetadata = {
         ...metadata,
@@ -257,6 +269,149 @@ describe('PdfGeneratorService', () => {
     it('no muestra el bloque de Nota de Crédito para una factura normal (E32)', async () => {
       const text = extractPdfText(await service.generateInvoiceA4Pdf(metadata));
       expect(text).not.toContain('NCF Modificado:');
+    });
+
+    it('muestra el NCF Modificado y Motivo para una Nota de Débito (E33)', async () => {
+      const debitNote: InvoiceReceiptMetadata = {
+        ...metadata,
+        invoice: {
+          ...metadata.invoice,
+          ncfType: 'E33',
+          ncfNumber: 'E330000000001',
+          ncfModificado: 'E310000000001',
+          razonModificacion: 'Ajuste extraordinario de consumo',
+        },
+      };
+      const text = extractPdfText(await service.generateInvoiceA4Pdf(debitNote));
+      expect(text).toContain('NOTA DE DÉBITO ELECTRÓNICA');
+      expect(text).toContain('NCF Modificado:');
+      expect(text).toContain('E310000000001');
+      expect(text).toContain('Ajuste extraordinario de consumo');
+    });
+
+    it('renderiza la denominación oficial exacta para E41, E43, E46, E47', async () => {
+      for (const [type, labelPart] of [
+        ['E41', 'COMPROBANTE DE COMPRAS'],
+        ['E43', 'COMPROBANTE PARA GASTOS MENORES'],
+        ['E46', 'COMPROBANTE PARA EXPORTACIONES'],
+        ['E47', 'COMPROBANTE PARA PAGOS AL EXTERIOR'],
+      ]) {
+        const item: InvoiceReceiptMetadata = {
+          ...metadata,
+          invoice: { ...metadata.invoice, ncfType: type, ncfNumber: `${type}0000000001` },
+        };
+        const text = extractPdfText(await service.generateInvoiceA4Pdf(item)).replace(/\s+/g, ' ');
+        expect(text).toContain(labelPart);
+        expect(text).toContain('ELECTRÓNICO');
+      }
+    });
+
+    it('renderiza correctamente el Aviso de Cobro / Factura Proforma en A4 con su leyenda informativa', async () => {
+      const proformaMetadata: InvoiceReceiptMetadata = {
+        ...metadata,
+        invoice: {
+          ...metadata.invoice,
+          ncfNumber: 'AVISO-A1B2C3D4',
+          ncfType: 'AVISO DE COBRO',
+          isProforma: true,
+          dgiiStatus: 'PENDING_PAYMENT',
+        },
+        sale: {
+          ...metadata.sale,
+          paymentMethod: 'PENDIENTE DE PAGO',
+          dueDate: '2026-11-15',
+        },
+      };
+
+      const buffer = await service.generateInvoiceA4Pdf(proformaMetadata);
+      expect(buffer.toString('latin1')).toContain('%PDF-');
+      const text = extractPdfText(buffer).replace(/\s+/g, ' ');
+      expect(text).toContain('AVISO DE COBRO');
+      expect(text).toContain('NO VÁLIDO PARA CRÉDITO FISCAL');
+      expect(text).toContain('PENDIENTE DE PAGO');
+      expect(text).toContain('AVISO-A1B2C3D4');
+    });
+  });
+
+  describe('generateInvoiceThermalPdf', () => {
+    const metadata: InvoiceReceiptMetadata = {
+      company: {
+        rnc: '131000000',
+        razonSocial: 'SUMTECH TELECOM S.R.L.',
+        nombreComercial: 'SUMTECH FIBRA & TV',
+        direccion: 'Av. 27 de Febrero, Santo Domingo',
+        telefono: '809-555-0199',
+        correo: 'facturacion@sumtech.com.do',
+      },
+      invoice: {
+        id: 'inv-thermal-1',
+        ncfNumber: 'E310000000001',
+        ncfType: 'E31',
+        dgiiStatus: 'ACCEPTED',
+        securityCode: 'Ab12Cd',
+        ncfExpiryDate: '31-12-2026',
+        issuedAt: new Date('2026-10-02T15:30:00Z'),
+        contingencyMode: false,
+      },
+      client: {
+        name: 'Cliente Corporativo SRL',
+        docNumber: '131880681',
+        docType: 'RNC',
+        email: 'corp@cliente.com',
+      },
+      sale: {
+        id: 'sale-thermal-1',
+        paymentMethod: 'CASH',
+        billingPeriod: 'Octubre 2026',
+        dueDate: '2026-10-31',
+        subtotal: 5000,
+        discountAmount: 0,
+        itbisTotal: 900,
+        grandTotal: 5900,
+        cashier: 'Caja Principal',
+        details: [
+          {
+            concept: 'Internet Dedicado 100M',
+            quantity: 1,
+            unitPrice: 5000,
+            itbisAmount: 900,
+            subtotal: 5000,
+            unidadMedida: 'SERV',
+          },
+        ],
+      },
+    };
+
+    it('genera un Buffer térmico con la firma %PDF- válida', async () => {
+      const buffer = await service.generateInvoiceThermalPdf(metadata);
+      expect(Buffer.isBuffer(buffer)).toBe(true);
+      expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    });
+
+    it('incluye e-NCF, Código de Seguridad, Fecha Vencimiento y leyenda legal obligatoria', async () => {
+      const text = extractPdfText(await service.generateInvoiceThermalPdf(metadata));
+      expect(text).toContain('FACTURA DE CRÉDITO FISCAL ELECTRÓNICA');
+      expect(text).toContain('E310000000001');
+      expect(text).toContain('Ab12Cd');
+      expect(text).toContain('Fecha Vencimiento Secuencia: 31-12-2026');
+      expect(text).toContain('representación impresa de un Comprobante Fiscal');
+      expect(text).toContain('normativa de la DGII');
+    });
+
+    it('incluye NCF Modificado y Motivo en el ticket cuando es Nota de Débito o Crédito', async () => {
+      const nc: InvoiceReceiptMetadata = {
+        ...metadata,
+        invoice: {
+          ...metadata.invoice,
+          ncfType: 'E34',
+          ncfNumber: 'E340000000001',
+          ncfModificado: 'E310000000001',
+          razonModificacion: 'Descuento comercial aplicado',
+        },
+      };
+      const text = extractPdfText(await service.generateInvoiceThermalPdf(nc));
+      expect(text).toContain('NCF Modificado: E310000000001');
+      expect(text).toContain('Descuento comercial aplicado');
     });
   });
 
@@ -318,6 +473,24 @@ describe('PdfGeneratorService', () => {
       const text = extractPdfText(buffer);
 
       expect(text).toContain('GENERALES');
+    });
+
+    it('renderiza clausulas personalizadas del tenant cuando estan configuradas', async () => {
+      const buffer = await service.generateContractPdf({
+        ...contractData,
+        company: {
+          ...contractData.company,
+          contractClauses: [
+            '1. CLAUSULA PERSONALIZADA TENANT — El servicio es de alta velocidad garantizado.',
+            '2. TERMINACION ESPECIAL — Puede cancelarse con 30 dias de anticipacion.',
+          ],
+        },
+      });
+      const text = extractPdfText(buffer);
+
+      expect(text).toContain('CLAUSULA PERSONALIZADA TENANT');
+      expect(text).toContain('alta velocidad garantizado');
+      expect(text).toContain('TERMINACION ESPECIAL');
     });
 
     it('sin portalCredentials, no incluye la sección de acceso al portal', async () => {

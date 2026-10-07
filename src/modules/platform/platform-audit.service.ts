@@ -12,6 +12,18 @@ export interface CreateAuditLogParams {
   ipAddress?: string;
 }
 
+export interface FindAuditLogsOptions {
+  search?: string;
+  action?: string;
+  platformUserId?: string;
+  entity?: string;
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+  offset?: number;
+  page?: number;
+}
+
 @Injectable()
 export class PlatformAuditService {
   private readonly logger = new Logger(PlatformAuditService.name);
@@ -39,17 +51,47 @@ export class PlatformAuditService {
     }
   }
 
-  async findAll(options?: { limit?: number; offset?: number }) {
-    const limit = options?.limit ?? 50;
-    const offset = options?.offset ?? 0;
+  async findAll(options?: FindAuditLogsOptions) {
+    const take = options?.limit ?? 50;
+    const skip = options?.offset ?? ((options?.page ? options.page - 1 : 0) * take);
 
-    const [items, total] = await this.auditRepo.findAndCount({
-      relations: ['platformUser'],
-      order: { createdAt: 'DESC' },
-      take: limit,
-      skip: offset,
-    });
+    const qb = this.auditRepo.createQueryBuilder('log')
+      .leftJoinAndSelect('log.platformUser', 'user')
+      .orderBy('log.createdAt', 'DESC');
 
-    return { items, total, limit, offset };
+    if (options?.search?.trim()) {
+      qb.andWhere(
+        '(log.action ILIKE :search OR log.entity ILIKE :search OR log.entityId ILIKE :search OR user.email ILIKE :search)',
+        { search: `%${options.search.trim()}%` },
+      );
+    }
+
+    if (options?.action?.trim() && options.action !== 'ALL') {
+      qb.andWhere('log.action ILIKE :action', { action: `%${options.action.trim()}%` });
+    }
+
+    if (options?.platformUserId?.trim() && options.platformUserId !== 'ALL') {
+      qb.andWhere('log.platformUserId = :platformUserId', { platformUserId: options.platformUserId.trim() });
+    }
+
+    if (options?.entity?.trim() && options.entity !== 'ALL') {
+      qb.andWhere('log.entity = :entity', { entity: options.entity.trim() });
+    }
+
+    if (options?.startDate?.trim()) {
+      qb.andWhere('log.createdAt >= :startDate', { startDate: new Date(options.startDate.trim()) });
+    }
+
+    if (options?.endDate?.trim()) {
+      const end = new Date(options.endDate.trim());
+      end.setHours(23, 59, 59, 999);
+      qb.andWhere('log.createdAt <= :endDate', { endDate: end });
+    }
+
+    qb.take(take).skip(skip);
+
+    const [items, total] = await qb.getManyAndCount();
+
+    return { items, total, limit: take, offset: skip };
   }
 }

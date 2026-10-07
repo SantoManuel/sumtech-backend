@@ -612,6 +612,7 @@ export class ClientsService {
       direccion?: string;
       telefono?: string;
       correo?: string;
+      contractClauses?: string[];
     };
 
     if (this.companyService) {
@@ -623,6 +624,7 @@ export class ClientsService {
         direccion: fiscal.direccion,
         telefono: fiscal.telefono,
         correo: fiscal.correo,
+        contractClauses: fiscal.contractClauses,
       };
     } else {
       const config = await this.dgiiClient.getConfig();

@@ -17,6 +17,7 @@ export interface CompanyFiscalInfo {
   correo?: string;
   telefono?: string;
   website?: string;
+  contractClauses?: string[];
 }
 
 export interface DgiiTenantSettings {
@@ -132,8 +133,37 @@ export class CompanyService {
    * todos los tenants por igual (cada ISP factura bajo su propio RNC y
    * certificado).
    */
-  async uploadDgiiCertificate(buffer: Buffer, originalName: string): Promise<CompanyProfileEntity> {
+  async uploadDgiiCertificate(buffer: Buffer, originalName: string, password?: string): Promise<CompanyProfileEntity> {
     const profile = await this.getProfile();
+    const effectivePassword = password || profile.dgiiCertPassword || '';
+
+    let certMetadata: Record<string, any> = {
+      originalName,
+      uploadedAt: new Date().toISOString(),
+    };
+
+    if (effectivePassword) {
+      try {
+        const forge = require('node-forge');
+        const p12Asn1 = forge.asn1.fromDer(buffer.toString('binary'));
+        const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, effectivePassword);
+        const certBags = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag] || [];
+        if (certBags.length > 0 && certBags[0].cert) {
+          const cert = certBags[0].cert;
+          certMetadata = {
+            ...certMetadata,
+            validUntil: cert.validity?.notAfter,
+            validFrom: cert.validity?.notBefore,
+            issuer: cert.issuer?.attributes?.map((a: any) => `${a.shortName || a.name}=${a.value}`).join(', '),
+            subject: cert.subject?.attributes?.map((a: any) => `${a.shortName || a.name}=${a.value}`).join(', '),
+            serialNumber: cert.serialNumber,
+          };
+        }
+      } catch (err: any) {
+        this.logger.warn(`No se pudo extraer metadata del certificado P12: ${err.message}`);
+      }
+    }
+
     const objectKey = await this.minioStorage.uploadBuffer(
       buffer,
       originalName,
@@ -141,6 +171,13 @@ export class CompanyService {
       'application/x-pkcs12',
     );
     profile.dgiiCertObjectKey = objectKey;
+    if (password) {
+      profile.dgiiCertPassword = password;
+    }
+    profile.settings = {
+      ...(profile.settings || {}),
+      dgiiCertMetadata: certMetadata,
+    };
     return this.profileRepository.save(profile);
   }
 
@@ -245,6 +282,9 @@ export class CompanyService {
       correo: profile.email,
       telefono: profile.phone,
       website: profile.website,
+      contractClauses: profile.contractClauses && profile.contractClauses.length > 0
+        ? profile.contractClauses
+        : undefined,
     };
   }
 }

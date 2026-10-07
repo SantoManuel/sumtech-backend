@@ -8,6 +8,8 @@ import { PlatformRole } from '../../modules/platform/enums/platform-role.enum';
 
 import { TenantEntity } from '../../modules/platform/entities/tenant.entity';
 import { SaasPlanEntity } from '../../modules/platform/entities/saas-plan.entity';
+import { SaasSubscriptionEntity } from '../../modules/platform/entities/saas-subscription.entity';
+import { SaasSubscriptionStatus } from '../../modules/platform/enums/saas-subscription-status.enum';
 import { TenantStatus } from '../../modules/platform/enums/tenant-status.enum';
 
 const SEED_USERS = [
@@ -63,14 +65,14 @@ const SEED_TENANTS = [
   {
     name: 'ISP Azua Telecom, S.R.L.',
     slug: 'ispazua',
-    dbName: process.env.DB_DATABASE || 'sumtech_erp',
+    dbName: 'tenant_ispazua',
     status: TenantStatus.ACTIVE,
     rnc: '132000000',
   },
   {
     name: 'Demo Telecomunicaciones',
     slug: 'demo',
-    dbName: process.env.DB_DATABASE || 'sumtech_erp',
+    dbName: 'tenant_demo',
     status: TenantStatus.ACTIVE,
     rnc: '133000000',
   },
@@ -99,28 +101,64 @@ export async function runPlatformSeed() {
     if (!defaultPlan) defaultPlan = existingPlan;
   }
 
-  // 2. Sembrar Tenants (Inquilinos)
+  // 2. Sembrar Tenants (Inquilinos) y sus Suscripciones SaaS
   const tenantRepo = PlatformDataSource.getRepository(TenantEntity);
+  const subRepo = PlatformDataSource.getRepository(SaasSubscriptionEntity);
+
+  const planEnterprise = await planRepo.findOneBy({ name: 'Plan Enterprise' });
+  const planProfesional = await planRepo.findOneBy({ name: 'Plan Profesional' });
+
   for (const t of SEED_TENANTS) {
+    const assignedPlan = t.slug === 'sumtech' ? planEnterprise : (planProfesional || defaultPlan);
     let existingTenant = await tenantRepo.findOneBy({ slug: t.slug });
     if (!existingTenant) {
-      await tenantRepo.save(
+      existingTenant = await tenantRepo.save(
         tenantRepo.create({
           name: t.name,
           slug: t.slug,
           dbName: t.dbName,
           status: t.status,
           rnc: t.rnc,
-          planId: defaultPlan?.id,
+          planId: assignedPlan?.id,
         }),
       );
       console.log(`✅ Tenant SaaS creado: ${t.name} (Subdominio: ${t.slug} -> DB: ${t.dbName})`);
     } else {
       existingTenant.status = t.status;
       existingTenant.dbName = t.dbName;
-      if (defaultPlan) existingTenant.planId = defaultPlan.id;
+      if (assignedPlan) existingTenant.planId = assignedPlan.id;
       await tenantRepo.save(existingTenant);
       console.log(`ℹ️  Tenant SaaS actualizado: ${t.name} (Subdominio: ${t.slug} -> DB: ${t.dbName})`);
+    }
+
+    // Sembrar o sincronizar suscripción de este tenant
+    let existingSub = await subRepo.findOne({ where: { tenantId: existingTenant.id } });
+    const isSumtechOrIsp = t.slug === 'sumtech' || t.slug === 'ispazua';
+    const subStatus = isSumtechOrIsp ? SaasSubscriptionStatus.ACTIVE : SaasSubscriptionStatus.TRIALING;
+    const renewalDays = t.slug === 'sumtech' ? 30 : t.slug === 'ispazua' ? 20 : 7;
+    const periodEnd = new Date();
+    periodEnd.setDate(periodEnd.getDate() + renewalDays);
+
+    if (!existingSub) {
+      if (assignedPlan) {
+        await subRepo.save(
+          subRepo.create({
+            tenantId: existingTenant.id,
+            planId: assignedPlan.id,
+            status: subStatus,
+            currentPeriodEnd: periodEnd,
+            trialEndsAt: isSumtechOrIsp ? undefined : periodEnd,
+            billingNotes: `Suscripción sembrada automáticamente (${assignedPlan.name}).`,
+          }),
+        );
+        console.log(`✅ Suscripción creada para ${t.name}: Estado ${subStatus}, Plan ${assignedPlan.name}`);
+      }
+    } else {
+      existingSub.planId = assignedPlan?.id || existingSub.planId;
+      existingSub.status = subStatus;
+      existingSub.currentPeriodEnd = periodEnd;
+      await subRepo.save(existingSub);
+      console.log(`ℹ️  Suscripción actualizada para ${t.name}: Estado ${subStatus}`);
     }
   }
 

@@ -4,17 +4,20 @@ import { LessThan, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { randomUUID, createHash } from 'crypto';
+import { randomUUID, createHash, randomBytes } from 'crypto';
 import * as bcrypt from 'bcrypt';
 import { UsersService } from '../users/users.service';
 import { UserEntity } from '../users/entities/user.entity';
 import { LoginDto } from './dto/login.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { RefreshTokenEntity } from './entities/refresh-token.entity';
 import { getJwtSecret, getJwtRefreshSecret } from '../../common/utils/required-env.util';
 import { parseDurationToMs } from './utils/refresh-cookie.util';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
+import { MailService } from '../mail/mail.service';
 
 const REFRESH_TOKEN_RETENTION_DAYS = 30;
 
@@ -35,6 +38,7 @@ export class AuthService {
     private readonly refreshTokenRepository: Repository<RefreshTokenEntity>,
     private readonly tenantContext: TenantContextService,
     private readonly tenantIterator: TenantIteratorService,
+    private readonly mailService: MailService,
   ) {}
 
   private buildAccessPayload(user: UserEntity): JwtPayload {
@@ -259,6 +263,107 @@ export class AuthService {
       id: user.id,
       username: user.username,
       email: user.email,
+    };
+  }
+
+  /**
+   * Genera un token criptográfico de recuperación y envía un correo con el enlace
+   * seguro al usuario. Aplica el principio OWASP de no enumeración (retorna siempre
+   * el mismo mensaje genérico aunque el email no exista en el tenant).
+   */
+  async requestPasswordReset(dto: ForgotPasswordDto, origin?: string): Promise<{ message: string }> {
+    const genericResponse = {
+      message: 'Si el correo electrónico existe en nuestra plataforma, hemos enviado un enlace seguro para restablecer su contraseña.',
+    };
+
+    if (!dto.email) {
+      return genericResponse;
+    }
+
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.usersService.findByEmail(email);
+
+    if (!user || !user.isActive) {
+      return genericResponse;
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutos
+
+    await this.usersService.setResetPasswordToken(user.id, tokenHash, expiresAt);
+
+    const slug = this.tenantContext.hasContext() ? this.tenantContext.getSlug() : null;
+
+    // Resolución dinámica de la URL base:
+    // 1. Si la petición proviene de un navegador con cabecera Origin/Referer (ej. "http://isp-sabana-yegua.localhost:3000"
+    //    o "https://isp-sabana-yegua.app.sumtech.com"), se toma exactamente el protocolo, subdominio y puerto del cliente.
+    // 2. Fallback: se construye a partir del slug del tenant + la variable SAAS_ROOT_DOMAIN del entorno (.env).
+    let baseUrl = '';
+    if (origin) {
+      try {
+        const parsedOrigin = new URL(origin);
+        baseUrl = `${parsedOrigin.protocol}//${parsedOrigin.host}`;
+      } catch {
+        baseUrl = '';
+      }
+    }
+
+    if (!baseUrl) {
+      const rawRootDomain = this.configService.get<string>('SAAS_ROOT_DOMAIN') || 'localhost:3000';
+      const rootDomain = rawRootDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+      const isLocal = rootDomain.includes('localhost') || rootDomain.includes('127.0.0.1');
+      const protocol = isLocal ? 'http' : 'https';
+      baseUrl = slug ? `${protocol}://${slug}.${rootDomain}` : `${protocol}://${rootDomain}`;
+    }
+
+    const resetUrl = `${baseUrl}/reset-password?token=${rawToken}`;
+
+    const tenantName = slug ? slug.charAt(0).toUpperCase() + slug.slice(1) : 'Sumtech';
+    const displayName = user.employee?.jobTitle 
+      ? `${user.username}` 
+      : (user.client?.name || user.username);
+
+    await this.mailService.sendTemplatedMail({
+      to: user.email,
+      subject: `Recuperación de Contraseña - ${tenantName} ERP`,
+      template: 'password-reset',
+      context: {
+        name: displayName,
+        tenantName,
+        resetUrl,
+        expirationMinutes: 30,
+      },
+    });
+
+    return genericResponse;
+  }
+
+  /**
+   * Valida el token de restablecimiento (comparando su hash SHA-256), comprueba
+   * que no haya expirado, hashea la nueva contraseña con bcrypt, limpia el token
+   * y revoca todas las sesiones previas del usuario.
+   */
+  async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
+    if (!dto.token || !dto.newPassword) {
+      throw new BadRequestException('El token y la nueva contraseña son requeridos');
+    }
+
+    const tokenHash = createHash('sha256').update(dto.token).digest('hex');
+    const user = await this.usersService.findByResetToken(tokenHash);
+
+    if (!user || !user.resetPasswordExpiresAt || user.resetPasswordExpiresAt < new Date()) {
+      throw new BadRequestException('El enlace para restablecer la contraseña es inválido o ha expirado. Por favor, solicite uno nuevo.');
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, 10);
+    await this.usersService.updatePasswordAndClearResetToken(user.id, passwordHash);
+
+    // Revoca todas las sesiones activas del usuario para máxima seguridad
+    await this.refreshTokenRepository.update({ userId: user.id }, { revokedAt: new Date() });
+
+    return {
+      message: 'Tu contraseña ha sido restablecida exitosamente. Ya puedes iniciar sesión con tus nuevas credenciales.',
     };
   }
 }

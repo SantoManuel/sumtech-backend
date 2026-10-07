@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { NotFoundException, ConflictException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { InvoicingService } from './invoicing.service';
 import { InvoiceEntity } from './entities/invoice.entity';
 import { EcfSequenceEntity } from './entities/ecf-sequence.entity';
@@ -123,6 +123,20 @@ describe('InvoicingService', () => {
               responseMessage: 'Timbrado Aceptado',
               timestamp: new Date(),
             }),
+            submitRfce: jest.fn().mockResolvedValue({
+              trackId: 'TRK-RFCE-123456',
+              status: 'ACCEPTED',
+              securityCode: 'A1B2C3',
+              qrCodeUrl: 'https://fc.dgii.gov.do/testecf/consultatimbrefc?rncemisor=131000000',
+              signedXml: '<RFCE></RFCE>',
+              responseMessage: 'Resumen RFCE Aceptado',
+              timestamp: new Date(),
+            }),
+            queryTrackIdStatus: jest.fn().mockResolvedValue({
+              trackId: 'TRK-DGII-123456',
+              estado: 'ACEPTADO',
+              mensaje: 'Comprobante procesado exitosamente',
+            }),
           },
         },
         { provide: getRepositoryToken(InvoiceEntity), useValue: invoiceRepo },
@@ -161,7 +175,7 @@ describe('InvoicingService', () => {
     });
 
     const result = await service.getNextNcfSequence('E31');
-    expect(result.ncfNumber).toBe('E3100000005');
+    expect(result.ncfNumber).toBe('E310000000005');
     expect(result.expiryDate).toBe('31-12-2028');
     expect(sequenceRepo.save).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -208,7 +222,7 @@ describe('InvoicingService', () => {
     });
 
     expect(invoice).toBeDefined();
-    expect(invoice.ncfNumber).toBe('E3100000001');
+    expect(invoice.ncfNumber).toBe('E310000000001');
     expect(invoice.dgiiStatus).toBe('ACCEPTED');
     expect(invoice.securityCode).toBe('A1B2C3');
     expect(invoiceRepo.save).toHaveBeenCalled();
@@ -555,7 +569,7 @@ describe('InvoicingService', () => {
 
       expect(invoice.status).toBe('ISSUED');
       expect(invoice.saleId).toBe('sale-200');
-      expect(invoice.ncfNumber).toBe('E3200000001');
+      expect(invoice.ncfNumber).toBe('E320000000001');
       expect(invoice.paidAt).toBeInstanceOf(Date);
       expect(invoiceRepo.save).toHaveBeenCalled();
     });
@@ -874,11 +888,37 @@ describe('InvoicingService', () => {
       );
     });
 
-    it('propaga el error si la factura está PENDING_PAYMENT (sin venta asociada)', async () => {
-      invoiceRepo.findOne.mockResolvedValue({ id: 'inv-2', status: 'PENDING_PAYMENT', sale: null });
+    it('genera el PDF en modo Aviso de Cobro / Proforma si la factura está PENDING_PAYMENT (sin venta asociada)', async () => {
+      invoiceRepo.findOne.mockResolvedValue({
+        id: 'inv-2',
+        status: 'PENDING_PAYMENT',
+        sale: null,
+        subtotal: 1500,
+        itbisTotal: 270,
+        grandTotal: 1770,
+        concept: 'Plan Fibra 50Mbps - Octubre 2026',
+        dueDate: '2026-10-31',
+        billingPeriodStart: '2026-10-01',
+        billingPeriodEnd: '2026-10-31',
+        client: { name: 'Juan Pérez', docType: 'CEDULA', docNumber: '001-0000000-0', email: 'juan@correo.com' },
+      });
 
-      await expect(service.generateInvoicePdf('inv-2')).rejects.toThrow(
-        'está pendiente de pago y aún no tiene una venta asociada',
+      const pdfGenerator = (service as any).pdfGenerator as { generateInvoiceA4Pdf: jest.Mock };
+      const buffer = await service.generateInvoicePdf('inv-2');
+
+      expect(buffer.toString('latin1')).toContain('%PDF-1.4');
+      expect(pdfGenerator.generateInvoiceA4Pdf).toHaveBeenCalledWith(
+        expect.objectContaining({
+          invoice: expect.objectContaining({
+            isProforma: true,
+            ncfType: 'AVISO DE COBRO',
+          }),
+          client: expect.objectContaining({ name: 'Juan Pérez' }),
+          sale: expect.objectContaining({
+            paymentMethod: 'PENDIENTE DE PAGO',
+            grandTotal: 1770,
+          }),
+        }),
       );
     });
 
@@ -929,5 +969,45 @@ describe('InvoicingService', () => {
       );
     });
   });
+
+  describe('syncDgiiStatus', () => {
+    it('lanza BadRequestException si la factura no tiene dgiiTrackId', async () => {
+      invoiceRepo.findOne.mockResolvedValue({ id: 'inv-no-track', ncfNumber: 'E3100000001' });
+      await expect(service.syncDgiiStatus('inv-no-track')).rejects.toThrow(BadRequestException);
+    });
+
+    it('actualiza el estado de la factura a ACCEPTED si DGII responde ACEPTADO', async () => {
+      const mockInv = {
+        id: 'inv-trk',
+        ncfNumber: 'E3100000001',
+        dgiiTrackId: 'TRK-DGII-123456',
+        dgiiStatus: 'CONTINGENCY',
+      };
+      invoiceRepo.findOne.mockResolvedValue(mockInv);
+      const updated = await service.syncDgiiStatus('inv-trk');
+      expect(updated.dgiiStatus).toBe('ACCEPTED');
+      expect(updated.contingencyMode).toBe(false);
+      expect(invoiceRepo.save).toHaveBeenCalled();
+    });
+  });
+
+  describe('getInvoiceXml', () => {
+    it('lanza NotFoundException si la factura no tiene signedXmlContent', async () => {
+      invoiceRepo.findOne.mockResolvedValue({ id: 'inv-no-xml' });
+      await expect(service.getInvoiceXml('inv-no-xml')).rejects.toThrow(NotFoundException);
+    });
+
+    it('retorna el nombre de archivo y el contenido XML firmado', async () => {
+      invoiceRepo.findOne.mockResolvedValue({
+        id: 'inv-with-xml',
+        ncfNumber: 'E3100000001',
+        signedXmlContent: '<ECF>Firmado</ECF>',
+      });
+      const result = await service.getInvoiceXml('inv-with-xml');
+      expect(result.filename).toBe('E3100000001.xml');
+      expect(result.xmlContent).toBe('<ECF>Firmado</ECF>');
+    });
+  });
 });
+
 

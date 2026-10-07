@@ -82,6 +82,9 @@ export class InvoiceEntity {
   @Column({ name: 'response_message', type: 'text', nullable: true })
   responseMessage?: string;
 
+  @Column({ name: 'dgii_response', type: 'jsonb', nullable: true })
+  dgiiResponse?: Record<string, any>;
+
   @Column({ name: 'contingency_mode', type: 'boolean', default: false })
   contingencyMode: boolean;
 

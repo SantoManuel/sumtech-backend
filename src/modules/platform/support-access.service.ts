@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { SupportAccessSessionEntity } from './entities/support-access-session.entity';
@@ -122,11 +122,46 @@ export class SupportAccessService {
     };
   }
 
-  async findAll() {
-    return this.sessionRepo.find({
+  async findAll(options?: {
+    limit?: number;
+    offset?: number;
+    page?: number;
+    tenantId?: string;
+    adminId?: string;
+    onlyActive?: boolean;
+  }) {
+    const where: any = {};
+
+    if (options?.onlyActive) {
+      where.endedAt = IsNull();
+    }
+    if (options?.tenantId) {
+      where.tenantId = options.tenantId;
+    }
+    if (options?.adminId) {
+      where.adminId = options.adminId;
+    }
+
+    if (!options?.limit) {
+      return this.sessionRepo.find({
+        where,
+        relations: ['admin', 'tenant'],
+        order: { startedAt: 'DESC' },
+        take: 100,
+      });
+    }
+
+    const take = options.limit;
+    const skip = options.offset ?? ((options.page ? options.page - 1 : 0) * take);
+
+    const [items, total] = await this.sessionRepo.findAndCount({
+      where,
       relations: ['admin', 'tenant'],
       order: { startedAt: 'DESC' },
-      take: 100,
+      take,
+      skip,
     });
+
+    return { items, total, limit: take, offset: skip };
   }
 }

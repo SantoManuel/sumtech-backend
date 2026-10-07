@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { DgiiXmlGeneratorService, EcfGenerationInput, ecfTipoDoc, usesNcfExpiryDate, UNIDAD_MEDIDA_UND } from './dgii-xml-generator.service';
+import { DgiiXmlGeneratorService, EcfGenerationInput, ecfTipoDoc, usesNcfExpiryDate, UNIDAD_MEDIDA_UND, sanitizeProvincia, sanitizeCorreo } from './dgii-xml-generator.service';
 
 describe('DgiiXmlGeneratorService', () => {
   let service: DgiiXmlGeneratorService;
@@ -276,9 +276,9 @@ describe('DgiiXmlGeneratorService', () => {
       expect(xml).toContain('<IndicadorNotaCredito>1</IndicadorNotaCredito>');
     });
 
-    it('cae al default "1" si no se provee indicadorNotaCredito (compatibilidad con el generador de certificación DGII)', () => {
+    it('cae al default "0" si no se provee indicadorNotaCredito (emitida dentro de los 30 días calendario)', () => {
       const xml = service.generateEcfXml(baseInput);
-      expect(xml).toContain('<IndicadorNotaCredito>1</IndicadorNotaCredito>');
+      expect(xml).toContain('<IndicadorNotaCredito>0</IndicadorNotaCredito>');
     });
 
     it('usa la fechaNcfModificado real provista en vez del default hardcodeado 01-01-2026', () => {
@@ -310,6 +310,129 @@ describe('DgiiXmlGeneratorService', () => {
       expect(usesNcfExpiryDate('E32')).toBe(false);
       expect(usesNcfExpiryDate('B02')).toBe(false);
       expect(usesNcfExpiryDate('E34')).toBe(false);
+    });
+  });
+
+  describe('Sanitización fiscal (Provincia ONE y Correo XSD)', () => {
+    it('convierte siglas o nombres informales a códigos de provincia ONE de 6 dígitos', () => {
+      expect(sanitizeProvincia('DN')).toBe('010000');
+      expect(sanitizeProvincia('Distrito Nacional')).toBe('010000');
+      expect(sanitizeProvincia('Santo Domingo')).toBe('320000');
+      expect(sanitizeProvincia('010000')).toBe('010000');
+      expect(sanitizeProvincia('')).toBe('010000');
+    });
+
+    it('elimina guiones bajos de correos electrónicos para cumplir con el patrón XSD de DGII', () => {
+      expect(sanitizeCorreo('cliente_prueba@empresa.com')).toBe('cliente.prueba@empresa.com');
+      expect(sanitizeCorreo('facturacion_dgii_test@dominio.do')).toBe('facturacion.dgii.test@dominio.do');
+      expect(sanitizeCorreo('correo.valido@dominio.do')).toBe('correo.valido@dominio.do');
+      expect(sanitizeCorreo('invalido@@algo')).toBeUndefined();
+    });
+  });
+
+  describe('Documentos e-CF Especiales (E41, E43, E46, E47)', () => {
+    it('genera E41 (Proveedores Informales) con Retencion antes de NombreItem y sin TipoIngresos', () => {
+      const xml = service.generateEcfXml({
+        ncfType: 'E41',
+        eNcf: 'E410000000001',
+        rncComprador: '00100000001',
+        razonSocialComprador: 'Soldador Informal',
+        items: [
+          {
+            numeroLinea: 1,
+            nombreItem: 'Soldadura en torre',
+            indicadorBienoServicio: '1',
+            indicadorFacturacion: '4',
+            cantidad: 1,
+            precioUnitario: 4500,
+            montoItem: 4500,
+          },
+        ],
+      });
+
+      expect(xml).toContain('<TipoeCF>41</TipoeCF>');
+      expect(xml).not.toContain('<TipoIngresos>');
+      expect(xml).toContain('<Retencion><IndicadorAgenteRetencionoPercepcion>1</IndicadorAgenteRetencionoPercepcion></Retencion>');
+      expect(xml).toContain('<NombreItem>Soldadura en torre</NombreItem>');
+    });
+
+    it('genera E43 (Gastos Menores) sin Comprador, sin TipoIngresos y con solo MontoExento/MontoTotal en Totales', () => {
+      const xml = service.generateEcfXml({
+        ncfType: 'E43',
+        eNcf: 'E430000000001',
+        razonSocialComprador: 'Consumidor Final Gastos Menores',
+        items: [
+          {
+            numeroLinea: 1,
+            nombreItem: 'Viáticos de combustible',
+            indicadorBienoServicio: '1',
+            indicadorFacturacion: '4',
+            cantidad: 1,
+            precioUnitario: 650,
+            montoItem: 650,
+          },
+        ],
+      });
+
+      expect(xml).toContain('<TipoeCF>43</TipoeCF>');
+      expect(xml).not.toContain('<TipoIngresos>');
+      expect(xml).not.toContain('<IndicadorMontoGravado>');
+      expect(xml).not.toContain('<Comprador>');
+      expect(xml).toContain('<Totales><MontoExento>650.00</MontoExento><MontoTotal>650.00</MontoTotal></Totales>');
+    });
+
+    it('genera E46 (Pagos al Exterior) con Gravado Tasa 0% (I3), ITBIS3 y sin MontoExento', () => {
+      const xml = service.generateEcfXml({
+        ncfType: 'E46',
+        eNcf: 'E460000000001',
+        razonSocialComprador: 'TRANSIT PROVIDER LLC',
+        items: [
+          {
+            numeroLinea: 1,
+            nombreItem: 'Capacidad de Tránsito IP Internacional',
+            indicadorBienoServicio: '2',
+            indicadorFacturacion: '3',
+            cantidad: 1,
+            precioUnitario: 58000,
+            montoItem: 58000,
+          },
+        ],
+      });
+
+      expect(xml).toContain('<TipoeCF>46</TipoeCF>');
+      expect(xml).toContain('<MontoGravadoTotal>58000.00</MontoGravadoTotal>');
+      expect(xml).toContain('<MontoGravadoI3>58000.00</MontoGravadoI3>');
+      expect(xml).toContain('<ITBIS3>0</ITBIS3>');
+      expect(xml).toContain('<TotalITBIS>0.00</TotalITBIS>');
+      expect(xml).toContain('<TotalITBIS3>0.00</TotalITBIS3>');
+      expect(xml).toContain('<MontoTotal>58000.00</MontoTotal>');
+      expect(xml).not.toContain('<MontoExento>');
+    });
+
+    it('genera E47 (Exportaciones) con IdentificadorExtranjero, Retencion y TotalISRRetencion en Totales', () => {
+      const xml = service.generateEcfXml({
+        ncfType: 'E47',
+        eNcf: 'E470000000001',
+        rncComprador: 'EXPORT-US-991',
+        razonSocialComprador: 'CARIBBEAN REGIONAL CORP',
+        items: [
+          {
+            numeroLinea: 1,
+            nombreItem: 'Exportación de Hosting y Peering de Red',
+            indicadorBienoServicio: '2',
+            indicadorFacturacion: '4',
+            cantidad: 1,
+            precioUnitario: 42000,
+            montoItem: 42000,
+          },
+        ],
+      });
+
+      expect(xml).toContain('<TipoeCF>47</TipoeCF>');
+      expect(xml).not.toContain('<TipoIngresos>');
+      expect(xml).toContain('<IdentificadorExtranjero>EXPORT-US-991</IdentificadorExtranjero>');
+      expect(xml).toContain('<Retencion><IndicadorAgenteRetencionoPercepcion>1</IndicadorAgenteRetencionoPercepcion><MontoISRRetenido>0.00</MontoISRRetenido></Retencion>');
+      expect(xml).toContain('<Totales><MontoExento>42000.00</MontoExento><MontoTotal>42000.00</MontoTotal><TotalISRRetencion>0.00</TotalISRRetencion></Totales>');
     });
   });
 });

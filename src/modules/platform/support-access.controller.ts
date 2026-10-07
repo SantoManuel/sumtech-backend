@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -51,7 +52,21 @@ export class SupportAccessController {
   @Get()
   @UseGuards(PlatformAuthGuard, PlatformRolesGuard)
   @PlatformRoles(PlatformRole.SUPERADMIN, PlatformRole.SUPPORT)
-  async findAll() {
-    return this.supportService.findAll();
+  async findAll(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('page') page?: string,
+    @Query('tenantId') tenantId?: string,
+    @Query('adminId') adminId?: string,
+    @Query('onlyActive') onlyActive?: string,
+  ) {
+    return this.supportService.findAll({
+      limit: limit ? parseInt(limit, 10) : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+      page: page ? parseInt(page, 10) : undefined,
+      tenantId,
+      adminId,
+      onlyActive: onlyActive === 'true',
+    });
   }
 }

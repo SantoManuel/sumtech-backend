@@ -42,7 +42,11 @@ export class TenantResolutionMiddleware implements NestMiddleware {
   ) {}
 
   async use(req: Request, res: Response, next: NextFunction): Promise<void> {
-    const slug = this.extractSlugFromHeader(req.headers['x-tenant-slug']) || this.extractSlug(req.headers.host);
+    let slug = this.extractSlugFromHeader(req.headers['x-tenant-slug']) || this.extractSlug(req.headers.host);
+
+    if ((!slug || slug === 'localhost' || slug === '127') && process.env.NODE_ENV !== 'production') {
+      slug = 'sumtech';
+    }
 
     if (!slug) {
       throw new NotFoundException('No se pudo determinar el tenant a partir del host de la petición');

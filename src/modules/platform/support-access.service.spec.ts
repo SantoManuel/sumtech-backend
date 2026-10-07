@@ -49,6 +49,7 @@ describe('SupportAccessService', () => {
         return Promise.resolve(null);
       }),
       find: jest.fn().mockResolvedValue([mockSession]),
+      findAndCount: jest.fn().mockResolvedValue([[mockSession], 1]),
     };
 
     tenantRepo = {
@@ -154,6 +155,33 @@ describe('SupportAccessService', () => {
 
     it('throws NotFoundException if session does not exist', async () => {
       await expect(service.endSession('non-existent')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('findAll', () => {
+    it('returns full list when no limit is provided', async () => {
+      const result = await service.findAll();
+      expect(result).toHaveLength(1);
+      expect(sessionRepo.find).toHaveBeenCalled();
+    });
+
+    it('returns paginated response when limit is specified', async () => {
+      const result = (await service.findAll({ limit: 10, page: 1, onlyActive: true })) as {
+        items: any[];
+        total: number;
+        limit: number;
+        offset: number;
+      };
+      expect(result.items).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.limit).toBe(10);
+      expect(result.offset).toBe(0);
+      expect(sessionRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 10,
+          skip: 0,
+        }),
+      );
     });
   });
 });

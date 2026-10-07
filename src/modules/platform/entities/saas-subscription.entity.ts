@@ -28,6 +28,15 @@ export class SaasSubscriptionEntity {
   @Column({ name: 'current_period_end', type: 'timestamp with time zone', nullable: true })
   currentPeriodEnd?: Date;
 
+  @Column({ name: 'trial_ends_at', type: 'timestamp with time zone', nullable: true })
+  trialEndsAt?: Date;
+
+  @Column({ name: 'billing_notes', type: 'text', nullable: true })
+  billingNotes?: string;
+
+  @Column({ name: 'last_payment_date', type: 'timestamp with time zone', nullable: true })
+  lastPaymentDate?: Date;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamp with time zone' })
   createdAt: Date;
 

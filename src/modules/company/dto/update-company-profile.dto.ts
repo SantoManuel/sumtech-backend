@@ -5,6 +5,7 @@ import {
   IsUUID,
   IsBoolean,
   IsObject,
+  IsArray,
   IsIn,
   MaxLength,
 } from 'class-validator';
@@ -103,6 +104,11 @@ export class UpdateCompanyProfileDto {
   @IsObject()
   @IsOptional()
   siteContent?: Record<string, any>;
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  contractClauses?: string[];
 
   @IsObject()
   @IsOptional()

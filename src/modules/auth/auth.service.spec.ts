@@ -7,8 +7,11 @@ import { UsersService } from '../users/users.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
 
+import { MailService } from '../mail/mail.service';
+
 jest.mock('bcrypt', () => ({
   compare: jest.fn(),
+  hash: jest.fn().mockResolvedValue('bcrypt-hashed-password'),
 }));
 
 const CONFIG_VALUES: Record<string, string> = {
@@ -16,6 +19,7 @@ const CONFIG_VALUES: Record<string, string> = {
   JWT_REFRESH_SECRET: 'refresh-secret',
   JWT_EXPIRATION_TIME: '15m',
   JWT_REFRESH_EXPIRATION_TIME: '7d',
+  SAAS_ROOT_DOMAIN: 'localhost:3000',
 };
 
 function buildActiveUser(overrides: Partial<any> = {}) {
@@ -36,12 +40,13 @@ function buildActiveUser(overrides: Partial<any> = {}) {
 
 describe('AuthService', () => {
   let service: AuthService;
-  let usersService: jest.Mocked<Pick<UsersService, 'findByUsernameOrEmail' | 'findById'>>;
+  let usersService: jest.Mocked<Pick<UsersService, 'findByUsernameOrEmail' | 'findById' | 'findByEmail' | 'setResetPasswordToken' | 'findByResetToken' | 'updatePasswordAndClearResetToken'>>;
   let jwtService: jest.Mocked<Pick<JwtService, 'sign' | 'verify'>>;
   let configService: ConfigService;
   let refreshTokenRepository: any;
-  let tenantContext: jest.Mocked<Pick<TenantContextService, 'getTenantId' | 'getSlug'>>;
+  let tenantContext: jest.Mocked<Pick<TenantContextService, 'getTenantId' | 'getSlug' | 'hasContext'>>;
   let tenantIterator: jest.Mocked<Pick<TenantIteratorService, 'runForEachActiveTenant'>>;
+  let mailService: { sendTemplatedMail: jest.Mock };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -49,6 +54,10 @@ describe('AuthService', () => {
     usersService = {
       findByUsernameOrEmail: jest.fn(),
       findById: jest.fn(),
+      findByEmail: jest.fn(),
+      setResetPasswordToken: jest.fn(),
+      findByResetToken: jest.fn(),
+      updatePasswordAndClearResetToken: jest.fn(),
     };
 
     let signCallCount = 0;
@@ -70,16 +79,17 @@ describe('AuthService', () => {
     tenantContext = {
       getTenantId: jest.fn().mockReturnValue('tenant-test-id'),
       getSlug: jest.fn().mockReturnValue('tenant-test'),
+      hasContext: jest.fn().mockReturnValue(true),
     };
 
     tenantIterator = {
-      // Simula un solo tenant activo ('tenant-test') e invoca el callback de
-      // verdad, para que los specs que dependen del efecto interno (ej.
-      // cleanupExpiredRefreshTokens) sigan probando el mismo comportamiento
-      // real que antes de envolverlo en runForEachActiveTenant().
       runForEachActiveTenant: jest.fn(async (_label: string, fn: (tenant: any) => Promise<void>) => {
         await fn({ id: 'tenant-test-id', slug: 'tenant-test' });
       }),
+    };
+
+    mailService = {
+      sendTemplatedMail: jest.fn().mockResolvedValue(true),
     };
 
     service = new AuthService(
@@ -89,6 +99,7 @@ describe('AuthService', () => {
       refreshTokenRepository,
       tenantContext as unknown as TenantContextService,
       tenantIterator as unknown as TenantIteratorService,
+      mailService as unknown as MailService,
     );
   });
 
@@ -341,4 +352,152 @@ describe('AuthService', () => {
       });
     });
   });
+
+  describe('requestPasswordReset', () => {
+    it('retorna mensaje genérico sin enviar correo si el email no existe (OWASP anti-enumeración)', async () => {
+      usersService.findByEmail.mockResolvedValue(null);
+
+      const result = await service.requestPasswordReset({ email: 'desconocido@empresa.com' });
+
+      expect(result.message).toContain('Si el correo electrónico existe');
+      expect(usersService.setResetPasswordToken).not.toHaveBeenCalled();
+      expect(mailService.sendTemplatedMail).not.toHaveBeenCalled();
+    });
+
+    it('retorna mensaje genérico sin enviar correo si el usuario está inactivo', async () => {
+      usersService.findByEmail.mockResolvedValue(buildActiveUser({ isActive: false }));
+
+      const result = await service.requestPasswordReset({ email: 'admin@sumtech.com' });
+
+      expect(result.message).toContain('Si el correo electrónico existe');
+      expect(usersService.setResetPasswordToken).not.toHaveBeenCalled();
+      expect(mailService.sendTemplatedMail).not.toHaveBeenCalled();
+    });
+
+    it('genera token SHA-256, asigna expiración de 30 minutos y envía correo cuando el usuario existe', async () => {
+      const activeUser = buildActiveUser({
+        id: 'user-reset-1',
+        username: 'juan.perez',
+        email: 'juan@sumtech.com',
+      });
+      usersService.findByEmail.mockResolvedValue(activeUser);
+
+      const result = await service.requestPasswordReset({ email: 'juan@sumtech.com' });
+
+      expect(result.message).toContain('Si el correo electrónico existe');
+      expect(usersService.setResetPasswordToken).toHaveBeenCalledWith(
+        'user-reset-1',
+        expect.any(String),
+        expect.any(Date),
+      );
+
+      // Verificar que el token guardado sea un hash hexadecimal de 64 caracteres (SHA-256)
+      const tokenHashArg = usersService.setResetPasswordToken.mock.calls[0][1];
+      expect(tokenHashArg).toHaveLength(64);
+
+      // Verificar despacho de correo
+      expect(mailService.sendTemplatedMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: 'juan@sumtech.com',
+          template: 'password-reset',
+          context: expect.objectContaining({
+            resetUrl: expect.stringContaining('/reset-password?token='),
+            expirationMinutes: 30,
+          }),
+        }),
+      );
+    });
+
+    it('construye la URL de reseteo respetando dinámicamente el origen del cliente cuando se envía la cabecera Origin', async () => {
+      const activeUser = buildActiveUser({
+        id: 'user-reset-2',
+        username: 'carlos.isp',
+        email: 'carlos@isp-sabana-yegua.com',
+      });
+      usersService.findByEmail.mockResolvedValue(activeUser);
+
+      await service.requestPasswordReset(
+        { email: 'carlos@isp-sabana-yegua.com' },
+        'http://isp-sabana-yegua.localhost:3000',
+      );
+
+      expect(mailService.sendTemplatedMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            resetUrl: expect.stringMatching(
+              /^http:\/\/isp-sabana-yegua\.localhost:3000\/reset-password\?token=[a-f0-9]{64}$/,
+            ),
+          }),
+        }),
+      );
+    });
+
+    it('construye la URL de reseteo para producción con HTTPS cuando el origen es un dominio real', async () => {
+      const activeUser = buildActiveUser({
+        id: 'user-reset-3',
+        username: 'carlos.isp',
+        email: 'carlos@isp-sabana-yegua.com',
+      });
+      usersService.findByEmail.mockResolvedValue(activeUser);
+
+      await service.requestPasswordReset(
+        { email: 'carlos@isp-sabana-yegua.com' },
+        'https://isp-sabana-yegua.app.sumtech.com',
+      );
+
+      expect(mailService.sendTemplatedMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            resetUrl: expect.stringMatching(
+              /^https:\/\/isp-sabana-yegua\.app\.sumtech\.com\/reset-password\?token=[a-f0-9]{64}$/,
+            ),
+          }),
+        }),
+      );
+    });
+  });
+
+  describe('resetPassword', () => {
+    it('lanza BadRequestException si el token no existe o ha expirado', async () => {
+      usersService.findByResetToken.mockResolvedValue(null);
+
+      await expect(
+        service.resetPassword({ token: 'token-invalido', newPassword: 'new-password-123' }),
+      ).rejects.toThrow(BadRequestException);
+
+      // Token expirado
+      const expiredUser = buildActiveUser({
+        resetPasswordExpiresAt: new Date(Date.now() - 1000 * 60), // hace 1 min
+      });
+      usersService.findByResetToken.mockResolvedValue(expiredUser);
+
+      await expect(
+        service.resetPassword({ token: 'token-expirado', newPassword: 'new-password-123' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('actualiza contraseña con bcrypt, limpia token y revoca todas las sesiones previas', async () => {
+      const validUser = buildActiveUser({
+        id: 'user-reset-ok',
+        resetPasswordExpiresAt: new Date(Date.now() + 1000 * 60 * 15), // vence en 15 min
+      });
+      usersService.findByResetToken.mockResolvedValue(validUser);
+
+      const result = await service.resetPassword({
+        token: 'token-valido-12345',
+        newPassword: 'NuevaContrasenaSegura2026',
+      });
+
+      expect(result.message).toContain('restablecida exitosamente');
+      expect(usersService.updatePasswordAndClearResetToken).toHaveBeenCalledWith(
+        'user-reset-ok',
+        'bcrypt-hashed-password',
+      );
+      expect(refreshTokenRepository.update).toHaveBeenCalledWith(
+        { userId: 'user-reset-ok' },
+        { revokedAt: expect.any(Date) },
+      );
+    });
+  });
 });
+

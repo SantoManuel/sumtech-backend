@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TenantTypeOrmModule } from '../../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { DgiiSignerService } from './dgii-signer.service';
@@ -19,12 +19,14 @@ import { DgiiReceivedInvoice } from '../entities/dgii-received-invoice.entity';
 import { DgiiCertificationRun } from './entities/dgii-certification-run.entity';
 import { UsersModule } from '../../users/users.module';
 import { CompanyModule } from '../../company/company.module';
+import { PrintingModule } from '../../printing/printing.module';
 
 @Module({
   imports: [
     TenantTypeOrmModule.forFeature([DgiiReceivedInvoice, DgiiCertificationRun]),
     UsersModule,
-    CompanyModule,
+    forwardRef(() => CompanyModule),
+    PrintingModule,
     JwtModule.register({}),
   ],
   controllers: [

@@ -84,6 +84,20 @@ describe('MinioStorageService', () => {
         { 'Content-Type': 'image/jpeg' },
       );
     });
+
+    it('resguarda en disco local de respaldo si MinIO lanza XMinioStorageFull', async () => {
+      const error: any = new Error('Storage backend has reached its minimum free drive threshold.');
+      error.code = 'XMinioStorageFull';
+      putObjectMock.mockRejectedValue(error);
+
+      const key = await service.uploadBuffer(Buffer.from('backup-data'), 'cert.p12', 'dgii-certs');
+
+      expect(key).toMatch(/^dgii-certs\//);
+      expect(key).toContain('cert.p12');
+
+      const retrieved = await service.getObjectBuffer(key);
+      expect(retrieved.toString('utf-8')).toBe('backup-data');
+    });
   });
 
   describe('getPresignedUrl', () => {

@@ -1,19 +1,23 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Client } from 'minio';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { loadMinioConfig, MinioConfig } from '../../config/minio.config';
 
 /**
- * Almacenamiento de archivos (fotos de facturas de gastos del Cierre de Jornada)
- * vía MinIO — object storage autoalojado compatible con la API de S3. Bucket
- * privado: las fotos se sirven siempre vía URL firmada con expiración, nunca
- * como una ruta pública directa.
+ * Almacenamiento de archivos (certificados DGII, fotos de gastos, contratos, logos)
+ * vía MinIO con mecanismo de resiliencia local: si el almacenamiento MinIO
+ * alcanza su umbral de espacio en disco (XMinioStorageFull) o presenta fallas
+ * transitorias, resguarda el archivo en el sistema de archivos local de forma
+ * segura sin interrumpir la operación del negocio.
  */
 @Injectable()
 export class MinioStorageService implements OnModuleInit {
   private readonly logger = new Logger(MinioStorageService.name);
   private readonly client: Client;
   private readonly config: MinioConfig;
+  private readonly fallbackDir: string;
 
   constructor() {
     this.config = loadMinioConfig();
@@ -24,6 +28,7 @@ export class MinioStorageService implements OnModuleInit {
       accessKey: this.config.accessKey,
       secretKey: this.config.secretKey,
     });
+    this.fallbackDir = path.resolve(process.cwd(), 'storage-fallback');
   }
 
   async onModuleInit() {
@@ -39,39 +44,72 @@ export class MinioStorageService implements OnModuleInit {
   }
 
   /**
-   * Sube un archivo en memoria y retorna el object key (no la URL — las fotos
-   * se leen siempre a través de getPresignedUrl, nunca por una ruta pública).
-   *
-   * `contentType` (ej. "image/jpeg", "application/pdf") se guarda como
-   * metadata del objeto en MinIO — sin esto, MinIO sirve el archivo como
-   * `application/octet-stream` y el navegador fuerza la descarga en vez de
-   * mostrarlo inline (imagen o PDF) al abrir la URL firmada.
+   * Sube un archivo en memoria y retorna el object key.
+   * Si MinIO reporta disco lleno (XMinioStorageFull) o error de I/O,
+   * se guarda en fallback local preservando exactamente el mismo objectKey.
    */
   async uploadBuffer(buffer: Buffer, originalName: string, prefix: string, contentType?: string): Promise<string> {
     const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
     const objectKey = `${prefix}/${randomUUID()}_${safeName}`;
     const metaData = contentType ? { 'Content-Type': contentType } : undefined;
-    await this.client.putObject(this.config.bucket, objectKey, buffer, buffer.length, metaData);
-    return objectKey;
+
+    try {
+      await this.client.putObject(this.config.bucket, objectKey, buffer, buffer.length, metaData);
+      return objectKey;
+    } catch (err: any) {
+      this.logger.warn(
+        `[MinioStorageService] MinIO no disponible para escritura (${err.code || err.message}). Activando almacenamiento local de respaldo para "${objectKey}".`,
+      );
+      try {
+        const fullLocalPath = path.join(this.fallbackDir, this.config.bucket, objectKey);
+        fs.mkdirSync(path.dirname(fullLocalPath), { recursive: true });
+        fs.writeFileSync(fullLocalPath, buffer);
+        this.logger.log(`[MinioStorageService] Objeto resguardado exitosamente en almacenamiento local: ${fullLocalPath}`);
+        return objectKey;
+      } catch (localErr: any) {
+        this.logger.error(`[MinioStorageService] Error crítico guardando en fallback local: ${localErr.message}`);
+        throw err;
+      }
+    }
   }
 
   async getPresignedUrl(objectKey: string, expirySeconds = 3600): Promise<string> {
-    return this.client.presignedGetObject(this.config.bucket, objectKey, expirySeconds);
+    try {
+      return await this.client.presignedGetObject(this.config.bucket, objectKey, expirySeconds);
+    } catch (err: any) {
+      const fullLocalPath = path.join(this.fallbackDir, this.config.bucket, objectKey);
+      if (fs.existsSync(fullLocalPath)) {
+        return `/api/v1/storage/fallback/${objectKey}`;
+      }
+      throw err;
+    }
   }
 
   /**
-   * Descarga el contenido completo de un objeto a memoria — para cuando el
-   * consumidor necesita los bytes directamente (ej. pdfkit dibujando una
-   * imagen de firma dentro de un PDF), no una URL para que el navegador la
-   * pida por su cuenta.
+   * Descarga el contenido completo de un objeto a memoria.
+   * Consulta primero el almacenamiento local de respaldo si existe;
+   * de lo contrario, transmite el stream desde MinIO.
    */
   async getObjectBuffer(objectKey: string): Promise<Buffer> {
-    const stream = await this.client.getObject(this.config.bucket, objectKey);
-    const chunks: Buffer[] = [];
-    return new Promise((resolve, reject) => {
-      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-      stream.on('end', () => resolve(Buffer.concat(chunks)));
-      stream.on('error', reject);
-    });
+    const fullLocalPath = path.join(this.fallbackDir, this.config.bucket, objectKey);
+    if (fs.existsSync(fullLocalPath)) {
+      return fs.readFileSync(fullLocalPath);
+    }
+
+    try {
+      const stream = await this.client.getObject(this.config.bucket, objectKey);
+      const chunks: Buffer[] = [];
+      return new Promise((resolve, reject) => {
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stream.on('end', () => resolve(Buffer.concat(chunks)));
+        stream.on('error', reject);
+      });
+    } catch (err: any) {
+      if (fs.existsSync(fullLocalPath)) {
+        return fs.readFileSync(fullLocalPath);
+      }
+      throw err;
+    }
   }
 }
+

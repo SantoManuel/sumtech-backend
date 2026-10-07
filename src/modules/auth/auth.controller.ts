@@ -2,6 +2,8 @@ import { Controller, Post, Body, HttpCode, HttpStatus, Req, Res, UnauthorizedExc
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { VerifySupervisorDto } from './dto/verify-supervisor.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { REFRESH_TOKEN_COOKIE_NAME, buildRefreshCookieOptions, parseDurationToMs } from './utils/refresh-cookie.util';
@@ -59,6 +61,21 @@ export class AuthController {
     await this.authService.logout(rawRefreshToken);
     res.clearCookie(REFRESH_TOKEN_COOKIE_NAME, buildRefreshCookieOptions());
     return { success: true, message: 'Sesión cerrada con éxito' };
+  }
+
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req: Request) {
+    const origin = (req.headers['origin'] || req.headers['referer']) as string | undefined;
+    return this.authService.requestPasswordReset(dto, origin);
+  }
+
+  @Public()
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
   @Post('verify-supervisor')

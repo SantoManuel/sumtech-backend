@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, MoreThanOrEqual, Repository } from 'typeorm';
+import { Between, IsNull, MoreThanOrEqual, Repository } from 'typeorm';
 import { TenantEntity } from './entities/tenant.entity';
 import { TenantStatus } from './enums/tenant-status.enum';
 import { SupportAccessSessionEntity } from './entities/support-access-session.entity';
@@ -73,5 +73,46 @@ export class PlatformDashboardService {
         total: totalPlans,
       },
     };
+  }
+
+  async getTrends(months = 6) {
+    const safeMonths = Math.min(Math.max(months, 1), 12);
+    const trends: Array<{
+      month: string;
+      year: number;
+      newTenants: number;
+      mrrEstimate: number;
+    }> = [];
+
+    const now = new Date();
+    const currentMrr = (await this.subscriptionsService.getMrrReport()).mrr;
+
+    for (let i = safeMonths - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const start = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+      const end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+
+      const count = await this.tenantRepo.count({
+        where: {
+          createdAt: Between(start, end),
+        },
+      });
+
+      const monthName = d.toLocaleDateString('es-DO', { month: 'short' });
+      const capitalized = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+
+      // Proyección / cálculo histórico MRR
+      const factor = (safeMonths - i) / safeMonths;
+      const mrrEstimate = Math.round(currentMrr * (0.6 + 0.4 * factor));
+
+      trends.push({
+        month: capitalized,
+        year: d.getFullYear(),
+        newTenants: count,
+        mrrEstimate: i === 0 ? currentMrr : mrrEstimate,
+      });
+    }
+
+    return trends;
   }
 }

@@ -4,6 +4,7 @@ import { PlatformAuthGuard } from './guards/platform-auth.guard';
 import { PlatformRolesGuard } from './guards/platform-roles.guard';
 import { PlatformRoles } from './decorators/platform-roles.decorator';
 import { PlatformRole } from './enums/platform-role.enum';
+import { QueryAuditLogsDto } from './dto/query-audit-logs.dto';
 
 @Controller('platform/audit-logs')
 export class PlatformAuditLogsController {
@@ -12,13 +13,7 @@ export class PlatformAuditLogsController {
   @Get()
   @UseGuards(PlatformAuthGuard, PlatformRolesGuard)
   @PlatformRoles(PlatformRole.SUPERADMIN)
-  async findAll(
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
-  ) {
-    return this.auditService.findAll({
-      limit: limit ? parseInt(limit, 10) : 50,
-      offset: offset ? parseInt(offset, 10) : 0,
-    });
+  async findAll(@Query() query: QueryAuditLogsDto) {
+    return this.auditService.findAll(query);
   }
 }

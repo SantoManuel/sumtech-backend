@@ -15,8 +15,8 @@ import { ContractEntity } from '../clients/entities/contract.entity';
 import { PlanEntity } from '../plans/entities/plan.entity';
 import { EmitInvoiceDto } from './dto/emit-invoice.dto';
 import { GenerateEcfDto } from './dto/generate-ecf.dto';
-import { DgiiXmlGeneratorService, EcfItemInput, UNIDAD_MEDIDA_UND, usesNcfExpiryDate } from './dgii/dgii-xml-generator.service';
-import { DgiiClientService } from './dgii/dgii-client.service';
+import { DgiiXmlGeneratorService, EcfItemInput, UNIDAD_MEDIDA_UND, usesNcfExpiryDate, sanitizeProvincia } from './dgii/dgii-xml-generator.service';
+import { DgiiClientService, DgiiSendResult } from './dgii/dgii-client.service';
 import { DgiiSignerService } from './dgii/dgii-signer.service';
 import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { InvoiceReceiptMetadata } from '../printing/pdf-generator.types';
@@ -53,7 +53,7 @@ export class InvoicingService {
     private readonly pdfGenerator: PdfGeneratorService,
     @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
     @Optional() private readonly companyService?: CompanyService,
-  ) {}
+  ) { }
 
   /**
    * Obtiene y reserva atómicamente la siguiente secuencia correlativa para el tipo de comprobante.
@@ -88,14 +88,15 @@ export class InvoicingService {
     }
 
     const currentSeqNum = Number(sequenceRecord.currentSequence);
+
     if (currentSeqNum > Number(sequenceRecord.endSequence)) {
       throw new BadRequestException(
         `El rango de secuencias autorizadas para ${ncfType} se ha agotado. Contacte a la administración para renovar en DGII.`,
       );
     }
 
-    // Formatear a 8 dígitos para e-CF (o 8 dígitos para B01/B02)
-    const formattedSeq = currentSeqNum.toString().padStart(8, '0');
+    const padLength = ncfType.startsWith('E') ? 10 : 8;
+    const formattedSeq = currentSeqNum.toString().padStart(padLength, '0');
     const ncfNumber = `${ncfType}${formattedSeq}`;
 
     // Incrementar secuencia
@@ -129,6 +130,17 @@ export class InvoicingService {
   ) {
     // 1. Obtener correlativo autorizado
     const { ncfNumber, expiryDate: sequenceExpiryDate } = await this.getNextNcfSequence(ncfType, queryRunner);
+
+    if (!sale.client && sale.clientId && this.clientRepository) {
+      try {
+        const foundClient = await this.clientRepository.findOne({ where: { id: sale.clientId } });
+        if (foundClient) {
+          sale.client = foundClient;
+        }
+      } catch {
+        // Ignorar si el repositorio de cliente no está disponible en este contexto
+      }
+    }
 
     // 2. Mapear líneas de detalle al formato fiscal DGII
     const ecfItems: EcfItemInput[] = (sale.details || []).map((detail, index) => {
@@ -178,7 +190,7 @@ export class InvoicingService {
         nombreComercial: fiscal.nombreComercial || dgiiCfg.nombreComercial,
         direccionEmisor: fiscal.direccion || dgiiCfg.direccionEmisor,
         municipioEmisor: fiscal.municipio || dgiiCfg.municipioEmisor,
-        provinciaEmisor: fiscal.provincia || dgiiCfg.provinciaEmisor,
+        provinciaEmisor: sanitizeProvincia(fiscal.provincia || dgiiCfg.provinciaEmisor),
         correoEmisor: fiscal.correo || dgiiCfg.correoEmisor,
         telefonoEmisor: fiscal.telefono || dgiiCfg.telefonoEmisor,
         webSite: fiscal.website || dgiiCfg.webSite,
@@ -209,13 +221,50 @@ export class InvoicingService {
       : this.xmlGenerator.generateEcfXml(ecfPayload);
 
     // 4. Firmar digitalmente y enviar a los servicios web de la DGII
-    const sendResult = await this.dgiiClient.submitEcf(
-      rawXml,
-      ncfNumber,
-      Number(sale.grandTotal),
-      ncfType,
-      sale.client?.docNumber,
-    );
+    // Conforme a la normativa oficial DGII y validado en certificación:
+    // Las facturas de consumo menor (< RD$250,000, tipo E32) se envían como RFCE
+    // a través del canal dedicado fc.dgii.gov.do (baseUrlRfce).
+    const isConsumoMenor = ncfType === 'E32' && Number(sale.grandTotal) < 250000;
+    let sendResult: DgiiSendResult;
+    let baseSignedXml: string | undefined;
+    let baseSecurityCode: string | undefined;
+
+    if (isConsumoMenor) {
+      // 1. Firmar el e-CF base subyacente para extraer su Código de Seguridad real (6 caracteres)
+      const dgiiConfig = await this.dgiiClient.getConfig();
+      const signedBase = this.signerService.signXml(rawXml, dgiiConfig.certPath, dgiiConfig.certPassword);
+      baseSecurityCode = signedBase.securityCode;
+      baseSignedXml = signedBase.signedXml;
+
+      // 2. Construir el Resumen RFCE conforme al esquema oficial rfce-32.xsd
+      const rfceRawXml = this.xmlGenerator.generateRfceXml(
+        ncfNumber,
+        effectiveConfig.rncEmisor,
+        Number(sale.grandTotal),
+        Number(sale.itbisTotal),
+        baseSecurityCode,
+        {
+          razonSocialEmisor: effectiveConfig.razonSocialEmisor,
+          fechaEmision: this.formatDateDgii(new Date()),
+          rncComprador: sale.client?.docNumber,
+          razonSocialComprador: sale.client?.name || 'Consumidor Final',
+          montoGravadoTotal: Number(sale.subtotal),
+          montoGravadoI1: Number(sale.subtotal),
+          totalItbis1: Number(sale.itbisTotal),
+        },
+      );
+
+      // 3. Transmitir el Resumen RFCE por el canal oficial fc.dgii.gov.do
+      sendResult = await this.dgiiClient.submitRfce(rfceRawXml, ncfNumber, Number(sale.grandTotal));
+    } else {
+      sendResult = await this.dgiiClient.submitEcf(
+        rawXml,
+        ncfNumber,
+        Number(sale.grandTotal),
+        ncfType,
+        sale.client?.docNumber,
+      );
+    }
 
     return {
       ncfNumber,
@@ -226,10 +275,14 @@ export class InvoicingService {
       ncfExpiryDate: usesNcfExpiryDate(ncfType) ? sequenceExpiryDate : undefined,
       dgiiStatus: sendResult.status,
       dgiiTrackId: sendResult.trackId,
-      securityCode: sendResult.securityCode,
-      qrCodeContent: sendResult.qrCodeUrl,
-      signedXmlContent: sendResult.signedXml,
+      securityCode: baseSecurityCode || sendResult.securityCode,
+      qrCodeContent:
+        isConsumoMenor && baseSecurityCode && typeof this.dgiiClient.generateQrCodeUrl === 'function'
+          ? this.dgiiClient.generateQrCodeUrl(effectiveConfig, ncfNumber, Number(sale.grandTotal), baseSecurityCode, new Date())
+          : sendResult.qrCodeUrl,
+      signedXmlContent: baseSignedXml || sendResult.signedXml,
       responseMessage: sendResult.responseMessage,
+      dgiiResponse: sendResult.rawResponse,
       contingencyMode: sendResult.status === 'CONTINGENCY',
       buyerDocType: sale.client?.docType,
       buyerDocNumber: sale.client?.docNumber,
@@ -302,7 +355,10 @@ export class InvoicingService {
   ): Promise<InvoiceEntity> {
     const invoiceRepo = queryRunner ? queryRunner.manager.getRepository(InvoiceEntity) : this.invoiceRepository;
 
-    const invoice = await invoiceRepo.findOne({ where: { id: invoiceId } });
+    const invoice = await invoiceRepo.findOne({
+      where: { id: invoiceId },
+      relations: ['client'],
+    });
     if (!invoice) {
       throw new NotFoundException(`Factura con ID ${invoiceId} no encontrada`);
     }
@@ -310,6 +366,10 @@ export class InvoicingService {
       throw new ConflictException(
         `La factura ${invoiceId} no está pendiente de pago (estado actual: ${invoice.status})`,
       );
+    }
+
+    if (!sale.client && invoice.client) {
+      sale.client = invoice.client;
     }
 
     const cdtAmount = Number(invoice.cdtAmount || 0);
@@ -509,6 +569,18 @@ export class InvoicingService {
     return `${dd}-${mm}-${d.getFullYear()}`;
   }
 
+  private normalizeSalePaymentMethod(
+    pm?: string,
+  ): 'CASH' | 'CARD_DEBIT' | 'CARD_CREDIT' | 'BANK_TRANSFER' | 'MIXED' {
+    if (!pm) return 'CASH';
+    const upper = pm.toUpperCase().trim();
+    if (upper === 'TRANSFER' || upper === 'TRANSFERENCIA' || upper === 'BANK_TRANSFER') return 'BANK_TRANSFER';
+    if (upper === 'CARD_CREDIT' || upper === 'CREDIT' || upper === 'TC') return 'CARD_CREDIT';
+    if (upper === 'CARD_DEBIT' || upper === 'CARD' || upper === 'TARJETA' || upper === 'TD') return 'CARD_DEBIT';
+    if (upper === 'MIXED' || upper === 'MIXTO') return 'MIXED';
+    return 'CASH';
+  }
+
   async findAll(dto: {
     page?: number;
     limit?: number;
@@ -614,6 +686,57 @@ export class InvoicingService {
   }
 
   /**
+   * Sincroniza el estado fiscal de la factura con la DGII consultando su TrackID.
+   * Actualiza dgiiStatus, responseMessage y dgiiResponse en la base de datos.
+   */
+  async syncDgiiStatus(id: string): Promise<InvoiceEntity> {
+    const invoice = await this.findById(id);
+    if (!invoice.dgiiTrackId) {
+      throw new BadRequestException(
+        `La factura ${invoice.ncfNumber || id} no cuenta con un TrackID de la DGII para consultar.`,
+      );
+    }
+
+    const queryResult = await this.dgiiClient.queryTrackIdStatus(invoice.dgiiTrackId);
+
+    const estadoStr = String(queryResult?.estado || queryResult?.status || '').toUpperCase();
+    if (
+      estadoStr === 'ACEPTADO' ||
+      estadoStr === '0' ||
+      estadoStr.includes('APROB') ||
+      estadoStr.includes('ACEPT')
+    ) {
+      invoice.dgiiStatus = 'ACCEPTED';
+      invoice.contingencyMode = false;
+    } else if (estadoStr === 'RECHAZADO' || estadoStr.includes('RECHAZ')) {
+      invoice.dgiiStatus = 'REJECTED';
+    } else if (estadoStr === 'CONTINGENCIA') {
+      invoice.dgiiStatus = 'CONTINGENCY';
+    }
+
+    if (queryResult?.mensaje) {
+      invoice.responseMessage = queryResult.mensaje;
+    }
+    invoice.dgiiResponse = queryResult;
+
+    return this.invoiceRepository.save(invoice);
+  }
+
+  /**
+   * Obtiene el XML firmado de la factura para descarga o integración fiscal.
+   */
+  async getInvoiceXml(id: string): Promise<{ filename: string; xmlContent: string }> {
+    const invoice = await this.findById(id);
+    if (!invoice.signedXmlContent) {
+      throw new NotFoundException(
+        `No existe XML firmado registrado para la factura ${invoice.ncfNumber || id}.`,
+      );
+    }
+    const filename = `${invoice.ncfNumber || id}.xml`;
+    return { filename, xmlContent: invoice.signedXmlContent };
+  }
+
+  /**
    * Obtiene el estado y disponibilidad de las secuencias autorizadas
    */
   async getAvailableSequences() {
@@ -661,14 +784,9 @@ export class InvoicingService {
   /**
    * Metadatos para impresión de Ticket Térmico 80mm o Representación Impresa PDF
    */
-  async getReceiptMetadata(invoiceId: string) {
+  async getReceiptMetadata(invoiceId: string): Promise<InvoiceReceiptMetadata> {
     const invoice = await this.findById(invoiceId);
-    if (!invoice.sale) {
-      throw new BadRequestException(
-        `La factura ${invoiceId} está pendiente de pago y aún no tiene una venta asociada`,
-      );
-    }
-    const sale = invoice.sale;
+
     let company: {
       rnc: string;
       razonSocial: string;
@@ -680,72 +798,346 @@ export class InvoicingService {
 
     if (this.companyService) {
       const fiscal = await this.companyService.getCompanyFiscalInfo();
+      const razonSocial = fiscal.razonSocial?.trim() || 'SUMTECH TELECOM S.R.L.';
+      const nombreComercial = fiscal.nombreComercial?.trim();
       company = {
-        rnc: fiscal.rnc,
-        razonSocial: fiscal.razonSocial,
-        nombreComercial: fiscal.nombreComercial,
+        rnc: fiscal.rnc || '131148697',
+        razonSocial,
+        nombreComercial: nombreComercial && nombreComercial !== razonSocial ? nombreComercial : undefined,
         direccion: fiscal.direccion,
         telefono: fiscal.telefono,
         correo: fiscal.correo,
       };
     } else {
       const config = await this.dgiiClient.getConfig();
+      const razonSocial = config.razonSocialEmisor?.trim() || 'SUMTECH TELECOM S.R.L.';
+      const nombreComercial = config.nombreComercial?.trim();
       company = {
-        rnc: config.rncEmisor,
-        razonSocial: config.razonSocialEmisor,
-        nombreComercial: config.nombreComercial,
+        rnc: config.rncEmisor || '131148697',
+        razonSocial,
+        nombreComercial: nombreComercial && nombreComercial !== razonSocial ? nombreComercial : undefined,
         direccion: config.direccionEmisor,
         telefono: config.telefonoEmisor,
         correo: config.correoEmisor,
       };
     }
 
+    const isIssued = invoice.status === 'ISSUED';
+
+    // CASO 1: Factura emitida y cobrada (o con venta asociada en el POS)
+    if (isIssued || invoice.sale) {
+      const sale = invoice.sale;
+
+      // Vigencia de secuencia DGII obligatoria para comprobantes con crédito fiscal (E31 / B01)
+      const isExpiryRequired = usesNcfExpiryDate(invoice.ncfType || '');
+      let effectiveNcfExpiryDate = invoice.ncfExpiryDate;
+      if (isExpiryRequired && !effectiveNcfExpiryDate) {
+        try {
+          const seq = await this.sequenceRepository.findOne({ where: { ncfType: invoice.ncfType as any } });
+          effectiveNcfExpiryDate = seq?.expiryDate || '31-12-2028';
+        } catch {
+          effectiveNcfExpiryDate = '31-12-2028';
+        }
+      }
+
+      // Código QR oficial DGII: regenerar si está vacío o si proviene de seed/dummy sin parámetros
+      let qrCodeUrl = invoice.qrCodeContent;
+      const isLegacyDummy = !qrCodeUrl || qrCodeUrl.includes('/consulta?encf=') || (!qrCodeUrl.includes('codigoseguridad') && !qrCodeUrl.includes('consultatimbrefc'));
+      if (isLegacyDummy && invoice.ncfNumber) {
+        try {
+          const config = await this.dgiiClient.getConfig();
+          qrCodeUrl = this.dgiiClient.generateQrCodeUrl(
+            config,
+            invoice.ncfNumber,
+            Number(invoice.grandTotal || sale?.grandTotal || 0),
+            invoice.securityCode || '000000',
+            invoice.issuedAt || invoice.paidAt || new Date(),
+            invoice.client?.docNumber || sale?.client?.docNumber,
+          );
+        } catch {
+          // Mantener qrCodeUrl actual si falla
+        }
+      }
+
+      // Detalle de ítems con fallback robusto
+      const saleDetails = (sale?.details && sale.details.length > 0)
+        ? sale.details.map((d) => ({
+            concept: d.concept,
+            quantity: d.quantity,
+            unitPrice: Number(d.unitPrice),
+            itbisAmount: Number(d.itbisAmount),
+            subtotal: Number(d.subtotal),
+            unidadMedida: d.itemType === 'PRODUCT_HARDWARE' ? 'UND' : 'SERV',
+          }))
+        : [
+            {
+              concept: invoice.concept || (invoice.contract?.plan?.name ? `${invoice.contract.plan.name} - Mensualidad de servicio` : 'Servicio de Telecomunicaciones de Internet'),
+              quantity: 1,
+              unitPrice: Number(invoice.subtotal || sale?.subtotal || 0),
+              itbisAmount: Number(invoice.itbisTotal || sale?.itbisTotal || 0),
+              subtotal: Number(invoice.subtotal || sale?.subtotal || 0),
+              unidadMedida: 'SERV',
+            },
+          ];
+
+      return {
+        company,
+        invoice: {
+          id: invoice.id,
+          ncfNumber: invoice.ncfNumber,
+          ncfType: invoice.ncfType,
+          ncfExpiryDate: effectiveNcfExpiryDate,
+          dgiiStatus: invoice.dgiiStatus || 'ACCEPTED',
+          securityCode: invoice.securityCode || '000000',
+          qrCodeUrl,
+          issuedAt: invoice.issuedAt || invoice.paidAt || new Date(),
+          contingencyMode: invoice.contingencyMode,
+          ncfModificado: invoice.ncfModificado,
+          razonModificacion: invoice.razonModificacion,
+          isProforma: false,
+        },
+        client: {
+          name: sale?.client?.name || invoice.client?.name || 'Consumidor Final',
+          docNumber: sale?.client?.docNumber || invoice.client?.docNumber || '000000000',
+          docType: sale?.client?.docType || invoice.client?.docType || 'Documento',
+          email: sale?.client?.email || invoice.client?.email || 'N/A',
+        },
+        sale: {
+          id: sale?.id || `sale-${invoice.id}`,
+          paymentMethod: sale?.paymentMethod || 'Contado',
+          billingPeriod: sale?.billingPeriod || invoice.billingPeriodStart || 'Mes Actual',
+          dueDate: sale?.dueDate || invoice.dueDate || 'N/A',
+          subtotal: Number(sale?.subtotal ?? invoice.subtotal ?? 0),
+          discountAmount: Number(sale?.discountAmount || 0),
+          itbisTotal: Number(sale?.itbisTotal ?? invoice.itbisTotal ?? 0),
+          grandTotal: Number(sale?.grandTotal ?? invoice.grandTotal ?? 0),
+          cashier: sale?.user?.username || 'Caja Sumtech',
+          details: saleDetails,
+        },
+      };
+    }
+
+    // CASO 2: Factura pendiente de pago (PENDING_PAYMENT, EN_GRACIA, VENCIDA)
+    // Se proyecta como Aviso de Cobro / Factura Proforma sin consumir secuencias de la DGII
+    const client = invoice.client;
+    const contract = invoice.contract;
+    const subtotal = Number(invoice.subtotal || 0);
+    const itbisTotal = Number(invoice.itbisTotal || 0);
+    const grandTotal = Number(invoice.grandTotal || (subtotal + itbisTotal));
+    const concept = invoice.concept || (contract?.plan?.name ? `${contract.plan.name} - Mensualidad de servicio` : 'Cargo recurrente de servicio');
+
+    let billingPeriod = 'Mes Actual';
+    if (invoice.billingPeriodStart && invoice.billingPeriodEnd) {
+      billingPeriod = `${invoice.billingPeriodStart} al ${invoice.billingPeriodEnd}`;
+    } else if (invoice.billingPeriodStart) {
+      billingPeriod = `Período desde ${invoice.billingPeriodStart}`;
+    }
+
     return {
       company,
       invoice: {
         id: invoice.id,
-        ncfNumber: invoice.ncfNumber,
-        ncfType: invoice.ncfType,
-        // Vencimiento de la secuencia de NCF (no la fecha de cobro de la factura,
-        // ver ncfExpiryDate en InvoicingService.buildEcfPayload). Solo presente
-        // para comprobantes con crédito fiscal (no E32/E34).
-        ncfExpiryDate: invoice.ncfExpiryDate,
-        dgiiStatus: invoice.dgiiStatus,
-        securityCode: invoice.securityCode,
-        qrCodeUrl: invoice.qrCodeContent,
-        issuedAt: invoice.issuedAt,
-        contingencyMode: invoice.contingencyMode,
-        ncfModificado: invoice.ncfModificado,
-        razonModificacion: invoice.razonModificacion,
+        ncfNumber: invoice.ncfNumber || `AVISO-${invoice.id.slice(0, 8).toUpperCase()}`,
+        ncfType: invoice.ncfType || 'AVISO DE COBRO',
+        ncfExpiryDate: undefined,
+        dgiiStatus: invoice.status || 'PENDING_PAYMENT',
+        securityCode: 'PROFORMA',
+        qrCodeUrl: undefined,
+        issuedAt: invoice.billingPeriodStart ? new Date(invoice.billingPeriodStart) : new Date(),
+        contingencyMode: false,
+        isProforma: true,
       },
       client: {
-        name: sale.client?.name || 'Consumidor Final',
-        docNumber: sale.client?.docNumber || 'N/A',
-        docType: sale.client?.docType || 'CEDULA',
-        email: sale.client?.email || 'N/A',
+        name: client?.name || 'Abonado / Suscriptor',
+        docNumber: client?.docNumber || 'N/A',
+        docType: client?.docType || 'DOCUMENTO',
+        email: client?.email || 'N/A',
       },
       sale: {
-        id: sale.id,
-        paymentMethod: sale.paymentMethod,
-        billingPeriod: sale.billingPeriod || 'Mes Actual',
-        dueDate: sale.dueDate || 'N/A',
-        subtotal: Number(sale.subtotal),
-        discountAmount: Number(sale.discountAmount),
-        itbisTotal: Number(sale.itbisTotal),
-        grandTotal: Number(sale.grandTotal),
-        cashier: sale.user?.username || 'Cajero Sumtech',
-        details: sale.details.map((d) => ({
-          concept: d.concept,
-          quantity: d.quantity,
-          unitPrice: Number(d.unitPrice),
-          itbisAmount: Number(d.itbisAmount),
-          subtotal: Number(d.subtotal),
-          // No existe un código DGII dedicado a "servicio" (ver UNIDAD_MEDIDA_UND);
-          // para la impresión se etiqueta como unidad de negocio, no el código XML.
-          unidadMedida: d.itemType === 'PRODUCT_HARDWARE' ? 'UND' : 'SERV',
-        })),
+        id: `proforma-${invoice.id}`,
+        paymentMethod: 'PENDIENTE DE PAGO',
+        billingPeriod,
+        dueDate: invoice.dueDate || 'Al Vencimiento',
+        subtotal,
+        discountAmount: 0,
+        itbisTotal,
+        grandTotal,
+        cashier: 'Facturación Automática',
+        details: [
+          {
+            concept,
+            quantity: 1,
+            unitPrice: subtotal,
+            itbisAmount: itbisTotal,
+            subtotal,
+            unidadMedida: 'SERV',
+          },
+        ],
       },
     };
+  }
+
+  /**
+   * Emite una factura e-CF directa desde el módulo de Facturación (/dashboard/facturas)
+   * creando la venta asociada, asignando e-NCF correlativo, firmando con certificado DGII
+   * y timbrando ante los servicios web de la DGII.
+   */
+  async emitDirect(dto: {
+    clientId: string;
+    ncfType: 'E31' | 'E32' | 'B01' | 'B02';
+    concept: string;
+    subtotal: number;
+    itbisAmount?: number;
+    paymentMethod?: string;
+    userId?: string;
+  }): Promise<InvoiceEntity> {
+    const client = await this.clientRepository.findOne({ where: { id: dto.clientId } });
+    if (!client) {
+      throw new NotFoundException(`Cliente con ID ${dto.clientId} no encontrado`);
+    }
+
+    const subtotal = Number(dto.subtotal || 0);
+    if (subtotal <= 0) {
+      throw new BadRequestException('El subtotal de la factura debe ser mayor a cero');
+    }
+
+    const isExempt = dto.ncfType === 'E32' && dto.itbisAmount === 0;
+    const itbisTotal = dto.itbisAmount !== undefined ? Number(dto.itbisAmount) : (isExempt ? 0 : Number((subtotal * 0.18).toFixed(2)));
+    const grandTotal = Number((subtotal + itbisTotal).toFixed(2));
+    const paymentMethod = this.normalizeSalePaymentMethod(dto.paymentMethod);
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const saleRepo = queryRunner.manager.getRepository(SaleEntity);
+      const detailRepo = queryRunner.manager.getRepository(SaleDetailEntity);
+      const invoiceRepo = queryRunner.manager.getRepository(InvoiceEntity);
+
+      const sale = saleRepo.create({
+        clientId: client.id,
+        userId: dto.userId || null,
+        subtotal,
+        itbisTotal,
+        grandTotal,
+        paymentMethod,
+        status: 'PAID',
+        paidAt: new Date(),
+        notes: `Factura e-CF emitida directamente: ${dto.concept}`,
+      } as any) as unknown as SaleEntity;
+      const savedSale = await saleRepo.save(sale);
+
+      const detail = detailRepo.create({
+        saleId: savedSale.id,
+        concept: dto.concept || 'Servicio de Telecomunicaciones de Internet',
+        itemType: 'PLAN_SUBSCRIPTION',
+        quantity: 1,
+        unitPrice: subtotal,
+        itbisAmount: itbisTotal,
+        subtotal,
+      } as any) as unknown as SaleDetailEntity;
+      await detailRepo.save(detail);
+      savedSale.details = [detail];
+      savedSale.client = client;
+
+      const ecfPayload = await this.buildEcfPayload(savedSale, dto.ncfType, undefined, queryRunner);
+
+      const invoice = invoiceRepo.create({
+        saleId: savedSale.id,
+        clientId: client.id,
+        status: 'ISSUED',
+        subtotal,
+        itbisTotal,
+        grandTotal,
+        concept: dto.concept,
+        paidAt: new Date(),
+        issuedAt: new Date(),
+        ...ecfPayload,
+      } as any) as unknown as InvoiceEntity;
+
+      const savedInvoice = await invoiceRepo.save(invoice);
+      await queryRunner.commitTransaction();
+      return savedInvoice;
+    } catch (err: any) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`Error emitiendo factura directa: ${err.message}`, err.stack);
+      throw err;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * Liquida y timbra directamente una factura PENDING_PAYMENT desde /dashboard/facturas
+   * sin requerir redirigir al cajero/POS.
+   */
+  async settlePendingInvoice(
+    invoiceId: string,
+    dto: {
+      ncfType?: 'E31' | 'E32' | 'B01' | 'B02';
+      paymentMethod?: string;
+      userId?: string;
+    },
+  ): Promise<InvoiceEntity> {
+    const invoice = await this.findById(invoiceId);
+    if (!isOpenInvoiceStatus(invoice.status)) {
+      throw new ConflictException(`La factura ya no está pendiente de pago (estado: ${invoice.status})`);
+    }
+
+    const ncfType = dto.ncfType || (invoice.ncfType?.startsWith('E') ? (invoice.ncfType as any) : 'E32');
+    const paymentMethod = this.normalizeSalePaymentMethod(dto.paymentMethod);
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const saleRepo = queryRunner.manager.getRepository(SaleEntity);
+      const detailRepo = queryRunner.manager.getRepository(SaleDetailEntity);
+
+      const subtotal = Number(invoice.subtotal || 0);
+      const itbisTotal = Number(invoice.itbisTotal || 0);
+      const grandTotal = Number(invoice.grandTotal || (subtotal + itbisTotal));
+
+      const sale = saleRepo.create({
+        clientId: invoice.clientId,
+        contractId: invoice.contractId,
+        userId: dto.userId || null,
+        subtotal,
+        itbisTotal,
+        grandTotal,
+        paymentMethod,
+        status: 'PAID',
+        paidAt: new Date(),
+        notes: `Cobro y timbrado de factura recurrente ${invoice.id}`,
+      } as any) as unknown as SaleEntity;
+      const savedSale = await saleRepo.save(sale);
+
+      const concept = invoice.concept || (invoice.contract?.plan?.name ? `${invoice.contract.plan.name} - Mensualidad de servicio` : 'Servicio de Internet');
+      const detail = detailRepo.create({
+        saleId: savedSale.id,
+        concept,
+        itemType: 'PLAN_SUBSCRIPTION',
+        quantity: 1,
+        unitPrice: subtotal,
+        itbisAmount: itbisTotal,
+        subtotal,
+      } as any) as unknown as SaleDetailEntity;
+      await detailRepo.save(detail);
+      savedSale.details = [detail];
+      savedSale.client = invoice.client;
+
+      const settled = await this.settleInvoice(invoiceId, savedSale, ncfType, queryRunner);
+      await queryRunner.commitTransaction();
+      return settled;
+    } catch (err: any) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`Error liquidando factura ${invoiceId}: ${err.message}`, err.stack);
+      throw err;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   /**

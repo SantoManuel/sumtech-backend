@@ -81,4 +81,122 @@ describe('DgiiXsdValidatorService', () => {
     expect(result.errors).toEqual([]);
     expect(result.valid).toBe(true);
   });
+
+  describe('Validación XSD oficial de documentos e-CF firmados (E32, E41, E43, E44, E46, E47)', () => {
+    it('valida exitosamente un E32 (Consumo < 250k) firmado contra ecf-32.xsd', () => {
+      const rawXml = generator.generateEcfXml({
+        ncfType: 'E32',
+        eNcf: 'E320000000001',
+        razonSocialComprador: 'Juan Pérez',
+        correoComprador: 'juan.perez@correo.com',
+        items: [
+          { numeroLinea: 1, nombreItem: 'Internet Residencial', indicadorBienoServicio: '2', indicadorFacturacion: '1', cantidad: 1, precioUnitario: 1450, montoItem: 1450 },
+        ],
+      });
+      const { signedXml } = signer.signXml(rawXml, TEST_CERT_PATH, TEST_CERT_PASSWORD);
+      const result = validator.validateEcf(signedXml, '32');
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('valida exitosamente un E41 (Proveedores Informales) firmado contra ecf-41.xsd', () => {
+      const rawXml = generator.generateEcfXml({
+        ncfType: 'E41',
+        eNcf: 'E410000000001',
+        rncComprador: '00100000001',
+        razonSocialComprador: 'José Miguel Albañil',
+        items: [
+          { numeroLinea: 1, nombreItem: 'Trabajo de albañilería', indicadorBienoServicio: '1', indicadorFacturacion: '4', cantidad: 1, precioUnitario: 4500, montoItem: 4500 },
+        ],
+      });
+      const { signedXml } = signer.signXml(rawXml, TEST_CERT_PATH, TEST_CERT_PASSWORD);
+      const result = validator.validateEcf(signedXml, '41');
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('valida exitosamente un E43 (Gastos Menores) firmado contra ecf-43.xsd', () => {
+      const rawXml = generator.generateEcfXml({
+        ncfType: 'E43',
+        eNcf: 'E430000000001',
+        razonSocialComprador: 'Consumidor Final Gastos Menores',
+        items: [
+          { numeroLinea: 1, nombreItem: 'Combustible cuadrilla', indicadorBienoServicio: '1', indicadorFacturacion: '4', cantidad: 1, precioUnitario: 650, montoItem: 650 },
+        ],
+      });
+      const { signedXml } = signer.signXml(rawXml, TEST_CERT_PATH, TEST_CERT_PASSWORD);
+      const result = validator.validateEcf(signedXml, '43');
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('valida exitosamente un E44 (Regímenes Especiales - Zona Franca) firmado contra ecf-44.xsd', () => {
+      const rawXml = generator.generateEcfXml({
+        ncfType: 'E44',
+        eNcf: 'E440000000001',
+        rncComprador: '130999999',
+        razonSocialComprador: 'PARQUE INDUSTRIAL ZONA FRANCA S.A.',
+        items: [
+          { numeroLinea: 1, nombreItem: 'Enlace Punto a Punto 1 Gbps Exento', indicadorBienoServicio: '2', indicadorFacturacion: '4', cantidad: 1, precioUnitario: 12500, montoItem: 12500 },
+        ],
+      });
+      const { signedXml } = signer.signXml(rawXml, TEST_CERT_PATH, TEST_CERT_PASSWORD);
+      const result = validator.validateEcf(signedXml, '44');
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('valida exitosamente un E46 (Pagos al Exterior - Tasa 0%) firmado contra ecf-46.xsd', () => {
+      const rawXml = generator.generateEcfXml({
+        ncfType: 'E46',
+        eNcf: 'E460000000001',
+        razonSocialComprador: 'TRANSIT PROVIDER LLC',
+        items: [
+          { numeroLinea: 1, nombreItem: 'Capacidad de Tránsito IP Internacional', indicadorBienoServicio: '2', indicadorFacturacion: '3', cantidad: 1, precioUnitario: 58000, montoItem: 58000 },
+        ],
+      });
+      const { signedXml } = signer.signXml(rawXml, TEST_CERT_PATH, TEST_CERT_PASSWORD);
+      const result = validator.validateEcf(signedXml, '46');
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('valida exitosamente un E47 (Exportaciones) firmado contra ecf-47.xsd', () => {
+      const rawXml = generator.generateEcfXml({
+        ncfType: 'E47',
+        eNcf: 'E470000000001',
+        rncComprador: 'EXPORT-US-991',
+        razonSocialComprador: 'CARIBBEAN REGIONAL CORP',
+        items: [
+          { numeroLinea: 1, nombreItem: 'Exportación de Hosting y Peering', indicadorBienoServicio: '2', indicadorFacturacion: '4', cantidad: 1, precioUnitario: 42000, montoItem: 42000 },
+        ],
+      });
+      const { signedXml } = signer.signXml(rawXml, TEST_CERT_PATH, TEST_CERT_PASSWORD);
+      const result = validator.validateEcf(signedXml, '47');
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('valida exitosamente un RFCE (Resumen de Factura de Consumo) firmado contra rfce-32.xsd', () => {
+      const rawXml = generator.generateRfceXml(
+        'E320000000012',
+        '131 148 697', // RNC con espacios para verificar sanitización
+        1000.0,
+        152.54,
+        'WPSJZ0',
+        {
+          razonSocialEmisor: 'SUMTECH TELECOM S.R.L.',
+          razonSocialComprador: 'Consumidor Final',
+          montoGravadoTotal: 847.46,
+          montoGravadoI1: 847.46,
+          totalItbis1: 152.54,
+        },
+      );
+      const { signedXml } = signer.signXml(rawXml, TEST_CERT_PATH, TEST_CERT_PASSWORD);
+      const result = validator.validateRfce(signedXml);
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+  });
 });
+

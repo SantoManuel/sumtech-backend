@@ -136,6 +136,9 @@ export class CompanyProfileEntity {
   @Column({ name: 'telegram_alerts_enabled', type: 'boolean', default: false })
   telegramAlertsEnabled: boolean;
 
+  @Column({ name: 'contract_clauses', type: 'text', array: true, nullable: true })
+  contractClauses?: string[];
+
   @Column({ type: 'jsonb', default: {} })
   settings: Record<string, any>;
 

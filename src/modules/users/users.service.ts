@@ -59,6 +59,48 @@ export class UsersService {
       .getOne();
   }
 
+  async findByEmail(email: string): Promise<UserEntity | null> {
+    return this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .leftJoinAndSelect('user.roles', 'roles')
+      .leftJoinAndSelect('user.employee', 'employee')
+      .leftJoinAndSelect('user.client', 'client')
+      .where('LOWER(user.email) = LOWER(:email)', { email: email.trim() })
+      .getOne();
+  }
+
+  async setResetPasswordToken(userId: string, tokenHash: string, expiresAt: Date): Promise<void> {
+    await this.userRepository.update(
+      { id: userId },
+      {
+        resetPasswordTokenHash: tokenHash,
+        resetPasswordExpiresAt: expiresAt,
+      },
+    );
+  }
+
+  async findByResetToken(tokenHash: string): Promise<UserEntity | null> {
+    return this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.resetPasswordTokenHash')
+      .addSelect('user.resetPasswordExpiresAt')
+      .where('user.resetPasswordTokenHash = :tokenHash', { tokenHash })
+      .getOne();
+  }
+
+  async updatePasswordAndClearResetToken(userId: string, newPasswordHash: string): Promise<void> {
+    await this.userRepository.update(
+      { id: userId },
+      {
+        passwordHash: newPasswordHash,
+        resetPasswordTokenHash: null,
+        resetPasswordExpiresAt: null,
+      },
+    );
+  }
+
+
   /**
    * `manager` opcional: cuando se provee (ej. desde EmployeesService.create()
    * dentro de una transacción de alta de empleado con acceso al sistema), toda
