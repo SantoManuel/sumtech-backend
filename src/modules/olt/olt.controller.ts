@@ -96,8 +96,13 @@ export class OltController {
   @Get('olts/:id/metrics/history')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('VIEW')
-  async getOltMetricsHistory(@Param('id') id: string, @Query('hours') hours?: number) {
-    return this.monitoringService.getMetricsHistory(id, hours ? Number(hours) : 24);
+  async getOltMetricsHistory(
+    @Param('id') id: string,
+    @Query('hours') hours?: number,
+    @Query('days') days?: number,
+  ) {
+    const totalHours = days ? Number(days) * 24 : hours ? Number(hours) : 24;
+    return this.monitoringService.getMetricsHistory(id, totalHours);
   }
 
   // ══════════════════════════════════════════════════

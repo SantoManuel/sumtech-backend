@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan } from 'typeorm';
+import { Repository, LessThan, MoreThanOrEqual } from 'typeorm';
 import axios from 'axios';
 import { OltEntity } from '../entities/olt.entity';
 import { OltMetricEntity } from '../entities/olt-metric.entity';
@@ -121,9 +121,8 @@ export class OltMonitoringService {
     since.setHours(since.getHours() - hours);
 
     const metrics = await this.metricRepository.find({
-      where: { oltId },
+      where: { oltId, createdAt: MoreThanOrEqual(since) },
       order: { createdAt: 'ASC' },
-      take: 100,
     });
 
     // Si aún no hay snapshots persistidos, generar una muestra inicial
