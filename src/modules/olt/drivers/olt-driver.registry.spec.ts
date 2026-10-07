@@ -1,0 +1,100 @@
+import { OltDriverRegistry } from './olt-driver.registry';
+import { ZteC320Driver } from './zte-c320.driver';
+import { HuaweiMa5800Driver } from './huawei-ma5800.driver';
+import { HiosoDriver } from './hioso.driver';
+import { HsgqDriver } from './hsgq.driver';
+import { UnknownOltVendorError } from '../ports/olt-driver.port';
+
+describe('OltDriverRegistry', () => {
+  let zteDriver: ZteC320Driver;
+  let huaweiDriver: HuaweiMa5800Driver;
+  let hiosoDriver: HiosoDriver;
+  let hsgqDriver: HsgqDriver;
+  let registry: OltDriverRegistry;
+
+  beforeEach(() => {
+    zteDriver = new ZteC320Driver();
+    huaweiDriver = new HuaweiMa5800Driver();
+    hiosoDriver = new HiosoDriver();
+    hsgqDriver = new HsgqDriver();
+    registry = new OltDriverRegistry(zteDriver, huaweiDriver, hiosoDriver, hsgqDriver);
+  });
+
+  describe('resolve() — enrutamiento por fabricante', () => {
+    it('resuelve ZTE al driver real', () => {
+      expect(registry.resolve('ZTE')).toBe(zteDriver);
+    });
+
+    it('resuelve HUAWEI a su propio driver registrado', () => {
+      expect(registry.resolve('HUAWEI')).toBe(huaweiDriver);
+    });
+
+    it('resuelve HIOSO a su propio driver registrado', () => {
+      expect(registry.resolve('HIOSO')).toBe(hiosoDriver);
+    });
+
+    it('resuelve HSGQ a su propio driver registrado', () => {
+      expect(registry.resolve('HSGQ')).toBe(hsgqDriver);
+    });
+
+    it('nunca resuelve un vendor desconocido a ZteC320Driver por defecto', () => {
+      expect(() => registry.resolve('MARCA-DESCONOCIDA')).toThrow(UnknownOltVendorError);
+    });
+
+    it('lanza UnknownOltVendorError para vendor vacío', () => {
+      expect(() => registry.resolve('')).toThrow(UnknownOltVendorError);
+    });
+
+    it('lanza UnknownOltVendorError para vendor indefinido', () => {
+      expect(() => registry.resolve(undefined)).toThrow(UnknownOltVendorError);
+    });
+  });
+
+  describe('integración — una OLT HiOSO jamás ejecuta código de ZteC320Driver', () => {
+    it('resolve(HIOSO).testConnection() nunca invoca ZteC320Driver.prototype.testConnection', async () => {
+      const zteSpy = jest.spyOn(ZteC320Driver.prototype, 'testConnection');
+
+      const driver = registry.resolve('HiOSO');
+      const result = await driver.testConnection({ host: '10.0.0.50', port: 23, username: 'admin', password: 'x' });
+
+      expect(zteSpy).not.toHaveBeenCalled();
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('HIOSO');
+
+      zteSpy.mockRestore();
+    });
+  });
+
+  describe('drivers no implementados — nunca retornan éxito simulado', () => {
+    it.each([
+      ['HuaweiMa5800Driver', () => new HuaweiMa5800Driver()],
+      ['HiosoDriver', () => new HiosoDriver()],
+      ['HsgqDriver', () => new HsgqDriver()],
+    ])('%s: getCapabilities() retorna todo en false', (_name, factory) => {
+      const driver = factory();
+      const caps = driver.getCapabilities();
+      expect(Object.values(caps).every((v) => v === false)).toBe(true);
+    });
+
+    it.each([
+      ['HuaweiMa5800Driver', () => new HuaweiMa5800Driver()],
+      ['HiosoDriver', () => new HiosoDriver()],
+      ['HsgqDriver', () => new HsgqDriver()],
+    ])('%s: testConnection() retorna ok:false en vez de simular conexión real', async (_name, factory) => {
+      const driver = factory();
+      const result = await driver.testConnection({ host: '10.0.0.1', port: 23, username: 'a', password: 'b' });
+      expect(result.ok).toBe(false);
+    });
+
+    it.each([
+      ['HuaweiMa5800Driver', () => new HuaweiMa5800Driver()],
+      ['HiosoDriver', () => new HiosoDriver()],
+      ['HsgqDriver', () => new HsgqDriver()],
+    ])('%s: discoverInterfaces() lanza en vez de inventar puertos', async (_name, factory) => {
+      const driver = factory();
+      await expect(
+        driver.discoverInterfaces({ host: '10.0.0.1', port: 23, username: 'a', password: 'b' }),
+      ).rejects.toThrow('no está implementada');
+    });
+  });
+});

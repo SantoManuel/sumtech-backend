@@ -11,9 +11,10 @@ import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
-import { ZteC320Driver } from '../drivers/zte-c320.driver';
+import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
+import { UnknownOltVendorError } from '../ports/olt-driver.port';
 
 describe('OnuManagementService', () => {
   let service: OnuManagementService;
@@ -27,12 +28,14 @@ describe('OnuManagementService', () => {
   let nodeRepo: any;
   let contractRepo: any;
   let zteDriver: any;
+  let driverRegistry: any;
   let reachabilityResolver: any;
   let deviceOperationLogger: any;
 
   const mockOlt: Partial<OltEntity> = {
     id: 'olt-uuid-1',
     name: 'OLT Central ZTE C320',
+    vendor: 'ZTE',
     model: 'ZTE-C320',
     host: '10.0.0.10',
     port: 23,
@@ -121,6 +124,11 @@ describe('OnuManagementService', () => {
       authorizeOnu: jest.fn(),
       setOnuAdminState: jest.fn(),
       deleteOnu: jest.fn(),
+      constructor: { name: 'ZteC320Driver' },
+    };
+
+    driverRegistry = {
+      resolve: jest.fn().mockReturnValue(zteDriver),
     };
 
     reachabilityResolver = {
@@ -146,7 +154,7 @@ describe('OnuManagementService', () => {
         { provide: getRepositoryToken(Tr069NetworkEntity), useValue: tr069Repo },
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
         { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
-        { provide: ZteC320Driver, useValue: zteDriver },
+        { provide: OltDriverRegistry, useValue: driverRegistry },
         { provide: ReachabilityResolver, useValue: reachabilityResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
       ],
@@ -332,6 +340,16 @@ describe('OnuManagementService', () => {
         'gpon-onu_1/1/1:1',
         'ACTIVE',
       );
+    });
+
+    it('nunca ejecuta setOnuAdminState del driver si el vendor de la OLT no es reconocido (ciclo de cobranza OLT_NATIVE)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE' });
+      driverRegistry.resolve.mockImplementation(() => {
+        throw new UnknownOltVendorError('MARCA-DESCONOCIDA');
+      });
+
+      await expect(service.blockOnu('onu-uuid-1', 'admin-id')).rejects.toThrow(BadRequestException);
+      expect(zteDriver.setOnuAdminState).not.toHaveBeenCalled();
     });
   });
 });

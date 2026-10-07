@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { IOltDriver } from '../ports/olt-driver.port';
+import { IOltDriver, UnknownOltVendorError } from '../ports/olt-driver.port';
 import { ZteC320Driver } from './zte-c320.driver';
 import { HuaweiMa5800Driver } from './huawei-ma5800.driver';
 import { HiosoDriver } from './hioso.driver';
@@ -14,8 +14,19 @@ export class OltDriverRegistry {
     private readonly hsgqDriver: HsgqDriver,
   ) {}
 
+  /**
+   * Resuelve el driver real del fabricante. Nunca cae en ZteC320Driver por
+   * defecto — un vendor vacío o no reconocido lanza UnknownOltVendorError en
+   * vez de ejecutar silenciosamente comandos de otro fabricante.
+   */
   resolve(vendorOrModel?: string): IOltDriver {
-    const v = (vendorOrModel || '').toUpperCase();
+    const v = (vendorOrModel || '').toUpperCase().trim();
+    if (!v) {
+      throw new UnknownOltVendorError(vendorOrModel);
+    }
+    if (v.includes('ZTE')) {
+      return this.zteDriver;
+    }
     if (v.includes('HUAWEI')) {
       return this.huaweiDriver;
     }
@@ -25,7 +36,6 @@ export class OltDriverRegistry {
     if (v.includes('HSGQ')) {
       return this.hsgqDriver;
     }
-    // Default: ZTE C320
-    return this.zteDriver;
+    throw new UnknownOltVendorError(vendorOrModel);
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OnuEntity } from '../entities/onu.entity';
@@ -10,11 +10,17 @@ import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
-import { ZteC320Driver } from '../drivers/zte-c320.driver';
+import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
-import { OltConnectionParams, AuthorizeOnuParams } from '../ports/olt-driver.port';
+import {
+  IOltDriver,
+  OltConnectionParams,
+  AuthorizeOnuParams,
+  DriverNotImplementedError,
+  UnknownOltVendorError,
+} from '../ports/olt-driver.port';
 
 @Injectable()
 export class OnuManagementService {
@@ -39,10 +45,37 @@ export class OnuManagementService {
     private readonly nodeRepository: Repository<NetworkNodeEntity>,
     @InjectRepository(ContractEntity)
     private readonly contractRepository: Repository<ContractEntity>,
-    private readonly zteDriver: ZteC320Driver,
+    private readonly driverRegistry: OltDriverRegistry,
     private readonly reachabilityResolver: ReachabilityResolver,
     private readonly deviceOperationLogger: DeviceOperationLogger,
   ) {}
+
+  /**
+   * Resuelve el driver real del fabricante de la OLT dueña de la ONU/operación.
+   * Nunca cae silenciosamente en ZteC320Driver para un vendor desconocido.
+   */
+  private resolveDriver(olt: OltEntity): IOltDriver {
+    try {
+      return this.driverRegistry.resolve(olt.vendor);
+    } catch (err) {
+      if (err instanceof UnknownOltVendorError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
+  }
+
+  /** Traduce DriverNotImplementedError a un 501 explícito en vez de un 500 genérico. */
+  private async callDriver<T>(op: () => Promise<T>): Promise<T> {
+    try {
+      return await op();
+    } catch (err: any) {
+      if (err instanceof DriverNotImplementedError) {
+        throw new HttpException({ code: err.code, message: err.message }, HttpStatus.NOT_IMPLEMENTED);
+      }
+      throw err;
+    }
+  }
 
   /**
    * Consulta ONUs sin configurar descubiertas por OLT o por ACS (RF-OLT-014).
@@ -118,8 +151,9 @@ export class OnuManagementService {
     const olt = await this.oltRepository.findOneBy({ id: oltId });
     if (!olt) throw new NotFoundException(`OLT no encontrada: ${oltId}`);
 
+    const driver = this.resolveDriver(olt);
     const connParams = await this.resolveOltConnectionParams(olt);
-    const discovered = await this.zteDriver.getUnconfiguredOnus(connParams);
+    const discovered = await this.callDriver(() => driver.getUnconfiguredOnus(connParams));
 
     const savedOnus: OnuEntity[] = [];
 
@@ -159,8 +193,9 @@ export class OnuManagementService {
       nodeId: olt.viaNodeId || olt.id,
       eventType: 'COMMAND',
       status: 'SUCCESS',
-      message: `Escaneo de ONUs sin configurar en OLT "${olt.name}": ${discovered.length} detectadas.`,
+      message: `[${olt.vendor}] Escaneo de ONUs sin configurar en OLT "${olt.name}": ${discovered.length} detectadas.`,
       actorUserId,
+      rawDetails: { oltId: olt.id, vendor: olt.vendor, driverName: driver.constructor.name, operation: 'scanUnconfiguredOnus' },
     });
 
     return savedOnus;
@@ -171,13 +206,14 @@ export class OnuManagementService {
    */
   async getOpticalTelemetry(id: string) {
     const onu = await this.findById(id);
+    const driver = this.resolveDriver(onu.olt);
     const connParams = await this.resolveOltConnectionParams(onu.olt);
 
     const onuTarget = onu.onuIndex.startsWith('gpon-onu_')
       ? onu.onuIndex
       : `${onu.ponInterface?.name || 'gpon-olt_1/1/1'}:${onu.onuIndex}`;
 
-    const power = await this.zteDriver.getOnuOpticalPower(connParams, onuTarget);
+    const power = await this.callDriver(() => driver.getOnuOpticalPower(connParams, onuTarget));
 
     if (power.rxDbm !== undefined) {
       onu.rxPowerDbm = power.rxDbm;
@@ -212,8 +248,9 @@ export class OnuManagementService {
    */
   async previewAuthorizationScript(id: string, dto: any) {
     const onu = await this.findById(id);
+    const driver = this.resolveDriver(onu.olt);
     const config = await this.buildAuthorizeParams(onu, dto);
-    const commands = this.zteDriver.generateAuthorizationScript(config);
+    const commands = await this.callDriver(async () => driver.generateAuthorizationScript(config));
 
     return {
       onuId: onu.id,
@@ -229,12 +266,13 @@ export class OnuManagementService {
   async authorizeOnu(id: string, dto: any, actorUserId?: string) {
     const onu = await this.findById(id);
     const olt = onu.olt;
+    const driver = this.resolveDriver(olt);
     const connParams = await this.resolveOltConnectionParams(olt);
 
     const authParams = await this.buildAuthorizeParams(onu, dto);
 
     // 1. Provisión en la OLT vía Telnet
-    const result = await this.zteDriver.authorizeOnu(connParams, authParams);
+    const result = await driver.authorizeOnu(connParams, authParams);
     if (!result.ok) {
       throw new BadRequestException(`Fallo aprovisionando ONU en OLT: ${result.error}`);
     }
@@ -285,9 +323,16 @@ export class OnuManagementService {
       nodeId: olt.viaNodeId || olt.id,
       eventType: 'PROVISION',
       status: 'SUCCESS',
-      message: `ONU ${onu.serialNumber} autorizada con éxito en ${authParams.ponInterface}:${authParams.onuId}`,
+      message: `[${olt.vendor}] ONU ${onu.serialNumber} autorizada con éxito en ${authParams.ponInterface}:${authParams.onuId}`,
       actorUserId,
-      rawDetails: { onuId: onu.id, serialNumber: onu.serialNumber },
+      rawDetails: {
+        onuId: onu.id,
+        serialNumber: onu.serialNumber,
+        oltId: olt.id,
+        vendor: olt.vendor,
+        driverName: driver.constructor.name,
+        operation: 'authorizeOnu',
+      },
     });
 
     return this.findById(onu.id);
@@ -298,10 +343,11 @@ export class OnuManagementService {
    */
   async blockOnu(id: string, actorUserId?: string) {
     const onu = await this.findById(id);
+    const driver = this.resolveDriver(onu.olt);
     const connParams = await this.resolveOltConnectionParams(onu.olt);
 
     const target = this.buildOnuTarget(onu);
-    const result = await this.zteDriver.setOnuAdminState(connParams, target, 'BLOCKED');
+    const result = await driver.setOnuAdminState(connParams, target, 'BLOCKED');
     if (!result.ok) {
       throw new BadRequestException(`No se pudo bloquear la ONU: ${result.error}`);
     }
@@ -313,8 +359,9 @@ export class OnuManagementService {
       nodeId: onu.olt.viaNodeId || onu.olt.id,
       eventType: 'COMMAND',
       status: 'SUCCESS',
-      message: `ONU ${onu.serialNumber} bloqueada (shutdown) en ${target}.`,
+      message: `[${onu.olt.vendor}] ONU ${onu.serialNumber} bloqueada (shutdown) en ${target}.`,
       actorUserId,
+      rawDetails: { onuId: onu.id, oltId: onu.olt.id, vendor: onu.olt.vendor, driverName: driver.constructor.name, operation: 'blockOnu' },
     });
 
     return { success: true, status: 'BLOCKED', message: 'ONU bloqueada correctamente en la OLT.' };
@@ -325,10 +372,11 @@ export class OnuManagementService {
    */
   async unblockOnu(id: string, actorUserId?: string) {
     const onu = await this.findById(id);
+    const driver = this.resolveDriver(onu.olt);
     const connParams = await this.resolveOltConnectionParams(onu.olt);
 
     const target = this.buildOnuTarget(onu);
-    const result = await this.zteDriver.setOnuAdminState(connParams, target, 'ACTIVE');
+    const result = await driver.setOnuAdminState(connParams, target, 'ACTIVE');
     if (!result.ok) {
       throw new BadRequestException(`No se pudo reactivar la ONU: ${result.error}`);
     }
@@ -340,8 +388,9 @@ export class OnuManagementService {
       nodeId: onu.olt.viaNodeId || onu.olt.id,
       eventType: 'COMMAND',
       status: 'SUCCESS',
-      message: `ONU ${onu.serialNumber} reactivada (no shutdown) en ${target}.`,
+      message: `[${onu.olt.vendor}] ONU ${onu.serialNumber} reactivada (no shutdown) en ${target}.`,
       actorUserId,
+      rawDetails: { onuId: onu.id, oltId: onu.olt.id, vendor: onu.olt.vendor, driverName: driver.constructor.name, operation: 'unblockOnu' },
     });
 
     return { success: true, status: 'ACTIVE', message: 'ONU reactivada correctamente en la OLT.' };

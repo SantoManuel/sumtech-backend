@@ -9,7 +9,7 @@ import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { OnuTypeEntity } from '../entities/onu-type.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
-import { ZteC320Driver } from '../drivers/zte-c320.driver';
+import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
 
@@ -63,7 +63,10 @@ describe('OltCatalogsService', () => {
         { provide: getRepositoryToken(Tr069NetworkEntity), useValue: tr069Repo },
         { provide: getRepositoryToken(OltEntity), useValue: {} },
         { provide: getRepositoryToken(PlanEntity), useValue: planRepo },
-        { provide: ZteC320Driver, useValue: { configureVlanOnInterface: jest.fn() } },
+        {
+          provide: OltDriverRegistry,
+          useValue: { resolve: jest.fn().mockReturnValue({ configureVlanOnInterface: jest.fn().mockResolvedValue({ ok: true }) }) },
+        },
       ],
     }).compile();
 

@@ -1,12 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { UnknownOltVendorError } from '../ports/olt-driver.port';
 import { OltManagementService } from './olt-management.service';
 import { OltEntity } from '../entities/olt.entity';
 import { OltRolePermissionEntity } from '../entities/olt-role-permission.entity';
 import { OltInterfaceEntity } from '../entities/olt-interface.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
-import { ZteC320Driver } from '../drivers/zte-c320.driver';
+import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 
@@ -17,6 +18,7 @@ describe('OltManagementService', () => {
   let ifaceRepo: any;
   let nodeRepo: any;
   let zteDriver: any;
+  let driverRegistry: any;
   let reachabilityResolver: any;
   let deviceOperationLogger: any;
 
@@ -70,6 +72,21 @@ describe('OltManagementService', () => {
       discoverInterfaces: jest.fn().mockResolvedValue([
         { name: 'gpon-olt_1/1/1', type: 'PON', slot: 1, port: 1, adminState: 'UP', operState: 'UP' },
       ]),
+      getCapabilities: jest.fn().mockReturnValue({
+        testConnection: true,
+        systemInfo: true,
+        discoverInterfaces: true,
+        configureVlan: true,
+        onuDiscovery: true,
+        onuOpticalPower: true,
+        onuAuthorize: true,
+        onuAdminState: true,
+        onuDelete: true,
+      }),
+      constructor: { name: 'ZteC320Driver' },
+    };
+    driverRegistry = {
+      resolve: jest.fn().mockReturnValue(zteDriver),
     };
     reachabilityResolver = {
       resolveEndpoint: jest.fn().mockResolvedValue({ host: '10.0.0.1', port: 8729, useHttps: false }),
@@ -85,7 +102,7 @@ describe('OltManagementService', () => {
         { provide: getRepositoryToken(OltRolePermissionEntity), useValue: permRepo },
         { provide: getRepositoryToken(OltInterfaceEntity), useValue: ifaceRepo },
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
-        { provide: ZteC320Driver, useValue: zteDriver },
+        { provide: OltDriverRegistry, useValue: driverRegistry },
         { provide: ReachabilityResolver, useValue: reachabilityResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
       ],
@@ -144,6 +161,26 @@ describe('OltManagementService', () => {
           status: 'SUCCESS',
         }),
       );
+    });
+  });
+
+  describe('enrutamiento por fabricante', () => {
+    it('findById adjunta las capacidades reales del driver resuelto para el vendor', async () => {
+      const olt = await service.findById('olt-1');
+
+      expect(driverRegistry.resolve).toHaveBeenCalledWith('ZTE');
+      expect((olt as any).capabilities).toEqual(
+        expect.objectContaining({ testConnection: true, onuAuthorize: true }),
+      );
+    });
+
+    it('nunca ejecuta testConnection del driver si el vendor no es reconocido', async () => {
+      driverRegistry.resolve.mockImplementation(() => {
+        throw new UnknownOltVendorError('MARCA-DESCONOCIDA');
+      });
+
+      await expect(service.testConnection('olt-1')).rejects.toThrow(BadRequestException);
+      expect(zteDriver.testConnection).not.toHaveBeenCalled();
     });
   });
 });

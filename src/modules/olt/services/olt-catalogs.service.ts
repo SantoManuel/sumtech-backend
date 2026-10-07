@@ -8,7 +8,7 @@ import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { OnuTypeEntity } from '../entities/onu-type.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
-import { ZteC320Driver } from '../drivers/zte-c320.driver';
+import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
@@ -33,7 +33,7 @@ export class OltCatalogsService {
     private readonly oltRepository: Repository<OltEntity>,
     @InjectRepository(PlanEntity)
     private readonly planRepository: Repository<PlanEntity>,
-    private readonly zteDriver: ZteC320Driver,
+    private readonly driverRegistry: OltDriverRegistry,
   ) {}
 
   // ══════════════════════════════════════════════════
@@ -119,8 +119,9 @@ export class OltCatalogsService {
     // Aplicación en vivo en la OLT mediante comando Telnet
     if (applyToHardware && iface.olt) {
       try {
+        const driver = this.driverRegistry.resolve(iface.olt.vendor);
         const password = decryptCredential(iface.olt.passwordEnc);
-        await this.zteDriver.configureVlanOnInterface(
+        const result = await driver.configureVlanOnInterface(
           {
             host: iface.olt.host,
             port: iface.olt.port || 23,
@@ -133,8 +134,10 @@ export class OltCatalogsService {
             mode,
           },
         );
-        mapping.applyStatus = 'APPLIED';
+        mapping.applyStatus = result.ok ? 'APPLIED' : 'ERROR';
       } catch {
+        // Incluye UnknownOltVendorError (vendor no reconocido) y fallas de
+        // comunicación real — ambas quedan como ERROR, nunca como APPLIED falso.
         mapping.applyStatus = 'ERROR';
       }
     }

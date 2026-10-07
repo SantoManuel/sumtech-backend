@@ -6,6 +6,7 @@ import {
   OltSystemInfo,
   DiscoveredInterface,
   ConfigureVlanParams,
+  OltDriverCapabilities,
 } from '../ports/olt-driver.port';
 
 @Injectable()
@@ -387,6 +388,20 @@ export class ZteC320Driver implements IOltDriver {
     } finally {
       session.close();
     }
+  }
+
+  getCapabilities(): OltDriverCapabilities {
+    return {
+      testConnection: true,
+      systemInfo: true,
+      discoverInterfaces: true,
+      configureVlan: true,
+      onuDiscovery: true,
+      onuOpticalPower: true,
+      onuAuthorize: true,
+      onuAdminState: true,
+      onuDelete: true,
+    };
   }
 }
 

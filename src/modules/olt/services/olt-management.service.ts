@@ -1,15 +1,22 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OltEntity } from '../entities/olt.entity';
 import { OltRolePermissionEntity } from '../entities/olt-role-permission.entity';
 import { OltInterfaceEntity } from '../entities/olt-interface.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
-import { ZteC320Driver } from '../drivers/zte-c320.driver';
+import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { encryptCredential, decryptCredential } from '../../network-connectivity/utils/crypto.util';
-import { OltConnectionParams } from '../ports/olt-driver.port';
+import {
+  IOltDriver,
+  OltConnectionParams,
+  OltDriverCapabilities,
+  NO_DRIVER_CAPABILITIES,
+  DriverNotImplementedError,
+  UnknownOltVendorError,
+} from '../ports/olt-driver.port';
 
 @Injectable()
 export class OltManagementService {
@@ -24,18 +31,19 @@ export class OltManagementService {
     private readonly ifaceRepository: Repository<OltInterfaceEntity>,
     @InjectRepository(NetworkNodeEntity)
     private readonly nodeRepository: Repository<NetworkNodeEntity>,
-    private readonly zteDriver: ZteC320Driver,
+    private readonly driverRegistry: OltDriverRegistry,
     private readonly reachabilityResolver: ReachabilityResolver,
     private readonly deviceOperationLogger: DeviceOperationLogger,
   ) {}
 
   async findAll(activeOnly = false) {
     const where = activeOnly ? { isActive: true } : {};
-    return this.oltRepository.find({
+    const olts = await this.oltRepository.find({
       where,
       relations: ['viaNode', 'zone', 'rolePermissions', 'interfaces'],
       order: { name: 'ASC' },
     });
+    return olts.map((olt) => this.attachCapabilities(olt));
   }
 
   async findById(id: string) {
@@ -46,7 +54,44 @@ export class OltManagementService {
     if (!olt) {
       throw new NotFoundException(`OLT no encontrada: ${id}`);
     }
-    return olt;
+    return this.attachCapabilities(olt);
+  }
+
+  /**
+   * Resuelve el driver real del fabricante (RF-RED, regla de enrutamiento):
+   * nunca cae silenciosamente en ZteC320Driver para un vendor desconocido.
+   */
+  private resolveDriver(olt: OltEntity): IOltDriver {
+    try {
+      return this.driverRegistry.resolve(olt.vendor);
+    } catch (err) {
+      if (err instanceof UnknownOltVendorError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
+  }
+
+  /** Traduce DriverNotImplementedError a un 501 explícito en vez de un 500 genérico. */
+  private async callDriver<T>(op: () => Promise<T>): Promise<T> {
+    try {
+      return await op();
+    } catch (err: any) {
+      if (err instanceof DriverNotImplementedError) {
+        throw new HttpException({ code: err.code, message: err.message }, HttpStatus.NOT_IMPLEMENTED);
+      }
+      throw err;
+    }
+  }
+
+  private attachCapabilities<T extends OltEntity>(olt: T): T & { capabilities: OltDriverCapabilities } {
+    let capabilities: OltDriverCapabilities;
+    try {
+      capabilities = this.driverRegistry.resolve(olt.vendor).getCapabilities();
+    } catch {
+      capabilities = { ...NO_DRIVER_CAPABILITIES };
+    }
+    return Object.assign(olt, { capabilities });
   }
 
   async create(dto: any, actorUserId?: string) {
@@ -145,11 +190,13 @@ export class OltManagementService {
     return this.findById(id);
   }
 
-  async testConnection(id: string) {
+  async testConnection(id: string, actorUserId?: string) {
     const olt = await this.findById(id);
+    const driver = this.resolveDriver(olt);
     const connParams = await this.resolveOltConnectionParams(olt);
 
-    const test = await this.zteDriver.testConnection(connParams);
+    const start = Date.now();
+    const test = await driver.testConnection(connParams);
     olt.lastCheckedAt = new Date();
 
     if (test.ok) {
@@ -158,16 +205,32 @@ export class OltManagementService {
 
       // Intentar refrescar versión y uptime
       try {
-        const sysInfo = await this.zteDriver.getSystemInfo(connParams);
+        const sysInfo = await driver.getSystemInfo(connParams);
         olt.firmwareVersion = sysInfo.firmwareVersion;
       } catch {
-        // Ignorar fallo secundario de system-info
+        // Ignorar fallo secundario de system-info (incluye DriverNotImplementedError)
       }
     } else {
       olt.connectionStatus = test.error?.includes('Login fallido') ? 'ERROR_AUTH' : 'INALCANZABLE';
     }
 
     await this.oltRepository.save(olt);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'COMMAND',
+      status: test.ok ? 'SUCCESS' : 'FAILURE',
+      message: `[${olt.vendor}] testConnection en OLT "${olt.name}": ${test.ok ? 'conectado' : test.error}.`,
+      actorUserId,
+      rawDetails: {
+        oltId: olt.id,
+        vendor: olt.vendor,
+        model: olt.model,
+        driverName: driver.constructor.name,
+        operation: 'testConnection',
+        durationMs: Date.now() - start,
+      },
+    });
 
     return {
       ok: test.ok,
@@ -183,9 +246,11 @@ export class OltManagementService {
    */
   async discoverInterfaces(id: string, actorUserId?: string) {
     const olt = await this.findById(id);
+    const driver = this.resolveDriver(olt);
     const connParams = await this.resolveOltConnectionParams(olt);
 
-    const discovered = await this.zteDriver.discoverInterfaces(connParams);
+    const start = Date.now();
+    const discovered = await this.callDriver(() => driver.discoverInterfaces(connParams));
 
     for (const iface of discovered) {
       let existing = await this.ifaceRepository.findOneBy({
@@ -212,8 +277,16 @@ export class OltManagementService {
       nodeId: olt.viaNodeId || olt.id,
       eventType: 'COMMAND',
       status: 'SUCCESS',
-      message: `Descubrimiento de interfaces completado para OLT "${olt.name}": ${discovered.length} interfaces detectadas.`,
+      message: `[${olt.vendor}] Descubrimiento de interfaces completado para OLT "${olt.name}": ${discovered.length} interfaces detectadas.`,
       actorUserId,
+      rawDetails: {
+        oltId: olt.id,
+        vendor: olt.vendor,
+        model: olt.model,
+        driverName: driver.constructor.name,
+        operation: 'discoverInterfaces',
+        durationMs: Date.now() - start,
+      },
     });
 
     return this.ifaceRepository.find({ where: { oltId: olt.id }, order: { name: 'ASC' } });

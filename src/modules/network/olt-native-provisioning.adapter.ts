@@ -6,7 +6,9 @@ import { OnuManagementService } from '../olt/services/onu-management.service';
 /**
  * Adaptador de aprovisionamiento y control OLT Nativo (RF-RED-001/002).
  * Controla el ciclo de vida y suspensión directamente en la cabecera OLT mediante
- * el bloqueo óptico del puerto ONU (shutdown / no shutdown en ZTE C320).
+ * el bloqueo óptico del puerto ONU (shutdown / no shutdown), delegando en
+ * OnuManagementService → OltDriverRegistry para usar el driver real del
+ * fabricante de cada OLT (no asume ZTE).
  */
 @Injectable()
 export class OltNativeProvisioningAdapter extends NetworkProvisioningPort {

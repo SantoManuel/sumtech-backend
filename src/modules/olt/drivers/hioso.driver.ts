@@ -8,79 +8,65 @@ import {
   DiscoveredUncfgOnu,
   OnuOpticalPower,
   AuthorizeOnuParams,
+  OltDriverCapabilities,
+  NO_DRIVER_CAPABILITIES,
+  DriverNotImplementedError,
 } from '../ports/olt-driver.port';
 
+const VENDOR = 'HIOSO';
+
+/**
+ * Driver registrado para HiOSO — ninguna operación tiene comunicación real
+ * implementada todavía. Se requiere evidencia real del equipo (script
+ * funcional, transcript de sesión real, o manual oficial) antes de escribir
+ * los comandos Telnet/SSH reales — ver DriverNotImplementedError y
+ * getCapabilities().
+ */
 @Injectable()
 export class HiosoDriver implements IOltDriver {
   private readonly logger = new Logger(HiosoDriver.name);
 
   async testConnection(params: OltConnectionParams): Promise<{ ok: boolean; error?: string; latencyMs?: number }> {
-    return { ok: true, latencyMs: 20 };
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'testConnection').message };
   }
 
   async getSystemInfo(params: OltConnectionParams): Promise<OltSystemInfo> {
-    return {
-      vendor: 'HIOSO',
-      model: 'HA7304GP',
-      uptime: '28 days, 04:10:00',
-      firmwareVersion: 'V2.1.8',
-    };
+    throw new DriverNotImplementedError(VENDOR, 'getSystemInfo');
   }
 
   async discoverInterfaces(params: OltConnectionParams): Promise<DiscoveredInterface[]> {
-    const ifaces: DiscoveredInterface[] = [];
-    for (let p = 1; p <= 4; p++) {
-      ifaces.push({
-        name: `EPON0/${p}`,
-        type: 'PON',
-        slot: 0,
-        port: p,
-        adminState: 'UP',
-        operState: 'UP',
-        registeredOnus: 18,
-      });
-    }
-    ifaces.push({
-      name: 'G1',
-      type: 'UPLINK',
-      slot: 0,
-      port: 1,
-      adminState: 'UP',
-      operState: 'UP',
-    });
-    return ifaces;
+    throw new DriverNotImplementedError(VENDOR, 'discoverInterfaces');
   }
 
   async configureVlanOnInterface(params: OltConnectionParams, config: ConfigureVlanParams): Promise<{ ok: boolean; error?: string }> {
-    return { ok: true };
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'configureVlanOnInterface').message };
   }
 
   async getUnconfiguredOnus(params: OltConnectionParams, ponInterface?: string): Promise<DiscoveredUncfgOnu[]> {
-    return [];
+    throw new DriverNotImplementedError(VENDOR, 'getUnconfiguredOnus');
   }
 
   async getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower> {
-    return { rxDbm: -20.5, txDbm: 2.4, attenuationDb: 22.9 };
+    throw new DriverNotImplementedError(VENDOR, 'getOnuOpticalPower');
   }
 
   async authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }> {
-    return { ok: true };
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'authorizeOnu').message };
   }
 
   async setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }> {
-    return { ok: true };
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'setOnuAdminState').message };
   }
 
   async deleteOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }> {
-    return { ok: true };
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'deleteOnu').message };
   }
 
   generateAuthorizationScript(config: AuthorizeOnuParams): string[] {
-    return [
-      `interface ${config.ponInterface}`,
-      `onu add ${config.onuId} mac ${config.serialNumber}`,
-      `onu ${config.onuId} vlan mode tag ${config.serviceVlan}`,
-      'exit',
-    ];
+    throw new DriverNotImplementedError(VENDOR, 'generateAuthorizationScript');
+  }
+
+  getCapabilities(): OltDriverCapabilities {
+    return { ...NO_DRIVER_CAPABILITIES };
   }
 }
