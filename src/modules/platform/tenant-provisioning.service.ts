@@ -235,9 +235,20 @@ export class TenantProvisioningService {
     `);
     await ds.synchronize();
 
-    // Asegurar tabla de control de migraciones y registrar línea base
-    // Cada estructura de base de datos de los tenants queda completa desde que se registran,
-    // marcando las migraciones históricas existentes para que migrate:all-tenants solo aplique deltas futuros.
+    // Asegurar tabla de control de migraciones y registrar línea base.
+    //
+    // IMPORTANTE: no basta con marcar cada migración histórica como "aplicada"
+    // sin ejecutarla — synchronize() solo refleja lo que las entidades
+    // TypeORM declaran hoy, y cualquier migración que no tenga una entidad
+    // decorada 1:1 (backfills de datos, índices parciales, constraints no
+    // expresables por decoradores, o un archivo .sql añadido antes de que su
+    // entidad existiera) queda marcada "aplicada" sin que su cambio real
+    // exista — exactamente el bug que encontramos en el tenant "sumtech" con
+    // 051_create_dgii_certification_runs.sql (marcada aplicada desde el
+    // 2026-10-01, pero la tabla nunca se creó). Por eso cada migración se
+    // ejecuta de verdad aquí (idempotente por convención: CREATE/ADD ...
+    // IF NOT EXISTS) y solo se tolera el error si ya quedó cubierta por
+    // synchronize() — nunca se marca "aplicada" a ciegas.
     await ds.query(`
       CREATE TABLE IF NOT EXISTS "sec"."schema_migrations" (
         "filename" VARCHAR(255) PRIMARY KEY,
@@ -252,6 +263,16 @@ export class TenantProvisioningService {
         .filter((f) => f.endsWith('.sql'))
         .sort();
       for (const file of files) {
+        const filePath = path.join(migrationsDir, file);
+        let sql = fs.readFileSync(filePath, 'utf8');
+        sql = sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*$/gm, '');
+        try {
+          await ds.query(sql);
+        } catch (err) {
+          this.logger.warn(
+            `Migración ${file} no se pudo re-ejecutar tras synchronize() (probablemente ya cubierta por las entidades): ${(err as Error).message}`,
+          );
+        }
         await ds.query(
           `INSERT INTO "sec"."schema_migrations" ("filename") VALUES ($1) ON CONFLICT ("filename") DO NOTHING`,
           [file],
