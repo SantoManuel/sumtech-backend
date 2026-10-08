@@ -6,6 +6,7 @@ import { OltEntity } from '../entities/olt.entity';
 import { ROUTEROS_CLIENT_FACTORY, RouterOsClientFactory } from '../../network/routeros/routeros-client-factory';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
+import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 
 @Injectable()
 export class OltNatManagerService {
@@ -47,11 +48,18 @@ export class OltNatManagerService {
     }
 
     const endpoint = await this.reachabilityResolver.resolveEndpoint(node);
+    // BUG REAL (certificación HiOSO, 2026-10-08): se pasaba node.apiPasswordEnc
+    // (el blob cifrado "iv:authTag:ciphertext") directo como password del
+    // cliente RouterOS, sin descifrar — el router rechazaba CUALQUIER
+    // contraseña real guardada con 401, sin importar cuántas veces se
+    // corrigiera en la base de datos, porque nunca se estaba enviando la
+    // contraseña real.
+    const password = node.apiPasswordEnc ? decryptCredential(node.apiPasswordEnc) : 'admin';
     const client = this.clientFactory({
       managementIp: endpoint.host,
       apiPort: endpoint.port,
       username: node.apiUser || 'admin',
-      password: node.apiPasswordEnc || 'admin',
+      password,
       useHttps: endpoint.useHttps,
     });
 
