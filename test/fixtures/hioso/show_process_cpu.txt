@@ -1,0 +1,3 @@
+Epon#show process cpu
+  CPU Utilization in the past 5 seconds : 6%
+Epon#

@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan, MoreThanOrEqual } from 'typeorm';
 import axios from 'axios';
@@ -9,7 +9,12 @@ import { CompanyProfileEntity } from '../../company/entities/company-profile.ent
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
-import { OltConnectionParams } from '../ports/olt-driver.port';
+import { OltDriverRegistry } from '../drivers/olt-driver.registry';
+import {
+  IOltDriver,
+  OltConnectionParams,
+  UnknownOltVendorError,
+} from '../ports/olt-driver.port';
 
 @Injectable()
 export class OltMonitoringService {
@@ -27,11 +32,58 @@ export class OltMonitoringService {
     @InjectRepository(NetworkNodeEntity)
     private readonly nodeRepository: Repository<NetworkNodeEntity>,
     private readonly reachabilityResolver: ReachabilityResolver,
+    private readonly driverRegistry: OltDriverRegistry,
   ) {}
+
+  /**
+   * Resuelve el driver real del fabricante — nunca cae en ZteC320Driver por
+   * defecto para un vendor desconocido (mismo patrón que OltManagementService).
+   */
+  private resolveDriver(olt: OltEntity): IOltDriver {
+    try {
+      return this.driverRegistry.resolve(olt.vendor);
+    } catch (err) {
+      if (err instanceof UnknownOltVendorError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
+  }
+
+  /** Mismo patrón que OltManagementService.resolveOltConnectionParams(). */
+  private async resolveOltConnectionParams(olt: OltEntity): Promise<OltConnectionParams> {
+    let host = olt.host;
+    let port = olt.port || 23;
+
+    if (olt.connectionMethod === 'VIA_MIKROTIK') {
+      if (!olt.viaNodeId) {
+        throw new BadRequestException(`La OLT "${olt.name}" usa VIA_MIKROTIK pero no tiene viaNodeId.`);
+      }
+      const node = await this.nodeRepository.findOneBy({ id: olt.viaNodeId });
+      if (!node) {
+        throw new NotFoundException(`Router MikroTik asignado no encontrado.`);
+      }
+      const endpoint = await this.reachabilityResolver.resolveEndpoint(node);
+      host = endpoint.host;
+      port = olt.natPort || 2323;
+    }
+
+    const password = decryptCredential(olt.passwordEnc);
+    const enablePassword = olt.enablePasswordEnc ? decryptCredential(olt.enablePasswordEnc) : undefined;
+
+    return { host, port, username: olt.username, password, enablePassword };
+  }
 
   /**
    * Recolecta métricas en vivo de la OLT, persiste un snapshot y envía alertas si es necesario.
    * RF-OLT-005.
+   *
+   * Nunca inventa datos: cada campo de salud (CPU/memoria/temperatura/uptime)
+   * y el inventario de tarjetas solo se llenan si el driver del fabricante
+   * declara esa capacidad como real (ver OltDriverCapabilities). Si no, el
+   * campo queda `undefined` (las columnas son nullable) en vez de un número
+   * simulado. Las alarmas quedan vacías hasta que exista una fuente real
+   * (pendiente: `show log` en HiOSO, sin investigar en ZTE).
    */
   async collectAndRecordMetrics(oltId: string): Promise<OltMetricEntity> {
     const olt = await this.oltRepository.findOne({
@@ -40,7 +92,7 @@ export class OltMonitoringService {
     });
     if (!olt) throw new NotFoundException(`OLT no encontrada: ${oltId}`);
 
-    // Conteo de ONUs registradas en esta OLT
+    // Conteo de ONUs registradas en esta OLT (siempre real, consulta directa)
     const activeCount = await this.onuRepository.count({
       where: { oltId: olt.id, status: 'ACTIVE' },
     });
@@ -48,35 +100,56 @@ export class OltMonitoringService {
       where: [{ oltId: olt.id, status: 'BLOCKED' }, { oltId: olt.id, status: 'UNCONFIGURED' }],
     });
 
-    // Simulación / extracción de métricas del hardware
-    const cpuUsage = Math.floor(Math.random() * 25) + 12; // 12% - 37%
-    const memoryUsage = Math.floor(Math.random() * 20) + 40; // 40% - 60%
-    const temperature = Number((38 + Math.random() * 6).toFixed(1)); // 38°C - 44°C
-    const uptimeSeconds = 86400 * 45 + Math.floor(Math.random() * 3600);
+    const driver = this.resolveDriver(olt);
+    const capabilities = driver.getCapabilities();
+    const connParams = await this.resolveOltConnectionParams(olt);
 
-    const cardsInfo = [
-      { slot: '1', cardType: 'GTGH', status: 'IN_SERVICE', ports: 16, softwareVersion: 'V1.2.5P3' },
-      { slot: '2', cardType: 'GTGH', status: 'IN_SERVICE', ports: 16, softwareVersion: 'V1.2.5P3' },
-      { slot: '3', cardType: 'SCXN', status: 'STANDBY', softwareVersion: 'V1.2.5P3' },
-      { slot: '4', cardType: 'SCXN', status: 'ACTIVE_CONTROL', softwareVersion: 'V1.2.5P3' },
-      { slot: '5', cardType: 'PRWG', status: 'POWER_SUPPLY' },
-    ];
+    let cpuUsagePercent: number | undefined;
+    let memoryUsagePercent: number | undefined;
+    let temperatureCelsius: number | undefined;
+    let uptimeSeconds: number | undefined;
 
-    const alarmsInfo: any[] = [];
-    if (temperature > 42) {
-      alarmsInfo.push({
-        level: 'WARNING',
-        code: 'TEMP_HIGH',
-        description: `Temperatura de chasis elevada: ${temperature}°C`,
-        timestamp: new Date().toISOString(),
-      });
+    if (capabilities.systemHealth) {
+      try {
+        const health = await driver.getSystemHealth(connParams);
+        cpuUsagePercent = health.cpuUsagePercent;
+        memoryUsagePercent = health.memoryUsagePercent;
+        temperatureCelsius = health.temperatureCelsius;
+        uptimeSeconds = health.uptimeSeconds;
+      } catch (err: any) {
+        this.logger.warn(`[${olt.vendor}] Error consultando salud de OLT "${olt.name}": ${err.message}`);
+      }
     }
+
+    let cardsInfo: OltMetricEntity['cardsInfo'] = [];
+    if (capabilities.chassisCards) {
+      try {
+        const cards = await driver.getCards(connParams);
+        cardsInfo = cards.map((c) => ({
+          slot: String(c.slot),
+          cardType: c.cardType,
+          status: c.status,
+          ports: c.portCount,
+          softwareVersion: c.softVer,
+        }));
+      } catch (err: any) {
+        this.logger.warn(`[${olt.vendor}] Error consultando tarjetas de OLT "${olt.name}": ${err.message}`);
+      }
+    }
+
+    // Alarmas reales: sin fuente implementada todavía para ningún fabricante
+    // (HiOSO tiene `show log (flash|ram) (critical|...)` como pista real sin
+    // reconocimiento aún; ZTE sin investigar) — nunca fabricar una a partir
+    // de otro dato simulado.
+    const alarmsInfo: OltMetricEntity['alarmsInfo'] = [];
+
+    const ponInterfacesCount = olt.interfaces?.filter((i) => i.type === 'PON').length;
 
     const metric = this.metricRepository.create({
       oltId: olt.id,
-      cpuUsagePercent: cpuUsage,
-      memoryUsagePercent: memoryUsage,
-      temperatureCelsius: temperature,
+      cpuUsagePercent,
+      memoryUsagePercent,
+      temperatureCelsius,
       uptimeSeconds,
       activeOnusCount: activeCount,
       offlineOnusCount: blockedOrOfflineCount,
@@ -86,18 +159,18 @@ export class OltMonitoringService {
       rawTelemetry: {
         vendor: olt.vendor,
         model: olt.model,
-        ponInterfacesCount: olt.interfaces?.length || 16,
+        ponInterfacesCount,
       },
     });
 
     const saved = await this.metricRepository.save(metric);
 
-    // Alerta por Telegram si hay anomalías críticas
+    // Alerta por Telegram solo ante anomalías reales
     if (alarmsInfo.length > 0 || blockedOrOfflineCount > 5) {
       await this.sendTelegramAlert(
         `🚨 *Alerta OLT: ${olt.name}*\n` +
-        `• Temperatura: ${temperature}°C\n` +
-        `• CPU: ${cpuUsage}%\n` +
+        (temperatureCelsius !== undefined ? `• Temperatura: ${temperatureCelsius}°C\n` : '') +
+        (cpuUsagePercent !== undefined ? `• CPU: ${cpuUsagePercent}%\n` : '') +
         `• ONUs Activas: ${activeCount} | Caídas: ${blockedOrOfflineCount}\n` +
         `• Alarmas: ${alarmsInfo.map((a) => a.description).join(', ')}`,
       );
@@ -111,6 +184,27 @@ export class OltMonitoringService {
     });
 
     return saved;
+  }
+
+  /**
+   * Lectura pasiva: devuelve el snapshot más reciente SIN disparar un poll
+   * nuevo contra el equipo. Si todavía no existe ninguno para esta OLT, se
+   * genera un primer snapshot real (mismo fallback que getMetricsHistory).
+   * Úsalo para cargas de pantalla / aperturas de modal; el botón "Refrescar"
+   * debe llamar a collectAndRecordMetrics() explícitamente.
+   */
+  async getLatestMetrics(oltId: string): Promise<OltMetricEntity> {
+    const [latest] = await this.metricRepository.find({
+      where: { oltId },
+      order: { createdAt: 'DESC' },
+      take: 1,
+    });
+
+    if (latest) {
+      return latest;
+    }
+
+    return this.collectAndRecordMetrics(oltId);
   }
 
   /**

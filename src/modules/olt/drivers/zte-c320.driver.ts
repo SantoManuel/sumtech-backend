@@ -4,10 +4,15 @@ import {
   IOltDriver,
   OltConnectionParams,
   OltSystemInfo,
+  OltSystemHealth,
+  DiscoveredCard,
   DiscoveredInterface,
   ConfigureVlanParams,
   OltDriverCapabilities,
+  DriverNotImplementedError,
 } from '../ports/olt-driver.port';
+
+const VENDOR = 'ZTE';
 
 @Injectable()
 export class ZteC320Driver implements IOltDriver {
@@ -69,6 +74,52 @@ export class ZteC320Driver implements IOltDriver {
     } finally {
       session.close();
     }
+  }
+
+  /**
+   * CPU/memoria/temperatura del chasis: sin evidencia real capturada todavía
+   * (los fixtures existentes solo cubren show system-group, show card, ONUs
+   * y potencia óptica). No inventar el comando — requiere una fase de
+   * reconocimiento read-only aparte contra la OLT de producción real.
+   */
+  async getSystemHealth(params: OltConnectionParams): Promise<OltSystemHealth> {
+    throw new DriverNotImplementedError(VENDOR, 'getSystemHealth');
+  }
+
+  /**
+   * Inventario real de tarjetas/slots del chasis (show card). Usa el mismo
+   * comando ya verificado en test/fixtures/zte-c320/show_card.txt.
+   */
+  async getCards(params: OltConnectionParams): Promise<DiscoveredCard[]> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand('show card');
+      return this.parseCards(output);
+    } finally {
+      session.close();
+    }
+  }
+
+  private parseCards(output: string): DiscoveredCard[] {
+    const cards: DiscoveredCard[] = [];
+    const rowMatches = output.matchAll(
+      /^\s*\d+\s+\d+\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$/gm,
+    );
+
+    for (const m of rowMatches) {
+      cards.push({
+        slot: parseInt(m[1], 10),
+        cardType: m[2],
+        realType: m[3],
+        portCount: parseInt(m[4], 10),
+        hardVer: m[5],
+        softVer: m[6],
+        status: m[7],
+      });
+    }
+
+    return cards;
   }
 
   /**
@@ -394,6 +445,8 @@ export class ZteC320Driver implements IOltDriver {
     return {
       testConnection: true,
       systemInfo: true,
+      systemHealth: false,
+      chassisCards: true,
       discoverInterfaces: true,
       configureVlan: true,
       onuDiscovery: true,

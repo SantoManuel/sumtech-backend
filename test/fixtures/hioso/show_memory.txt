@@ -1,0 +1,8 @@
+Epon#show memory
+  Status    KBytes
+  ------   ---------
+  Free        219240
+  Used         37304
+  Total       256544
+
+Epon#

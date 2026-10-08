@@ -4,6 +4,8 @@ import {
   IOltDriver,
   OltConnectionParams,
   OltSystemInfo,
+  OltSystemHealth,
+  DiscoveredCard,
   DiscoveredInterface,
   ConfigureVlanParams,
   DiscoveredUncfgOnu,
@@ -21,10 +23,12 @@ const VENDOR = 'HIOSO';
  *
  * Solo las operaciones cubiertas por reconocimiento real de CLI (ver
  * test/fixtures/hioso/cli_command_tree.txt) están implementadas:
- * testConnection, getSystemInfo, discoverInterfaces. El resto sigue
- * lanzando DriverNotImplementedError porque requieren sintaxis de
- * configuración (VLAN, autorización de ONU) que no se ha podido validar
- * de forma segura sin un ONU físico conectado — ver getCapabilities().
+ * testConnection, getSystemInfo, getSystemHealth, discoverInterfaces. El
+ * resto sigue lanzando DriverNotImplementedError: getCards() porque este
+ * hardware no tiene chasis modular (no hay comando equivalente a "show
+ * card"), y VLAN/autorización de ONU porque requieren sintaxis de
+ * configuración que no se ha podido validar de forma segura sin un ONU
+ * físico conectado — ver getCapabilities().
  */
 @Injectable()
 export class HiosoDriver implements IOltDriver {
@@ -86,6 +90,83 @@ export class HiosoDriver implements IOltDriver {
     } finally {
       session.close();
     }
+  }
+
+  /**
+   * show process cpu + show memory + show system. CPU y memoria vienen de
+   * comandos reales verificados (ver test/fixtures/hioso/show_process_cpu.txt
+   * y show_memory.txt). La temperatura del chasis NO se incluye: la única
+   * temperatura verificada en este equipo es la del transceptor SFP
+   * ("show epon <IF> optical-ddm"), una métrica distinta (óptica, no de
+   * chasis) — no se debe confundir ni inventar un valor de chasis que nunca
+   * se ha observado.
+   */
+  async getSystemHealth(params: OltConnectionParams): Promise<OltSystemHealth> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const rawCpu = await session.executeCommand('show process cpu');
+      const rawMemory = await session.executeCommand('show memory');
+      const rawSystem = await session.executeCommand('show system');
+
+      const cpuMatch = rawCpu.match(/CPU Utilization in the past 5 seconds\s*:\s*(\d+)%/i);
+      const cpuUsagePercent = cpuMatch ? parseInt(cpuMatch[1], 10) : undefined;
+
+      const freeMatch = rawMemory.match(/Free\s+(\d+)/i);
+      const usedMatch = rawMemory.match(/Used\s+(\d+)/i);
+      const totalMatch = rawMemory.match(/Total\s+(\d+)/i);
+      const memoryUsagePercent =
+        usedMatch && totalMatch && parseInt(totalMatch[1], 10) > 0
+          ? Math.round((parseInt(usedMatch[1], 10) / parseInt(totalMatch[1], 10)) * 100)
+          : undefined;
+
+      const uptimeMatch = rawSystem.match(/System Up Time\s*:\s*(.+)/i);
+      const uptimeSeconds = uptimeMatch ? this.parseUptimeToSeconds(uptimeMatch[1].trim()) : undefined;
+
+      return {
+        cpuUsagePercent,
+        memoryUsagePercent,
+        uptimeSeconds,
+        raw: `${rawCpu}\n${rawMemory}`.slice(0, 500),
+      };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * Parsea el formato de "System Up Time" observado realmente en este equipo
+   * ("1h 54m 38s"). No se ha visto un formato con días en la evidencia real
+   * (el equipo lleva menos de un día encendido) — el parser acepta un token
+   * "Nd" opcional por si aparece, pero esto no está verificado.
+   */
+  private parseUptimeToSeconds(raw: string): number | undefined {
+    const dayMatch = raw.match(/(\d+)d/i);
+    const hourMatch = raw.match(/(\d+)h/i);
+    const minuteMatch = raw.match(/(\d+)m/i);
+    const secondMatch = raw.match(/(\d+)s/i);
+
+    if (!dayMatch && !hourMatch && !minuteMatch && !secondMatch) {
+      return undefined;
+    }
+
+    const days = dayMatch ? parseInt(dayMatch[1], 10) : 0;
+    const hours = hourMatch ? parseInt(hourMatch[1], 10) : 0;
+    const minutes = minuteMatch ? parseInt(minuteMatch[1], 10) : 0;
+    const seconds = secondMatch ? parseInt(secondMatch[1], 10) : 0;
+
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds;
+  }
+
+  /**
+   * Este equipo (HAT7304VXD-ADC) no tiene chasis modular con tarjetas/slots
+   * intercambiables — es una unidad compacta de 4 puertos EPON. No hay
+   * comando real equivalente a "show card" de ZTE para esta familia de
+   * hardware, así que esta capacidad queda sin implementar (no "no aplica"
+   * silenciosamente — getCapabilities().chassisCards queda en false).
+   */
+  async getCards(params: OltConnectionParams): Promise<DiscoveredCard[]> {
+    throw new DriverNotImplementedError(VENDOR, 'getCards');
   }
 
   /**
@@ -183,6 +264,7 @@ export class HiosoDriver implements IOltDriver {
       ...NO_DRIVER_CAPABILITIES,
       testConnection: true,
       systemInfo: true,
+      systemHealth: true,
       discoverInterfaces: true,
     };
   }

@@ -50,6 +50,14 @@ export interface DiscoveredUncfgOnu {
   vendor?: string;
 }
 
+export interface OltSystemHealth {
+  cpuUsagePercent?: number;
+  memoryUsagePercent?: number;
+  temperatureCelsius?: number;
+  uptimeSeconds?: number;
+  raw?: string;
+}
+
 export interface OnuOpticalPower {
   rxDbm?: number;
   txDbm?: number;
@@ -83,6 +91,8 @@ export interface AuthorizeOnuParams {
 export interface OltDriverCapabilities {
   testConnection: boolean;
   systemInfo: boolean;
+  systemHealth: boolean;
+  chassisCards: boolean;
   discoverInterfaces: boolean;
   configureVlan: boolean;
   onuDiscovery: boolean;
@@ -95,6 +105,8 @@ export interface OltDriverCapabilities {
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   testConnection: false,
   systemInfo: false,
+  systemHealth: false,
+  chassisCards: false,
   discoverInterfaces: false,
   configureVlan: false,
   onuDiscovery: false,
@@ -136,6 +148,8 @@ export class UnknownOltVendorError extends Error {
 export interface IOltDriver {
   testConnection(params: OltConnectionParams): Promise<{ ok: boolean; error?: string; latencyMs?: number }>;
   getSystemInfo(params: OltConnectionParams): Promise<OltSystemInfo>;
+  getSystemHealth(params: OltConnectionParams): Promise<OltSystemHealth>;
+  getCards(params: OltConnectionParams): Promise<DiscoveredCard[]>;
   discoverInterfaces(params: OltConnectionParams): Promise<DiscoveredInterface[]>;
   configureVlanOnInterface(params: OltConnectionParams, config: ConfigureVlanParams): Promise<{ ok: boolean; error?: string }>;
   getUnconfiguredOnus(params: OltConnectionParams, ponInterface?: string): Promise<DiscoveredUncfgOnu[]>;

@@ -83,6 +83,43 @@ describe('ZteC320Driver', () => {
     expect(result[1].vendor).toBe('Huawei');
   });
 
+  it('parsea correctamente el inventario de tarjetas del chasis (show card)', async () => {
+    const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_card.txt');
+    const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(fixtureContent),
+      close: jest.fn(),
+    });
+
+    const result = await driver.getCards({
+      host: '10.0.0.10',
+      port: 23,
+      username: 'admin',
+      password: 'password',
+    });
+
+    expect(result).toHaveLength(5);
+    expect(result[0]).toEqual({
+      slot: 1,
+      cardType: 'GTGH',
+      realType: 'GTGH',
+      portCount: 16,
+      hardVer: 'V1.2.0',
+      softVer: 'V2.1.0',
+      status: 'INSERVICE',
+    });
+    expect(result[3].status).toBe('STANDBY');
+    expect(result[4].portCount).toBe(1);
+  });
+
+  it('getSystemHealth() sigue señalando DRIVER_NOT_IMPLEMENTED: sin evidencia real de CPU/memoria/temperatura', async () => {
+    await expect(
+      driver.getSystemHealth({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' }),
+    ).rejects.toThrow('no está implementada');
+  });
+
   it('parsea correctamente la telemetría de potencia óptica en dBm (RF-OLT-015)', async () => {
     const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_pon_power_attenuation.txt');
     const fixtureContent = fs.readFileSync(fixturePath, 'utf8');

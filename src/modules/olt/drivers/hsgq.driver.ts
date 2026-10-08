@@ -3,6 +3,8 @@ import {
   IOltDriver,
   OltConnectionParams,
   OltSystemInfo,
+  OltSystemHealth,
+  DiscoveredCard,
   DiscoveredInterface,
   ConfigureVlanParams,
   DiscoveredUncfgOnu,
@@ -29,6 +31,14 @@ export class HsgqDriver implements IOltDriver {
 
   async getSystemInfo(params: OltConnectionParams): Promise<OltSystemInfo> {
     throw new DriverNotImplementedError(VENDOR, 'getSystemInfo');
+  }
+
+  async getSystemHealth(params: OltConnectionParams): Promise<OltSystemHealth> {
+    throw new DriverNotImplementedError(VENDOR, 'getSystemHealth');
+  }
+
+  async getCards(params: OltConnectionParams): Promise<DiscoveredCard[]> {
+    throw new DriverNotImplementedError(VENDOR, 'getCards');
   }
 
   async discoverInterfaces(params: OltConnectionParams): Promise<DiscoveredInterface[]> {

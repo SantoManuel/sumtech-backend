@@ -17,10 +17,12 @@ describe('HiosoDriver', () => {
     expect(driver).toBeDefined();
   });
 
-  it('solo declara capacidades reales: testConnection, systemInfo y discoverInterfaces', () => {
+  it('solo declara capacidades reales: testConnection, systemInfo, systemHealth y discoverInterfaces', () => {
     expect(driver.getCapabilities()).toEqual({
       testConnection: true,
       systemInfo: true,
+      systemHealth: true,
+      chassisCards: false,
       discoverInterfaces: true,
       configureVlan: false,
       onuDiscovery: false,
@@ -108,6 +110,44 @@ describe('HiosoDriver', () => {
     // Ten-Gigabit Ethernet 1/1 no tiene bloque de "Current Status" en la
     // salida real (SFP no presente) -> sin evidencia de "Up", se asume DOWN.
     expect(tenGe1!.operState).toBe('DOWN');
+  });
+
+  it('parsea show process cpu + show memory + show system (CPU%, memoria% y uptime en segundos) con evidencia real', async () => {
+    const cpuOut = fixture('show_process_cpu.txt');
+    const memOut = fixture('show_memory.txt');
+    const systemOut = fixture('show_system.txt');
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show process cpu') return Promise.resolve(cpuOut);
+        if (cmd === 'show memory') return Promise.resolve(memOut);
+        if (cmd === 'show system') return Promise.resolve(systemOut);
+        throw new Error(`comando inesperado en el test: ${cmd}`);
+      }),
+      close: jest.fn(),
+    });
+
+    const result = await driver.getSystemHealth({
+      host: '172.16.100.5',
+      port: 2324,
+      username: 'admin',
+      password: 'admin',
+    });
+
+    expect(result.cpuUsagePercent).toBe(6);
+    // Used 37304 / Total 256544 ≈ 14.54% -> redondeado a 15
+    expect(result.memoryUsagePercent).toBe(15);
+    // 1h 54m 38s
+    expect(result.uptimeSeconds).toBe(1 * 3600 + 54 * 60 + 38);
+    // Sin evidencia real de temperatura de chasis en este equipo
+    expect(result.temperatureCelsius).toBeUndefined();
+  });
+
+  it('getCards() sigue señalando DRIVER_NOT_IMPLEMENTED: este hardware no tiene chasis modular', async () => {
+    await expect(
+      driver.getCards({ host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' }),
+    ).rejects.toThrow(DriverNotImplementedError);
   });
 
   it('las operaciones no verificadas contra hardware siguen señalando DRIVER_NOT_IMPLEMENTED', async () => {

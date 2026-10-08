@@ -90,6 +90,13 @@ export class OltController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('VIEW')
   async getOltTelemetry(@Param('id') id: string) {
+    return this.monitoringService.getLatestMetrics(id);
+  }
+
+  @Post('olts/:id/telemetry/refresh')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('OPERATE')
+  async refreshOltTelemetry(@Param('id') id: string) {
     return this.monitoringService.collectAndRecordMetrics(id);
   }
 
