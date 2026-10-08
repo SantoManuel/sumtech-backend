@@ -1,0 +1,13 @@
+Epon#show vlan
+VLAN ID:    1
+Type:    Static
+Name:
+Status:  Active
+Ports :  Pon1/1 (U) Pon1/2 (U) Pon1/3 (U) Pon1/4 (U) Ten-GE1/1 (U) Ten-GE1/2 (U)
+         GE1/1 (U) GE1/2 (U) GE1/3 (U) GE1/4 (U)
+VLAN ID:  400
+Type:    Static
+Name:    Internet
+Status:  Active
+Ports :  Pon1/1 (T) Pon1/2 (T) Pon1/3 (T) Pon1/4 (T) Ten-GE1/1 (T) GE1/1 (T)
+Epon#

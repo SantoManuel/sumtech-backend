@@ -1,0 +1,134 @@
+Epon#show running-config
+
+Current configuration:
+!
+hostname OLT
+clock timezone Beijing,_Chongqing,_Hong_Kong,_Urumqi hours 8 minute 0 after-utc
+!
+logging history ram 7
+!
+!
+!
+vlan database
+ vlan 400 name Internet
+!
+interface mgmt
+ ip address 192.168.0.88 255.255.255.0 192.168.0.1
+!
+!
+interface vlan 1
+ ip address 192.168.1.88 255.255.255.0 192.168.1.1
+!
+!
+!
+!
+!
+interface epon 1/1
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+ switchport mode trunk
+ switchport allowed vlan add 400 tagged
+interface epon 1/2
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+ switchport mode trunk
+ switchport allowed vlan add 400 tagged
+interface epon 1/3
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+ switchport mode trunk
+ switchport allowed vlan add 400 tagged
+interface epon 1/4
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+ switchport mode trunk
+ switchport allowed vlan add 400 tagged
+interface ten-gigabitethernet 1/1
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+ switchport mode trunk
+ switchport allowed vlan add 400 tagged
+interface ten-gigabitethernet 1/2
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+interface gigabitethernet 1/1
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+ switchport mode trunk
+ switchport allowed vlan add 400 tagged
+interface gigabitethernet 1/2
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+interface gigabitethernet 1/3
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+interface gigabitethernet 1/4
+ storm-control broadcast pps 512
+ storm-control unknown-multicast pps 512
+ storm-control unknown-unicast pps 512
+!
+!
+
+! Loop-detection configuration
+!
+!
+!
+!
+
+!Config for epon:
+
+! Epon P2P configuration
+
+! Epon interface onu configuration
+  interface epon 1/1
+   onu 1 vlan port 1 vlan-mode tag pvid 400
+   onu 1 vlan port 2 vlan-mode tag pvid 400
+   onu 1 vlan port 3 vlan-mode tag pvid 400
+   onu 1 vlan port 4 vlan-mode tag pvid 400
+  interface epon 1/2
+  interface epon 1/3
+  interface epon 1/4
+  exit
+
+! White list configuration
+  interface epon 1/1
+  interface epon 1/2
+  interface epon 1/3
+  interface epon 1/4
+  exit
+
+! Black list configuration
+  interface epon 1/1
+  interface epon 1/2
+  interface epon 1/3
+  interface epon 1/4
+  exit
+
+! Pon auth configuration
+  interface epon 1/1
+  interface epon 1/2
+  interface epon 1/3
+  interface epon 1/4
+  exit
+
+! Epon alarm control configuration
+
+! Epon DB configuration
+
+! Polling task configuration
+  set polling task-olt days 1 time_hour 4 time_minute 30
+  set polling task-onu days 1 time_hour 4 time_minute 0
+
+! Fan control configuration
+end
+
+Epon#

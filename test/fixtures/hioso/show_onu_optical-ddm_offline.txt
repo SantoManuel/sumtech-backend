@@ -1,0 +1,4 @@
+Epon#show onu optical-ddm epon 1/1 1
+
+! Onu 1 is offline!
+Epon#

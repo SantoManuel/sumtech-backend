@@ -1,0 +1,10 @@
+Epon#show epon sfp-info 1/1
+ vendor_name  : OEM
+ vendor_PN    : EPONOLTPX20+++++
+ vendor_SN    : X202603190135
+ vendor_rev   : 10
+ date_code    : 260319
+ length_km    : 20
+ length_100m  : 200
+ SFF8472 Ver  : SFF-8472 Rev 11.0
+Epon#

@@ -1,0 +1,8 @@
+Epon#show interfaces brief
+Interface Name                     Status    PVID Pri Speed/Duplex    Trunk
+--------- ------------------------ --------- ---- --- --------------  -----
+GE1/1                              Down      1    0    Auto           None
+GE1/2                              Down      1    0    Auto           None
+GE1/3                              Down      1    0    Auto           None
+GE1/4                              Down      1    0    Auto           None
+Epon#

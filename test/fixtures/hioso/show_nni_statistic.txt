@@ -1,0 +1,13 @@
+Epon#show nni 1 statistic
+
+ Rx Unicast       :                          0
+ Rx Broadcast     :                        348
+ Rx Multicast     :                        817
+ Rx Error         :                          0
+ Rx Bytes         :                    166,680
+ Tx Unicast       :                          0
+ Tx Broadcast     :                          0
+ Tx Multicast     :                          0
+ Tx Error         :                          0
+ Tx Bytes         :                          0
+Epon#

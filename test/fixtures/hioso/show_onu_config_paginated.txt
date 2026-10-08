@@ -1,0 +1,6 @@
+Epon#show onu config epon 1/1 1
+
+! Onu 1/1:1 configuration
+   onu 1 vlan port 1 vlan-mode tag pvid 400
+   onu 1 vlan port 2 vlan-mode tag pvid 400
+--- Enter Key To Continue ----

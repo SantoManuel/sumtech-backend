@@ -1,0 +1,6 @@
+Epon#show olt mac
+
+ Here will take some time,please wait...
+ ID    mac               valid static_flag aging port_id
+----------------------------------------------------------
+Epon#

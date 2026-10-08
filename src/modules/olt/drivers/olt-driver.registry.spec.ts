@@ -55,20 +55,25 @@ describe('OltDriverRegistry', () => {
       const zteSpy = jest.spyOn(ZteC320Driver.prototype, 'testConnection');
 
       const driver = registry.resolve('HiOSO');
-      const result = await driver.testConnection({ host: '10.0.0.50', port: 23, username: 'admin', password: 'x' });
+      // HiosoDriver.testConnection() ya hace un intento de conexión Telnet real
+      // (ver test/fixtures/hioso) — timeoutMs corto para que el test falle rápido
+      // por host inalcanzable, sin depender de ZteC320Driver.
+      const result = await driver.testConnection({ host: '10.0.0.50', port: 23, username: 'admin', password: 'x', timeoutMs: 300 });
 
       expect(zteSpy).not.toHaveBeenCalled();
       expect(result.ok).toBe(false);
-      expect(result.error).toContain('HIOSO');
+      expect(result.error).toBeDefined();
 
       zteSpy.mockRestore();
     });
   });
 
   describe('drivers no implementados — nunca retornan éxito simulado', () => {
+    // HiosoDriver ya tiene evidencia real para testConnection/systemInfo/
+    // discoverInterfaces (ver hioso.driver.spec.ts) — queda fuera de estas
+    // pruebas genéricas de "stub puro" junto con Huawei/HSGQ.
     it.each([
       ['HuaweiMa5800Driver', () => new HuaweiMa5800Driver()],
-      ['HiosoDriver', () => new HiosoDriver()],
       ['HsgqDriver', () => new HsgqDriver()],
     ])('%s: getCapabilities() retorna todo en false', (_name, factory) => {
       const driver = factory();
@@ -78,7 +83,6 @@ describe('OltDriverRegistry', () => {
 
     it.each([
       ['HuaweiMa5800Driver', () => new HuaweiMa5800Driver()],
-      ['HiosoDriver', () => new HiosoDriver()],
       ['HsgqDriver', () => new HsgqDriver()],
     ])('%s: testConnection() retorna ok:false en vez de simular conexión real', async (_name, factory) => {
       const driver = factory();
@@ -88,13 +92,28 @@ describe('OltDriverRegistry', () => {
 
     it.each([
       ['HuaweiMa5800Driver', () => new HuaweiMa5800Driver()],
-      ['HiosoDriver', () => new HiosoDriver()],
       ['HsgqDriver', () => new HsgqDriver()],
     ])('%s: discoverInterfaces() lanza en vez de inventar puertos', async (_name, factory) => {
       const driver = factory();
       await expect(
         driver.discoverInterfaces({ host: '10.0.0.1', port: 23, username: 'a', password: 'b' }),
       ).rejects.toThrow('no está implementada');
+    });
+
+    it('HiosoDriver: getUnconfiguredOnus/authorizeOnu siguen sin implementar (no hay evidencia real todavía)', async () => {
+      const driver = new HiosoDriver();
+      const params = { host: '10.0.0.1', port: 23, username: 'a', password: 'b' };
+      await expect(driver.getUnconfiguredOnus(params)).rejects.toThrow('no está implementada');
+      const authResult = await driver.authorizeOnu(params, {
+        ponInterface: 'epon 1/1',
+        onuId: 1,
+        modelTypeName: 'HIOSO-GENERIC',
+        serialNumber: 'X',
+        serviceVlan: 1,
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+      });
+      expect(authResult.ok).toBe(false);
     });
   });
 });

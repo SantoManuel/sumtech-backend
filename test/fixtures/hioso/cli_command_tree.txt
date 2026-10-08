@@ -1,0 +1,317 @@
+Login sequence (Telnet, port 23/2324 via NAT):
+
+Welcome to EPON.
+
+
+User Access Verification
+
+Username: admin
+Password: admin
+
+Epon>
+
+Unprivileged prompt is "Epon> ". "help" is NOT a valid command ("% Unknown command: help") -- the discovery command is "?".
+
+Epon>?
+  enable  Turn on privileged mode command
+  exit    Exit current mode and down to previous mode
+  list    Print command list
+  ping    ping functions
+  show    Show running system information
+
+--- enable (no enable password was required on this unit) ---
+
+Epon>enable
+Epon#
+
+Privileged prompt is "Epon# ".
+
+Epon#?
+  calendar       Set the system clock
+  clear          Reset functions
+  configure      Enter configuration mode
+  copy           Copy configuration
+  dbg            Debug only!
+  debug          Debug the system
+  disable        Turn off privileged mode command
+  disconnect     Terminates a line connection
+  erase          Erase a filesystem
+  exec-timeout   Set the EXEC timeout
+  exit           Exit current mode and down to previous mode
+  fan_ctrl       Fan control
+  fwonu          Onu version file operation
+  list           Print command list
+  no             Negate a command or set its defaults
+  ping           ping functions
+  reload         Halt and perform a cold restart
+  show           Show config
+  spanning-tree  spanning-tree Display spanning tree information
+  sys-debug      Enter system debug mode
+  write          Write running configuration to memory, network, or terminal
+
+Epon#show ?
+  alarm_ctrl         -- Alarm contrl
+  calendar           Current system date and time
+  cloud              -- Cloud config
+  debugging          Debugging functions
+  epon               -- Epon config
+  epon-nni           -- Epon nni config
+  epon-onu           -- Epon onu config
+  fan_ctrl           Fan control
+  history            Display the session command history
+  interfaces         Interface status and configuration
+  ip                 Internet Protocol (IP)
+  lacp               Link Aggregation Control Protocol
+  language           System language
+  line               TTY line information
+  log                Show the log messages stored in local memory
+  logging            Show current logging configuration
+  loopdetect         Loopdetect function
+  mac-address-table  MAC forwarding table
+  mac-age-olt        OLT Mac address aging
+  memory             Shows memory utilization parameters
+  mirror             Port Mirroring
+  nni                -- Network interface
+  olt                -- Olt config
+  onu                -- Onu config
+  polling            -- Polling config
+  pon                -- Pon
+  portrate           Port rate
+  process            Active process statistics
+  reload             Scheduled reload information
+  running-config     running configuration
+  snmp               SNMP protocol
+  sntp               SNTP configure
+  spanning-tree      spanning-tree Display spanning tree information
+  startup-config     Contentes of startup configuration
+  storm-control      The layer2 interface
+  switchport         Set the switching characteristics of the Layer2 interface
+  system             Displays system information
+  uplink             -- Uplink SFP info
+  users              Shows all active console and Telnet sessions
+  version            Display version
+  vlan               Vlan interface
+  web                OLT web server
+
+NOTE ON SYNTAX ORDER: the "list" command (full grammar reference, see below)
+places the optional vendor-keyword in parentheses FIRST and the INTERFACE
+placeholder in the position it actually occupies on the command line -- do
+not assume INTERFACE always comes last. Examples actually verified working
+on this unit:
+  show epon sfp-info 1/1          (keyword "sfp-info" BEFORE the interface)
+  show epon 1/1 optical-ddm       (interface BEFORE the keyword "optical-ddm")
+  show onu optical-ddm epon 1/1 1 (onu optical-ddm epon <IF> <onu-id>)
+  show onu config epon 1/1 1      (onu config epon <IF> <onu-id>)
+  show pon 1 statistic            (bare port number, no "epon" keyword, no slash)
+  show nni 1 statistic            (bare port number, same pattern)
+A command guessed by "probably symmetric" ordering was tried and rejected
+by the device ("show epon 1/1 sfp-info" -> "% Unknown command"). Always
+verify the exact token order against the "list" output or a live "?"
+before using a new show/config command in the driver.
+
+--- configuration mode ---
+
+Epon#configure terminal
+Epon(config)#
+
+Epon(config)#?
+  clear              Clear config
+  clock              Clock confiugure
+  cloud              Cloud config
+  dbg                Debug only!
+  debug              Debug the system
+  enable             Modify enable password parameters
+  end                End current mode and change to enable mode.
+  exec-timeout       Set the EXEC timeout
+  exit               Exit current mode and down to previous mode
+  fan_ctrl           Fan control
+  fwonu              Onu version file operation
+  hostname           Set system's network name
+  interface          Select an interface to configure
+  ip                 Internet Protocol (IP)
+  language           System language
+  line               Configure a terminal line
+  list               Print command list
+  log                Logging control
+  logging            Modify message logging facilities
+  loopdetect         Loopdetect information
+  mac-address-table  Configure the MAC address table
+  mac-age-olt        OLT Mac address aging
+  no                 Negate a command or set its defaults
+  prompt             Set system's prompt
+  reload             Halt and perform a cold restart
+  set                Set config
+  show               Show config
+  snmp-server        Enable SNMP agent
+  sntp               SNTP configure command
+  spanning-tree      Spanning tree commands
+  user               User Management
+  vlan               Configure VLAN parameters
+  web                Web server config
+
+Epon(config)#interface epon 1/1
+Epon(config-epon1/1)#
+
+NOTE: entering this per-EPON-port config context (interface epon <X/Y>) does
+NOT by itself change the running-config -- it only moves the CLI prompt one
+level deeper, exactly like Cisco IOS "interface" sub-mode. No write/commit
+happens until a config-changing command is actually typed inside it.
+
+Epon(config-epon1/1)#?
+  add            Add configuration
+  auth           Auth config
+  autonegtiate   Enables autonegotiation function
+  blacklist      Blacklist config
+  capabilities   Advertises the capabilities for use in autonegotiation
+  clear          Clear config
+  confirm        confirm config
+  dbg            Debug only!
+  debug          Debug the system
+  delete         delete config
+  dereg          De-register onu
+  description    Interface specific description
+  end            End current mode and change to enable mode.
+  exit           Exit current mode and down to previous mode
+  flowcontrol    IEEE 802.3x Flow Control
+  fwonu          Onu version file operation
+  interface      Select an interface to configure
+  list           Print command list
+  loidlist       Loid list config
+  no             Negate a command or set its defaults
+  onu            Config ONU
+  show           Show config
+  shutdown       Shutdown the selected interface
+  spanning-tree  Spanning tree commands
+  speed-duplex   Speed commands
+  storm-control  Storm config for interface
+  switchport     Set the switching characteristics of the Layer2 interface
+  whitelist      whitelist config
+
+--- ONU authorization grammar (this is the mechanism that gates
+    discoverUnconfiguredOnus / authorizeOnu / blockOnu / unblockOnu) ---
+
+Epon(config-epon1/1)#auth mode ?
+  disable  -- Disable auth function
+  hybrid   -- Hybrid auth mode
+  loid     -- Loid based auth mode
+  mac      -- Mac based auth mode
+
+Epon(config-epon1/1)#whitelist ?
+  add     -- Add whitelist entry
+  clear   -- Clear whitelist table
+  delete  -- Delete whitelist entry
+
+Epon(config-epon1/1)#whitelist add ?
+  MACADDR  -- Mac address.example: 78:5c:72:00:11:22
+
+Epon(config-epon1/1)#blacklist ?
+  add     -- Add blacklist entry
+  clear   -- Clear blacklist table
+  delete  -- Delete blacklist entry
+
+Epon(config-epon1/1)#loidlist ?
+  add     -- Add loid entry
+  clear   -- Clear loid table
+  delete  -- Delete loid entry
+
+Epon(config-epon1/1)#loidlist add ?
+  LOID  -- Loid value, 6-24 character
+
+Epon(config-epon1/1)#add ?
+  onu  -- Onu config
+
+Epon(config-epon1/1)#add onu ?
+  <1-128>  -- Specified Onu Id
+
+UNVERIFIED: whether "add onu <id>" takes any further argument (e.g. a MAC to
+bind to that slot) after the id, or is a complete command as-is. The device
+only ever showed "<1-128> -- Specified Onu Id" as the sole completion at
+this depth; the next token was never probed because doing so would be the
+first state-changing command on this port (no physical ONU exists yet to
+safely validate against). DO NOT implement authorizeOnu's "add onu" step
+without probing "add onu 1 ?" first, ideally once a real ONU is physically
+present so the end-to-end effect can be observed.
+
+Epon(config-epon1/1)#onu 1 ?
+  activate
+  admin                -- Port admin config
+  auto-neg             -- Port auto neg config
+  bandwidth            -- Link bandwidth
+  catv                 -- ONU CATV control
+  deactivate
+  factory              -- Default ONU to factory status
+  flow-ctrl            -- Port flow control config
+  multicast-mode       -- Onu multicast mode
+  multicast-tag-strip  -- Onu multicast tag strip option
+  multicast-vlan       -- Onu multicast vlan
+  name                 -- Set ONU name
+  port-speed           -- Full-1000M
+  reboot               -- Reboot ONU
+  upgrade              -- Upgrade request
+  vlan                 -- Set vlan
+
+Epon(config-epon1/1)#onu 1 vlan ?
+  port       -- Config port
+  vlan-mode  Set vlan mode
+
+Epon(config-epon1/1)#onu 1 admin ?
+  port  -- Config port
+
+CONFIRMED real syntax in actual use on this unit (captured verbatim from
+"show running-config", not guessed):
+  onu 1 vlan port 1 vlan-mode tag pvid 400
+  onu 1 vlan port 2 vlan-mode tag pvid 400
+  onu 1 vlan port 3 vlan-mode tag pvid 400
+  onu 1 vlan port 4 vlan-mode tag pvid 400
+(one line per physical LAN port on the ONU, port numbers 1-4 observed)
+
+--- quirks that any driver/parser MUST account for ---
+
+1. PAGER: some "show" outputs longer than one screen stop with the literal
+   line "--- Enter Key To Continue ----" and wait for an Enter keypress
+   before continuing (see show_onu_config_paginated.txt). A driver's telnet
+   client must detect this marker and send a bare newline to page through,
+   or it will hang forever waiting for the real prompt.
+
+2. STREAMING/BLOCKING COMMAND -- AVOID: "show epon <IF> counter-change"
+   never returned to the "Epon# " prompt during reconnaissance and appears
+   to be a live/continuously-refreshing view (like a "watch"), not a
+   one-shot report. Sending it from an automated session with no way to
+   send Ctrl+C left the whole telnet session stuck (every subsequent
+   command sent in that same session was silently swallowed, interpreted
+   as keystrokes inside the live view instead of as new CLI commands).
+   Do not use this command in the driver without first confirming the
+   correct way to exit it (Ctrl+C was not tested).
+
+3. INTERFACE NAMING IS NOT CONSISTENT ACROSS CONTEXTS for the same physical
+   EPON port 1 on slot 1:
+     - "show interfaces status"      -> "Epon 1/1"   (capitalized, space)
+     - "show vlan" (port membership) -> "Pon1/1"     (no space, "Pon" not "Epon")
+     - CLI command argument syntax   -> "epon 1/1"   (lowercase keyword + space + slot/port)
+     - "show interfaces brief"       -> does not list EPON ports at all,
+       only the GE1/1-4 copper uplinks.
+   A driver's parser must not assume one canonical interface-name string
+   works across all show commands; each command's own format must be
+   parsed on its own terms.
+
+4. "show olt mac" / "show olt mac epon 1/1" only ever showed the table
+   header ("ID    mac               valid static_flag aging port_id") with
+   zero data rows, because no ONU is physically connected yet. The actual
+   column data format for a populated row is UNVERIFIED -- do not write a
+   row-parsing regex until a real populated table has been captured.
+
+5. OLT-side optical DDM ("show epon <IF> optical-ddm") only exposes
+   Temperature / Voltage / TxBias / TxPower -- there is no RxPower field on
+   the OLT's own EPON port, unlike a GPON OLT. This is architecturally
+   expected: EPON upstream reception is burst-mode per-ONU, so a
+   continuous "RxPower" reading for the whole PON port does not apply the
+   same way it would on a GPON card. Per-ONU optical data (if/when it
+   becomes available) must come from "show onu optical-ddm epon <IF> <id>"
+   once an ONU is actually online -- today it only yields
+   "! Onu <id> is offline!".
+
+6. "show version" / "show system" never required paging (one screen).
+   "show running-config" / "show interfaces status" were multi-section
+   but also fit without triggering the pager on this unit's current
+   (nearly-empty) configuration; a production config with many VLANs/ONUs
+   provisioned may trigger the pager on these too.

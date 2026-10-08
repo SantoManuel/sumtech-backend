@@ -1,0 +1,13 @@
+Epon#show pon 1 statistic
+
+ Rx Unicast       :                          0
+ Rx Broadcast     :                          0
+ Rx Multicast     :                          0
+ Rx Error         :                          0
+ Rx Bytes         :                          0
+ Tx Unicast       :                          0
+ Tx Broadcast     :                        348
+ Tx Multicast     :                        817
+ Tx Error         :                          0
+ Tx Bytes         :                    187,650
+Epon#
