@@ -7,6 +7,7 @@ import { DgiiReceivedInvoice } from '../entities/dgii-received-invoice.entity';
 import { DgiiXmlGeneratorService, ArecfGenerationInput } from './dgii-xml-generator.service';
 import { DgiiSignerService } from './dgii-signer.service';
 import { DgiiClientService } from './dgii-client.service';
+import { DgiiXsdValidatorService } from './dgii-xsd-validator.service';
 
 @Injectable()
 export class DgiiB2bService {
@@ -18,6 +19,7 @@ export class DgiiB2bService {
     private readonly xmlGenerator: DgiiXmlGeneratorService,
     private readonly signerService: DgiiSignerService,
     private readonly dgiiClient: DgiiClientService,
+    private readonly xsdValidator: DgiiXsdValidatorService,
   ) {}
 
   /**
@@ -133,6 +135,15 @@ export class DgiiB2bService {
       xmlArecfSigned = signResult.signedXml;
     } catch (signErr: any) {
       this.logger.warn(`No se pudo firmar ARECF con certPath (${config.certPath}): ${signErr.message}`);
+    }
+
+    // Validación contra el XSD oficial (arecf.xsd) — solo se loguea, nunca
+    // bloquea la respuesta síncrona a la DGII, pero deja evidencia inmediata
+    // en logs si el generador vuelve a desviarse del esquema real (como pasó
+    // con la estructura <Header>/<EstadoRespuesta> previa a esta corrección).
+    const arecfValidation = this.xsdValidator.validateArecf(xmlArecfSigned);
+    if (!arecfValidation.valid) {
+      this.logger.error(`ARECF generado para ${encf} NO pasa la validación XSD oficial: ${arecfValidation.errors.join(' | ')}`);
     }
 
     // 3. Persistir en la base de datos PostgreSQL

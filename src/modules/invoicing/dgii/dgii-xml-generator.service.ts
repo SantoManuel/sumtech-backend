@@ -351,16 +351,6 @@ export class DgiiXmlGeneratorService {
   }
 
   /**
-   * Formatea solo la hora para el nodo HoraEmision (HH:mm:ss)
-   */
-  private formatTimeDgii(date: Date = new Date()): string {
-    const hr = String(date.getHours()).padStart(2, '0');
-    const min = String(date.getMinutes()).padStart(2, '0');
-    const sec = String(date.getSeconds()).padStart(2, '0');
-    return `${hr}:${min}:${sec}`;
-  }
-
-  /**
    * Formatea fecha y hora para el nodo FechaHoraFirma (dd-MM-yyyy HH:mm:ss)
    */
   private formatDateTimeDgii(date: Date = new Date()): string {
@@ -1229,9 +1219,20 @@ export class DgiiXmlGeneratorService {
   /**
    * Genera el XML de Acuse de Recibo (ARECF) conforme a la especificación oficial DGII
    */
+  /**
+   * Genera el Acuse de Recibo (ARECF) exactamente según arecf.xsd oficial de
+   * la DGII: envoltorio <DetalleAcusedeRecibo>, <RNCEmisor>/<RNCComprador> en
+   * mayúsculas, <Estado> (no "EstadoRespuesta"), y <FechaHoraAcuseRecibo>
+   * combinando fecha+hora en un solo nodo "dd-MM-yyyy HH:mm:ss", y SIN
+   * namespace en la raíz (arecf.xsd no declara targetNamespace) — la versión
+   * anterior usaba nombres de nodo inventados (<Header>, <RncEmisor>,
+   * <EstadoRespuesta>, <FechaEmision>/<HoraEmision> separados) y un
+   * xmlns="http://www.dgii.gov.do/ecf" que el esquema real no espera, por lo
+   * que la DGII rechazaba el acuse como "no válido" en toda prueba de
+   * recepción B2B (ver certificación 2026-10-07).
+   */
   generateArecfXml(input: ArecfGenerationInput): string {
-    const fechaEmisionStr = this.formatDateDgii(input.fechaEmision || new Date());
-    const horaEmisionStr = this.formatTimeDgii(input.fechaEmision || new Date());
+    const fechaHoraAcuseStr = this.formatDateTimeDgii(input.fechaEmision || new Date());
     const cleanRncEmisor = sanitizeRnc(input.rncEmisor);
     const cleanRncComprador = sanitizeRnc(input.rncComprador);
 
@@ -1242,17 +1243,16 @@ export class DgiiXmlGeneratorService {
 
     return (
       `<?xml version="1.0" encoding="utf-8"?>` +
-      `<ARECF xmlns="http://www.dgii.gov.do/ecf">` +
-        `<Header>` +
+      `<ARECF>` +
+        `<DetalleAcusedeRecibo>` +
           `<Version>1.0</Version>` +
-          `<RncEmisor>${cleanRncEmisor}</RncEmisor>` +
-          `<RncComprador>${cleanRncComprador}</RncComprador>` +
+          `<RNCEmisor>${cleanRncEmisor}</RNCEmisor>` +
+          `<RNCComprador>${cleanRncComprador}</RNCComprador>` +
           `<eNCF>${this.escapeXml(input.eNcf)}</eNCF>` +
-          `<EstadoRespuesta>${input.estadoRespuesta}</EstadoRespuesta>` +
+          `<Estado>${input.estadoRespuesta}</Estado>` +
           motivoNoRecibidoXml +
-          `<FechaEmision>${fechaEmisionStr}</FechaEmision>` +
-          `<HoraEmision>${horaEmisionStr}</HoraEmision>` +
-        `</Header>` +
+          `<FechaHoraAcuseRecibo>${fechaHoraAcuseStr}</FechaHoraAcuseRecibo>` +
+        `</DetalleAcusedeRecibo>` +
       `</ARECF>`
     );
   }

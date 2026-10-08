@@ -4,6 +4,7 @@ import { DgiiB2bService } from './dgii-b2b.service';
 import { DgiiXmlGeneratorService } from './dgii-xml-generator.service';
 import { DgiiSignerService } from './dgii-signer.service';
 import { DgiiClientService } from './dgii-client.service';
+import { DgiiXsdValidatorService } from './dgii-xsd-validator.service';
 import { DgiiReceivedInvoice } from '../entities/dgii-received-invoice.entity';
 
 describe('DgiiB2bService', () => {
@@ -12,6 +13,7 @@ describe('DgiiB2bService', () => {
   let xmlGenerator: DgiiXmlGeneratorService;
   let signerService: any;
   let dgiiClient: any;
+  let xsdValidator: DgiiXsdValidatorService;
 
   beforeEach(async () => {
     receivedInvoiceRepo = {
@@ -43,6 +45,7 @@ describe('DgiiB2bService', () => {
       providers: [
         DgiiB2bService,
         DgiiXmlGeneratorService,
+        DgiiXsdValidatorService,
         { provide: getRepositoryToken(DgiiReceivedInvoice), useValue: receivedInvoiceRepo },
         { provide: DgiiSignerService, useValue: signerService },
         { provide: DgiiClientService, useValue: dgiiClient },
@@ -51,6 +54,7 @@ describe('DgiiB2bService', () => {
 
     service = module.get<DgiiB2bService>(DgiiB2bService);
     xmlGenerator = module.get<DgiiXmlGeneratorService>(DgiiXmlGeneratorService);
+    xsdValidator = module.get<DgiiXsdValidatorService>(DgiiXsdValidatorService);
   });
 
   it('debe estar definido', () => {
@@ -102,20 +106,28 @@ describe('DgiiB2bService', () => {
     const arecfSigned = await service.procesarEcfRecibido(ecfXml);
 
     expect(arecfSigned).toContain('<ARECF');
-    expect(arecfSigned).toContain('<EstadoRespuesta>0</EstadoRespuesta>');
+    expect(arecfSigned).toContain('<DetalleAcusedeRecibo>');
+    expect(arecfSigned).toContain('<Estado>0</Estado>');
     expect(arecfSigned).toContain('<eNCF>E310000000099</eNCF>');
-    expect(arecfSigned).toContain('<RncEmisor>131880681</RncEmisor>');
-    expect(arecfSigned).toContain('<RncComprador>131000000</RncComprador>');
+    expect(arecfSigned).toContain('<RNCEmisor>131880681</RNCEmisor>');
+    expect(arecfSigned).toContain('<RNCComprador>131000000</RNCComprador>');
     expect(receivedInvoiceRepo.create).toHaveBeenCalled();
     expect(receivedInvoiceRepo.save).toHaveBeenCalled();
+
+    // Regresión: el ARECF generado debe validar contra el XSD oficial real de
+    // la DGII (arecf.xsd) — este es exactamente el chequeo que faltaba y
+    // permitió que la estructura <Header>/<EstadoRespuesta> anterior pasara
+    // certificación sin ser detectada hasta que la DGII la rechazó en vivo.
+    const validation = xsdValidator.validateArecf(arecfSigned);
+    expect(validation.valid).toBe(true);
   });
 
-  it('debe rechazar e-CF con estructura XML inválida y generar ARECF con EstadoRespuesta = 1', async () => {
+  it('debe rechazar e-CF con estructura XML inválida y generar ARECF con Estado = 1', async () => {
     const invalidXml = `NO ES UN XML VALIDO <<<>>>`;
 
     const arecfSigned = await service.procesarEcfRecibido(invalidXml);
 
-    expect(arecfSigned).toContain('<EstadoRespuesta>1</EstadoRespuesta>');
+    expect(arecfSigned).toContain('<Estado>1</Estado>');
     expect(arecfSigned).toContain('<CodigoMotivoNoRecibido>1</CodigoMotivoNoRecibido>');
   });
 
