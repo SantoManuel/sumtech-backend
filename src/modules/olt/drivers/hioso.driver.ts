@@ -23,12 +23,12 @@ const VENDOR = 'HIOSO';
  *
  * Solo las operaciones cubiertas por reconocimiento real de CLI (ver
  * test/fixtures/hioso/cli_command_tree.txt) están implementadas:
- * testConnection, getSystemInfo, getSystemHealth, discoverInterfaces. El
- * resto sigue lanzando DriverNotImplementedError: getCards() porque este
- * hardware no tiene chasis modular (no hay comando equivalente a "show
- * card"), y VLAN/autorización de ONU porque requieren sintaxis de
- * configuración que no se ha podido validar de forma segura sin un ONU
- * físico conectado — ver getCapabilities().
+ * testConnection, getSystemInfo, getSystemHealth, discoverInterfaces,
+ * getOnuOpticalPower. El resto sigue lanzando DriverNotImplementedError:
+ * getCards() porque este hardware no tiene chasis modular (no hay comando
+ * equivalente a "show card"), y VLAN/autorización de ONU porque requieren
+ * comandos de configuración que todavía no se han ejecutado contra el
+ * equipo real — ver getCapabilities().
  */
 @Injectable()
 export class HiosoDriver implements IOltDriver {
@@ -239,8 +239,61 @@ export class HiosoDriver implements IOltDriver {
     throw new DriverNotImplementedError(VENDOR, 'getUnconfiguredOnus');
   }
 
+  /**
+   * show onu optical-ddm epon <IF> <onu-id>. onuTarget llega como
+   * "<nombre de interfaz>:<onu-id>" (ej. "epon 1/1:2"), mismo patrón que
+   * usa OnuManagementService para los demás fabricantes.
+   *
+   * Verificado contra un ONU real conectado (ver
+   * test/fixtures/hioso/show_onu_optical-ddm_online.txt): cuando el ONU
+   * está online el equipo SÍ reporta RxPower (potencia que el ONU recibe
+   * del OLT) además de TxPower (potencia que el ONU transmite). No hay
+   * forma de obtener la potencia que el OLT recibe DEL ONU (upRxDbm) ni
+   * una atenuación calculada con este comando — esos campos quedan
+   * `undefined`, no se inventan. Cuando el ONU no está online, el equipo
+   * responde "! Onu X is offline!" o "! Onu X invalid" (dos mensajes
+   * distintos, ver cli_command_tree.txt) y simplemente no hay campos que
+   * parsear — se devuelve todo `undefined` con el mensaje crudo en `raw`.
+   */
   async getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower> {
-    throw new DriverNotImplementedError(VENDOR, 'getOnuOpticalPower');
+    const { iface, onuId } = this.parseOnuTarget(onuTarget);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand(`show onu optical-ddm epon ${iface} ${onuId}`);
+
+      const rxMatch = output.match(/RxPower\s*:\s*([-\d.]+)\s*dBm/i);
+      const txMatch = output.match(/TxPower\s*:\s*([-\d.]+)\s*dBm/i);
+
+      const rxDbm = rxMatch ? parseFloat(rxMatch[1]) : undefined;
+      const txDbm = txMatch ? parseFloat(txMatch[1]) : undefined;
+
+      return {
+        rxDbm,
+        txDbm,
+        downRxDbm: rxDbm,
+        raw: output.slice(0, 300),
+      };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * "<interfaz>:<onu-id>" -> { iface: "1/1", onuId: "2" }. El nombre de
+   * interfaz que persiste discoverInterfaces() es "epon 1/1"; aquí se le
+   * quita el prefijo "epon " porque el comando real ya lo incluye
+   * ("show onu optical-ddm epon 1/1 2").
+   */
+  private parseOnuTarget(onuTarget: string): { iface: string; onuId: string } {
+    const sep = onuTarget.lastIndexOf(':');
+    if (sep === -1) {
+      throw new Error(`onuTarget con formato inesperado para HiOSO: "${onuTarget}" (se esperaba "<interfaz>:<onu-id>")`);
+    }
+    const rawIface = onuTarget.slice(0, sep).trim();
+    const onuId = onuTarget.slice(sep + 1).trim();
+    const iface = rawIface.replace(/^epon\s+/i, '');
+    return { iface, onuId };
   }
 
   async authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }> {
@@ -266,6 +319,7 @@ export class HiosoDriver implements IOltDriver {
       systemInfo: true,
       systemHealth: true,
       discoverInterfaces: true,
+      onuOpticalPower: true,
     };
   }
 }

@@ -305,12 +305,64 @@ CONFIRMED real syntax in actual use on this unit (captured verbatim from
    the OLT's own EPON port, unlike a GPON OLT. This is architecturally
    expected: EPON upstream reception is burst-mode per-ONU, so a
    continuous "RxPower" reading for the whole PON port does not apply the
-   same way it would on a GPON card. Per-ONU optical data (if/when it
-   becomes available) must come from "show onu optical-ddm epon <IF> <id>"
-   once an ONU is actually online -- today it only yields
-   "! Onu <id> is offline!".
+   same way it would on a GPON card.
 
-6. "show version" / "show system" never required paging (one screen).
+   UPDATE (real ONU connected 2026-10-08): per-ONU optical DDM DOES include
+   RxPower once the ONU is actually online -- "show onu optical-ddm epon
+   <IF> <onu-id>" for an online ONU returns 5 fields in this order:
+   Temperature, Voltage, TxBias, TxPower, RxPower (see
+   show_onu_optical-ddm_online.txt). Two distinct error strings exist for
+   the not-online case, not just one:
+     "! Onu <id> is offline!"  -> that onu-id has a known/provisioned
+                                   binding but is not currently registered.
+     "! Onu <id> invalid"      -> that onu-id has never been seen/bound on
+                                   that port at all (no MAC ever learned).
+   Do not treat these as the same state in a parser -- "invalid" vs
+   "offline" are different pieces of information.
+
+6. ONU-ID ASSIGNMENT IS MAC-BASED AND PERSISTENT, NOT A SIMPLE "FIRST FREE
+   SLOT 1,2,3...". When a real ONU was connected to epon 1/1 for the first
+   time, it was auto-assigned onu-id 2, NOT onu-id 1 (which had a leftover
+   MAC binding -- e4:2d:7b:0f:3b:cf, status Down -- from some earlier
+   test/registration, confirmed via "show onu upgrade-state epon 1/1").
+   Never assume "the first ONU connected becomes onu-id 1" when writing
+   discovery logic -- the real onu-id must always be read back from the
+   device (e.g. from the port_id column of "show olt mac", formatted
+   "onu_<slot>/<port>:<onu-id>"), never computed/guessed.
+
+7. "show onu upgrade-state epon <IF>" is NOT just about firmware upgrades
+   despite the name -- it is actually the richest real per-ONU status
+   table found so far: OnuId, MacAddress, Status (Up/Down), ChipId, Ge/Fe/
+   Pots (hardware port counts on the ONU itself), CtcStatus (PON
+   registration/negotiation state, e.g. "CtcNegDone"), CtcVer, Uptime (the
+   ONU's own uptime, not the OLT's), Firmware, UpgradeState. This is a
+   better candidate than "show olt mac" for a future "list registered
+   ONUs on this port" driver method, since it also reports online/offline
+   status and firmware version per ONU (see show_onu_upgrade-state.txt).
+
+8. A newly auto-registered ONU (recognized at the PON/MAC layer, appears
+   in "show olt mac" and "show onu upgrade-state") has ZERO VLAN/service
+   config by default -- "show onu config epon <IF> <new-onu-id>" returns
+   just the bare "! Onu <slot>/<port>:<id> configuration" header with no
+   "onu ... vlan port ..." lines (see show_onu_config_unprovisioned.txt).
+   It will not pass real customer traffic until explicitly provisioned
+   with the same "onu <id> vlan port <n> vlan-mode tag pvid <vlan>"
+   command already confirmed in show_running-config.txt for onu-id 1.
+
+9. "show olt mac" (no filter) and "show olt mac epon <IF>" (filtered) both
+   work and return the same row shape; "show olt mac cache" also works and
+   returns what looks like the same table (possibly a faster/precomputed
+   read instead of a live poll — difference not fully characterized). The
+   MAC address shown for a given onu_<slot>/<port>:<id> entry in "show olt
+   mac" did NOT exactly match the MacAddress shown for the same onu-id in
+   "show onu upgrade-state" in one real observation (04:B0:E7:D3:09:A8 vs
+   04:b0:e7:d3:09:a6, differing in the last octet) -- do not assume these
+   two commands' MAC columns are always interchangeable/the same value
+   without further verification; they may represent different interfaces
+   of the same ONU (e.g. management vs data MAC) or one table may simply
+   be stale relative to the other.
+
+10. "show version" / "show system" never required paging (one screen).
    "show running-config" / "show interfaces status" were multi-section
    but also fit without triggering the pager on this unit's current
    (nearly-empty) configuration; a production config with many VLANs/ONUs

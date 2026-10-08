@@ -1,0 +1,7 @@
+Epon#show onu optical-ddm epon 1/1 2
+ Temperature  : 46.00 C
+ Voltage      : 3.00  V
+ TxBias       : 17.00 mA
+ TxPower      : 2.32 dBm
+ RxPower      : -4.43 dBm
+Epon#

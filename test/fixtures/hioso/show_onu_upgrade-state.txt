@@ -1,0 +1,7 @@
+Epon#show onu upgrade-state epon 1/1
+
+OnuId  MacAddress        Status  ChipId Ge Fe Pots CtcStatus      CtcVer Uptime           Firmware         UpgradeState
+=======================================================================================================================
+1/1:1  e4:2d:7b:0f:3b:cf Down    6301   1  3  1    --             30     0H0M0S           V3R017C10S125    --
+1/1:2  04:b0:e7:d3:09:a6 Up      6301   1  3  1    CtcNegDone     30     0H3M42S          V3R017C10S125    --
+Epon#

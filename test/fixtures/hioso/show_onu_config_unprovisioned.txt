@@ -1,0 +1,4 @@
+Epon#show onu config epon 1/1 2
+
+! Onu 1/1:2 configuration
+Epon#

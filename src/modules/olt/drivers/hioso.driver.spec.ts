@@ -17,7 +17,7 @@ describe('HiosoDriver', () => {
     expect(driver).toBeDefined();
   });
 
-  it('solo declara capacidades reales: testConnection, systemInfo, systemHealth y discoverInterfaces', () => {
+  it('solo declara capacidades reales: testConnection, systemInfo, systemHealth, discoverInterfaces y onuOpticalPower', () => {
     expect(driver.getCapabilities()).toEqual({
       testConnection: true,
       systemInfo: true,
@@ -26,7 +26,7 @@ describe('HiosoDriver', () => {
       discoverInterfaces: true,
       configureVlan: false,
       onuDiscovery: false,
-      onuOpticalPower: false,
+      onuOpticalPower: true,
       onuAuthorize: false,
       onuAdminState: false,
       onuDelete: false,
@@ -150,6 +150,46 @@ describe('HiosoDriver', () => {
     ).rejects.toThrow(DriverNotImplementedError);
   });
 
+  it('parsea la potencia óptica real de un ONU online (incluye RxPower, verificado con hardware real)', async () => {
+    const onlineOut = fixture('show_onu_optical-ddm_online.txt');
+
+    const executeCommand = jest.fn().mockResolvedValue(onlineOut);
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.getOnuOpticalPower(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 1/1:2',
+    );
+
+    expect(executeCommand).toHaveBeenCalledWith('show onu optical-ddm epon 1/1 2');
+    expect(result.rxDbm).toBe(-4.43);
+    expect(result.txDbm).toBe(2.32);
+    expect(result.downRxDbm).toBe(-4.43);
+  });
+
+  it('getOnuOpticalPower() no inventa valores cuando el ONU está offline/invalid', async () => {
+    const offlineOut = fixture('show_onu_optical-ddm_offline.txt');
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(offlineOut),
+      close: jest.fn(),
+    });
+
+    const result = await driver.getOnuOpticalPower(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 1/1:1',
+    );
+
+    expect(result.rxDbm).toBeUndefined();
+    expect(result.txDbm).toBeUndefined();
+    expect(result.raw).toContain('offline');
+  });
+
   it('las operaciones no verificadas contra hardware siguen señalando DRIVER_NOT_IMPLEMENTED', async () => {
     const params = { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' };
 
@@ -161,7 +201,6 @@ describe('HiosoDriver', () => {
     expect(vlanResult.ok).toBe(false);
 
     await expect(driver.getUnconfiguredOnus(params)).rejects.toThrow(DriverNotImplementedError);
-    await expect(driver.getOnuOpticalPower(params, 'epon 1/1:1')).rejects.toThrow(DriverNotImplementedError);
 
     const authResult = await driver.authorizeOnu(params, {
       ponInterface: 'epon 1/1',
