@@ -20,6 +20,7 @@ import { OltManagementService } from './services/olt-management.service';
 import { OltCatalogsService } from './services/olt-catalogs.service';
 import { OltNatManagerService } from './services/olt-nat-manager.service';
 import { OltMonitoringService } from './services/olt-monitoring.service';
+import { OltDriverRegistry } from './drivers/olt-driver.registry';
 import { OltPermissionGuard, RequireOltAction } from './guards/olt-permission.guard';
 import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from './dto/speed-profile.dto';
 
@@ -32,6 +33,7 @@ export class OltController {
     private readonly catalogsService: OltCatalogsService,
     private readonly natService: OltNatManagerService,
     private readonly monitoringService: OltMonitoringService,
+    private readonly driverRegistry: OltDriverRegistry,
   ) {}
 
   // ══════════════════════════════════════════════════
@@ -42,6 +44,17 @@ export class OltController {
   @RequireOltAction('VIEW')
   async findAllOlts(@Query('activeOnly') activeOnly?: string) {
     return this.oltService.findAll(activeOnly === 'true');
+  }
+
+  /**
+   * Capacidades reales por fabricante (sin conectarse a ningún equipo) — el
+   * frontend lo usa para mostrar qué tan soportado está cada vendor antes de
+   * que el usuario cree una OLT.
+   */
+  @Get('vendors')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
+  async findAllVendorCapabilities() {
+    return this.driverRegistry.listAll();
   }
 
   @Get('olts/:id')

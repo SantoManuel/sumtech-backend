@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { IOltDriver, UnknownOltVendorError } from '../ports/olt-driver.port';
+import { IOltDriver, OltDriverCapabilities, UnknownOltVendorError } from '../ports/olt-driver.port';
 import { ZteC320Driver } from './zte-c320.driver';
 import { HuaweiMa5800Driver } from './huawei-ma5800.driver';
 import { HiosoDriver } from './hioso.driver';
@@ -37,5 +37,21 @@ export class OltDriverRegistry {
       return this.hsgqDriver;
     }
     throw new UnknownOltVendorError(vendorOrModel);
+  }
+
+  /**
+   * Lista las capacidades reales de cada fabricante registrado. Sin efectos
+   * secundarios — getCapabilities() nunca intenta conectarse al equipo, solo
+   * reporta qué operaciones tienen comunicación real implementada. Usado por
+   * el frontend para mostrar qué tan soportado está cada fabricante antes de
+   * que el usuario cree una OLT (ver GET /olt/vendors).
+   */
+  listAll(): Array<{ vendor: string; capabilities: OltDriverCapabilities }> {
+    return [
+      { vendor: 'ZTE', capabilities: this.zteDriver.getCapabilities() },
+      { vendor: 'HUAWEI', capabilities: this.huaweiDriver.getCapabilities() },
+      { vendor: 'HIOSO', capabilities: this.hiosoDriver.getCapabilities() },
+      { vendor: 'HSGQ', capabilities: this.hsgqDriver.getCapabilities() },
+    ];
   }
 }

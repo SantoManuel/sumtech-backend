@@ -20,6 +20,23 @@ describe('OltDriverRegistry', () => {
     registry = new OltDriverRegistry(zteDriver, huaweiDriver, hiosoDriver, hsgqDriver);
   });
 
+  describe('listAll() — capacidades por fabricante para el frontend', () => {
+    it('lista los 4 fabricantes registrados con sus capacidades reales', () => {
+      const list = registry.listAll();
+
+      expect(list).toHaveLength(4);
+      expect(list.map((v) => v.vendor)).toEqual(['ZTE', 'HUAWEI', 'HIOSO', 'HSGQ']);
+
+      const zte = list.find((v) => v.vendor === 'ZTE')!;
+      expect(zte.capabilities).toEqual(zteDriver.getCapabilities());
+      expect(zte.capabilities.onuAuthorize).toBe(true);
+
+      const hioso = list.find((v) => v.vendor === 'HIOSO')!;
+      expect(hioso.capabilities.systemHealth).toBe(true);
+      expect(hioso.capabilities.onuAuthorize).toBe(false);
+    });
+  });
+
   describe('resolve() — enrutamiento por fabricante', () => {
     it('resuelve ZTE al driver real', () => {
       expect(registry.resolve('ZTE')).toBe(zteDriver);
