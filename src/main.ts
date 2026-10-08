@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
@@ -77,8 +77,27 @@ async function bootstrap() {
   });
 
   // Prefijo Global de API
+  //
+  // Excepción: los 3 endpoints de recepción B2B de e-CF (DgiiRecepcionB2bController,
+  // DgiiAutenticacionB2bController, DgiiAprobacionComercialB2bController en
+  // dgii-b2b.controller.ts) deben vivir en las rutas EXACTAS que exige el
+  // formulario de certificación de la DGII ("Paso 7: URL Servicio de Prueba"):
+  // https://<host>/fe/autenticacion/api/[semilla|ValidacionCertificado]
+  // https://<host>/fe/recepcion/api/ecf
+  // https://<host>/fe/aprobacioncomercial/api/ecf
+  // La DGII concatena esos sufijos fijos a la URL que se le declara — si el
+  // prefijo global los antepusiera (quedarían en /api/v1/fe/...), la
+  // validación de la DGII fallaría con 404 contra la URL real.
   const apiPrefix = process.env.API_PREFIX || 'api/v1';
-  app.setGlobalPrefix(apiPrefix);
+  app.setGlobalPrefix(apiPrefix, {
+    exclude: [
+      { path: 'fe/autenticacion/api/semilla', method: RequestMethod.GET },
+      { path: 'fe/autenticacion/api/validacioncertificado', method: RequestMethod.POST },
+      { path: 'fe/autenticacion/api/ValidacionCertificado', method: RequestMethod.POST },
+      { path: 'fe/recepcion/api/ecf', method: RequestMethod.POST },
+      { path: 'fe/aprobacioncomercial/api/ecf', method: RequestMethod.POST },
+    ],
+  });
 
   // Pipe Global de Validación de DTOs
   app.useGlobalPipes(

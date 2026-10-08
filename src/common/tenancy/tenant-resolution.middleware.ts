@@ -48,6 +48,21 @@ export class TenantResolutionMiddleware implements NestMiddleware {
       slug = 'sumtech';
     }
 
+    // Recepción B2B de e-CF (DgiiRecepcionB2bController y hermanos en
+    // dgii-b2b.controller.ts, montados en /fe/autenticacion|recepcion|
+    // aprobacioncomercial/api/...): la DGII y cualquier software contable de
+    // un tercero llaman a estas rutas directamente contra el host de la API
+    // (`erp-api.sumtech.com.do`) — nunca van a mandar `X-Tenant-Slug` ni un
+    // subdominio que resuelva a un tenant real, así que sin este fallback
+    // estas rutas siempre devolverían 404 "no existe tenant". Mientras el
+    // sistema tenga un único tenant de producción real (`sumtech`) resolver
+    // aquí mismo a ese tenant es correcto; el día que un ISP más necesite su
+    // propia URL de recepción B2B certificada ante la DGII, esto hay que
+    // resolverlo por el RNC embebido en el XML recibido, no por host/slug.
+    if (req.path.startsWith('/fe/') && (!slug || !(await this.resolveWithCache(slug)))) {
+      slug = 'sumtech';
+    }
+
     if (!slug) {
       throw new NotFoundException('No se pudo determinar el tenant a partir del host de la petición');
     }
