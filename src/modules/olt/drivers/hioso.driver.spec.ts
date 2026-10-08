@@ -17,7 +17,7 @@ describe('HiosoDriver', () => {
     expect(driver).toBeDefined();
   });
 
-  it('solo declara capacidades reales: testConnection, systemInfo, systemHealth, discoverInterfaces y onuOpticalPower', () => {
+  it('solo declara capacidades reales: todo menos chassisCards y configureVlan (sin comando verificado para ninguno de los dos)', () => {
     expect(driver.getCapabilities()).toEqual({
       testConnection: true,
       systemInfo: true,
@@ -25,11 +25,11 @@ describe('HiosoDriver', () => {
       chassisCards: false,
       discoverInterfaces: true,
       configureVlan: false,
-      onuDiscovery: false,
+      onuDiscovery: true,
       onuOpticalPower: true,
-      onuAuthorize: false,
-      onuAdminState: false,
-      onuDelete: false,
+      onuAuthorize: true,
+      onuAdminState: true,
+      onuDelete: true,
     });
   });
 
@@ -190,27 +190,200 @@ describe('HiosoDriver', () => {
     expect(result.raw).toContain('offline');
   });
 
-  it('las operaciones no verificadas contra hardware siguen señalando DRIVER_NOT_IMPLEMENTED', async () => {
-    const params = { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' };
+  it('getUnconfiguredOnus() con ponInterface explícito: parsea show onu upgrade-state, descarta la fila Down (binding viejo) y usa la MAC como serialNumber', async () => {
+    const upgradeStateOut = fixture('show_onu_upgrade-state.txt');
 
-    const vlanResult = await driver.configureVlanOnInterface(params, {
-      interfaceName: 'epon 1/1',
-      vlanId: 400,
-      mode: 'TAG',
+    const executeCommand = jest.fn().mockResolvedValue(upgradeStateOut);
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
     });
-    expect(vlanResult.ok).toBe(false);
 
-    await expect(driver.getUnconfiguredOnus(params)).rejects.toThrow(DriverNotImplementedError);
+    const result = await driver.getUnconfiguredOnus(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 1/1',
+    );
 
-    const authResult = await driver.authorizeOnu(params, {
+    expect(executeCommand).toHaveBeenCalledWith('show onu upgrade-state epon 1/1');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({
       ponInterface: 'epon 1/1',
-      onuId: 1,
-      modelTypeName: 'HIOSO-GENERIC',
-      serialNumber: 'HIOSO0000001',
+      onuIndex: '2',
+      serialNumber: '04:b0:e7:d3:09:a6',
+      vendor: 'HiOSO',
+    });
+  });
+
+  it('getUnconfiguredOnus() sin ponInterface: descubre los puertos EPON reales y consulta cada uno', async () => {
+    const statusOut = fixture('show_interfaces_status.txt');
+    const upgradeStateOut = fixture('show_onu_upgrade-state.txt');
+
+    const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+      if (cmd === 'show interfaces status') return Promise.resolve(statusOut);
+      if (cmd === 'show onu upgrade-state epon 1/1') return Promise.resolve(upgradeStateOut);
+      if (/^show onu upgrade-state epon /.test(cmd)) {
+        return Promise.resolve(
+          'OnuId  MacAddress        Status  ChipId Ge Fe Pots CtcStatus      CtcVer Uptime           Firmware         UpgradeState\n' +
+            '=======================================================================================================================',
+        );
+      }
+      throw new Error(`comando inesperado en el test: ${cmd}`);
+    });
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.getUnconfiguredOnus({
+      host: '172.16.100.5',
+      port: 2324,
+      username: 'admin',
+      password: 'admin',
+    });
+
+    expect(executeCommand).toHaveBeenCalledWith('show interfaces status');
+    expect(executeCommand).toHaveBeenCalledWith('show onu upgrade-state epon 1/1');
+    expect(executeCommand).toHaveBeenCalledWith('show onu upgrade-state epon 1/2');
+    expect(executeCommand).toHaveBeenCalledWith('show onu upgrade-state epon 1/3');
+    expect(executeCommand).toHaveBeenCalledWith('show onu upgrade-state epon 1/4');
+    expect(result).toEqual([
+      {
+        ponInterface: 'epon 1/1',
+        onuIndex: '2',
+        serialNumber: '04:b0:e7:d3:09:a6',
+        vendor: 'HiOSO',
+      },
+    ]);
+  });
+
+  it('configureVlanOnInterface() sigue señalando DRIVER_NOT_IMPLEMENTED: no hay comando verificado para VLAN en un puerto uplink/NNI', async () => {
+    const vlanResult = await driver.configureVlanOnInterface(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      { interfaceName: 'epon 1/1', vlanId: 400, mode: 'TAG' },
+    );
+    expect(vlanResult.ok).toBe(false);
+  });
+
+  it('generateAuthorizationScript() produce la secuencia real confirmada: add onu <id> <mac> <type> + VLAN en los 4 puertos LAN', () => {
+    const commands = driver.generateAuthorizationScript({
+      ponInterface: 'epon 1/1',
+      onuId: 2,
+      modelTypeName: 'onu-01g',
+      serialNumber: '04:b0:e7:aa:bb:cc',
       serviceVlan: 400,
       managementMethod: 'OMCI',
       operationMode: 'ROUTER',
     });
-    expect(authResult.ok).toBe(false);
+
+    expect(commands).toEqual([
+      'configure terminal',
+      'interface epon 1/1',
+      'add onu 2 04:b0:e7:aa:bb:cc onu-01g',
+      'onu 2 vlan port 1 vlan-mode tag pvid 400',
+      'onu 2 vlan port 2 vlan-mode tag pvid 400',
+      'onu 2 vlan port 3 vlan-mode tag pvid 400',
+      'onu 2 vlan port 4 vlan-mode tag pvid 400',
+      'exit',
+      'exit',
+      'write',
+    ]);
+  });
+
+  it('authorizeOnu() ejecuta la secuencia de generateAuthorizationScript() y responde ok:true', async () => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.authorizeOnu(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      {
+        ponInterface: 'epon 1/1',
+        onuId: 2,
+        modelTypeName: 'onu-01g',
+        serialNumber: '04:b0:e7:aa:bb:cc',
+        serviceVlan: 400,
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith('add onu 2 04:b0:e7:aa:bb:cc onu-01g');
+    expect(executeCommand).toHaveBeenCalledWith('onu 2 vlan port 4 vlan-mode tag pvid 400');
+  });
+
+  it('authorizeOnu() responde ok:false con el mensaje del equipo si un comando falla a mitad de secuencia', async () => {
+    const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+      if (cmd.startsWith('add onu')) {
+        return Promise.reject(new Error('! De-register onu failed!'));
+      }
+      return Promise.resolve('');
+    });
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.authorizeOnu(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      {
+        ponInterface: 'epon 1/1',
+        onuId: 2,
+        modelTypeName: 'onu-01g',
+        serialNumber: '04:b0:e7:aa:bb:cc',
+        serviceVlan: 400,
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('! De-register onu failed!');
+  });
+
+  it.each([
+    ['BLOCKED', 'onu 2 deactivate'],
+    ['ACTIVE', 'onu 2 activate'],
+  ])('setOnuAdminState(%s) usa el comando real confirmado "%s"', async (state, expectedCmd) => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.setOnuAdminState(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 1/1:2',
+      state as 'ACTIVE' | 'BLOCKED',
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith(expectedCmd);
+  });
+
+  it('deleteOnu() usa "delete onu <id>" (confirmado) y no "dereg" (confirmado que falla en este equipo)', async () => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.deleteOnu(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 1/1',
+      5,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith('delete onu 5');
+    expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('dereg'));
   });
 });

@@ -24,11 +24,12 @@ const VENDOR = 'HIOSO';
  * Solo las operaciones cubiertas por reconocimiento real de CLI (ver
  * test/fixtures/hioso/cli_command_tree.txt) están implementadas:
  * testConnection, getSystemInfo, getSystemHealth, discoverInterfaces,
- * getOnuOpticalPower. El resto sigue lanzando DriverNotImplementedError:
- * getCards() porque este hardware no tiene chasis modular (no hay comando
- * equivalente a "show card"), y VLAN/autorización de ONU porque requieren
- * comandos de configuración que todavía no se han ejecutado contra el
- * equipo real — ver getCapabilities().
+ * getOnuOpticalPower, getUnconfiguredOnus, authorizeOnu, setOnuAdminState,
+ * deleteOnu. El resto sigue lanzando DriverNotImplementedError: getCards()
+ * porque este hardware no tiene chasis modular (no hay comando equivalente
+ * a "show card"), y configureVlanOnInterface() (VLAN en un puerto
+ * uplink/NNI, no en un ONU) porque no hay ningún comando verificado para
+ * eso todavía — ver getCapabilities().
  */
 @Injectable()
 export class HiosoDriver implements IOltDriver {
@@ -235,8 +236,91 @@ export class HiosoDriver implements IOltDriver {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'configureVlanOnInterface').message };
   }
 
+  /**
+   * show onu upgrade-state epon <IF> (ver test/fixtures/hioso/show_onu_upgrade-state.txt
+   * y la nota 7 de cli_command_tree.txt). A diferencia de ZTE (GPON), este
+   * hardware EPON no reporta un "serial number" con prefijo de fabricante —
+   * el único identificador estable por ONU verificado en el equipo real es
+   * su MAC address, que aquí se usa como `serialNumber` (ver DiscoveredUncfgOnu).
+   *
+   * No existe un comando verificado que distinga "ONU vista pero sin VLAN
+   * aplicada" de "ONU ya aprovisionada" sin una consulta extra por ONU (show
+   * onu config epon <IF> <id>) — se reportan todas las ONUs con Status "Up"
+   * registradas a nivel PON/MAC. Las entradas "Down" se excluyen porque son
+   * bindings de MAC obsoletos (ver nota 6: una ONU con Status Down observada
+   * en hardware real resultó ser un registro viejo de otra prueba, no un
+   * equipo físicamente presente). Re-escanear una ONU ya autorizada es
+   * inofensivo: OnuManagementService.scanUnconfiguredOnus() solo crea
+   * status UNCONFIGURED para serialNumbers nuevos, nunca lo resetea en un
+   * registro ya existente.
+   *
+   * Si se pasa `ponInterface` (formato "epon 1/1", igual al `name` de
+   * discoverInterfaces()), se consulta solo ese puerto. Si no se pasa
+   * ninguno, se listan primero las interfaces EPON reales vía
+   * discoverInterfaces() y se consulta cada una por separado (no existe un
+   * comando verificado que liste ONUs de todos los puertos PON a la vez).
+   */
   async getUnconfiguredOnus(params: OltConnectionParams, ponInterface?: string): Promise<DiscoveredUncfgOnu[]> {
-    throw new DriverNotImplementedError(VENDOR, 'getUnconfiguredOnus');
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+
+      let slotPorts: string[];
+      if (ponInterface) {
+        slotPorts = [this.toBareSlotPort(ponInterface)];
+      } else {
+        const ifaceOutput = await session.executeCommand('show interfaces status');
+        slotPorts = this.parseInterfacesStatus(ifaceOutput)
+          .filter((iface) => iface.type === 'PON')
+          .map((iface) => `${iface.slot}/${iface.port}`);
+      }
+
+      const results: DiscoveredUncfgOnu[] = [];
+      for (const slotPort of slotPorts) {
+        const output = await session.executeCommand(`show onu upgrade-state epon ${slotPort}`);
+        results.push(...this.parseOnuUpgradeState(output, slotPort));
+      }
+      return results;
+    } finally {
+      session.close();
+    }
+  }
+
+  /** "epon 1/1" -> "1/1" (formato que acepta "show onu upgrade-state epon <slot>/<port>"). */
+  private toBareSlotPort(ponInterface: string): string {
+    const match = ponInterface.match(/(\d+)\/(\d+)\s*$/);
+    if (!match) {
+      throw new Error(
+        `Interfaz PON con formato inesperado para HiOSO: "${ponInterface}" (se esperaba terminar en "<slot>/<port>")`,
+      );
+    }
+    return `${match[1]}/${match[2]}`;
+  }
+
+  private parseOnuUpgradeState(output: string, slotPort: string): DiscoveredUncfgOnu[] {
+    const results: DiscoveredUncfgOnu[] = [];
+    const lines = output.split('\n');
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const match = trimmed.match(/^\d+\/\d+:(\d+)\s+([0-9a-f]{2}(?::[0-9a-f]{2}){5})\s+(\w+)/i);
+      if (!match) {
+        continue;
+      }
+      const [, onuId, mac, status] = match;
+      if (!/^up$/i.test(status)) {
+        continue;
+      }
+
+      results.push({
+        ponInterface: `epon ${slotPort}`,
+        onuIndex: onuId,
+        serialNumber: mac.toLowerCase(),
+        vendor: 'HiOSO',
+      });
+    }
+
+    return results;
   }
 
   /**
@@ -296,20 +380,128 @@ export class HiosoDriver implements IOltDriver {
     return { iface, onuId };
   }
 
+  /**
+   * Ejecuta generateAuthorizationScript() comando por comando (mismo patrón
+   * que ZteC320Driver.authorizeOnu()).
+   *
+   * NO VERIFICADO: el efecto de correr "add onu <id> <mac> <type>" contra un
+   * onu-id que YA está auto-registrado/en línea (ej. re-afirmar el binding
+   * del ONU real ya conectado). Solo se probó contra un id previamente libre
+   * sin hardware físico detrás (ver cli_command_tree.txt nota 12). Si en
+   * producción el modo de autorización del puerto permite auto-registro
+   * (como hoy en el equipo de pruebas), es posible que este paso sea
+   * redundante pero no se ha confirmado que sea inofensivo repetirlo sobre
+   * un ONU ya vivo — probarlo deliberadamente antes de confiar en este flujo
+   * para un ONU que ya aparece como discovered/auto-registrado.
+   */
   async authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }> {
-    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'authorizeOnu').message };
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const commands = this.generateAuthorizationScript(config);
+
+      for (const cmd of commands) {
+        await session.executeCommand(cmd);
+      }
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
   }
 
+  /**
+   * "onu <id> activate" / "onu <id> deactivate" dentro de la interfaz PON
+   * (ver cli_command_tree.txt nota 11): confirmados con efecto real sobre
+   * hardware físico (el Status en "show onu upgrade-state" cambió Up<->Down
+   * de verdad). IMPORTANTE para quien toque este código: nunca enviar estos
+   * comandos con un "?" al final sobre un socket crudo — en este firmware
+   * eso no es ayuda inofensiva, también ejecuta el comando (así se descubrió
+   * esto, desactivando por accidente el ONU real de pruebas).
+   */
   async setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }> {
-    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'setOnuAdminState').message };
+    const { iface, onuId } = this.parseOnuTarget(onuTarget);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await session.executeCommand('configure terminal');
+      await session.executeCommand(`interface epon ${iface}`);
+      await session.executeCommand(`onu ${onuId} ${state === 'BLOCKED' ? 'deactivate' : 'activate'}`);
+      await session.executeCommand('exit');
+      await session.executeCommand('exit');
+      await session.executeCommand('write');
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
   }
 
+  /**
+   * "delete onu <id>" dentro de la interfaz PON — confirmado con efecto real
+   * (removió limpio un binding de prueba creado con "add onu", sin error).
+   * "dereg onu <id>" / "dereg <MAC>" aparecen en el árbol "?" pero AMBOS
+   * fallaron al ejecutarlos de verdad ("De-register onu failed!" / "Failed")
+   * — no usar "dereg" en este driver pese a que la gramática lo sugiere.
+   */
   async deleteOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }> {
-    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'deleteOnu').message };
+    const slotPort = this.toBareSlotPort(ponInterface);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await session.executeCommand('configure terminal');
+      await session.executeCommand(`interface epon ${slotPort}`);
+      await session.executeCommand(`delete onu ${onuId}`);
+      await session.executeCommand('exit');
+      await session.executeCommand('exit');
+      await session.executeCommand('write');
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
   }
 
+  /**
+   * "add onu <1-128> <MAC> <ONU-TYPE>" + "onu <id> vlan port <1-4> vlan-mode
+   * tag pvid <vlan>" — ambos con sintaxis confirmada contra hardware real
+   * (ver cli_command_tree.txt notas 12 y la sintaxis de VLAN ya verificada
+   * desde "show running-config" en sesiones anteriores). 4 puertos LAN fijos
+   * porque es lo único observado en el equipo real (mismo patrón que el
+   * resto de este driver, no una suposición nueva).
+   *
+   * `config.serialNumber` ya es la MAC del ONU (así quedó definido en
+   * getUnconfiguredOnus() — no hay un serial con prefijo de fabricante en
+   * este hardware EPON). `config.modelTypeName` debe ser un ONU-TYPE real
+   * para HiOSO (ej. "onu-01g", el único valor confirmado contra este
+   * firmware) — si el catálogo `net.onu_types` no tiene todavía una entrada
+   * HiOSO real con el `vendorTypeName` correcto, este comando fallará o
+   * usará un tipo inválido; eso es un problema de datos de catálogo
+   * pendiente (ver sumtech_olt_driver_vendor_routing), no algo que este
+   * driver deba adivinar. Si `managementMethod === 'TR069'`, igual que en
+   * ZteC320Driver, esto NO conecta con GenieACS/CpeConfiguratorService —
+   * esa integración sigue fuera de alcance aquí.
+   */
   generateAuthorizationScript(config: AuthorizeOnuParams): string[] {
-    throw new DriverNotImplementedError(VENDOR, 'generateAuthorizationScript');
+    const slotPort = this.toBareSlotPort(config.ponInterface);
+    const commands: string[] = [
+      'configure terminal',
+      `interface epon ${slotPort}`,
+      `add onu ${config.onuId} ${config.serialNumber} ${config.modelTypeName}`,
+    ];
+
+    for (let lanPort = 1; lanPort <= 4; lanPort++) {
+      commands.push(`onu ${config.onuId} vlan port ${lanPort} vlan-mode tag pvid ${config.serviceVlan}`);
+    }
+
+    commands.push('exit', 'exit', 'write');
+    return commands;
   }
 
   getCapabilities(): OltDriverCapabilities {
@@ -320,6 +512,10 @@ export class HiosoDriver implements IOltDriver {
       systemHealth: true,
       discoverInterfaces: true,
       onuOpticalPower: true,
+      onuDiscovery: true,
+      onuAuthorize: true,
+      onuAdminState: true,
+      onuDelete: true,
     };
   }
 }

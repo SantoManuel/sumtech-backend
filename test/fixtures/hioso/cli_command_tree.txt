@@ -367,3 +367,65 @@ CONFIRMED real syntax in actual use on this unit (captured verbatim from
    but also fit without triggering the pager on this unit's current
    (nearly-empty) configuration; a production config with many VLANs/ONUs
    provisioned may trigger the pager on these too.
+
+11. DANGEROUS QUIRK CONFIRMED THE HARD WAY: sending "<complete command> ?"
+   as one line over a raw TCP/Telnet socket (no real terminal) does NOT
+   behave like a Cisco terminal's inline help. The device echoes the help
+   text (e.g. "<cr>") for the TYPED portion before the "?", but because a
+   trailing CR/LF follows the "?" in the same line, it ALSO submits and
+   EXECUTES the typed command for real once it is already a complete,
+   valid command (e.g. "onu 2 activate ?" both showed help AND executed
+   "onu 2 activate"). This only happens when the text before "?" is
+   already complete on its own — an INCOMPLETE command (e.g. "onu 2 ?",
+   "add onu 2 ?", "dereg ?") is safe: the device answers "% Incomplete
+   command." and nothing is executed. CONFIRMED LIVE 2026-10-08: this
+   accidentally deactivated the real connected ONU (onu-id 2) via
+   "onu 2 deactivate ?", observed via "show onu upgrade-state" (Status
+   flipped Down, CtcStatus MpcpDiscovery) before being manually reversed
+   with a plain "onu 2 activate" (no trailing "?"). RULE: never append
+   "?" to a command string that might already be complete when driving
+   this CLI programmatically — only use it on a prefix already known (or
+   suspected) to be incomplete, or split connection per probe so an
+   accidental execution can't chain into the next command.
+
+12. ONU pre-registration grammar completed live (resolves the "UNVERIFIED"
+   note above about "add onu <id>"): the full command is
+   "add onu <1-128> <MAC> <ONU-TYPE>" — three arguments, not one. Verified
+   step by step via incomplete-command "?" probing (safe, since each
+   prefix was genuinely incomplete until the last argument):
+     add onu 5 ?                           -> ONU-MAC (format xx:xx:xx:xx:xx:xx)
+     add onu 5 04:b0:e7:aa:bb:cc ?         -> ONU-TYPE (example given: "onu-01g")
+   Executing "add onu 5 04:b0:e7:aa:bb:cc onu-01g" (confirmed complete,
+   no further args) for real created a phantom (no physical hardware)
+   registration: it appeared in "show onu upgrade-state epon 1/1" as
+   "1/1:5  04:b0:e7:aa:bb:cc  Down  0  1  0  0  MpcpDiscovery  0  0H0M0S --"
+   (ChipId/Ge/Fe/Pots all 0 or placeholder, unlike a real connected ONU)
+   but did NOT appear in "show olt mac" (that table only shows MACs
+   actually learned off the wire) nor in "show running-config" under
+   "White list configuration" (so this binding is NOT part of the
+   persisted/saved whitelist section — likely pure runtime state until
+   an actual ONU with that MAC links up, or the entry is removed).
+   "onu-01g" was accepted as a valid ONU-TYPE value on this firmware; no
+   command was found that enumerates the full list of valid types, so
+   other type strings remain unverified.
+
+13. REMOVING AN "add onu" BINDING: contrary to what the config-mode "?"
+   tree advertises, "dereg onu <id>" and "dereg <MAC>" BOTH FAILED when
+   actually executed against the phantom binding from note 12 ("! De-
+   register onu failed!" and " Failed" respectively) — "dereg" being
+   listed in the grammar does not mean it works on this firmware/scenario.
+   The command that actually worked: "delete onu <1-128>" (discovered via
+   the config-epon sub-mode's top-level "delete ?" -> "onu -- Onu config"
+   -> "delete onu ?" -> "<1-128>"). "delete onu 5" removed the phantom
+   binding cleanly (confirmed gone from "show onu upgrade-state"
+   afterwards), with zero error output. "clear onu <id>" also exists in
+   the grammar (same "<1-128>" shape) but was not tested since "delete
+   onu" already worked — do not assume "clear onu" is equivalent without
+   verifying it separately.
+
+   STILL UNVERIFIED: whether "add onu <id> <mac> <type>" behaves safely
+   when run against an onu-id that is ALREADY live/auto-registered (e.g.
+   re-asserting the real onu-id 2's own binding) — only tested against a
+   previously-unused id (5) with no physical ONU behind it. Do not assume
+   this is a safe no-op on an already-connected real ONU without testing
+   it deliberately first.

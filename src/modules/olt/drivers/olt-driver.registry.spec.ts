@@ -33,7 +33,7 @@ describe('OltDriverRegistry', () => {
 
       const hioso = list.find((v) => v.vendor === 'HIOSO')!;
       expect(hioso.capabilities.systemHealth).toBe(true);
-      expect(hioso.capabilities.onuAuthorize).toBe(false);
+      expect(hioso.capabilities.onuAuthorize).toBe(true);
     });
   });
 
@@ -115,22 +115,6 @@ describe('OltDriverRegistry', () => {
       await expect(
         driver.discoverInterfaces({ host: '10.0.0.1', port: 23, username: 'a', password: 'b' }),
       ).rejects.toThrow('no está implementada');
-    });
-
-    it('HiosoDriver: getUnconfiguredOnus/authorizeOnu siguen sin implementar (no hay evidencia real todavía)', async () => {
-      const driver = new HiosoDriver();
-      const params = { host: '10.0.0.1', port: 23, username: 'a', password: 'b' };
-      await expect(driver.getUnconfiguredOnus(params)).rejects.toThrow('no está implementada');
-      const authResult = await driver.authorizeOnu(params, {
-        ponInterface: 'epon 1/1',
-        onuId: 1,
-        modelTypeName: 'HIOSO-GENERIC',
-        serialNumber: 'X',
-        serviceVlan: 1,
-        managementMethod: 'OMCI',
-        operationMode: 'ROUTER',
-      });
-      expect(authResult.ok).toBe(false);
     });
   });
 });
