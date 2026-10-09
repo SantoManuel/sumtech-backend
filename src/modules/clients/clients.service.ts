@@ -744,6 +744,7 @@ export class ClientsService {
         'networkAccess.node',
         'networkAccess.onu',
         'networkAccess.onu.olt',
+        'networkAccess.onu.ponInterface',
       ],
       order: { createdAt: 'DESC' },
     });
@@ -802,15 +803,14 @@ export class ClientsService {
         onu: onu
           ? {
               id: onu.id,
-              serialNumber: onu.serialNumber,
-              vendor: onu.vendor,
-              status: onu.status,
-              onuIndex: onu.onuIndex,
               oltId: onu.oltId,
               oltName: onu.olt?.name,
-              rxPowerDbm: onu.rxPowerDbm,
-              txPowerDbm: onu.txPowerDbm,
-              lastSeenAt: onu.lastSeenAt,
+              ponPort: onu.ponInterface?.name,
+              onuId: onu.onuIndex,
+              sn: onu.serialNumber,
+              state: onu.status,
+              rxPower: onu.rxPowerDbm ?? null,
+              txPower: onu.txPowerDbm ?? null,
             }
           : null,
         effectiveSuspensionMedium,

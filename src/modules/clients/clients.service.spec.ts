@@ -939,6 +939,7 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
               onuIndex: 'gpon-onu_1/1/1:1',
               oltId: 'olt-1',
               olt: { name: 'OLT Central' },
+              ponInterface: { name: 'gpon-olt_1/1/1' },
               rxPowerDbm: -19.5,
               txPowerDbm: 2.1,
             },
@@ -953,7 +954,9 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       expect(result[0].contractNumber).toBe('CTR-0001');
       expect(result[0].plan?.name).toBe('Plan 100M');
       expect(result[0].secret?.username).toBe('juan_perez');
-      expect(result[0].onu?.serialNumber).toBe('ZTEGC0123456');
+      expect(result[0].onu?.sn).toBe('ZTEGC0123456');
+      expect(result[0].onu?.ponPort).toBe('gpon-olt_1/1/1');
+      expect(result[0].onu?.rxPower).toBe(-19.5);
       expect(result[0].effectiveSuspensionMedium).toBe('PPPOE');
     });
 
