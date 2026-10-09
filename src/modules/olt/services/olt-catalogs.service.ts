@@ -10,10 +10,12 @@ import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { UnknownOltVendorError } from '../ports/olt-driver.port';
-import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
+import { decryptCredential, encryptCredential } from '../../network-connectivity/utils/crypto.util';
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from '../dto/speed-profile.dto';
+import { CreateTr069NetworkDto } from '../dto/create-tr069-network.dto';
+import { UpdateTr069NetworkDto } from '../dto/update-tr069-network.dto';
 
 @Injectable()
 export class OltCatalogsService {
@@ -327,8 +329,40 @@ export class OltCatalogsService {
     return this.tr069Repository.find({ relations: ['vlan'], order: { name: 'ASC' } });
   }
 
-  async createTr069Network(dto: any) {
-    const net = this.tr069Repository.create(dto);
+  async findTr069NetworkById(id: string): Promise<Tr069NetworkEntity> {
+    const net = await this.tr069Repository.findOne({ where: { id }, relations: ['vlan'] });
+    if (!net) throw new NotFoundException(`Red TR-069 no encontrada: ${id}`);
+    return net;
+  }
+
+  async createTr069Network(dto: CreateTr069NetworkDto) {
+    const { acsPassword, connReqPassword, ...rest } = dto;
+    const net = this.tr069Repository.create({
+      ...rest,
+      acsPasswordEnc: acsPassword ? encryptCredential(acsPassword) : undefined,
+      connReqPasswordEnc: connReqPassword ? encryptCredential(connReqPassword) : undefined,
+    });
     return this.tr069Repository.save(net);
+  }
+
+  async updateTr069Network(id: string, dto: UpdateTr069NetworkDto) {
+    const net = await this.findTr069NetworkById(id);
+    const { acsPassword, connReqPassword, ...rest } = dto;
+
+    Object.assign(net, rest);
+    if (acsPassword) {
+      net.acsPasswordEnc = encryptCredential(acsPassword);
+    }
+    if (connReqPassword) {
+      net.connReqPasswordEnc = encryptCredential(connReqPassword);
+    }
+
+    return this.tr069Repository.save(net);
+  }
+
+  async deleteTr069Network(id: string) {
+    const net = await this.findTr069NetworkById(id);
+    await this.tr069Repository.delete(id);
+    return { success: true, message: `Red TR-069 "${net.name}" eliminada correctamente.` };
   }
 }

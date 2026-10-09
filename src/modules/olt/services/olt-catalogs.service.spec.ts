@@ -42,8 +42,10 @@ describe('OltCatalogsService', () => {
     tr069Repo = {
       count: jest.fn(),
       find: jest.fn(),
+      findOne: jest.fn(),
       create: jest.fn((dto) => dto),
       save: jest.fn((dto) => Promise.resolve(dto)),
+      delete: jest.fn(),
     };
     speedProfileRepo = {
       find: jest.fn(),
@@ -133,6 +135,78 @@ describe('OltCatalogsService', () => {
 
       expect(res.success).toBe(true);
       expect(vlanRepo.delete).toHaveBeenCalledWith('vlan-1');
+    });
+  });
+
+  describe('createTr069Network / updateTr069Network', () => {
+    it('cifra acsPassword/connReqPassword antes de guardar y nunca los persiste en texto plano', async () => {
+      await service.createTr069Network({
+        name: 'Red Lab HiOSO',
+        cidr: '10.15.160.0/22',
+        gateway: '10.15.160.1',
+        acsUrl: 'http://66.94.107.219:7547',
+        acsUsername: 'acs-admin',
+        acsPassword: 'plaintext-secret',
+      } as any);
+
+      expect(tr069Repo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Red Lab HiOSO',
+          acsUrl: 'http://66.94.107.219:7547',
+          acsPasswordEnc: expect.any(String),
+        }),
+      );
+      const saved = tr069Repo.save.mock.calls[0][0];
+      expect(saved.acsPasswordEnc).not.toBe('plaintext-secret');
+      expect(saved.acsPassword).toBeUndefined();
+    });
+
+    it('createTr069Network no falla si no se provee password (campos opcionales)', async () => {
+      await service.createTr069Network({
+        name: 'Red Lab HiOSO',
+        cidr: '10.15.160.0/22',
+        gateway: '10.15.160.1',
+        acsUrl: 'http://66.94.107.219:7547',
+      } as any);
+
+      const saved = tr069Repo.save.mock.calls[0][0];
+      expect(saved.acsPasswordEnc).toBeUndefined();
+    });
+
+    it('updateTr069Network actualiza campos y re-cifra solo si se envía un password nuevo', async () => {
+      tr069Repo.findOne.mockResolvedValue({
+        id: 'tr069-1',
+        name: 'Red Vieja',
+        acsUrl: 'http://old:7547',
+        acsPasswordEnc: 'old-enc-value',
+      });
+
+      await service.updateTr069Network('tr069-1', { acsUrl: 'http://66.94.107.219:7547' } as any);
+
+      const saved = tr069Repo.save.mock.calls[0][0];
+      expect(saved.acsUrl).toBe('http://66.94.107.219:7547');
+      expect(saved.acsPasswordEnc).toBe('old-enc-value'); // no se tocó, no se envió password nuevo
+    });
+
+    it('updateTr069Network lanza NotFoundException si la red no existe', async () => {
+      tr069Repo.findOne.mockResolvedValue(null);
+      await expect(service.updateTr069Network('nope', {} as any)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('deleteTr069Network', () => {
+    it('elimina la red TR-069 existente', async () => {
+      tr069Repo.findOne.mockResolvedValue({ id: 'tr069-1', name: 'Red Lab HiOSO' });
+
+      const res = await service.deleteTr069Network('tr069-1');
+
+      expect(res.success).toBe(true);
+      expect(tr069Repo.delete).toHaveBeenCalledWith('tr069-1');
+    });
+
+    it('lanza NotFoundException si la red no existe', async () => {
+      tr069Repo.findOne.mockResolvedValue(null);
+      await expect(service.deleteTr069Network('nope')).rejects.toThrow(NotFoundException);
     });
   });
 

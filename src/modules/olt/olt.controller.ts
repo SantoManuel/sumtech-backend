@@ -23,6 +23,8 @@ import { OltMonitoringService } from './services/olt-monitoring.service';
 import { OltDriverRegistry } from './drivers/olt-driver.registry';
 import { OltPermissionGuard, RequireOltAction } from './guards/olt-permission.guard';
 import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from './dto/speed-profile.dto';
+import { CreateTr069NetworkDto } from './dto/create-tr069-network.dto';
+import { UpdateTr069NetworkDto } from './dto/update-tr069-network.dto';
 
 @Controller('olt')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -237,7 +239,19 @@ export class OltController {
 
   @Post('tr069-networks')
   @Roles(Role.ADMIN, Role.GERENTE)
-  async createTr069Network(@Body() dto: any) {
+  async createTr069Network(@Body() dto: CreateTr069NetworkDto) {
     return this.catalogsService.createTr069Network(dto);
+  }
+
+  @Patch('tr069-networks/:id')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async updateTr069Network(@Param('id') id: string, @Body() dto: UpdateTr069NetworkDto) {
+    return this.catalogsService.updateTr069Network(id, dto);
+  }
+
+  @Delete('tr069-networks/:id')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async deleteTr069Network(@Param('id') id: string) {
+    return this.catalogsService.deleteTr069Network(id);
   }
 }
