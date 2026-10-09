@@ -30,6 +30,7 @@ export type RouterOsClientLike = Pick<
   | 'ensureVlanInterface'
   | 'findIpAddressByInterface'
   | 'ensureIpAddress'
+  | 'getIpAddresses'
   | 'findDhcpClientByInterface'
   | 'ensureDhcpClient'
   | 'findPppoeClientByName'

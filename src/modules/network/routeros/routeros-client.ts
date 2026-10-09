@@ -686,6 +686,23 @@ export class RouterOsClient {
   }
 
   /** Busca una IP ya asignada a una interfaz (/ip/address). Null si no existe. */
+  /** Devuelve TODAS las IPs configuradas en el router (/ip/address) — diagnóstico de topología real. */
+  async getIpAddresses(): Promise<RouterOsIpAddress[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/address'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'],
+      address: entry.address,
+      interface: entry.interface,
+      comment: entry.comment,
+    }));
+  }
+
   async findIpAddressByInterface(interfaceName: string): Promise<RouterOsIpAddress | null> {
     let response;
     try {

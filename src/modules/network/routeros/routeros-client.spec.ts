@@ -378,6 +378,25 @@ describe('RouterOsClient', () => {
     });
   });
 
+  describe('getIpAddresses', () => {
+    it('devuelve todas las IPs configuradas en el router', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*1', address: '192.168.0.1/24', interface: 'ether2-lab', comment: 'LAN laboratorio' },
+          { '.id': '*2', address: '172.16.100.5/32', interface: 'wg0' },
+        ],
+      });
+
+      const result = await client.getIpAddresses();
+
+      expect(http.get).toHaveBeenCalledWith('https://10.10.0.1:8729/rest/ip/address', expect.anything());
+      expect(result).toEqual([
+        { id: '*1', address: '192.168.0.1/24', interface: 'ether2-lab', comment: 'LAN laboratorio' },
+        { id: '*2', address: '172.16.100.5/32', interface: 'wg0', comment: undefined },
+      ]);
+    });
+  });
+
   describe('findIpAddressByInterface / ensureIpAddress', () => {
     it('ensureIpAddress crea la IP vía PUT si la interfaz no tiene ninguna asignada', async () => {
       http.get.mockResolvedValue({ data: [] });

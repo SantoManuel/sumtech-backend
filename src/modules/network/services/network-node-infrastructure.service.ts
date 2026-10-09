@@ -291,6 +291,20 @@ export class NetworkNodeInfrastructureService {
   }
 
   /**
+   * Lista las IPs reales configuradas en el router (diagnóstico de topología:
+   * ej. confirmar el gateway real de una LAN antes de registrar una Red
+   * TR-069, en vez de asumirlo). Solo lectura, sin side-effects.
+   */
+  async getIpAddresses(nodeId: string) {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    return client.getIpAddresses();
+  }
+
+  /**
    * Asegura la auto-configuración TR-069 vía DHCP Option 43 (ver
    * RouterOsClient.ensureAcsAutoProvisioning para el detalle del mecanismo
    * TR-069 Annex G). `server` por defecto es 'all': el matcher solo activa

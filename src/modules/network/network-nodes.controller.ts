@@ -179,6 +179,13 @@ export class NetworkNodesController {
     return this.infrastructureService.ensureFirewallBaseline(id, userId);
   }
 
+  /** Diagnóstico de topología real: IPs configuradas en el router (ej. confirmar el gateway real de una LAN). */
+  @Get(':id/ip-addresses')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeIpAddresses(@Param('id') id: string) {
+    return this.infrastructureService.getIpAddresses(id);
+  }
+
   /** Auto-configuración TR-069 vía DHCP Option 43 (RF-OLT-013 / Broadband Forum Annex G). */
   @Post(':id/tr069/ensure-acs-auto-provisioning')
   @Roles(Role.ADMIN, Role.GERENTE)

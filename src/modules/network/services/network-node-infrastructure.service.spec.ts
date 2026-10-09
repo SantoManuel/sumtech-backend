@@ -264,6 +264,24 @@ describe('NetworkNodeInfrastructureService', () => {
     });
   });
 
+  describe('getIpAddresses', () => {
+    it('lanza NotFoundException si el nodo no existe', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.getIpAddresses('node-x')).rejects.toThrow(NotFoundException);
+    });
+
+    it('devuelve las IPs reales configuradas en el router', async () => {
+      const getIpAddresses = jest.fn().mockResolvedValue([
+        { id: '*1', address: '192.168.0.1/24', interface: 'ether2-lab' },
+      ]);
+      clientFactory.mockReturnValue({ getIpAddresses });
+
+      const result = await service.getIpAddresses('node-1');
+
+      expect(result).toEqual([{ id: '*1', address: '192.168.0.1/24', interface: 'ether2-lab' }]);
+    });
+  });
+
   describe('ensureAcsAutoProvisioning', () => {
     it('lanza NotFoundException si el nodo no existe', async () => {
       nodeRepo.findOneBy.mockResolvedValue(null);
