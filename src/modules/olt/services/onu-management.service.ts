@@ -283,35 +283,48 @@ export class OnuManagementService {
     }
 
     // 2. Persistir configuración de servicio en net.onu_service_config
+    // Normaliza campos UUID opcionales: un "" (select sin elegir, ej.
+    // tr069NetworkId cuando managementMethod=TR069 pero no se eligió red)
+    // es un valor inválido para una columna uuid nullable en Postgres
+    // ("invalid input syntax for type uuid"), a diferencia de omitir el
+    // campo. No confiar solo en que el cliente nunca mande "".
+    const mgmtVlanId = dto.mgmtVlanId || undefined;
+    const tr069VlanId = dto.tr069VlanId || undefined;
+    const tr069NetworkId = dto.tr069NetworkId || undefined;
+    const speedProfileId = dto.speedProfileId || undefined;
+
     let config = await this.configRepository.findOneBy({ onuId: onu.id });
     if (!config) {
       config = this.configRepository.create({
         onuId: onu.id,
         serviceVlanId: dto.serviceVlanId,
-        mgmtVlanId: dto.mgmtVlanId,
-        tr069VlanId: dto.tr069VlanId,
-        tr069NetworkId: dto.tr069NetworkId,
+        mgmtVlanId,
+        tr069VlanId,
+        tr069NetworkId,
         managementMethod: dto.managementMethod || 'TR069',
         operationMode: dto.operationMode || 'ROUTER',
         wanMode: dto.wanMode || 'PPPOE',
-        speedProfileId: dto.speedProfileId,
+        speedProfileId,
         desiredVersion: 1,
         appliedVersion: 1,
         applyStatus: 'APPLIED',
       });
     } else {
       config.serviceVlanId = dto.serviceVlanId;
-      config.mgmtVlanId = dto.mgmtVlanId;
-      config.tr069VlanId = dto.tr069VlanId;
-      config.tr069NetworkId = dto.tr069NetworkId;
+      config.mgmtVlanId = mgmtVlanId;
+      config.tr069VlanId = tr069VlanId;
+      config.tr069NetworkId = tr069NetworkId;
       config.managementMethod = dto.managementMethod || config.managementMethod;
       config.operationMode = dto.operationMode || config.operationMode;
       config.wanMode = dto.wanMode || config.wanMode;
-      config.speedProfileId = dto.speedProfileId;
+      config.speedProfileId = speedProfileId;
       config.appliedVersion += 1;
       config.desiredVersion = config.appliedVersion;
       config.applyStatus = 'APPLIED';
     }
+    // No reasignar onu.serviceConfig aquí: la relación ya no tiene cascade
+    // (ver nota en onu.entity.ts) precisamente para que el save() de más
+    // abajo no reintente persistir esta misma fila por su cuenta.
     await this.configRepository.save(config);
 
     // 3. Actualizar estado de la ONU en net.onus

@@ -105,7 +105,15 @@ export class OnuEntity {
   @JoinColumn({ name: 'contract_id' })
   contract?: ContractEntity;
 
-  @OneToOne(() => OnuServiceConfigEntity, (cfg) => cfg.onu, { cascade: true })
+  // Sin cascade: OnuManagementService.authorizeOnu() ya gestiona
+  // explícitamente el insert/update de onu_service_config vía su propio
+  // repositorio. Con cascade:true, el posterior onuRepository.save(onu) (con
+  // onu.serviceConfig todavía apuntando al objeto OBSOLETO cargado antes de
+  // esa actualización) hacía que TypeORM reintentara persistir esa relación
+  // en la misma transacción, generando un segundo UPDATE sobre la misma fila
+  // con datos corruptos (onu_id null / uuid vacío) — causa real de los 500
+  // en POST /olt/onus/:id/authorize.
+  @OneToOne(() => OnuServiceConfigEntity, (cfg) => cfg.onu)
   serviceConfig?: OnuServiceConfigEntity;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamp with time zone' })

@@ -323,6 +323,31 @@ describe('OnuManagementService', () => {
       );
     });
 
+    it('normaliza tr069NetworkId/mgmtVlanId/tr069VlanId/speedProfileId "" a undefined antes de guardar onu_service_config (regresión: Postgres rechaza "" como uuid)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        onuTypeId: 'type-1',
+        managementMethod: 'TR069',
+        operationMode: 'ROUTER',
+        tr069NetworkId: '',
+        mgmtVlanId: '',
+        tr069VlanId: '',
+        speedProfileId: '',
+      });
+
+      expect(configRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tr069NetworkId: undefined,
+          mgmtVlanId: undefined,
+          tr069VlanId: undefined,
+          speedProfileId: undefined,
+        }),
+      );
+    });
+
     it('resuelve speedProfileId a tcontProfile/downKbps/upKbps y los pasa al driver (antes de este fix nunca se leía)', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
       zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
