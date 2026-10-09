@@ -291,6 +291,47 @@ export class NetworkNodeInfrastructureService {
   }
 
   /**
+   * Asegura la auto-configuración TR-069 vía DHCP Option 43 (ver
+   * RouterOsClient.ensureAcsAutoProvisioning para el detalle del mecanismo
+   * TR-069 Annex G). `server` por defecto es 'all': el matcher solo activa
+   * para clientes DHCP que declaren soporte TR-069 (Option 60 contiene
+   * "dslforum.org"), así que cubrir todos los servidores DHCP del router no
+   * amplía el radio de impacto hacia clientes que no lo pidieron.
+   */
+  async ensureAcsAutoProvisioning(nodeId: string, acsUrl: string, actorUserId?: string): Promise<NetworkNodeEntity> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
+    }
+
+    try {
+      const client = await this.resolveClient(node);
+      await client.ensureAcsAutoProvisioning(acsUrl);
+
+      await this.deviceOperationLogger.logEvent({
+        nodeId: node.id,
+        eventType: 'COMMAND',
+        status: 'SUCCESS',
+        message: `Auto-configuración TR-069 (DHCP Option 43) asegurada en "${node.name}" con ACS ${acsUrl}.`,
+        actorUserId,
+        rawDetails: { nodeId: node.id, operation: 'ensureAcsAutoProvisioning', acsUrl },
+      });
+
+      return node;
+    } catch (err: any) {
+      await this.deviceOperationLogger.logEvent({
+        nodeId: node.id,
+        eventType: 'COMMAND',
+        status: 'FAILURE',
+        message: `Error asegurando auto-configuración TR-069 en "${node.name}": ${err.message}`,
+        actorUserId,
+        rawDetails: { nodeId: node.id, operation: 'ensureAcsAutoProvisioning', acsUrl },
+      });
+      throw err;
+    }
+  }
+
+  /**
    * Materializa el WAN del nodo según `wanMode`:
    * - DHCP_CLIENT / PPPOE_CLIENT ya agregan su propia ruta por defecto
    *   (add-default-route=yes) — no hace falta `ensureDefaultRoute` para esos.

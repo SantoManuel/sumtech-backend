@@ -264,6 +264,35 @@ describe('NetworkNodeInfrastructureService', () => {
     });
   });
 
+  describe('ensureAcsAutoProvisioning', () => {
+    it('lanza NotFoundException si el nodo no existe', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.ensureAcsAutoProvisioning('node-x', 'http://66.94.107.219:7547')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('llama ensureAcsAutoProvisioning del cliente con la URL del ACS y loguea SUCCESS', async () => {
+      const ensureAcsAutoProvisioning = jest.fn().mockResolvedValue({ name: 'sumtech-tr069-dslforum' });
+      clientFactory.mockReturnValue({ ensureAcsAutoProvisioning });
+
+      await service.ensureAcsAutoProvisioning('node-1', 'http://66.94.107.219:7547', 'admin-1');
+
+      expect(ensureAcsAutoProvisioning).toHaveBeenCalledWith('http://66.94.107.219:7547');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'SUCCESS', rawDetails: expect.objectContaining({ acsUrl: 'http://66.94.107.219:7547' }) }),
+      );
+    });
+
+    it('loguea FAILURE y relanza si el router rechaza la operación', async () => {
+      const ensureAcsAutoProvisioning = jest.fn().mockRejectedValue(new Error('timeout'));
+      clientFactory.mockReturnValue({ ensureAcsAutoProvisioning });
+
+      await expect(service.ensureAcsAutoProvisioning('node-1', 'http://66.94.107.219:7547')).rejects.toThrow('timeout');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILURE' }));
+    });
+  });
+
   it('es idempotente: si ya existe un registro para ese nodo+VLAN, lo actualiza en vez de crear uno nuevo', async () => {
     nodeVlanRepo.findOneBy.mockResolvedValue({
       id: 'nv-existing',

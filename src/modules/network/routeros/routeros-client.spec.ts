@@ -1,4 +1,4 @@
-import { RouterOsClient } from './routeros-client';
+import { RouterOsClient, encodeAcsUrlDhcpOption43 } from './routeros-client';
 
 describe('RouterOsClient', () => {
   let http: { get: jest.Mock; put: jest.Mock; patch: jest.Mock; delete: jest.Mock };
@@ -674,6 +674,118 @@ describe('RouterOsClient', () => {
       expect(http.patch).toHaveBeenCalledWith(
         'https://10.10.0.1:8729/rest/queue/simple/*23',
         { disabled: 'true' },
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('encodeAcsUrlDhcpOption43', () => {
+    it('codifica la URL del ACS como sub-opción TLV code=1 (TR-069 Annex G), verificado contra un ejemplo real decodificado', () => {
+      // Ejemplo real del foro de MikroTik: 0x011E<hex de "https://acs.made4graph.com.br/" (30 bytes)>
+      const result = encodeAcsUrlDhcpOption43('https://acs.made4graph.com.br/');
+      expect(result).toBe('0x011e68747470733a2f2f6163732e6d6164653467726170682e636f6d2e62722f');
+    });
+
+    it('codifica correctamente la URL real de GenieACS CWMP del laboratorio', () => {
+      const result = encodeAcsUrlDhcpOption43('http://66.94.107.219:7547');
+      // 'http://66.94.107.219:7547' tiene 25 caracteres -> 0x19
+      expect(result).toBe(
+        `0x0119${Buffer.from('http://66.94.107.219:7547', 'ascii').toString('hex')}`,
+      );
+    });
+
+    it('lanza error si la URL supera los 255 bytes (longitud de un solo byte en el TLV)', () => {
+      const longUrl = 'http://' + 'a'.repeat(250) + '.com';
+      expect(() => encodeAcsUrlDhcpOption43(longUrl)).toThrow(/demasiado larga/);
+    });
+  });
+
+  describe('ensureAcsAutoProvisioning', () => {
+    it('crea la opción DHCP, el option-set y el matcher dslforum.org cuando no existen', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockImplementation((url: string, body: any) => {
+        if (url.endsWith('/ip/dhcp-server/option')) return Promise.resolve({ data: { '.id': '*1', ...body } });
+        if (url.endsWith('/ip/dhcp-server/option/sets')) return Promise.resolve({ data: { '.id': '*2', ...body } });
+        if (url.endsWith('/ip/dhcp-server/matcher')) return Promise.resolve({ data: { '.id': '*3', ...body } });
+        return Promise.resolve({ data: {} });
+      });
+
+      const result = await client.ensureAcsAutoProvisioning('http://66.94.107.219:7547');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/option',
+        expect.objectContaining({
+          name: 'sumtech-tr069-acs-url',
+          code: 'vendor-specific',
+          value: encodeAcsUrlDhcpOption43('http://66.94.107.219:7547'),
+        }),
+        expect.anything(),
+      );
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/option/sets',
+        { name: 'sumtech-tr069-autoconf', options: 'sumtech-tr069-acs-url' },
+        expect.anything(),
+      );
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/matcher',
+        expect.objectContaining({
+          name: 'sumtech-tr069-dslforum',
+          server: 'all',
+          code: '60',
+          value: 'dslforum.org',
+          'matching-type': 'substring',
+          'option-set': 'sumtech-tr069-autoconf',
+        }),
+        expect.anything(),
+      );
+      expect(result.name).toBe('sumtech-tr069-dslforum');
+    });
+
+    it('es idempotente: no vuelve a crear nada si ya existe con los mismos valores', async () => {
+      const encodedValue = encodeAcsUrlDhcpOption43('http://66.94.107.219:7547');
+      http.get.mockImplementation((url: string) => {
+        if (url.endsWith('/ip/dhcp-server/option')) {
+          return Promise.resolve({ data: [{ '.id': '*1', name: 'sumtech-tr069-acs-url', code: 'vendor-specific', value: encodedValue }] });
+        }
+        if (url.endsWith('/ip/dhcp-server/option/sets')) {
+          return Promise.resolve({ data: [{ '.id': '*2', name: 'sumtech-tr069-autoconf', options: 'sumtech-tr069-acs-url' }] });
+        }
+        if (url.endsWith('/ip/dhcp-server/matcher')) {
+          return Promise.resolve({
+            data: [{ '.id': '*3', name: 'sumtech-tr069-dslforum', server: 'all', code: '60', value: 'dslforum.org', 'matching-type': 'substring', 'option-set': 'sumtech-tr069-autoconf' }],
+          });
+        }
+        return Promise.resolve({ data: [] });
+      });
+
+      await client.ensureAcsAutoProvisioning('http://66.94.107.219:7547');
+
+      expect(http.put).not.toHaveBeenCalled();
+      expect(http.patch).not.toHaveBeenCalled();
+    });
+
+    it('actualiza la opción vía PATCH si la URL del ACS cambió', async () => {
+      const oldValue = encodeAcsUrlDhcpOption43('http://old-acs.example.com:7547');
+      http.get.mockImplementation((url: string) => {
+        if (url.endsWith('/ip/dhcp-server/option')) {
+          return Promise.resolve({ data: [{ '.id': '*1', name: 'sumtech-tr069-acs-url', code: 'vendor-specific', value: oldValue }] });
+        }
+        if (url.endsWith('/ip/dhcp-server/option/sets')) {
+          return Promise.resolve({ data: [{ '.id': '*2', name: 'sumtech-tr069-autoconf', options: 'sumtech-tr069-acs-url' }] });
+        }
+        if (url.endsWith('/ip/dhcp-server/matcher')) {
+          return Promise.resolve({
+            data: [{ '.id': '*3', name: 'sumtech-tr069-dslforum', server: 'all', code: '60', value: 'dslforum.org', 'matching-type': 'substring', 'option-set': 'sumtech-tr069-autoconf' }],
+          });
+        }
+        return Promise.resolve({ data: [] });
+      });
+
+      await client.ensureAcsAutoProvisioning('http://66.94.107.219:7547');
+
+      expect(http.patch).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/option/*1',
+        { value: encodeAcsUrlDhcpOption43('http://66.94.107.219:7547') },
         expect.anything(),
       );
     });

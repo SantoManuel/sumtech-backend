@@ -50,6 +50,7 @@ export type RouterOsClientLike = Pick<
   | 'findSimpleQueueByName'
   | 'ensureSimpleQueue'
   | 'setSimpleQueueDisabled'
+  | 'ensureAcsAutoProvisioning'
 >;
 
 export type RouterOsClientFactory = (config: RouterOsClientConfig) => RouterOsClientLike;

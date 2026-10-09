@@ -145,6 +145,50 @@ export interface RouterOsSimpleQueue {
   disabled: boolean;
 }
 
+export interface RouterOsDhcpOption {
+  id: string;
+  name: string;
+  code: string;
+  value: string;
+}
+
+export interface RouterOsDhcpOptionSet {
+  id: string;
+  name: string;
+  options: string;
+}
+
+export interface RouterOsDhcpMatcher {
+  id: string;
+  name: string;
+  server: string;
+  code: string;
+  value: string;
+  matchingType: string;
+  optionSet?: string;
+}
+
+/**
+ * Codifica la URL del ACS como el valor crudo del DHCP Option 43 (vendor-specific)
+ * según el mecanismo de auto-configuración DHCP de TR-069 Annex G (Broadband
+ * Forum): sub-opción TLV `<code:1 byte><longitud:1 byte><valor ASCII>`, con
+ * code=1 para la URL del ACS. No incluye la sub-opción 2 (ProvisioningCode) —
+ * opcional y sin uso en este despliegue. Verificado contra un ejemplo real
+ * decodificado byte a byte (RouterOS forum): `0x011E<...URL en hex ASCII...>`
+ * para una URL de 30 caracteres (0x1E).
+ */
+export function encodeAcsUrlDhcpOption43(acsUrl: string): string {
+  const urlBytes = Buffer.from(acsUrl, 'ascii');
+  if (urlBytes.length > 255) {
+    throw new Error(
+      `La URL del ACS es demasiado larga para DHCP Option 43 (${urlBytes.length} bytes, máximo 255): "${acsUrl}"`,
+    );
+  }
+  const lengthHex = urlBytes.length.toString(16).padStart(2, '0');
+  const urlHex = urlBytes.toString('hex');
+  return `0x01${lengthHex}${urlHex}`;
+}
+
 const DEFAULT_TIMEOUT_MS = 5000;
 
 /**
@@ -1257,6 +1301,196 @@ export class RouterOsClient {
       } catch (error) {
         throw new Error(this.describeError(error));
       }
+    }
+  }
+
+  /** Busca una opción DHCP cruda ya definida por nombre (/ip/dhcp-server/option). */
+  private async findDhcpOptionByName(name: string): Promise<RouterOsDhcpOption | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/dhcp-server/option'), {
+        ...this.buildRequestConfig(),
+        params: { name },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.name === name);
+    if (!match) return null;
+    return { id: match['.id'], name: match.name, code: match.code, value: match.value };
+  }
+
+  /** Asegura una opción DHCP cruda (ej. vendor-specific/option 43), idempotente por nombre. */
+  private async ensureDhcpOption(name: string, code: string, value: string): Promise<RouterOsDhcpOption> {
+    const existing = await this.findDhcpOptionByName(name);
+    if (existing) {
+      if (existing.value !== value) {
+        try {
+          await this.http.patch(
+            this.buildUrl(`ip/dhcp-server/option/${encodeURIComponent(existing.id)}`),
+            { value },
+            this.buildRequestConfig(),
+          );
+        } catch (error) {
+          throw new Error(this.describeError(error));
+        }
+        return { ...existing, value };
+      }
+      return existing;
+    }
+    try {
+      const response = await this.http.put(
+        this.buildUrl('ip/dhcp-server/option'),
+        { name, code, value },
+        this.buildRequestConfig(),
+      );
+      const data = response.data;
+      return { id: data?.['.id'] || '', name: data?.name || name, code: data?.code || code, value: data?.value || value };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca un conjunto de opciones DHCP ya definido por nombre (/ip/dhcp-server/option/sets). */
+  private async findDhcpOptionSetByName(name: string): Promise<RouterOsDhcpOptionSet | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/dhcp-server/option/sets'), {
+        ...this.buildRequestConfig(),
+        params: { name },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.name === name);
+    if (!match) return null;
+    return { id: match['.id'], name: match.name, options: match.options };
+  }
+
+  /** Asegura un conjunto de opciones DHCP, idempotente por nombre. */
+  private async ensureDhcpOptionSet(name: string, optionNames: string[]): Promise<RouterOsDhcpOptionSet> {
+    const optionsValue = optionNames.join(',');
+    const existing = await this.findDhcpOptionSetByName(name);
+    if (existing) {
+      if (existing.options !== optionsValue) {
+        try {
+          await this.http.patch(
+            this.buildUrl(`ip/dhcp-server/option/sets/${encodeURIComponent(existing.id)}`),
+            { options: optionsValue },
+            this.buildRequestConfig(),
+          );
+        } catch (error) {
+          throw new Error(this.describeError(error));
+        }
+        return { ...existing, options: optionsValue };
+      }
+      return existing;
+    }
+    try {
+      const response = await this.http.put(
+        this.buildUrl('ip/dhcp-server/option/sets'),
+        { name, options: optionsValue },
+        this.buildRequestConfig(),
+      );
+      const data = response.data;
+      return { id: data?.['.id'] || '', name: data?.name || name, options: data?.options || optionsValue };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca un matcher DHCP ya definido por nombre (/ip/dhcp-server/matcher). */
+  private async findDhcpMatcherByName(name: string): Promise<RouterOsDhcpMatcher | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/dhcp-server/matcher'), {
+        ...this.buildRequestConfig(),
+        params: { name },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.name === name);
+    if (!match) return null;
+    return {
+      id: match['.id'],
+      name: match.name,
+      server: match.server,
+      code: match.code,
+      value: match.value,
+      matchingType: match['matching-type'],
+      optionSet: match['option-set'],
+    };
+  }
+
+  /**
+   * Asegura, de forma idempotente, la auto-configuración TR-069 vía DHCP
+   * Option 43 (Broadband Forum TR-069 Annex G): crea/actualiza la opción
+   * cruda con la URL del ACS codificada, su option-set, y el matcher que la
+   * aplica a cualquier cliente DHCP cuyo Option 60 (vendor-class-id)
+   * contenga "dslforum.org" — el identificador estándar con el que un CPE
+   * anuncia soporte de auto-configuración TR-069 vía DHCP. El radio de
+   * impacto es intencionalmente acotado por el propio matcher: nunca afecta
+   * a un cliente DHCP que no declare explícitamente ese soporte.
+   */
+  async ensureAcsAutoProvisioning(
+    acsUrl: string,
+    namePrefix = 'sumtech-tr069',
+    server: 'all' | string = 'all',
+  ): Promise<RouterOsDhcpMatcher> {
+    const optionName = `${namePrefix}-acs-url`;
+    const optionSetName = `${namePrefix}-autoconf`;
+    const matcherName = `${namePrefix}-dslforum`;
+
+    const encodedValue = encodeAcsUrlDhcpOption43(acsUrl);
+    await this.ensureDhcpOption(optionName, 'vendor-specific', encodedValue);
+    await this.ensureDhcpOptionSet(optionSetName, [optionName]);
+
+    const existingMatcher = await this.findDhcpMatcherByName(matcherName);
+    if (existingMatcher) {
+      if (existingMatcher.optionSet !== optionSetName || existingMatcher.server !== server) {
+        try {
+          await this.http.patch(
+            this.buildUrl(`ip/dhcp-server/matcher/${encodeURIComponent(existingMatcher.id)}`),
+            { server, 'option-set': optionSetName },
+            this.buildRequestConfig(),
+          );
+        } catch (error) {
+          throw new Error(this.describeError(error));
+        }
+        return { ...existingMatcher, server, optionSet: optionSetName };
+      }
+      return existingMatcher;
+    }
+
+    try {
+      const response = await this.http.put(
+        this.buildUrl('ip/dhcp-server/matcher'),
+        {
+          name: matcherName,
+          server,
+          code: '60',
+          value: 'dslforum.org',
+          'matching-type': 'substring',
+          'option-set': optionSetName,
+        },
+        this.buildRequestConfig(),
+      );
+      const data = response.data;
+      return {
+        id: data?.['.id'] || '',
+        name: data?.name || matcherName,
+        server: data?.server || server,
+        code: data?.code || '60',
+        value: data?.value || 'dslforum.org',
+        matchingType: data?.['matching-type'] || 'substring',
+        optionSet: data?.['option-set'] || optionSetName,
+      };
+    } catch (error) {
+      throw new Error(this.describeError(error));
     }
   }
 

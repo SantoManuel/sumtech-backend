@@ -25,6 +25,7 @@ import { NetworkNodeInfrastructureService } from './services/network-node-infras
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
 import { SyncNodeVlanDto } from './dto/sync-node-vlan.dto';
 import { EnsureDhcpServerDto } from './dto/ensure-dhcp-server.dto';
+import { EnsureAcsAutoProvisioningDto } from './dto/ensure-acs-auto-provisioning.dto';
 import { CreateRouterOsProfileDto, UpdateRouterOsProfileDto } from './dto/routeros-profile.dto';
 import { SyncCatalogProfilesDto } from './dto/sync-catalog-profiles.dto';
 
@@ -176,6 +177,17 @@ export class NetworkNodesController {
   @Roles(Role.ADMIN, Role.GERENTE)
   async ensureNodeFirewallBaseline(@Param('id') id: string, @CurrentUser('sub') userId?: string) {
     return this.infrastructureService.ensureFirewallBaseline(id, userId);
+  }
+
+  /** Auto-configuración TR-069 vía DHCP Option 43 (RF-OLT-013 / Broadband Forum Annex G). */
+  @Post(':id/tr069/ensure-acs-auto-provisioning')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async ensureNodeAcsAutoProvisioning(
+    @Param('id') id: string,
+    @Body() dto: EnsureAcsAutoProvisioningDto,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.infrastructureService.ensureAcsAutoProvisioning(id, dto.acsUrl, userId);
   }
 
   @Get(':id/ppp/profiles')
