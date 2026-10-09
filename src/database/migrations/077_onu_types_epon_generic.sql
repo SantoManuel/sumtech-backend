@@ -16,7 +16,14 @@
 -- para filtrar el selector de la UI es pon_type='EPON', no vendor.
 -- ==============================================================================
 
+-- Nota: no se usa ON CONFLICT (vendor, model) porque en producción la tabla
+-- net.onu_types (creada por la migración 064) nunca tuvo esa restricción
+-- UNIQUE realmente aplicada (drift de esquema preexistente, no de esta
+-- migración) — "there is no unique or exclusion constraint matching the ON
+-- CONFLICT specification". Se usa WHERE NOT EXISTS, que es idempotente sin
+-- depender de ninguna restricción de la tabla.
 INSERT INTO net.onu_types (vendor, model, vendor_type_name, pon_type, eth_ports, pots_ports, wifi_bands, catv_port, supports_tr069, supports_omci, supports_bridge, supports_router, default_mode)
-VALUES
-  ('Genérico', 'ONU EPON (4 puertos)', 'onu-01g', 'EPON', 4, 0, 'Variable según fabricante', FALSE, TRUE, TRUE, TRUE, TRUE, 'ROUTER')
-ON CONFLICT (vendor, model) DO NOTHING;
+SELECT 'Genérico', 'ONU EPON (4 puertos)', 'onu-01g', 'EPON', 4, 0, 'Variable según fabricante', FALSE, TRUE, TRUE, TRUE, TRUE, 'ROUTER'
+WHERE NOT EXISTS (
+  SELECT 1 FROM net.onu_types WHERE vendor = 'Genérico' AND model = 'ONU EPON (4 puertos)'
+);
