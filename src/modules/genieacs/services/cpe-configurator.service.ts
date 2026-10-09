@@ -114,17 +114,36 @@ export class CpeConfiguratorService {
   }
 
   /**
+   * Resuelve un identificador de CPE (serial/MAC del ONU, o ya el _id real de
+   * GenieACS) al _id real de GenieACS. Lanza NotFoundException si el CPE
+   * nunca reportó al ACS — mismo criterio que configureCpe(), que ya
+   * trataba esto como error esperado y no como 500. refreshCpe/factoryResetCpe
+   * antes NO validaban esto: si no se encontraba el device, seguían de
+   * largo usando el serial/MAC crudo como si fuera un _id de GenieACS, y
+   * GenieACS respondía 404 a esa consulta → describeError() lo envolvía en
+   * un Error genérico → el filtro global de excepciones lo convertía en 500
+   * "Internal Server Error" sin mensaje útil, en vez de comunicar con
+   * claridad que el ONU EPON/HiOSO todavía no hizo su primer Inform TR-069.
+   */
+  private async resolveDeviceId(client: GenieAcsClient, serialOrDeviceId: string): Promise<string> {
+    if (serialOrDeviceId.includes('-')) {
+      return serialOrDeviceId;
+    }
+    const resolved = await client.findDeviceBySerial(serialOrDeviceId);
+    if (!resolved) {
+      throw new NotFoundException(
+        `El CPE con serial/MAC "${serialOrDeviceId}" no ha sido detectado por GenieACS (aún no ha enviado su primer Inform TR-069).`,
+      );
+    }
+    return resolved;
+  }
+
+  /**
    * Refresca los parámetros de un CPE forzando lectura vía connection_request.
    */
   async refreshCpe(serialOrDeviceId: string): Promise<{ success: boolean; deviceId: string }> {
     const client = this.getClient();
-    let deviceId = serialOrDeviceId;
-
-    if (!serialOrDeviceId.includes('-')) {
-      const resolved = await client.findDeviceBySerial(serialOrDeviceId);
-      if (resolved) deviceId = resolved;
-    }
-
+    const deviceId = await this.resolveDeviceId(client, serialOrDeviceId);
     await client.refreshObject(deviceId);
     return { success: true, deviceId };
   }
@@ -134,13 +153,7 @@ export class CpeConfiguratorService {
    */
   async factoryResetCpe(serialOrDeviceId: string): Promise<{ success: boolean; deviceId: string }> {
     const client = this.getClient();
-    let deviceId = serialOrDeviceId;
-
-    if (!serialOrDeviceId.includes('-')) {
-      const resolved = await client.findDeviceBySerial(serialOrDeviceId);
-      if (resolved) deviceId = resolved;
-    }
-
+    const deviceId = await this.resolveDeviceId(client, serialOrDeviceId);
     await client.factoryReset(deviceId);
     return { success: true, deviceId };
   }

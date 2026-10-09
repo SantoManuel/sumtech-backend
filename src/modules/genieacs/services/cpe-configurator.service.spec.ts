@@ -93,4 +93,29 @@ describe('CpeConfiguratorService', () => {
     expect(result.success).toBe(true);
     expect(mockClient.factoryReset).toHaveBeenCalledWith('DEVICE-ID-01');
   });
+
+  it('refreshCpe lanza NotFoundException (no 500 genérico) si el CPE (ej. MAC de un ONU EPON) nunca reportó a GenieACS', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue(null);
+
+    await expect(service.refreshCpe('04:b0:e7:d3:09:a6')).rejects.toThrow(NotFoundException);
+    expect(mockClient.findDeviceBySerial).toHaveBeenCalledWith('04:b0:e7:d3:09:a6');
+    expect(mockClient.refreshObject).not.toHaveBeenCalled();
+  });
+
+  it('factoryResetCpe lanza NotFoundException si el CPE nunca reportó a GenieACS', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue(null);
+
+    await expect(service.factoryResetCpe('04:b0:e7:d3:09:a6')).rejects.toThrow(NotFoundException);
+    expect(mockClient.factoryReset).not.toHaveBeenCalled();
+  });
+
+  it('refreshCpe resuelve el serial/MAC al _id real de GenieACS antes de refrescar', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT-04B0E7D309A6');
+    mockClient.refreshObject.mockResolvedValue(undefined);
+
+    const result = await service.refreshCpe('04:b0:e7:d3:09:a6');
+
+    expect(result.deviceId).toBe('00259E-ONT-04B0E7D309A6');
+    expect(mockClient.refreshObject).toHaveBeenCalledWith('00259E-ONT-04B0E7D309A6');
+  });
 });
