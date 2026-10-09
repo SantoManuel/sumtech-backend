@@ -8,6 +8,7 @@ import {
   Index,
 } from 'typeorm';
 import { OltEntity } from './olt.entity';
+import { numericTransformer } from '../../../common/utils/numeric.transformer';
 
 @Entity({ schema: 'net', name: 'olt_metrics' })
 @Index(['oltId', 'createdAt'])
@@ -22,13 +23,13 @@ export class OltMetricEntity {
   @JoinColumn({ name: 'olt_id' })
   olt: OltEntity;
 
-  @Column({ name: 'cpu_usage_percent', type: 'numeric', precision: 5, scale: 2, nullable: true })
+  @Column({ name: 'cpu_usage_percent', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numericTransformer })
   cpuUsagePercent?: number;
 
-  @Column({ name: 'memory_usage_percent', type: 'numeric', precision: 5, scale: 2, nullable: true })
+  @Column({ name: 'memory_usage_percent', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numericTransformer })
   memoryUsagePercent?: number;
 
-  @Column({ name: 'temperature_celsius', type: 'numeric', precision: 5, scale: 2, nullable: true })
+  @Column({ name: 'temperature_celsius', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numericTransformer })
   temperatureCelsius?: number;
 
   @Column({ name: 'uptime_seconds', type: 'bigint', nullable: true })

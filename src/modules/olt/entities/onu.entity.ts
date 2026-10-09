@@ -13,6 +13,7 @@ import { OltInterfaceEntity } from './olt-interface.entity';
 import { OnuTypeEntity } from './onu-type.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { OnuServiceConfigEntity } from './onu-service-config.entity';
+import { numericTransformer } from '../../../common/utils/numeric.transformer';
 
 export type OnuStatus =
   | 'UNCONFIGURED'
@@ -83,10 +84,10 @@ export class OnuEntity {
   @Column({ name: 'authorized_by_user_id', type: 'uuid', nullable: true })
   authorizedByUserId?: string;
 
-  @Column({ name: 'rx_power_dbm', type: 'numeric', precision: 5, scale: 2, nullable: true })
+  @Column({ name: 'rx_power_dbm', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numericTransformer })
   rxPowerDbm?: number;
 
-  @Column({ name: 'tx_power_dbm', type: 'numeric', precision: 5, scale: 2, nullable: true })
+  @Column({ name: 'tx_power_dbm', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numericTransformer })
   txPowerDbm?: number;
 
   @Column({ name: 'last_seen_at', type: 'timestamp with time zone', nullable: true })

@@ -11,6 +11,7 @@ import {
 } from 'typeorm';
 import { ZoneEntity } from './zone.entity';
 import { NetworkAccessEntity } from './network-access.entity';
+import { numericTransformer } from '../../../common/utils/numeric.transformer';
 
 export type NetworkNodeConnectionMethod = 'wireguard' | 'ddns' | 'public_ip' | 'api' | 'ssh';
 export type NetworkNodeStatus = 'ACTIVE' | 'UNREACHABLE' | 'ERROR_AUTH' | 'MAINTENANCE' | 'PROVISIONING';
@@ -96,7 +97,7 @@ export class NetworkNodeEntity {
   @Column({ name: 'last_heartbeat_at', type: 'timestamp with time zone', nullable: true })
   lastHeartbeatAt?: Date;
 
-  @Column({ name: 'cpu_usage', type: 'numeric', precision: 5, scale: 2, nullable: true })
+  @Column({ name: 'cpu_usage', type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: numericTransformer })
   cpuUsage?: number;
 
   @Column({ name: 'memory_free_bytes', type: 'bigint', nullable: true })
@@ -114,10 +115,10 @@ export class NetworkNodeEntity {
   @Column({ name: 'uptime_seconds', type: 'bigint', nullable: true })
   uptimeSeconds?: number;
 
-  @Column({ name: 'temperature_celsius', type: 'numeric', precision: 4, scale: 1, nullable: true })
+  @Column({ name: 'temperature_celsius', type: 'numeric', precision: 4, scale: 1, nullable: true, transformer: numericTransformer })
   temperatureCelsius?: number;
 
-  @Column({ name: 'voltage', type: 'numeric', precision: 4, scale: 1, nullable: true })
+  @Column({ name: 'voltage', type: 'numeric', precision: 4, scale: 1, nullable: true, transformer: numericTransformer })
   voltage?: number;
 
   @Column({ name: 'default_parent_queue', type: 'varchar', length: 100, nullable: true })

@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToOne, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { SerialNumberEntity } from '../../inventory/entities/serial-number.entity';
+import { numericTransformer } from '../../../common/utils/numeric.transformer';
 
 /**
  * Vínculo entre un contrato y su ONU/router real gestionado por GenieACS
@@ -49,7 +50,7 @@ export class GenieAcsDeviceEntity {
   @Column({ name: 'online_status', type: 'enum', enum: ['ONLINE', 'OFFLINE', 'UNKNOWN'], default: 'UNKNOWN' })
   onlineStatus: 'ONLINE' | 'OFFLINE' | 'UNKNOWN';
 
-  @Column({ name: 'optical_rx_power_dbm', type: 'numeric', precision: 6, scale: 2, nullable: true })
+  @Column({ name: 'optical_rx_power_dbm', type: 'numeric', precision: 6, scale: 2, nullable: true, transformer: numericTransformer })
   opticalRxPowerDbm?: number | null;
 
   @Column({ name: 'last_reboot_at', type: 'timestamp with time zone', nullable: true })
