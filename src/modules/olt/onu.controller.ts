@@ -15,7 +15,7 @@ import { RequireFeature } from '../../common/decorators/require-feature.decorato
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { OnuManagementService } from './services/onu-management.service';
-import { OltPermissionGuard, RequireOltAction } from './guards/olt-permission.guard';
+import { OltPermissionGuard, RequireOltAction, OltIdFrom } from './guards/olt-permission.guard';
 
 @Controller('olt/onus')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -63,6 +63,7 @@ export class OnuController {
   @Get(':id')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
   @RequireOltAction('VIEW')
+  @OltIdFrom('ONU_ID_PARAM')
   async findById(@Param('id') id: string) {
     return this.onuService.findById(id);
   }
@@ -73,6 +74,7 @@ export class OnuController {
   @Get(':id/optical-power')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
   @RequireOltAction('OPERATE')
+  @OltIdFrom('ONU_ID_PARAM')
   async getOpticalTelemetry(@Param('id') id: string) {
     return this.onuService.getOpticalTelemetry(id);
   }
@@ -83,6 +85,7 @@ export class OnuController {
   @Post(':id/preview-script')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
   async previewScript(@Param('id') id: string, @Body() dto: any) {
     return this.onuService.previewAuthorizationScript(id, dto);
   }
@@ -93,6 +96,7 @@ export class OnuController {
   @Post(':id/authorize')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
   async authorizeOnu(
     @Param('id') id: string,
     @Body() dto: any,
@@ -107,6 +111,7 @@ export class OnuController {
   @Post(':id/block')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('OPERATE')
+  @OltIdFrom('ONU_ID_PARAM')
   async blockOnu(@Param('id') id: string, @Req() req: any) {
     return this.onuService.blockOnu(id, req.user?.id);
   }
@@ -117,6 +122,7 @@ export class OnuController {
   @Post(':id/unblock')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('OPERATE')
+  @OltIdFrom('ONU_ID_PARAM')
   async unblockOnu(@Param('id') id: string, @Req() req: any) {
     return this.onuService.unblockOnu(id, req.user?.id);
   }
