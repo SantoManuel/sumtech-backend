@@ -3,6 +3,7 @@ import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module'
 import { JwtModule } from '@nestjs/jwt';
 import { UsersModule } from '../users/users.module';
 import { NetworkConnectivityModule } from '../network-connectivity/network-connectivity.module';
+import { GenieAcsModule } from '../genieacs/genieacs.module';
 import { routerOsClientFactoryProvider } from '../network/routeros/routeros-client-factory';
 
 import { OltEntity } from './entities/olt.entity';
@@ -56,6 +57,7 @@ import { OnuController } from './onu.controller';
       PlanEntity,
     ]),
     NetworkConnectivityModule,
+    GenieAcsModule,
     UsersModule,
     JwtModule.register({}),
   ],

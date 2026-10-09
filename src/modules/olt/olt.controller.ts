@@ -166,6 +166,18 @@ export class OltController {
     );
   }
 
+  @Post('interfaces/:id/admin-state')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async setInterfaceAdminState(@Param('id') interfaceId: string, @Body() body: { state: 'UP' | 'DOWN' }) {
+    return this.catalogsService.setInterfaceAdminState(interfaceId, body.state);
+  }
+
+  @Post('olts/:oltId/speed-profiles/:profileId/sync')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async syncSpeedProfileToOlt(@Param('oltId') oltId: string, @Param('profileId') profileId: string) {
+    return this.catalogsService.syncSpeedProfileToOlt(oltId, profileId);
+  }
+
   // ══════════════════════════════════════════════════
   // Perfiles de Velocidad OLT (RF-OLT-008)
   // ══════════════════════════════════════════════════
@@ -204,8 +216,8 @@ export class OltController {
   // ══════════════════════════════════════════════════
   @Get('onu-types')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
-  async findAllOnuTypes() {
-    return this.catalogsService.findAllOnuTypes();
+  async findAllOnuTypes(@Query('ponType') ponType?: string) {
+    return this.catalogsService.findAllOnuTypes(ponType);
   }
 
   @Post('onu-types')

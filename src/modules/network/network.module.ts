@@ -19,18 +19,22 @@ import { RouterOsShadowSyncService } from './routeros-shadow-sync.service';
 import { routerOsClientFactoryProvider } from './routeros/routeros-client-factory';
 import { ZoneEntity } from './entities/zone.entity';
 import { NetworkNodeEntity } from './entities/network-node.entity';
+import { NetworkNodeVlanEntity } from './entities/network-node-vlan.entity';
 import { NetworkAccessEntity } from './entities/network-access.entity';
+import { VlanEntity } from '../olt/entities/vlan.entity';
 import { ProvisioningAuditLogEntity } from './entities/provisioning-audit-log.entity';
 import { DeviceLogEntity } from './entities/device-log.entity';
 import { WireguardPeerEntity } from './entities/wireguard-peer.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { PlanEntity } from '../plans/entities/plan.entity';
 import { PppManagementService } from './services/ppp-management.service';
+import { NetworkNodeInfrastructureService } from './services/network-node-infrastructure.service';
 import { NetworkAccessManagementController } from './network-access-management.controller';
 import { UsersModule } from '../users/users.module';
 import { NetworkConnectivityModule } from '../network-connectivity/network-connectivity.module';
 import { OltModule } from '../olt/olt.module';
 import { OltNativeProvisioningAdapter } from './olt-native-provisioning.adapter';
+import { DhcpProvisioningAdapter } from './dhcp-provisioning.adapter';
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
 
 import { BullModule } from '@nestjs/bullmq';
@@ -44,12 +48,14 @@ import { PendingOperationsController } from './pending-operations.controller';
     TenantTypeOrmModule.forFeature([
       ZoneEntity,
       NetworkNodeEntity,
+      NetworkNodeVlanEntity,
       NetworkAccessEntity,
       ProvisioningAuditLogEntity,
       DeviceLogEntity,
       WireguardPeerEntity,
       ContractEntity,
       PlanEntity,
+      VlanEntity,
     ]),
     BullModule.registerQueue({ name: NETWORK_OPS_QUEUE }),
     NetworkConnectivityModule,
@@ -74,6 +80,7 @@ import { PendingOperationsController } from './pending-operations.controller';
     ManualProvisioningAdapter,
     RouterOsProvisioningAdapter,
     OltNativeProvisioningAdapter,
+    DhcpProvisioningAdapter,
     NetworkProvisioningPortRegistry,
     routerOsClientFactoryProvider,
     NetworkContractCreatedListener,
@@ -82,6 +89,7 @@ import { PendingOperationsController } from './pending-operations.controller';
     NetworkPlanSpeedChangedListener,
     RouterOsShadowSyncService,
     PppManagementService,
+    NetworkNodeInfrastructureService,
     SuspensionPortalManagerService,
   ],
   exports: [
@@ -92,6 +100,7 @@ import { PendingOperationsController } from './pending-operations.controller';
     NetworkProvisioningPortRegistry,
     RouterOsShadowSyncService,
     PppManagementService,
+    NetworkNodeInfrastructureService,
     SuspensionPortalManagerService,
   ],
 })

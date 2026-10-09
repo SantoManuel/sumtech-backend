@@ -6,6 +6,7 @@ import { TenantContextService } from '../../common/tenancy/tenant-context.servic
 import { NetworkNodesController } from './network-nodes.controller';
 import { NetworkNodesService } from './network-nodes.service';
 import { PppManagementService } from './services/ppp-management.service';
+import { NetworkNodeInfrastructureService } from './services/network-node-infrastructure.service';
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
 import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
@@ -14,6 +15,7 @@ import { Role } from '../../common/enums/role.enum';
 describe('NetworkNodesController', () => {
   let controller: NetworkNodesController;
   let service: any;
+  let infrastructureService: any;
   const reflector = new Reflector();
 
   beforeEach(async () => {
@@ -36,11 +38,21 @@ describe('NetworkNodesController', () => {
       getPortalStatus: jest.fn().mockResolvedValue({ portalInstalled: true, portalRulesStatus: 'INSTALLED' }),
     };
 
+    infrastructureService = {
+      listVlans: jest.fn().mockResolvedValue([]),
+      syncVlan: jest.fn().mockResolvedValue({ id: 'nv-1', applyStatus: 'APPLIED' }),
+      ensureWan: jest.fn().mockResolvedValue({ id: 'node-1', wanLastSyncAt: new Date() }),
+      ensureNatMasquerade: jest.fn().mockResolvedValue({ id: 'node-1' }),
+      ensureFirewallBaseline: jest.fn().mockResolvedValue({ id: 'node-1' }),
+      ensureDhcpServerForVlan: jest.fn().mockResolvedValue({ id: 'nv-1' }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [NetworkNodesController],
       providers: [
         { provide: NetworkNodesService, useValue: service },
         { provide: PppManagementService, useValue: pppManagementService },
+        { provide: NetworkNodeInfrastructureService, useValue: infrastructureService },
         { provide: SuspensionPortalManagerService, useValue: suspensionPortalService },
         { provide: JwtService, useValue: { verify: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
@@ -95,6 +107,38 @@ describe('NetworkNodesController', () => {
   it('reactivate delega en el servicio con el id', async () => {
     await controller.reactivate('node-1');
     expect(service.reactivate).toHaveBeenCalledWith('node-1');
+  });
+
+  it('getNodeVlans delega en NetworkNodeInfrastructureService.listVlans', async () => {
+    await controller.getNodeVlans('node-1');
+    expect(infrastructureService.listVlans).toHaveBeenCalledWith('node-1');
+  });
+
+  it('syncNodeVlan delega en NetworkNodeInfrastructureService.syncVlan con nodo, vlan, dto y actor', async () => {
+    const dto = { uplinkInterface: 'ether5', gatewayCidr: '10.20.0.1/24' };
+    await controller.syncNodeVlan('node-1', 'vlan-1', dto as any, 'admin-1');
+    expect(infrastructureService.syncVlan).toHaveBeenCalledWith('node-1', 'vlan-1', dto, 'admin-1');
+  });
+
+  it('syncNodeWan delega en NetworkNodeInfrastructureService.ensureWan con nodo y actor', async () => {
+    await controller.syncNodeWan('node-1', 'admin-1');
+    expect(infrastructureService.ensureWan).toHaveBeenCalledWith('node-1', 'admin-1');
+  });
+
+  it('ensureNodeVlanDhcpServer delega en NetworkNodeInfrastructureService.ensureDhcpServerForVlan', async () => {
+    const dto = { poolRange: '10.20.0.10-10.20.0.250' };
+    await controller.ensureNodeVlanDhcpServer('node-1', 'vlan-1', dto as any, 'admin-1');
+    expect(infrastructureService.ensureDhcpServerForVlan).toHaveBeenCalledWith('node-1', 'vlan-1', dto, 'admin-1');
+  });
+
+  it('ensureNodeNatMasquerade delega en NetworkNodeInfrastructureService.ensureNatMasquerade', async () => {
+    await controller.ensureNodeNatMasquerade('node-1', 'admin-1');
+    expect(infrastructureService.ensureNatMasquerade).toHaveBeenCalledWith('node-1', 'admin-1');
+  });
+
+  it('ensureNodeFirewallBaseline delega en NetworkNodeInfrastructureService.ensureFirewallBaseline', async () => {
+    await controller.ensureNodeFirewallBaseline('node-1', 'admin-1');
+    expect(infrastructureService.ensureFirewallBaseline).toHaveBeenCalledWith('node-1', 'admin-1');
   });
 
   describe('metadatos de guards (roles)', () => {

@@ -151,10 +151,16 @@ export class NetworkProvisioningService {
     if (dto.username !== undefined) access.username = dto.username;
     if (dto.serviceAlias !== undefined) access.serviceAlias = dto.serviceAlias;
     if (dto.ipAddress !== undefined) access.ipAddress = dto.ipAddress;
+    if (dto.macAddress !== undefined) access.macAddress = dto.macAddress;
+    if (dto.vlanId !== undefined) access.vlanId = dto.vlanId;
 
     const saved = await this.accessRepository.save(access);
 
-    if (wasPending && ((saved.nodeId && saved.username) || saved.onuId)) {
+    // Medio DHCP: se autoprovisiona con nodo+MAC+IP (no hay "usuario" como en
+    // PPPoE — la identidad del cliente en DHCP es su MAC con lease estática).
+    const dhcpReady = saved.nodeId && saved.macAddress && saved.ipAddress;
+
+    if (wasPending && ((saved.nodeId && saved.username) || saved.onuId || dhcpReady)) {
       const actor = actorUserId ? `USER:${actorUserId}` : 'ADMIN';
       await this.transition(saved, 'PROVISION', 'ACTIVE', (port, acc) => port.provision(acc), undefined, actor, actorUserId);
     }

@@ -7,6 +7,7 @@ import { OnuServiceConfigEntity } from '../entities/onu-service-config.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltInterfaceEntity } from '../entities/olt-interface.entity';
 import { OnuTypeEntity } from '../entities/onu-type.entity';
+import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
@@ -14,6 +15,7 @@ import { ContractEntity } from '../../clients/entities/contract.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
+import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
 import { UnknownOltVendorError } from '../ports/olt-driver.port';
 
 describe('OnuManagementService', () => {
@@ -23,6 +25,7 @@ describe('OnuManagementService', () => {
   let oltRepo: any;
   let ifaceRepo: any;
   let onuTypeRepo: any;
+  let speedProfileRepo: any;
   let vlanRepo: any;
   let tr069Repo: any;
   let nodeRepo: any;
@@ -31,6 +34,7 @@ describe('OnuManagementService', () => {
   let driverRegistry: any;
   let reachabilityResolver: any;
   let deviceOperationLogger: any;
+  let cpeConfiguratorService: any;
 
   const mockOlt: Partial<OltEntity> = {
     id: 'olt-uuid-1',
@@ -84,7 +88,17 @@ describe('OnuManagementService', () => {
     };
 
     onuTypeRepo = {
-      findOneBy: jest.fn().mockResolvedValue({ id: 'type-1', modelName: 'ZTE-F660' }),
+      findOneBy: jest.fn().mockResolvedValue({ id: 'type-1', model: 'F660', vendorTypeName: 'ZTE-F660' }),
+    };
+
+    speedProfileRepo = {
+      findOneBy: jest.fn().mockResolvedValue({
+        id: 'profile-1',
+        code: 'OLT-100M',
+        downKbps: 102400,
+        upKbps: 102400,
+        vendorTcontProfile: 'TCONT-100M',
+      }),
     };
 
     vlanRepo = {
@@ -142,6 +156,10 @@ describe('OnuManagementService', () => {
       logEvent: jest.fn().mockResolvedValue(undefined),
     };
 
+    cpeConfiguratorService = {
+      configureCpe: jest.fn().mockResolvedValue({ success: true, deviceId: 'dev-1', appliedParametersCount: 3, verification: {}, message: 'ok' }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OnuManagementService,
@@ -150,6 +168,7 @@ describe('OnuManagementService', () => {
         { provide: getRepositoryToken(OltEntity), useValue: oltRepo },
         { provide: getRepositoryToken(OltInterfaceEntity), useValue: ifaceRepo },
         { provide: getRepositoryToken(OnuTypeEntity), useValue: onuTypeRepo },
+        { provide: getRepositoryToken(OltSpeedProfileEntity), useValue: speedProfileRepo },
         { provide: getRepositoryToken(VlanEntity), useValue: vlanRepo },
         { provide: getRepositoryToken(Tr069NetworkEntity), useValue: tr069Repo },
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
@@ -157,6 +176,7 @@ describe('OnuManagementService', () => {
         { provide: OltDriverRegistry, useValue: driverRegistry },
         { provide: ReachabilityResolver, useValue: reachabilityResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
+        { provide: CpeConfiguratorService, useValue: cpeConfiguratorService },
       ],
     }).compile();
 
@@ -301,6 +321,86 @@ describe('OnuManagementService', () => {
           status: 'SUCCESS',
         }),
       );
+    });
+
+    it('resuelve speedProfileId a tcontProfile/downKbps/upKbps y los pasa al driver (antes de este fix nunca se leía)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        onuTypeId: 'type-1',
+        speedProfileId: 'profile-1',
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+      });
+
+      expect(speedProfileRepo.findOneBy).toHaveBeenCalledWith({ id: 'profile-1' });
+      expect(zteDriver.authorizeOnu).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          tcontProfile: 'TCONT-100M',
+          downKbps: 102400,
+          upKbps: 102400,
+        }),
+      );
+    });
+
+    it('con managementMethod TR069 y tr069NetworkId, llama a CpeConfiguratorService.configureCpe() y marca cpeConfigured:true', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      const result = await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        onuTypeId: 'type-1',
+        tr069NetworkId: 'tr069-1',
+        managementMethod: 'TR069',
+        operationMode: 'BRIDGE',
+        wanMode: 'DHCP',
+      });
+
+      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serialNumber: mockOnu.serialNumber,
+          operationMode: 'BRIDGE',
+          wanMode: 'DHCP',
+          managementServer: expect.objectContaining({ acsUrl: 'http://10.46.0.1:7547/' }),
+        }),
+      );
+      expect((result as any).cpeConfigured).toBe(true);
+      expect((result as any).cpeConfigWarning).toBeUndefined();
+    });
+
+    it('si GenieACS todavía no conoce el ONU, no falla la autorización completa — agrega cpeConfigWarning', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+      cpeConfiguratorService.configureCpe.mockRejectedValue(
+        new NotFoundException('El CPE con serial "ZTEGC0123456" no ha sido detectado por GenieACS (aún no ha enviado Inform).'),
+      );
+
+      const result = await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        tr069NetworkId: 'tr069-1',
+        managementMethod: 'TR069',
+      });
+
+      expect((result as any).cpeConfigured).toBe(false);
+      expect((result as any).cpeConfigWarning).toContain('ONU autorizada en la OLT');
+      expect(onuRepo.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'ACTIVE' }));
+    });
+
+    it('con managementMethod OMCI, nunca llama a CpeConfiguratorService', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      const result = await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        tr069NetworkId: 'tr069-1',
+        managementMethod: 'OMCI',
+      });
+
+      expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
+      expect((result as any).cpeConfigured).toBeUndefined();
     });
 
     it('lanza BadRequestException si el driver de la OLT falla aprovisionando', async () => {

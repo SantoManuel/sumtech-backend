@@ -2,6 +2,7 @@ import { NetworkProvisioningPortRegistry } from './network-provisioning-port.reg
 import { ManualProvisioningAdapter } from './manual-provisioning.adapter';
 import { RouterOsProvisioningAdapter } from './routeros-provisioning.adapter';
 import { OltNativeProvisioningAdapter } from './olt-native-provisioning.adapter';
+import { DhcpProvisioningAdapter } from './dhcp-provisioning.adapter';
 import { NetworkAccessEntity } from './entities/network-access.entity';
 import { NetworkNodeEntity } from './entities/network-node.entity';
 
@@ -9,7 +10,8 @@ describe('NetworkProvisioningPortRegistry', () => {
   const manualAdapter = new ManualProvisioningAdapter();
   const routerOsAdapter = {} as RouterOsProvisioningAdapter;
   const oltNativeAdapter = {} as OltNativeProvisioningAdapter;
-  const registry = new NetworkProvisioningPortRegistry(manualAdapter, routerOsAdapter, oltNativeAdapter);
+  const dhcpAdapter = {} as DhcpProvisioningAdapter;
+  const registry = new NetworkProvisioningPortRegistry(manualAdapter, routerOsAdapter, oltNativeAdapter, dhcpAdapter);
 
   it('devuelve el adaptador RouterOS cuando el modo es ROUTEROS', () => {
     expect(registry.resolve('ROUTEROS')).toBe(routerOsAdapter);
@@ -63,6 +65,16 @@ describe('NetworkProvisioningPortRegistry', () => {
 
       expect(registry.resolveSuspensionMedium(access)).toBe('NONE');
     });
+
+    it('respeta override DHCP', () => {
+      const access = { suspensionMediumOverride: 'DHCP' } as NetworkAccessEntity;
+      expect(registry.resolveSuspensionMedium(access)).toBe('DHCP');
+    });
+
+    it('usa el suspensionMedium DHCP del nodo si no hay override', () => {
+      const access = { nodeId: 'node-1', node: { suspensionMedium: 'DHCP' } as NetworkNodeEntity } as NetworkAccessEntity;
+      expect(registry.resolveSuspensionMedium(access)).toBe('DHCP');
+    });
   });
 
   describe('resolveForAccess', () => {
@@ -90,6 +102,15 @@ describe('NetworkProvisioningPortRegistry', () => {
       } as NetworkAccessEntity;
 
       expect(registry.resolveForAccess(access)).toBe(manualAdapter);
+    });
+
+    it('devuelve dhcpAdapter cuando el medio efectivo es DHCP, sin importar el provisioningMode del nodo', () => {
+      const access = {
+        nodeId: 'node-1',
+        node: { suspensionMedium: 'DHCP', provisioningMode: 'MANUAL' } as NetworkNodeEntity,
+      } as NetworkAccessEntity;
+
+      expect(registry.resolveForAccess(access)).toBe(dhcpAdapter);
     });
   });
 });

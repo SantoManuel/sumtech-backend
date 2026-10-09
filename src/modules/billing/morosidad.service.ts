@@ -48,7 +48,7 @@ export interface CarteraVencidaReport {
 export interface GetDelinquentsQueryDto {
   search?: string;
   nodeId?: string;
-  medium?: 'PPPOE' | 'OLT_NATIVE' | 'NONE';
+  medium?: 'PPPOE' | 'OLT_NATIVE' | 'DHCP' | 'NONE';
   minDaysOverdue?: number;
   status?: string;
 }
@@ -77,7 +77,7 @@ export interface DelinquentItem {
     grandTotal: number;
     status: string;
   }>;
-  suspensionMedium: 'PPPOE' | 'OLT_NATIVE' | 'NONE';
+  suspensionMedium: 'PPPOE' | 'OLT_NATIVE' | 'DHCP' | 'NONE';
   networkStatus: {
     nodeId?: string;
     nodeName?: string;

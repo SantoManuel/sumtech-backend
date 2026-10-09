@@ -10,16 +10,20 @@ import { OnuTypeEntity } from '../entities/onu-type.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
+import { UnknownOltVendorError } from '../ports/olt-driver.port';
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
 
 describe('OltCatalogsService', () => {
   let service: OltCatalogsService;
   let vlanRepo: any;
+  let ifaceRepo: any;
   let ifaceVlanRepo: any;
   let tr069Repo: any;
   let speedProfileRepo: any;
   let planRepo: any;
+  let driverRegistry: any;
+  let oltRepo: any;
 
   beforeEach(async () => {
     vlanRepo = {
@@ -51,22 +55,33 @@ describe('OltCatalogsService', () => {
     planRepo = {
       count: jest.fn(),
     };
+    ifaceRepo = {
+      findOne: jest.fn(),
+      save: jest.fn((entity) => Promise.resolve(entity)),
+    };
+    oltRepo = {
+      findOneBy: jest.fn(),
+    };
+    driverRegistry = {
+      resolve: jest.fn().mockReturnValue({
+        configureVlanOnInterface: jest.fn().mockResolvedValue({ ok: true }),
+        setInterfaceAdminState: jest.fn().mockResolvedValue({ ok: true }),
+        ensureTcontProfile: jest.fn().mockResolvedValue({ ok: true }),
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OltCatalogsService,
         { provide: getRepositoryToken(VlanEntity), useValue: vlanRepo },
-        { provide: getRepositoryToken(OltInterfaceEntity), useValue: {} },
+        { provide: getRepositoryToken(OltInterfaceEntity), useValue: ifaceRepo },
         { provide: getRepositoryToken(OltInterfaceVlanEntity), useValue: ifaceVlanRepo },
         { provide: getRepositoryToken(OltSpeedProfileEntity), useValue: speedProfileRepo },
         { provide: getRepositoryToken(OnuTypeEntity), useValue: {} },
         { provide: getRepositoryToken(Tr069NetworkEntity), useValue: tr069Repo },
-        { provide: getRepositoryToken(OltEntity), useValue: {} },
+        { provide: getRepositoryToken(OltEntity), useValue: oltRepo },
         { provide: getRepositoryToken(PlanEntity), useValue: planRepo },
-        {
-          provide: OltDriverRegistry,
-          useValue: { resolve: jest.fn().mockReturnValue({ configureVlanOnInterface: jest.fn().mockResolvedValue({ ok: true }) }) },
-        },
+        { provide: OltDriverRegistry, useValue: driverRegistry },
       ],
     }).compile();
 
@@ -191,6 +206,111 @@ describe('OltCatalogsService', () => {
 
       expect(res.success).toBe(true);
       expect(speedProfileRepo.delete).toHaveBeenCalledWith('p1');
+    });
+  });
+
+  describe('setInterfaceAdminState', () => {
+    const olt = { id: 'olt-1', vendor: 'HIOSO', host: '172.16.100.5', port: 2324, username: 'admin', passwordEnc: 'enc' };
+    const iface = { id: 'iface-1', name: 'ten-gigabitethernet 1/2', adminState: 'UP', olt };
+
+    it('lanza NotFoundException si la interfaz no existe', async () => {
+      ifaceRepo.findOne.mockResolvedValue(null);
+      await expect(service.setInterfaceAdminState('iface-x', 'DOWN')).rejects.toThrow(NotFoundException);
+    });
+
+    it('lanza BadRequestException si la interfaz no tiene OLT asociada', async () => {
+      ifaceRepo.findOne.mockResolvedValue({ ...iface, olt: undefined });
+      await expect(service.setInterfaceAdminState('iface-1', 'DOWN')).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza BadRequestException si el vendor de la OLT no está registrado', async () => {
+      ifaceRepo.findOne.mockResolvedValue(iface);
+      driverRegistry.resolve.mockImplementation(() => {
+        throw new UnknownOltVendorError('RARO');
+      });
+      await expect(service.setInterfaceAdminState('iface-1', 'DOWN')).rejects.toThrow(BadRequestException);
+    });
+
+    it('llama driver.setInterfaceAdminState con los datos de conexión y persiste adminState', async () => {
+      ifaceRepo.findOne.mockResolvedValue({ ...iface });
+      const setInterfaceAdminState = jest.fn().mockResolvedValue({ ok: true });
+      driverRegistry.resolve.mockReturnValue({ setInterfaceAdminState });
+
+      const result = await service.setInterfaceAdminState('iface-1', 'DOWN');
+
+      expect(setInterfaceAdminState).toHaveBeenCalledWith(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: expect.any(String) },
+        'ten-gigabitethernet 1/2',
+        'DOWN',
+      );
+      expect(result.adminState).toBe('DOWN');
+      expect(ifaceRepo.save).toHaveBeenCalledWith(expect.objectContaining({ adminState: 'DOWN' }));
+    });
+
+    it('lanza BadRequestException con el mensaje del driver si el equipo rechaza el comando', async () => {
+      ifaceRepo.findOne.mockResolvedValue({ ...iface });
+      driverRegistry.resolve.mockReturnValue({
+        setInterfaceAdminState: jest.fn().mockResolvedValue({ ok: false, error: '% Unknown command' }),
+      });
+
+      await expect(service.setInterfaceAdminState('iface-1', 'DOWN')).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('syncSpeedProfileToOlt', () => {
+    const olt = { id: 'olt-1', name: 'OLT Central ZTE', vendor: 'ZTE', host: '10.0.0.10', port: 23, username: 'admin', passwordEnc: 'enc' };
+    const profile = { id: 'prof-1', name: 'Plan 5 Megas', vendorTcontProfile: 'FIXED5M', upKbps: 5000, downKbps: 5000 };
+
+    it('lanza NotFoundException si la OLT no existe', async () => {
+      oltRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.syncSpeedProfileToOlt('olt-x', 'prof-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('lanza NotFoundException si el perfil no existe', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      speedProfileRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.syncSpeedProfileToOlt('olt-1', 'prof-x')).rejects.toThrow(NotFoundException);
+    });
+
+    it('lanza BadRequestException si el perfil no tiene vendorTcontProfile configurado', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      speedProfileRepo.findOneBy.mockResolvedValue({ ...profile, vendorTcontProfile: null });
+      await expect(service.syncSpeedProfileToOlt('olt-1', 'prof-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('llama driver.ensureTcontProfile con el nombre y el ancho de banda de subida del perfil', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      speedProfileRepo.findOneBy.mockResolvedValue(profile);
+      const ensureTcontProfile = jest.fn().mockResolvedValue({ ok: true });
+      driverRegistry.resolve.mockReturnValue({ ensureTcontProfile });
+
+      const result = await service.syncSpeedProfileToOlt('olt-1', 'prof-1');
+
+      expect(ensureTcontProfile).toHaveBeenCalledWith(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: expect.any(String) },
+        { name: 'FIXED5M', fixedKbps: 5000 },
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it('lanza BadRequestException con el mensaje del driver si la OLT rechaza el comando', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      speedProfileRepo.findOneBy.mockResolvedValue(profile);
+      driverRegistry.resolve.mockReturnValue({
+        ensureTcontProfile: jest.fn().mockResolvedValue({ ok: false, error: '% Unknown command' }),
+      });
+
+      await expect(service.syncSpeedProfileToOlt('olt-1', 'prof-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza BadRequestException si el vendor de la OLT no está registrado', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      speedProfileRepo.findOneBy.mockResolvedValue(profile);
+      driverRegistry.resolve.mockImplementation(() => {
+        throw new UnknownOltVendorError('RARO');
+      });
+
+      await expect(service.syncSpeedProfileToOlt('olt-1', 'prof-1')).rejects.toThrow(BadRequestException);
     });
   });
 });

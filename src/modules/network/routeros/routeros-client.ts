@@ -75,6 +75,76 @@ export interface RouterOsConnectionResult {
   error?: string;
 }
 
+export interface RouterOsVlanInterface {
+  /** El ".id" interno de RouterOS (ej. "*1"). */
+  id: string;
+  name: string;
+  vlanId: number;
+  interface: string;
+}
+
+export interface EnsureVlanInterfaceOptions {
+  /** Nombre de la sub-interfaz a crear, ej. "vlan400-clientes". */
+  name: string;
+  vlanId: number;
+  /** Interfaz física (o bridge) sobre la que corre la VLAN, ej. "ether5". */
+  parentInterface: string;
+  comment?: string;
+}
+
+export interface RouterOsIpAddress {
+  id: string;
+  address: string;
+  interface: string;
+  comment?: string;
+}
+
+export interface RouterOsDhcpClient {
+  id: string;
+  interface: string;
+  disabled: boolean;
+}
+
+export interface RouterOsPppoeClient {
+  id: string;
+  name: string;
+  interface: string;
+  user?: string;
+  disabled: boolean;
+}
+
+export interface EnsurePppoeClientOptions {
+  name: string;
+  parentInterface: string;
+  user: string;
+  password: string;
+  addDefaultRoute?: boolean;
+}
+
+export interface RouterOsRoute {
+  id: string;
+  dstAddress: string;
+  gateway: string;
+  comment?: string;
+}
+
+export interface RouterOsDhcpLease {
+  id: string;
+  address: string;
+  macAddress: string;
+  server: string;
+  disabled: boolean;
+  comment?: string;
+}
+
+export interface RouterOsSimpleQueue {
+  id: string;
+  name: string;
+  target: string;
+  maxLimit: string;
+  disabled: boolean;
+}
+
 const DEFAULT_TIMEOUT_MS = 5000;
 
 /**
@@ -511,6 +581,532 @@ export class RouterOsClient {
   }
 
   /**
+   * Busca una sub-interfaz VLAN existente por su VLAN ID (/interface/vlan).
+   * Devuelve null si no existe todavía en este router.
+   */
+  async findVlanInterfaceByVlanId(vlanId: number): Promise<RouterOsVlanInterface | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('interface/vlan'), {
+        ...this.buildRequestConfig(),
+        params: { 'vlan-id': String(vlanId) },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => Number(entry?.['vlan-id']) === vlanId);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      id: match['.id'],
+      name: match.name,
+      vlanId: Number(match['vlan-id']),
+      interface: match.interface,
+    };
+  }
+
+  /**
+   * Asegura que exista la sub-interfaz VLAN (idempotente: crea si falta,
+   * no hace nada si ya existe con la misma interfaz padre — en RouterOS no
+   * hay "modo trunk" aparte: un puerto con varias VLAN encima YA ES trunk).
+   */
+  async ensureVlanInterface(options: EnsureVlanInterfaceOptions): Promise<RouterOsVlanInterface> {
+    const existing = await this.findVlanInterfaceByVlanId(options.vlanId);
+    if (existing) {
+      return existing;
+    }
+
+    const payload: Record<string, string> = {
+      name: options.name,
+      'vlan-id': String(options.vlanId),
+      interface: options.parentInterface,
+    };
+    if (options.comment) payload.comment = options.comment;
+
+    try {
+      const response = await this.http.put(this.buildUrl('interface/vlan'), payload, this.buildRequestConfig());
+      const data = response.data;
+      return {
+        id: data?.['.id'] || '',
+        name: data?.name || options.name,
+        vlanId: options.vlanId,
+        interface: data?.interface || options.parentInterface,
+      };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca una IP ya asignada a una interfaz (/ip/address). Null si no existe. */
+  async findIpAddressByInterface(interfaceName: string): Promise<RouterOsIpAddress | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/address'), {
+        ...this.buildRequestConfig(),
+        params: { interface: interfaceName },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.interface === interfaceName);
+    if (!match) {
+      return null;
+    }
+
+    return { id: match['.id'], address: match.address, interface: match.interface, comment: match.comment };
+  }
+
+  /**
+   * Asegura que una interfaz tenga la IP indicada asignada (idempotente por
+   * interfaz — no permite dos IPs distintas en la misma interfaz vía este
+   * método, asume una IP de gateway por VLAN).
+   */
+  async ensureIpAddress(interfaceName: string, address: string, comment?: string): Promise<RouterOsIpAddress> {
+    const existing = await this.findIpAddressByInterface(interfaceName);
+    if (existing) {
+      if (existing.address !== address) {
+        throw new Error(
+          `La interfaz "${interfaceName}" ya tiene la IP "${existing.address}" asignada (se esperaba "${address}") — no se sobreescribe automáticamente.`,
+        );
+      }
+      return existing;
+    }
+
+    const payload: Record<string, string> = { address, interface: interfaceName };
+    if (comment) payload.comment = comment;
+
+    try {
+      const response = await this.http.put(this.buildUrl('ip/address'), payload, this.buildRequestConfig());
+      const data = response.data;
+      return {
+        id: data?.['.id'] || '',
+        address: data?.address || address,
+        interface: data?.interface || interfaceName,
+        comment: data?.comment,
+      };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca un cliente DHCP ya configurado sobre una interfaz (/ip/dhcp-client). */
+  async findDhcpClientByInterface(interfaceName: string): Promise<RouterOsDhcpClient | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/dhcp-client'), {
+        ...this.buildRequestConfig(),
+        params: { interface: interfaceName },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.interface === interfaceName);
+    if (!match) {
+      return null;
+    }
+    return { id: match['.id'], interface: match.interface, disabled: match.disabled === true || match.disabled === 'true' };
+  }
+
+  /** Asegura que la interfaz tenga un cliente DHCP activo (idempotente). */
+  async ensureDhcpClient(interfaceName: string, addDefaultRoute = true): Promise<RouterOsDhcpClient> {
+    const existing = await this.findDhcpClientByInterface(interfaceName);
+    if (existing) {
+      return existing;
+    }
+
+    const payload: Record<string, string> = {
+      interface: interfaceName,
+      'add-default-route': addDefaultRoute ? 'yes' : 'no',
+      'use-peer-dns': 'yes',
+    };
+
+    try {
+      const response = await this.http.put(this.buildUrl('ip/dhcp-client'), payload, this.buildRequestConfig());
+      const data = response.data;
+      return { id: data?.['.id'] || '', interface: data?.interface || interfaceName, disabled: false };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca una interfaz PPPoE-client ya configurada por nombre (/interface/pppoe-client). */
+  async findPppoeClientByName(name: string): Promise<RouterOsPppoeClient | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('interface/pppoe-client'), {
+        ...this.buildRequestConfig(),
+        params: { name },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.name === name);
+    if (!match) {
+      return null;
+    }
+    return {
+      id: match['.id'],
+      name: match.name,
+      interface: match.interface,
+      user: match.user,
+      disabled: match.disabled === true || match.disabled === 'true',
+    };
+  }
+
+  /**
+   * Asegura la interfaz PPPoE-client hacia el proveedor de tránsito
+   * (idempotente: crea si falta, actualiza usuario/contraseña si cambiaron).
+   */
+  async ensurePppoeClient(options: EnsurePppoeClientOptions): Promise<RouterOsPppoeClient> {
+    const existing = await this.findPppoeClientByName(options.name);
+    if (!existing) {
+      const payload: Record<string, string> = {
+        name: options.name,
+        interface: options.parentInterface,
+        user: options.user,
+        password: options.password,
+        'add-default-route': options.addDefaultRoute === false ? 'no' : 'yes',
+        disabled: 'no',
+      };
+      try {
+        const response = await this.http.put(this.buildUrl('interface/pppoe-client'), payload, this.buildRequestConfig());
+        const data = response.data;
+        return {
+          id: data?.['.id'] || '',
+          name: data?.name || options.name,
+          interface: data?.interface || options.parentInterface,
+          user: data?.user || options.user,
+          disabled: false,
+        };
+      } catch (error) {
+        throw new Error(this.describeError(error));
+      }
+    }
+
+    const updates: Record<string, string> = {};
+    if (existing.user !== options.user) updates.user = options.user;
+    updates.password = options.password;
+
+    try {
+      await this.http.patch(
+        this.buildUrl(`interface/pppoe-client/${encodeURIComponent(existing.id)}`),
+        updates,
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    return { ...existing, user: options.user };
+  }
+
+  /** Busca una ruta ya existente hacia un destino dado (ej. "0.0.0.0/0"). */
+  async findRouteByDestination(dstAddress: string): Promise<RouterOsRoute | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/route'), {
+        ...this.buildRequestConfig(),
+        params: { 'dst-address': dstAddress },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.['dst-address'] === dstAddress);
+    if (!match) {
+      return null;
+    }
+    return { id: match['.id'], dstAddress: match['dst-address'], gateway: match.gateway, comment: match.comment };
+  }
+
+  /**
+   * Asegura la ruta por defecto hacia un gateway dado (solo aplica a WAN
+   * en modo STATIC — DHCP_CLIENT/PPPOE_CLIENT ya agregan su propia ruta por
+   * defecto vía add-default-route=yes).
+   */
+  async ensureDefaultRoute(gateway: string, comment?: string): Promise<RouterOsRoute> {
+    const existing = await this.findRouteByDestination('0.0.0.0/0');
+    if (existing) {
+      if (existing.gateway !== gateway) {
+        throw new Error(
+          `Ya existe una ruta por defecto hacia "${existing.gateway}" (se esperaba "${gateway}") — no se sobreescribe automáticamente.`,
+        );
+      }
+      return existing;
+    }
+
+    const payload: Record<string, string> = { 'dst-address': '0.0.0.0/0', gateway };
+    if (comment) payload.comment = comment;
+
+    try {
+      const response = await this.http.put(this.buildUrl('ip/route'), payload, this.buildRequestConfig());
+      const data = response.data;
+      return { id: data?.['.id'] || '', dstAddress: '0.0.0.0/0', gateway: data?.gateway || gateway, comment: data?.comment };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca un pool de IPs existente por nombre (/ip/pool). */
+  async findIpPoolByName(name: string): Promise<{ id: string; name: string; ranges: string } | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/pool'), { ...this.buildRequestConfig(), params: { name } });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.name === name);
+    return match ? { id: match['.id'], name: match.name, ranges: match.ranges } : null;
+  }
+
+  /** Asegura un pool de IPs (idempotente por nombre; para el pool DHCP de una VLAN). */
+  async ensureIpPool(name: string, ranges: string): Promise<{ id: string; name: string; ranges: string }> {
+    const existing = await this.findIpPoolByName(name);
+    if (existing) {
+      return existing;
+    }
+    try {
+      const response = await this.http.put(this.buildUrl('ip/pool'), { name, ranges }, this.buildRequestConfig());
+      const data = response.data;
+      return { id: data?.['.id'] || '', name: data?.name || name, ranges: data?.ranges || ranges };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca una red DHCP ya configurada por su dirección (/ip/dhcp-server/network). */
+  async findDhcpServerNetworkByAddress(addressCidr: string): Promise<{ id: string } | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/dhcp-server/network'), {
+        ...this.buildRequestConfig(),
+        params: { address: addressCidr },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.address === addressCidr);
+    return match ? { id: match['.id'] } : null;
+  }
+
+  /** Asegura la red DHCP (gateway + DNS) para un rango dado (idempotente por dirección). */
+  async ensureDhcpServerNetwork(addressCidr: string, gateway: string, dnsServers?: string): Promise<void> {
+    const existing = await this.findDhcpServerNetworkByAddress(addressCidr);
+    if (existing) {
+      return;
+    }
+    const payload: Record<string, string> = { address: addressCidr, gateway };
+    if (dnsServers) payload['dns-server'] = dnsServers;
+    try {
+      await this.http.put(this.buildUrl('ip/dhcp-server/network'), payload, this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca un servidor DHCP ya configurado sobre una interfaz (/ip/dhcp-server). */
+  async findDhcpServerByInterface(interfaceName: string): Promise<{ id: string; name: string } | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/dhcp-server'), {
+        ...this.buildRequestConfig(),
+        params: { interface: interfaceName },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.interface === interfaceName);
+    return match ? { id: match['.id'], name: match.name } : null;
+  }
+
+  /** Asegura el servidor DHCP sobre una interfaz, usando un pool ya asegurado (idempotente). */
+  async ensureDhcpServer(name: string, interfaceName: string, addressPool: string, leaseTimeSec = 86400): Promise<{ id: string; name: string }> {
+    const existing = await this.findDhcpServerByInterface(interfaceName);
+    if (existing) {
+      return existing;
+    }
+    try {
+      const response = await this.http.put(
+        this.buildUrl('ip/dhcp-server'),
+        { name, interface: interfaceName, 'address-pool': addressPool, 'lease-time': `${leaseTimeSec}s`, disabled: 'no' },
+        this.buildRequestConfig(),
+      );
+      const data = response.data;
+      return { id: data?.['.id'] || '', name: data?.name || name };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca una lease estática existente por MAC (/ip/dhcp-server/lease). */
+  async findStaticLeaseByMac(macAddress: string): Promise<RouterOsDhcpLease | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/dhcp-server/lease'), {
+        ...this.buildRequestConfig(),
+        params: { 'mac-address': macAddress },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.['mac-address']?.toUpperCase() === macAddress.toUpperCase());
+    if (!match) {
+      return null;
+    }
+    return {
+      id: match['.id'],
+      address: match.address,
+      macAddress: match['mac-address'],
+      server: match.server,
+      disabled: match.disabled === true || match.disabled === 'true',
+      comment: match.comment,
+    };
+  }
+
+  /**
+   * Asegura la lease estática MAC→IP (identidad del cliente en el medio
+   * DHCP, equivalente al secret PPPoE). Idempotente: actualiza la IP/server
+   * si cambiaron, no duplica.
+   */
+  async ensureStaticLease(macAddress: string, address: string, server: string, comment?: string): Promise<RouterOsDhcpLease> {
+    const existing = await this.findStaticLeaseByMac(macAddress);
+    if (!existing) {
+      const payload: Record<string, string> = { 'mac-address': macAddress, address, server, disabled: 'no' };
+      if (comment) payload.comment = comment;
+      try {
+        const response = await this.http.put(this.buildUrl('ip/dhcp-server/lease'), payload, this.buildRequestConfig());
+        const data = response.data;
+        return {
+          id: data?.['.id'] || '',
+          address: data?.address || address,
+          macAddress: data?.['mac-address'] || macAddress,
+          server: data?.server || server,
+          disabled: false,
+        };
+      } catch (error) {
+        throw new Error(this.describeError(error));
+      }
+    }
+
+    const updates: Record<string, string> = {};
+    if (existing.address !== address) updates.address = address;
+    if (existing.server !== server) updates.server = server;
+
+    if (Object.keys(updates).length > 0) {
+      try {
+        await this.http.patch(
+          this.buildUrl(`ip/dhcp-server/lease/${encodeURIComponent(existing.id)}`),
+          updates,
+          this.buildRequestConfig(),
+        );
+      } catch (error) {
+        throw new Error(this.describeError(error));
+      }
+    }
+
+    return { ...existing, address, server };
+  }
+
+  /** Habilita/deshabilita una lease estática ya existente (suspensión/reactivación DHCP). */
+  async setLeaseDisabled(leaseId: string, disabled: boolean): Promise<void> {
+    try {
+      await this.http.patch(
+        this.buildUrl(`ip/dhcp-server/lease/${encodeURIComponent(leaseId)}`),
+        { disabled: disabled ? 'true' : 'false' },
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca una simple-queue existente por nombre (/queue/simple). */
+  async findSimpleQueueByName(name: string): Promise<RouterOsSimpleQueue | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('queue/simple'), { ...this.buildRequestConfig(), params: { name } });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.name === name);
+    if (!match) {
+      return null;
+    }
+    return {
+      id: match['.id'],
+      name: match.name,
+      target: match.target,
+      maxLimit: match['max-limit'],
+      disabled: match.disabled === true || match.disabled === 'true',
+    };
+  }
+
+  /**
+   * Asegura la simple-queue de rate-limit para un target (IP del cliente)
+   * — equivalente DHCP del perfil PPP con rate-limit. Idempotente: actualiza
+   * el límite si cambió.
+   */
+  async ensureSimpleQueue(name: string, target: string, maxLimit: string): Promise<RouterOsSimpleQueue> {
+    const existing = await this.findSimpleQueueByName(name);
+    if (!existing) {
+      try {
+        const response = await this.http.put(
+          this.buildUrl('queue/simple'),
+          { name, target, 'max-limit': maxLimit, disabled: 'no' },
+          this.buildRequestConfig(),
+        );
+        const data = response.data;
+        return { id: data?.['.id'] || '', name: data?.name || name, target: data?.target || target, maxLimit: data?.['max-limit'] || maxLimit, disabled: false };
+      } catch (error) {
+        throw new Error(this.describeError(error));
+      }
+    }
+
+    const updates: Record<string, string> = {};
+    if (existing.target !== target) updates.target = target;
+    if (existing.maxLimit !== maxLimit) updates['max-limit'] = maxLimit;
+
+    if (Object.keys(updates).length > 0) {
+      try {
+        await this.http.patch(this.buildUrl(`queue/simple/${encodeURIComponent(existing.id)}`), updates, this.buildRequestConfig());
+      } catch (error) {
+        throw new Error(this.describeError(error));
+      }
+    }
+
+    return { ...existing, target, maxLimit };
+  }
+
+  /** Habilita/deshabilita una simple-queue ya existente. */
+  async setSimpleQueueDisabled(queueId: string, disabled: boolean): Promise<void> {
+    try {
+      await this.http.patch(
+        this.buildUrl(`queue/simple/${encodeURIComponent(queueId)}`),
+        { disabled: disabled ? 'true' : 'false' },
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
    * Agrega una IP a una address-list en /ip/firewall/address-list (RF-PORTAL-001).
    */
   async addAddressListEntry(list: string, address: string, comment?: string): Promise<void> {
@@ -574,6 +1170,93 @@ export class RouterOsClient {
       await this.http.put(this.buildUrl('ip/firewall/filter'), rule, this.buildRequestConfig());
     } catch {
       // Ignorar si ya existe
+    }
+  }
+
+  /** Busca una regla NAT existente por su comentario (idempotencia real, a diferencia de addFirewallNatRule). */
+  private async findNatRuleByComment(comment: string): Promise<{ id: string } | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/firewall/nat'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.comment === comment);
+    return match ? { id: match['.id'] } : null;
+  }
+
+  /**
+   * Asegura la regla de NAT masquerade de salida hacia Internet (idempotente
+   * por `comment` — a diferencia de `addFirewallNatRule`, que no verifica
+   * nada antes de insertar). Sin esto, ningún cliente detrás del router
+   * puede salir a Internet aunque el WAN ya tenga IP real.
+   */
+  async ensureNatMasquerade(outInterface: string, comment = 'sumtech-nat-masquerade'): Promise<void> {
+    const existing = await this.findNatRuleByComment(comment);
+    if (existing) {
+      return;
+    }
+    try {
+      await this.http.put(
+        this.buildUrl('ip/firewall/nat'),
+        { chain: 'srcnat', action: 'masquerade', 'out-interface': outInterface, comment },
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca una regla filter existente por su comentario. */
+  private async findFilterRuleByComment(comment: string): Promise<{ id: string } | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/firewall/filter'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.comment === comment);
+    return match ? { id: match['.id'] } : null;
+  }
+
+  /**
+   * Asegura un set FIJO y deliberadamente mínimo de reglas de firewall en el
+   * chain input, cada una idempotente por `comment` (a diferencia de
+   * `addFirewallFilterRule`, que no verifica nada antes de insertar):
+   *   1. aceptar established/related (tráfico de respuesta normal)
+   *   2. descartar conexiones "invalid" (higiene estándar anti-spoofing)
+   *
+   * Deliberadamente NO incluye una regla que restrinja el acceso de gestión
+   * (API/Winbox) a una IP específica — eso requeriría saber de antemano cuál
+   * es la IP/subred de gestión legítima (ej. el rango WireGuard), y una
+   * regla mal armada ahí podría dejar al administrador fuera del router de
+   * forma remota e irreversible sin acceso físico. Queda fuera a propósito,
+   * no es un olvido.
+   */
+  async ensureFirewallBaseline(): Promise<void> {
+    const rules: Array<{ comment: string; rule: Record<string, string> }> = [
+      {
+        comment: 'sumtech-baseline-established',
+        rule: { chain: 'input', 'connection-state': 'established,related', action: 'accept', comment: 'sumtech-baseline-established' },
+      },
+      {
+        comment: 'sumtech-baseline-drop-invalid',
+        rule: { chain: 'input', 'connection-state': 'invalid', action: 'drop', comment: 'sumtech-baseline-drop-invalid' },
+      },
+    ];
+
+    for (const { comment, rule } of rules) {
+      const existing = await this.findFilterRuleByComment(comment);
+      if (existing) {
+        continue;
+      }
+      try {
+        await this.http.put(this.buildUrl('ip/firewall/filter'), rule, this.buildRequestConfig());
+      } catch (error) {
+        throw new Error(this.describeError(error));
+      }
     }
   }
 

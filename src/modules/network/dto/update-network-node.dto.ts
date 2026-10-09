@@ -108,10 +108,10 @@ export class UpdateNetworkNodeDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(['PPPOE', 'OLT_NATIVE'], {
-    message: 'suspensionMedium debe ser PPPOE o OLT_NATIVE',
+  @IsIn(['PPPOE', 'OLT_NATIVE', 'DHCP'], {
+    message: 'suspensionMedium debe ser PPPOE, OLT_NATIVE o DHCP',
   })
-  suspensionMedium?: 'PPPOE' | 'OLT_NATIVE';
+  suspensionMedium?: 'PPPOE' | 'OLT_NATIVE' | 'DHCP';
 
   @IsOptional()
   @IsString()
@@ -130,4 +130,40 @@ export class UpdateNetworkNodeDto {
   @Min(1)
   @Max(65535)
   portalPort?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  wanInterfaceName?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['STATIC', 'DHCP_CLIENT', 'PPPOE_CLIENT'], {
+    message: 'wanMode debe ser STATIC, DHCP_CLIENT o PPPOE_CLIENT',
+  })
+  wanMode?: 'STATIC' | 'DHCP_CLIENT' | 'PPPOE_CLIENT';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(45)
+  wanStaticIp?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(45)
+  wanStaticGateway?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  wanStaticDns?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  wanPppoeUsername?: string;
+
+  @IsOptional()
+  @IsString()
+  wanPppoePassword?: string;
 }

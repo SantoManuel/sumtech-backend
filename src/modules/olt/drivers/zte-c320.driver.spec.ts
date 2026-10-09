@@ -141,4 +141,181 @@ describe('ZteC320Driver', () => {
     expect(result.rxDbm).toBe(-19.80); // Potencia recibida en la ONU
     expect(result.attenuationDb).toBe(23.60);
   });
+
+  it.each([
+    ['DOWN', 'shutdown'],
+    ['UP', 'no shutdown'],
+  ])('setInterfaceAdminState(%s) usa "%s" sobre la interfaz física (puerto PON/uplink, no un ONU)', async (state, expectedCmd) => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.setInterfaceAdminState(
+      { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+      'gpon-olt_1/1/1',
+      state as 'UP' | 'DOWN',
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith('interface gpon-olt_1/1/1');
+    expect(executeCommand).toHaveBeenCalledWith(expectedCmd);
+  });
+
+  it('setInterfaceAdminState() responde ok:false si el equipo rechaza el comando', async () => {
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockRejectedValue(new Error('% Invalid input')),
+      close: jest.fn(),
+    });
+
+    const result = await driver.setInterfaceAdminState(
+      { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+      'gpon-olt_1/1/1',
+      'DOWN',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('% Invalid input');
+  });
+
+  describe('findTcontProfileByName / ensureTcontProfile (sintaxis documentada públicamente, no verificada en vivo)', () => {
+    it('findTcontProfileByName devuelve null si el nombre no aparece en "show gpon profile tcont"', async () => {
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand: jest.fn().mockResolvedValue('PROFILE NAME   TYPE   FIXED\nOTHER5M        1      5000'),
+        close: jest.fn(),
+      });
+
+      const result = await driver.findTcontProfileByName(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'FIXED5M',
+      );
+
+      expect(result).toBeNull();
+    });
+
+    it('findTcontProfileByName encuentra el perfil y extrae el valor fixed cercano', async () => {
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand: jest.fn().mockResolvedValue('PROFILE NAME   TYPE   FIXED\nFIXED5M        1      fixed 5000'),
+        close: jest.fn(),
+      });
+
+      const result = await driver.findTcontProfileByName(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'FIXED5M',
+      );
+
+      expect(result).toEqual({ name: 'FIXED5M', fixedKbps: 5000 });
+    });
+
+    it('ensureTcontProfile crea el perfil con "profile tcont <nombre> type 1 fixed <kbps>" si no existe', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show gpon profile tcont') return Promise.resolve('PROFILE NAME   TYPE   FIXED');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.ensureTcontProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'FIXED5M', fixedKbps: 5000 },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('profile tcont FIXED5M type 1 fixed 5000');
+    });
+
+    it('ensureTcontProfile es idempotente: no vuelve a crear si el perfil ya existe', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('PROFILE NAME   TYPE   FIXED\nFIXED5M  1  fixed 5000');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      await driver.ensureTcontProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'FIXED5M', fixedKbps: 5000 },
+      );
+
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('profile tcont FIXED5M type'));
+    });
+  });
+
+  describe('authorizeOnu() + TCONT', () => {
+    it('asegura el perfil TCONT antes de correr el script de autorización cuando hay tcontProfile + upKbps', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show gpon profile tcont') return Promise.resolve('PROFILE NAME   TYPE   FIXED');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        {
+          ponInterface: 'gpon-olt_1/1/1',
+          onuId: 1,
+          modelTypeName: 'ZTE-F660',
+          serialNumber: 'ZTEGC0123456',
+          serviceVlan: 400,
+          tcontProfile: 'FIXED5M',
+          upKbps: 5000,
+          managementMethod: 'OMCI',
+          operationMode: 'ROUTER',
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      const calledCommands = executeCommand.mock.calls.map((c) => c[0]);
+      expect(calledCommands.indexOf('show gpon profile tcont')).toBeGreaterThanOrEqual(0);
+      expect(calledCommands.indexOf('profile tcont FIXED5M type 1 fixed 5000')).toBeGreaterThan(
+        calledCommands.indexOf('show gpon profile tcont'),
+      );
+    });
+
+    it('no intenta asegurar ningún perfil TCONT si no se provee tcontProfile/upKbps', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        {
+          ponInterface: 'gpon-olt_1/1/1',
+          onuId: 1,
+          modelTypeName: 'ZTE-F660',
+          serialNumber: 'ZTEGC0123456',
+          serviceVlan: 400,
+          managementMethod: 'OMCI',
+          operationMode: 'ROUTER',
+        },
+      );
+
+      expect(executeCommand).not.toHaveBeenCalledWith('show gpon profile tcont');
+    });
+  });
+
+  it('configureVlanTranslation() sigue señalando DRIVER_NOT_IMPLEMENTED: solo se confirmó el nombre del comando, no la sintaxis completa', async () => {
+    const result = await driver.configureVlanTranslation(
+      { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+      { interfaceName: 'gpon-olt_1/1/1', customerVlanId: 100, networkVlanId: 400 },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('no está implementada');
+  });
 });

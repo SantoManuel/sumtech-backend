@@ -423,9 +423,77 @@ CONFIRMED real syntax in actual use on this unit (captured verbatim from
    onu" already worked — do not assume "clear onu" is equivalent without
    verifying it separately.
 
+15. UPLINK TRUNK CONFIGURATION CONFIRMED LIVE 2026-10-09 (tested against
+   "ten-gigabitethernet 1/2", a real uplink port with no SFP installed and
+   no traffic — chosen specifically to avoid touching the ports actually
+   carrying the real ONU). Full working sequence, confirmed via
+   "show running-config" before/after:
+     configure terminal
+     vlan database                              -> enters "Epon(config-vlan)#"
+     vlan <id> name <name>
+     exit                                        -> back to "Epon(config)#"
+     interface <interfaceName>                   -> e.g. "ten-gigabitethernet 1/2"
+     switchport mode trunk
+     switchport allowed vlan add <id> tagged
+     exit
+     exit
+     write
+   This creates the VLAN in the global "vlan database" AND trunks it
+   (tagged) on the given interface in one shot — same two-step shape
+   (global VLAN + per-interface trunk) as ZteC320Driver's own
+   configureVlanOnInterface(). Implemented in HiosoDriver.configureVlanOnInterface(),
+   capability now true.
+
+16. "shutdown"/"no shutdown" ON A PHYSICAL INTERFACE (not an ONU) CONFIRMED
+   LIVE 2026-10-09, same test interface as note 15. Sequence:
+     configure terminal
+     interface <interfaceName>
+     shutdown        (or "no shutdown" to reverse)
+     exit
+     exit
+     write
+   Confirmed via "show running-config": the literal word "shutdown" appears
+   under the interface block when administratively down, and disappears
+   after "no shutdown" — exactly what HiosoDriver.discoverInterfaces()'s own
+   parser already looks for (`shutdownMentioned` regex). Implemented in
+   HiosoDriver.setInterfaceAdminState(), capability now true. Test interface
+   left clean (back to "no shutdown" state) at the end of this test.
+
    STILL UNVERIFIED: whether "add onu <id> <mac> <type>" behaves safely
    when run against an onu-id that is ALREADY live/auto-registered (e.g.
    re-asserting the real onu-id 2's own binding) — only tested against a
    previously-unused id (5) with no physical ONU behind it. Do not assume
    this is a safe no-op on an already-connected real ONU without testing
    it deliberately first.
+
+14. BANDWIDTH COMMAND GRAMMAR (full, confirmed live 2026-10-09 against the
+   real connected ONU, onu-id 2 — this OLT only has this one ONU plugged
+   in, there is no spare unit to test against): seven positional arguments,
+   discovered one "?" at a time (each prefix genuinely incomplete until the
+   last argument, so safe per the rule in note 11):
+     onu <1-128> bandwidth <FIR-up> <CIR-up> <PIR-up> <weight-up> <weight-down> <PIR-down> <PBS-down>
+   Ranges as reported by the device itself:
+     FIR-up:     0-960000     ("Upstream fir")
+     CIR-up:     0-960000     ("Upstream cir")
+     PIR-up:     512-1000000  ("Upstream pir")
+     weight-up:  1-16         ("Upstream weight")
+     weight-down:1-16         ("Downstream weight")
+     PIR-down:   0-1000000    ("Downstream pir")
+     PBS-down:   0-1000000    ("Downstream pbs")
+   All three upstream values (FIR/CIR/PIR) are in kbps; EPON has no
+   per-ONU absolute downstream rate control beyond PIR/PBS because
+   downstream is a shared broadcast medium from the OLT — the up/down
+   "weight" pair is a DBA scheduling priority (1-16) between ONUs sharing
+   the same PON port, not a bandwidth value itself.
+
+   DANGEROUS QUIRK HIT AGAIN (same class as note 11): the full 7-argument
+   form IS a complete command by itself. Appending "?" after supplying all
+   seven values ("onu 2 bandwidth 100000 100000 100000 8 8 100000 100000 ?")
+   showed the "<cr>" hint AND executed the command for real — it actually
+   capped the real connected ONU's upstream and downstream to 100 Mbps.
+   The ONU stayed Up/CtcNegDone throughout (unlike the activate/deactivate
+   incident, this did not bounce the PON link), but it is a live example of
+   the same mistake: never append "?" to a prefix that might already be a
+   complete, valid command when driving this CLI programmatically. Values
+   below 7 full arguments ("... bandwidth 100000 ?", "... 100000 100000 ?",
+   etc.) were all genuinely incomplete and safe to probe with "?".

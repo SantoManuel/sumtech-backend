@@ -67,6 +67,20 @@ export interface OnuOpticalPower {
   raw?: string;
 }
 
+export interface TcontProfile {
+  name: string;
+  /** Ancho de banda FIJO (upstream) en kbps — tipo DBA 1 (fixed), el único que modela hoy `net.olt_speed_profiles`. */
+  fixedKbps: number;
+}
+
+export interface VlanTranslationParams {
+  interfaceName: string;
+  /** VLAN que llega del lado del cliente/ONU (interior). */
+  customerVlanId: number;
+  /** VLAN hacia la que se traduce del lado de la red/uplink (exterior). */
+  networkVlanId: number;
+}
+
 export interface AuthorizeOnuParams {
   ponInterface: string; // ej. 'gpon-olt_1/1/1'
   onuId: number; // 1-128
@@ -75,6 +89,8 @@ export interface AuthorizeOnuParams {
   clientName?: string;
   serviceVlan: number;
   tcontProfile?: string;
+  downKbps?: number;
+  upKbps?: number;
   managementMethod: 'OMCI' | 'TR069';
   operationMode: 'ROUTER' | 'BRIDGE';
   tr069Url?: string;
@@ -100,6 +116,26 @@ export interface OltDriverCapabilities {
   onuAuthorize: boolean;
   onuAdminState: boolean;
   onuDelete: boolean;
+  interfaceAdminState: boolean;
+  /**
+   * Crear/consultar perfiles DBA-TCONT como objetos reales en la OLT (no
+   * solo referenciarlos por nombre). Para ZTE la sintaxis sale de
+   * documentación pública oficial del C320 (no de reconocimiento en vivo
+   * contra un equipo propio) — por eso esta capacidad se mantiene en
+   * `false` hasta confirmarlo contra hardware real, aunque el método ya
+   * tenga lógica funcional. Ver ZteC320Driver.ensureTcontProfile().
+   */
+  dbaProfile: boolean;
+  /**
+   * Traducción de VLAN cliente↔red en una interfaz (VLAN translation /
+   * Smart QinQ). Solo se confirmó el NOMBRE del comando en documentación
+   * pública (`vlan-translate ingress-port`), sin el ejemplo completo de
+   * sintaxis — insuficiente para implementar sin inventar argumentos, así
+   * que el método sigue lanzando DriverNotImplementedError en todos los
+   * drivers hasta tener evidencia completa (reconocimiento en vivo o un
+   * ejemplo documentado íntegro).
+   */
+  vlanTranslation: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -114,6 +150,9 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   onuAuthorize: false,
   onuAdminState: false,
   onuDelete: false,
+  interfaceAdminState: false,
+  dbaProfile: false,
+  vlanTranslation: false,
 };
 
 /**
@@ -157,6 +196,20 @@ export interface IOltDriver {
   authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }>;
   setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }>;
   deleteOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Habilita/deshabilita administrativamente una interfaz física completa
+   * (puerto PON o uplink) — distinto de `setOnuAdminState`, que opera sobre
+   * un ONU individual. Apagar un puerto PON corta a TODOS los ONUs
+   * conectados a ese puerto, no a uno solo — los servicios que llamen esto
+   * deben tratarlo con el mismo cuidado que una operación destructiva.
+   */
+  setInterfaceAdminState(params: OltConnectionParams, interfaceName: string, state: 'UP' | 'DOWN'): Promise<{ ok: boolean; error?: string }>;
+  /** Busca un perfil DBA-TCONT existente por nombre. Null si no existe todavía en la OLT. */
+  findTcontProfileByName(params: OltConnectionParams, name: string): Promise<TcontProfile | null>;
+  /** Asegura que el perfil exista con el ancho de banda indicado (idempotente: crea si falta, no duplica si ya existe). */
+  ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }>;
+  /** Traducción de VLAN cliente↔red en una interfaz (VLAN translation/QinQ) — ver `vlanTranslation` en OltDriverCapabilities sobre por qué sigue sin evidencia suficiente para implementarse. */
+  configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }>;
   generateAuthorizationScript(config: AuthorizeOnuParams): string[];
   getCapabilities(): OltDriverCapabilities;
 }

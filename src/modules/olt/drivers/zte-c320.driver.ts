@@ -8,6 +8,8 @@ import {
   DiscoveredCard,
   DiscoveredInterface,
   ConfigureVlanParams,
+  TcontProfile,
+  VlanTranslationParams,
   OltDriverCapabilities,
   DriverNotImplementedError,
 } from '../ports/olt-driver.port';
@@ -364,7 +366,15 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
-   * Ejecuta el aprovisionamiento de la ONU en la OLT.
+   * Ejecuta el aprovisionamiento de la ONU en la OLT. Antes de correr el
+   * script generado, asegura que el perfil TCONT referenciado
+   * (`config.tcontProfile`) exista de verdad en la OLT — antes de esto,
+   * `generateAuthorizationScript()` solo lo referenciaba por nombre
+   * (`tcont 1 profile <nombre>`) asumiendo silenciosamente que ya existía;
+   * si no existía, la autorización fallaba sin explicación clara. Solo
+   * aplica si hay `tcontProfile` + `upKbps` (TCONT es ancho de banda de
+   * SUBIDA en GPON — ver `ensureTcontProfile`, el ancho de banda de bajada
+   * no se gestiona por esta vía).
    */
   async authorizeOnu(
     params: OltConnectionParams,
@@ -373,6 +383,11 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
+
+      if (config.tcontProfile && config.upKbps) {
+        await this.ensureTcontProfileWithSession(session, { name: config.tcontProfile, fixedKbps: config.upKbps });
+      }
+
       const commands = this.generateAuthorizationScript(config);
 
       for (const cmd of commands) {
@@ -385,6 +400,93 @@ export class ZteC320Driver implements IOltDriver {
     } finally {
       session.close();
     }
+  }
+
+  /**
+   * Busca un perfil TCONT por nombre vía `show gpon profile tcont` (comando
+   * confirmado en documentación pública oficial de configuración GPON del
+   * ZTE C320 — NO verificado contra un equipo real propio, por eso
+   * `OltDriverCapabilities.dbaProfile` se mantiene en `false`). El formato
+   * exacto de columnas de esa salida no está confirmado, así que el parseo
+   * es deliberadamente conservador: busca el nombre como palabra completa y,
+   * si logra encontrar un valor "fixed <kbps>" cerca, lo extrae; si no,
+   * reporta el perfil como existente con `fixedKbps` indefinido en vez de
+   * inventar un número.
+   */
+  async findTcontProfileByName(params: OltConnectionParams, name: string): Promise<TcontProfile | null> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand('show gpon profile tcont');
+      return this.parseTcontProfileFromOutput(output, name);
+    } finally {
+      session.close();
+    }
+  }
+
+  private parseTcontProfileFromOutput(output: string, name: string): TcontProfile | null {
+    const nameRegex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (!nameRegex.test(output)) {
+      return null;
+    }
+    const nearbyFixed = new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]{0,80}?fixed\\s+(\\d+)`, 'i');
+    const match = output.match(nearbyFixed);
+    return { name, fixedKbps: match ? parseInt(match[1], 10) : (undefined as unknown as number) };
+  }
+
+  /**
+   * Crea el perfil TCONT tipo 1 (fixed) si no existe — sintaxis confirmada
+   * en documentación pública oficial de ZTE C320:
+   * `profile tcont <nombre> type 1 fixed <kbps>`. Idempotente: si
+   * `findTcontProfileByName` ya lo encuentra, no reintenta crearlo (no se
+   * confirmó qué hace el equipo si se manda el comando de creación dos
+   * veces con el mismo nombre, así que no se arriesga).
+   *
+   * IMPORTANTE — alcance: TCONT en GPON gobierna el ancho de banda de
+   * SUBIDA del ONU únicamente (ITU-T G.984). El ancho de banda de BAJADA
+   * normalmente se gestiona con un mecanismo aparte (ej. un "traffic
+   * profile" aplicado al gemport/service-port) — esta sesión no tiene
+   * evidencia documentada de esa sintaxis para este equipo, así que
+   * `net.olt_speed_profiles.vendor_traffic_profile` sigue sin usarse por
+   * ningún driver. No asumir que crear el TCONT ya configuró la velocidad
+   * completa del cliente en ambos sentidos.
+   */
+  async ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await this.ensureTcontProfileWithSession(session, profile);
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  private async ensureTcontProfileWithSession(
+    session: { executeCommand(cmd: string, timeoutMs?: number): Promise<string> },
+    profile: TcontProfile,
+  ): Promise<void> {
+    const output = await session.executeCommand('show gpon profile tcont');
+    const existing = this.parseTcontProfileFromOutput(output, profile.name);
+    if (existing) {
+      return;
+    }
+    await session.executeCommand(`profile tcont ${profile.name} type 1 fixed ${profile.fixedKbps}`);
+  }
+
+  /**
+   * Solo se confirmó el NOMBRE de este comando en documentación pública
+   * ("vlan-translate ingress-port", manual de VLAN translation/Smart QinQ
+   * del ZTE C300/C320) — sin un ejemplo completo de sintaxis (orden de
+   * argumentos, modo de configuración exacto). Implementarlo con esa
+   * evidencia parcial sería inventar el resto del comando, así que sigue
+   * señalando DRIVER_NOT_IMPLEMENTED hasta tener el ejemplo completo
+   * (documentado o por reconocimiento en vivo).
+   */
+  async configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'configureVlanTranslation').message };
   }
 
   /**
@@ -441,6 +543,39 @@ export class ZteC320Driver implements IOltDriver {
     }
   }
 
+  /**
+   * "shutdown"/"no shutdown" sobre la interfaz indicada — mismo mecanismo ya
+   * confirmado en producción vía `setOnuAdminState()`, aplicado aquí a una
+   * interfaz física completa (puerto PON o uplink) en vez de a la
+   * sub-interfaz virtual de un ONU individual. Apagar un puerto PON corta a
+   * TODOS los ONUs de ese puerto, no a uno solo.
+   */
+  async setInterfaceAdminState(
+    params: OltConnectionParams,
+    interfaceName: string,
+    state: 'UP' | 'DOWN',
+  ): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await session.executeCommand('configure terminal');
+      await session.executeCommand(`interface ${interfaceName}`);
+      if (state === 'DOWN') {
+        await session.executeCommand('shutdown');
+      } else {
+        await session.executeCommand('no shutdown');
+      }
+      await session.executeCommand('exit');
+      await session.executeCommand('write');
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
   getCapabilities(): OltDriverCapabilities {
     return {
       testConnection: true,
@@ -454,6 +589,13 @@ export class ZteC320Driver implements IOltDriver {
       onuAuthorize: true,
       onuAdminState: true,
       onuDelete: true,
+      interfaceAdminState: true,
+      // Implementados con lógica real a partir de documentación pública oficial
+      // de ZTE C320, pero NUNCA verificados contra un equipo real propio —
+      // se mantienen en false hasta confirmarlo en vivo (ver ensureTcontProfile
+      // y configureVlanTranslation).
+      dbaProfile: false,
+      vlanTranslation: false,
     };
   }
 }

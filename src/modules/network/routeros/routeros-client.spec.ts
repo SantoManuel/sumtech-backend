@@ -333,4 +333,349 @@ describe('RouterOsClient', () => {
       expect(http.get).toHaveBeenCalledWith('https://10.10.0.1:8729/rest/ppp/secret', expect.anything());
     });
   });
+
+  describe('findVlanInterfaceByVlanId / ensureVlanInterface', () => {
+    it('findVlanInterfaceByVlanId devuelve null si ninguna VLAN coincide', async () => {
+      http.get.mockResolvedValue({ data: [] });
+
+      const result = await client.findVlanInterfaceByVlanId(400);
+
+      expect(result).toBeNull();
+      expect(http.get).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/vlan',
+        expect.objectContaining({ params: { 'vlan-id': '400' } }),
+      );
+    });
+
+    it('ensureVlanInterface no crea nada si la VLAN ya existe (idempotente)', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*5', name: 'vlan400-clientes', 'vlan-id': '400', interface: 'ether5' }],
+      });
+
+      const result = await client.ensureVlanInterface({ name: 'vlan400-clientes', vlanId: 400, parentInterface: 'ether5' });
+
+      expect(result).toEqual({ id: '*5', name: 'vlan400-clientes', vlanId: 400, interface: 'ether5' });
+      expect(http.put).not.toHaveBeenCalled();
+    });
+
+    it('ensureVlanInterface crea la sub-interfaz vía PUT si no existe', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: { '.id': '*6', name: 'vlan400-clientes', interface: 'ether5' } });
+
+      const result = await client.ensureVlanInterface({
+        name: 'vlan400-clientes',
+        vlanId: 400,
+        parentInterface: 'ether5',
+        comment: 'Sumtech - VLAN clientes',
+      });
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/vlan',
+        { name: 'vlan400-clientes', 'vlan-id': '400', interface: 'ether5', comment: 'Sumtech - VLAN clientes' },
+        expect.anything(),
+      );
+      expect(result).toEqual({ id: '*6', name: 'vlan400-clientes', vlanId: 400, interface: 'ether5' });
+    });
+  });
+
+  describe('findIpAddressByInterface / ensureIpAddress', () => {
+    it('ensureIpAddress crea la IP vía PUT si la interfaz no tiene ninguna asignada', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: { '.id': '*7', address: '10.20.0.1/24', interface: 'vlan400-clientes' } });
+
+      const result = await client.ensureIpAddress('vlan400-clientes', '10.20.0.1/24', 'Gateway VLAN 400');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/address',
+        { address: '10.20.0.1/24', interface: 'vlan400-clientes', comment: 'Gateway VLAN 400' },
+        expect.anything(),
+      );
+      expect(result.address).toBe('10.20.0.1/24');
+    });
+
+    it('ensureIpAddress no duplica si la interfaz ya tiene exactamente esa IP', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*7', address: '10.20.0.1/24', interface: 'vlan400-clientes' }],
+      });
+
+      const result = await client.ensureIpAddress('vlan400-clientes', '10.20.0.1/24');
+
+      expect(http.put).not.toHaveBeenCalled();
+      expect(result.id).toBe('*7');
+    });
+
+    it('ensureIpAddress lanza si la interfaz ya tiene una IP distinta (no sobreescribe a ciegas)', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*7', address: '10.20.0.5/24', interface: 'vlan400-clientes' }],
+      });
+
+      await expect(client.ensureIpAddress('vlan400-clientes', '10.20.0.1/24')).rejects.toThrow(
+        /ya tiene la IP/,
+      );
+    });
+  });
+
+  describe('ensureDhcpClient', () => {
+    it('crea el cliente DHCP vía PUT con add-default-route=yes si no existe', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: { '.id': '*8', interface: 'ether1' } });
+
+      const result = await client.ensureDhcpClient('ether1');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-client',
+        { interface: 'ether1', 'add-default-route': 'yes', 'use-peer-dns': 'yes' },
+        expect.anything(),
+      );
+      expect(result).toEqual({ id: '*8', interface: 'ether1', disabled: false });
+    });
+
+    it('es idempotente: no crea nada si la interfaz ya tiene cliente DHCP', async () => {
+      http.get.mockResolvedValue({ data: [{ '.id': '*8', interface: 'ether1', disabled: 'false' }] });
+
+      await client.ensureDhcpClient('ether1');
+
+      expect(http.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ensurePppoeClient', () => {
+    it('crea la interfaz pppoe-client vía PUT si no existe', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: { '.id': '*9', name: 'pppoe-wan', interface: 'ether1', user: 'isp-user' } });
+
+      const result = await client.ensurePppoeClient({
+        name: 'pppoe-wan',
+        parentInterface: 'ether1',
+        user: 'isp-user',
+        password: 'isp-pass',
+      });
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/pppoe-client',
+        { name: 'pppoe-wan', interface: 'ether1', user: 'isp-user', password: 'isp-pass', 'add-default-route': 'yes', disabled: 'no' },
+        expect.anything(),
+      );
+      expect(result.name).toBe('pppoe-wan');
+    });
+
+    it('actualiza usuario/contraseña vía PATCH si la interfaz ya existe', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*9', name: 'pppoe-wan', interface: 'ether1', user: 'old-user', disabled: 'false' }],
+      });
+
+      await client.ensurePppoeClient({ name: 'pppoe-wan', parentInterface: 'ether1', user: 'new-user', password: 'new-pass' });
+
+      expect(http.patch).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/pppoe-client/*9',
+        { user: 'new-user', password: 'new-pass' },
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('ensureDefaultRoute', () => {
+    it('crea la ruta 0.0.0.0/0 vía PUT si no existe ninguna', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: { '.id': '*10', gateway: '200.1.1.1' } });
+
+      const result = await client.ensureDefaultRoute('200.1.1.1', 'Sumtech - WAN');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/route',
+        { 'dst-address': '0.0.0.0/0', gateway: '200.1.1.1', comment: 'Sumtech - WAN' },
+        expect.anything(),
+      );
+      expect(result.gateway).toBe('200.1.1.1');
+    });
+
+    it('lanza si ya existe una ruta por defecto hacia un gateway distinto (no sobreescribe)', async () => {
+      http.get.mockResolvedValue({ data: [{ '.id': '*10', 'dst-address': '0.0.0.0/0', gateway: '200.1.1.9' }] });
+
+      await expect(client.ensureDefaultRoute('200.1.1.1')).rejects.toThrow(/Ya existe una ruta por defecto/);
+    });
+  });
+
+  describe('ensureNatMasquerade', () => {
+    it('crea la regla de masquerade vía PUT si no existe ninguna con ese comentario', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: {} });
+
+      await client.ensureNatMasquerade('ether1');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/firewall/nat',
+        { chain: 'srcnat', action: 'masquerade', 'out-interface': 'ether1', comment: 'sumtech-nat-masquerade' },
+        expect.anything(),
+      );
+    });
+
+    it('es idempotente: no duplica si ya existe una regla con el mismo comentario', async () => {
+      http.get.mockResolvedValue({ data: [{ '.id': '*11', comment: 'sumtech-nat-masquerade' }] });
+
+      await client.ensureNatMasquerade('ether1');
+
+      expect(http.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ensureFirewallBaseline', () => {
+    it('crea las 2 reglas base (established/related + drop invalid) si no existen', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: {} });
+
+      await client.ensureFirewallBaseline();
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/firewall/filter',
+        expect.objectContaining({ comment: 'sumtech-baseline-established', action: 'accept' }),
+        expect.anything(),
+      );
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/firewall/filter',
+        expect.objectContaining({ comment: 'sumtech-baseline-drop-invalid', action: 'drop' }),
+        expect.anything(),
+      );
+      expect(http.put).toHaveBeenCalledTimes(2);
+    });
+
+    it('es idempotente: no duplica reglas que ya existen por comentario', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*1', comment: 'sumtech-baseline-established' }, { '.id': '*2', comment: 'sumtech-baseline-drop-invalid' }],
+      });
+
+      await client.ensureFirewallBaseline();
+
+      expect(http.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ensureIpPool', () => {
+    it('crea el pool vía PUT si no existe', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: { '.id': '*20', name: 'pool-vlan400', ranges: '10.20.0.10-10.20.0.250' } });
+
+      const result = await client.ensureIpPool('pool-vlan400', '10.20.0.10-10.20.0.250');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/pool',
+        { name: 'pool-vlan400', ranges: '10.20.0.10-10.20.0.250' },
+        expect.anything(),
+      );
+      expect(result.name).toBe('pool-vlan400');
+    });
+
+    it('es idempotente: no duplica si el pool ya existe por nombre', async () => {
+      http.get.mockResolvedValue({ data: [{ '.id': '*20', name: 'pool-vlan400', ranges: '10.20.0.10-10.20.0.250' }] });
+      await client.ensureIpPool('pool-vlan400', '10.20.0.10-10.20.0.250');
+      expect(http.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ensureDhcpServerNetwork / ensureDhcpServer', () => {
+    it('crea la red DHCP vía PUT si no existe', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: {} });
+
+      await client.ensureDhcpServerNetwork('10.20.0.0/24', '10.20.0.1', '8.8.8.8');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/network',
+        { address: '10.20.0.0/24', gateway: '10.20.0.1', 'dns-server': '8.8.8.8' },
+        expect.anything(),
+      );
+    });
+
+    it('ensureDhcpServer crea el servidor vía PUT si la interfaz no tiene uno', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: { '.id': '*21', name: 'dhcp-vlan400' } });
+
+      const result = await client.ensureDhcpServer('dhcp-vlan400', 'vlan400', 'pool-vlan400', 86400);
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server',
+        { name: 'dhcp-vlan400', interface: 'vlan400', 'address-pool': 'pool-vlan400', 'lease-time': '86400s', disabled: 'no' },
+        expect.anything(),
+      );
+      expect(result.name).toBe('dhcp-vlan400');
+    });
+  });
+
+  describe('ensureStaticLease / setLeaseDisabled', () => {
+    it('crea la lease vía PUT si no existe ninguna con esa MAC', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: { '.id': '*22', address: '10.20.0.50', 'mac-address': 'AA:BB:CC:DD:EE:FF', server: 'dhcp-vlan400' } });
+
+      const result = await client.ensureStaticLease('AA:BB:CC:DD:EE:FF', '10.20.0.50', 'dhcp-vlan400', 'Contrato:c-1');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/lease',
+        { 'mac-address': 'AA:BB:CC:DD:EE:FF', address: '10.20.0.50', server: 'dhcp-vlan400', disabled: 'no', comment: 'Contrato:c-1' },
+        expect.anything(),
+      );
+      expect(result.address).toBe('10.20.0.50');
+    });
+
+    it('actualiza la IP vía PATCH si la lease ya existe con otra dirección', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*22', address: '10.20.0.40', 'mac-address': 'AA:BB:CC:DD:EE:FF', server: 'dhcp-vlan400', disabled: 'false' }],
+      });
+
+      await client.ensureStaticLease('AA:BB:CC:DD:EE:FF', '10.20.0.50', 'dhcp-vlan400');
+
+      expect(http.patch).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/lease/*22',
+        { address: '10.20.0.50' },
+        expect.anything(),
+      );
+    });
+
+    it('setLeaseDisabled hace PATCH disabled=true', async () => {
+      await client.setLeaseDisabled('*22', true);
+      expect(http.patch).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/lease/*22',
+        { disabled: 'true' },
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('ensureSimpleQueue / setSimpleQueueDisabled', () => {
+    it('crea la simple-queue vía PUT si no existe', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: { '.id': '*23', name: 'q-contrato-1', target: '10.20.0.50/32', 'max-limit': '10M/10M' } });
+
+      const result = await client.ensureSimpleQueue('q-contrato-1', '10.20.0.50/32', '10M/10M');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/queue/simple',
+        { name: 'q-contrato-1', target: '10.20.0.50/32', 'max-limit': '10M/10M', disabled: 'no' },
+        expect.anything(),
+      );
+      expect(result.maxLimit).toBe('10M/10M');
+    });
+
+    it('actualiza max-limit vía PATCH si la queue ya existe con otro límite', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*23', name: 'q-contrato-1', target: '10.20.0.50/32', 'max-limit': '5M/5M', disabled: 'false' }],
+      });
+
+      await client.ensureSimpleQueue('q-contrato-1', '10.20.0.50/32', '20M/20M');
+
+      expect(http.patch).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/queue/simple/*23',
+        { 'max-limit': '20M/20M' },
+        expect.anything(),
+      );
+    });
+
+    it('setSimpleQueueDisabled hace PATCH disabled=true', async () => {
+      await client.setSimpleQueueDisabled('*23', true);
+      expect(http.patch).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/queue/simple/*23',
+        { disabled: 'true' },
+        expect.anything(),
+      );
+    });
+  });
 });

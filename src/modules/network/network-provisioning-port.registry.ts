@@ -3,6 +3,7 @@ import { NetworkProvisioningPort } from './network-provisioning.port';
 import { ManualProvisioningAdapter } from './manual-provisioning.adapter';
 import { RouterOsProvisioningAdapter } from './routeros-provisioning.adapter';
 import { OltNativeProvisioningAdapter } from './olt-native-provisioning.adapter';
+import { DhcpProvisioningAdapter } from './dhcp-provisioning.adapter';
 import { NetworkAccessEntity } from './entities/network-access.entity';
 
 /**
@@ -16,6 +17,7 @@ export class NetworkProvisioningPortRegistry {
     private readonly manualAdapter: ManualProvisioningAdapter,
     private readonly routerOsAdapter: RouterOsProvisioningAdapter,
     private readonly oltNativeAdapter: OltNativeProvisioningAdapter,
+    private readonly dhcpAdapter: DhcpProvisioningAdapter,
   ) {}
 
   /**
@@ -33,8 +35,8 @@ export class NetworkProvisioningPortRegistry {
     if (medium === 'OLT_NATIVE') {
       return this.oltNativeAdapter;
     }
-    if (medium === 'PPPOE') {
-      return this.resolve(access.node?.provisioningMode);
+    if (medium === 'DHCP') {
+      return this.dhcpAdapter;
     }
     return this.resolve(access.node?.provisioningMode);
   }
@@ -47,7 +49,7 @@ export class NetworkProvisioningPortRegistry {
    * 4. Si hay nodo pero sin medio explícito: PPPOE.
    * 5. En caso de no haber infraestructura: NONE.
    */
-  resolveSuspensionMedium(access: NetworkAccessEntity): 'PPPOE' | 'OLT_NATIVE' | 'NONE' {
+  resolveSuspensionMedium(access: NetworkAccessEntity): 'PPPOE' | 'OLT_NATIVE' | 'DHCP' | 'NONE' {
     if (access.suspensionMediumOverride) {
       return access.suspensionMediumOverride;
     }

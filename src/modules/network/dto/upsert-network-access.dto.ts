@@ -10,8 +10,8 @@ export class UpsertNetworkAccessDto {
   onuId?: string;
 
   @IsOptional()
-  @IsIn(['PPPOE', 'OLT_NATIVE'], { message: 'suspensionMediumOverride debe ser PPPOE u OLT_NATIVE' })
-  suspensionMediumOverride?: 'PPPOE' | 'OLT_NATIVE';
+  @IsIn(['PPPOE', 'OLT_NATIVE', 'DHCP'], { message: 'suspensionMediumOverride debe ser PPPOE, OLT_NATIVE o DHCP' })
+  suspensionMediumOverride?: 'PPPOE' | 'OLT_NATIVE' | 'DHCP';
 
   @IsOptional()
   @IsString()
@@ -27,4 +27,13 @@ export class UpsertNetworkAccessDto {
   @IsString()
   @MaxLength(45, { message: 'La IP no puede superar 45 caracteres' })
   ipAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(17, { message: 'La MAC no puede superar 17 caracteres' })
+  macAddress?: string;
+
+  @IsOptional()
+  @IsUUID('4', { message: 'vlanId debe ser un UUID válido' })
+  vlanId?: string;
 }

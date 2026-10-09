@@ -17,19 +17,22 @@ describe('HiosoDriver', () => {
     expect(driver).toBeDefined();
   });
 
-  it('solo declara capacidades reales: todo menos chassisCards y configureVlan (sin comando verificado para ninguno de los dos)', () => {
+  it('solo declara capacidades reales: todo menos chassisCards (sin chasis modular en este hardware)', () => {
     expect(driver.getCapabilities()).toEqual({
       testConnection: true,
       systemInfo: true,
       systemHealth: true,
       chassisCards: false,
       discoverInterfaces: true,
-      configureVlan: false,
+      configureVlan: true,
       onuDiscovery: true,
       onuOpticalPower: true,
       onuAuthorize: true,
       onuAdminState: true,
       onuDelete: true,
+      interfaceAdminState: true,
+      dbaProfile: false,
+      vlanTranslation: false,
     });
   });
 
@@ -258,12 +261,59 @@ describe('HiosoDriver', () => {
     ]);
   });
 
-  it('configureVlanOnInterface() sigue señalando DRIVER_NOT_IMPLEMENTED: no hay comando verificado para VLAN en un puerto uplink/NNI', async () => {
-    const vlanResult = await driver.configureVlanOnInterface(
+  it('configureVlanOnInterface() aplica el trunk tageado con la sintaxis real confirmada (vlan database + switchport)', async () => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.configureVlanOnInterface(
       { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
-      { interfaceName: 'epon 1/1', vlanId: 400, mode: 'TAG' },
+      { interfaceName: 'ten-gigabitethernet 1/2', vlanId: 400, mode: 'TAG' },
     );
-    expect(vlanResult.ok).toBe(false);
+
+    expect(result.ok).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith('configure terminal');
+    expect(executeCommand).toHaveBeenCalledWith('vlan database');
+    expect(executeCommand).toHaveBeenCalledWith('vlan 400 name VLAN400');
+    expect(executeCommand).toHaveBeenCalledWith('interface ten-gigabitethernet 1/2');
+    expect(executeCommand).toHaveBeenCalledWith('switchport mode trunk');
+    expect(executeCommand).toHaveBeenCalledWith('switchport allowed vlan add 400 tagged');
+    expect(executeCommand).toHaveBeenCalledWith('write');
+  });
+
+  it('configureVlanOnInterface() con mode UNTAG usa la palabra clave "untagged"', async () => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    await driver.configureVlanOnInterface(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      { interfaceName: 'gigabitethernet 1/2', vlanId: 10, mode: 'UNTAG' },
+    );
+
+    expect(executeCommand).toHaveBeenCalledWith('switchport allowed vlan add 10 untagged');
+  });
+
+  it('configureVlanOnInterface() responde ok:false si el equipo rechaza algún comando', async () => {
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockRejectedValue(new Error('% Unknown command')),
+      close: jest.fn(),
+    });
+
+    const result = await driver.configureVlanOnInterface(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      { interfaceName: 'ten-gigabitethernet 1/2', vlanId: 400, mode: 'TAG' },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('% Unknown command');
   });
 
   it('generateAuthorizationScript() produce la secuencia real confirmada: add onu <id> <mac> <type> + VLAN en los 4 puertos LAN', () => {
@@ -289,6 +339,50 @@ describe('HiosoDriver', () => {
       'exit',
       'write',
     ]);
+  });
+
+  it('generateAuthorizationScript() agrega "onu <id> bandwidth <7 args>" cuando hay perfil de velocidad (gramática real confirmada)', () => {
+    const commands = driver.generateAuthorizationScript({
+      ponInterface: 'epon 1/1',
+      onuId: 2,
+      modelTypeName: 'onu-01g',
+      serialNumber: '04:b0:e7:aa:bb:cc',
+      serviceVlan: 400,
+      downKbps: 100000,
+      upKbps: 100000,
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+    });
+
+    expect(commands).toEqual([
+      'configure terminal',
+      'interface epon 1/1',
+      'add onu 2 04:b0:e7:aa:bb:cc onu-01g',
+      'onu 2 bandwidth 100000 100000 100000 8 8 100000 100000',
+      'onu 2 vlan port 1 vlan-mode tag pvid 400',
+      'onu 2 vlan port 2 vlan-mode tag pvid 400',
+      'onu 2 vlan port 3 vlan-mode tag pvid 400',
+      'onu 2 vlan port 4 vlan-mode tag pvid 400',
+      'exit',
+      'exit',
+      'write',
+    ]);
+  });
+
+  it('generateAuthorizationScript() ajusta upKbps/downKbps a los rangos reales del equipo (FIR/CIR hasta 960000, PIR-up mínimo 512)', () => {
+    const commands = driver.generateAuthorizationScript({
+      ponInterface: 'epon 1/1',
+      onuId: 2,
+      modelTypeName: 'onu-01g',
+      serialNumber: '04:b0:e7:aa:bb:cc',
+      serviceVlan: 400,
+      downKbps: 2000000,
+      upKbps: 100,
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+    });
+
+    expect(commands).toContain('onu 2 bandwidth 100 100 512 8 8 1000000 1000000');
   });
 
   it('authorizeOnu() ejecuta la secuencia de generateAuthorizationScript() y responde ok:true', async () => {
@@ -368,6 +462,45 @@ describe('HiosoDriver', () => {
     expect(executeCommand).toHaveBeenCalledWith(expectedCmd);
   });
 
+  it.each([
+    ['DOWN', 'shutdown'],
+    ['UP', 'no shutdown'],
+  ])('setInterfaceAdminState(%s) usa "%s" sobre la interfaz indicada (no sobre un ONU)', async (state, expectedCmd) => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.setInterfaceAdminState(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'ten-gigabitethernet 1/2',
+      state as 'UP' | 'DOWN',
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith('interface ten-gigabitethernet 1/2');
+    expect(executeCommand).toHaveBeenCalledWith(expectedCmd);
+  });
+
+  it('setInterfaceAdminState() responde ok:false si el equipo rechaza el comando', async () => {
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockRejectedValue(new Error('% Unknown command')),
+      close: jest.fn(),
+    });
+
+    const result = await driver.setInterfaceAdminState(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'ten-gigabitethernet 1/2',
+      'DOWN',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('% Unknown command');
+  });
+
   it('deleteOnu() usa "delete onu <id>" (confirmado) y no "dereg" (confirmado que falla en este equipo)', async () => {
     const executeCommand = jest.fn().mockResolvedValue('');
     jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -385,5 +518,21 @@ describe('HiosoDriver', () => {
     expect(result.ok).toBe(true);
     expect(executeCommand).toHaveBeenCalledWith('delete onu 5');
     expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('dereg'));
+  });
+
+  it('findTcontProfileByName/ensureTcontProfile/configureVlanTranslation siguen sin implementar: este hardware no tiene perfiles DBA guardados ni evidencia de VLAN translation', async () => {
+    const params = { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' };
+
+    await expect(driver.findTcontProfileByName(params, 'FIXED5M')).rejects.toThrow(DriverNotImplementedError);
+
+    const ensureResult = await driver.ensureTcontProfile(params, { name: 'FIXED5M', fixedKbps: 5000 });
+    expect(ensureResult.ok).toBe(false);
+
+    const vlanTranslationResult = await driver.configureVlanTranslation(params, {
+      interfaceName: 'epon 1/1',
+      customerVlanId: 100,
+      networkVlanId: 400,
+    });
+    expect(vlanTranslationResult.ok).toBe(false);
   });
 });

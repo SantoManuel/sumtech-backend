@@ -9,6 +9,7 @@ import { OnuTypeEntity } from '../entities/onu-type.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
+import { UnknownOltVendorError } from '../ports/olt-driver.port';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
@@ -145,6 +146,91 @@ export class OltCatalogsService {
     return this.ifaceVlanRepository.save(mapping);
   }
 
+  /**
+   * Habilita/deshabilita administrativamente un puerto físico completo
+   * (PON o uplink) — distinto de bloquear un ONU individual. Apagar un
+   * puerto PON corta a TODOS los ONUs conectados a ese puerto.
+   */
+  async setInterfaceAdminState(interfaceId: string, state: 'UP' | 'DOWN') {
+    const iface = await this.ifaceRepository.findOne({ where: { id: interfaceId }, relations: ['olt'] });
+    if (!iface) throw new NotFoundException('Interfaz OLT no encontrada.');
+    if (!iface.olt) throw new BadRequestException('Esta interfaz no tiene una OLT asociada.');
+
+    let driver;
+    try {
+      driver = this.driverRegistry.resolve(iface.olt.vendor);
+    } catch (err) {
+      if (err instanceof UnknownOltVendorError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
+
+    const password = decryptCredential(iface.olt.passwordEnc);
+    const result = await driver.setInterfaceAdminState(
+      { host: iface.olt.host, port: iface.olt.port || 23, username: iface.olt.username, password },
+      iface.name,
+      state,
+    );
+
+    if (!result.ok) {
+      throw new BadRequestException(`No se pudo cambiar el estado de la interfaz: ${result.error}`);
+    }
+
+    iface.adminState = state;
+    return this.ifaceRepository.save(iface);
+  }
+
+  /**
+   * Empuja un perfil de velocidad del catálogo (`net.olt_speed_profiles`)
+   * como un objeto DBA/TCONT real en una OLT específica — acción explícita
+   * (no automática al crear/editar el perfil) porque el mismo perfil del
+   * catálogo puede aplicarse a OLTs de distintos fabricantes, y "crear el
+   * objeto en la OLT" es por definición una operación contra un equipo
+   * puntual, igual que `assignVlanToInterface`.
+   *
+   * Requiere `vendor_tcont_profile` ya cargado en el perfil (el nombre con
+   * el que se referenciará en la OLT, ej. "FIXED5M") — sin eso no hay un
+   * nombre determinístico que usar.
+   */
+  async syncSpeedProfileToOlt(oltId: string, speedProfileId: string) {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException('OLT no encontrada.');
+
+    const profile = await this.speedProfileRepository.findOneBy({ id: speedProfileId });
+    if (!profile) throw new NotFoundException('Perfil de velocidad no encontrado.');
+    if (!profile.vendorTcontProfile) {
+      throw new BadRequestException(
+        `El perfil "${profile.name}" no tiene un nombre de perfil TCONT configurado (vendorTcontProfile) — asígnalo antes de sincronizar.`,
+      );
+    }
+
+    let driver;
+    try {
+      driver = this.driverRegistry.resolve(olt.vendor);
+    } catch (err) {
+      if (err instanceof UnknownOltVendorError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
+
+    const password = decryptCredential(olt.passwordEnc);
+    const result = await driver.ensureTcontProfile(
+      { host: olt.host, port: olt.port || 23, username: olt.username, password },
+      { name: profile.vendorTcontProfile, fixedKbps: profile.upKbps },
+    );
+
+    if (!result.ok) {
+      throw new BadRequestException(`No se pudo sincronizar el perfil en la OLT: ${result.error}`);
+    }
+
+    return {
+      success: true,
+      message: `Perfil TCONT "${profile.vendorTcontProfile}" asegurado en la OLT "${olt.name}". Nota: esto solo cubre el ancho de banda de SUBIDA — la bajada no se gestiona por esta vía todavía.`,
+    };
+  }
+
   // ══════════════════════════════════════════════════
   // 3. Perfiles de Velocidad OLT (RF-OLT-008)
   // ══════════════════════════════════════════════════
@@ -216,8 +302,17 @@ export class OltCatalogsService {
   // ══════════════════════════════════════════════════
   // 4. Tipos de ONU (RF-OLT-010)
   // ══════════════════════════════════════════════════
-  async findAllOnuTypes() {
-    return this.onuTypeRepository.find({ order: { vendor: 'ASC', model: 'ASC' } });
+  /**
+   * `ponType` filtra por tipo de PON (EPON/GPON), no por fabricante: en una
+   * OLT EPON (ej. HiOSO) se puede conectar cualquier ONU EPON de cualquier
+   * marca, no hay vendor-lock como suele asumirse en GPON — ver migración
+   * 077. Sin `ponType` devuelve todo el catálogo (comportamiento previo).
+   */
+  async findAllOnuTypes(ponType?: string) {
+    return this.onuTypeRepository.find({
+      where: ponType ? { ponType } : {},
+      order: { vendor: 'ASC', model: 'ASC' },
+    });
   }
 
   async createOnuType(dto: any) {

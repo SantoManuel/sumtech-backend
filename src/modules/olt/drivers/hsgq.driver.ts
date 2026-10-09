@@ -10,6 +10,8 @@ import {
   DiscoveredUncfgOnu,
   OnuOpticalPower,
   AuthorizeOnuParams,
+  TcontProfile,
+  VlanTranslationParams,
   OltDriverCapabilities,
   NO_DRIVER_CAPABILITIES,
   DriverNotImplementedError,
@@ -67,6 +69,22 @@ export class HsgqDriver implements IOltDriver {
 
   async deleteOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'deleteOnu').message };
+  }
+
+  async setInterfaceAdminState(params: OltConnectionParams, interfaceName: string, state: 'UP' | 'DOWN'): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'setInterfaceAdminState').message };
+  }
+
+  async findTcontProfileByName(params: OltConnectionParams, name: string): Promise<TcontProfile | null> {
+    throw new DriverNotImplementedError(VENDOR, 'findTcontProfileByName');
+  }
+
+  async ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureTcontProfile').message };
+  }
+
+  async configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'configureVlanTranslation').message };
   }
 
   generateAuthorizationScript(config: AuthorizeOnuParams): string[] {

@@ -2,6 +2,7 @@ import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDa
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { NetworkNodeEntity } from './network-node.entity';
 import { OnuEntity } from '../../olt/entities/onu.entity';
+import { VlanEntity } from '../../olt/entities/vlan.entity';
 
 /**
  * Identidad de red de un contrato (Usuario/Servicio/Ip/Estado del sistema WISP
@@ -40,7 +41,14 @@ export class NetworkAccessEntity {
   onu?: OnuEntity;
 
   @Column({ name: 'suspension_medium_override', type: 'varchar', length: 30, nullable: true })
-  suspensionMediumOverride?: 'PPPOE' | 'OLT_NATIVE';
+  suspensionMediumOverride?: 'PPPOE' | 'OLT_NATIVE' | 'DHCP';
+
+  @Column({ name: 'vlan_id', type: 'uuid', nullable: true })
+  vlanId?: string;
+
+  @ManyToOne(() => VlanEntity, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'vlan_id' })
+  vlan?: VlanEntity;
 
   @Column({ type: 'varchar', length: 150, nullable: true })
   username?: string;

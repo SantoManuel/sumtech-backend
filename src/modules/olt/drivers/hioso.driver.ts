@@ -14,6 +14,8 @@ import {
   OltDriverCapabilities,
   NO_DRIVER_CAPABILITIES,
   DriverNotImplementedError,
+  TcontProfile,
+  VlanTranslationParams,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'HIOSO';
@@ -232,8 +234,52 @@ export class HiosoDriver implements IOltDriver {
     return interfaces;
   }
 
+  /**
+   * Trunk hacia el router/uplink — sintaxis confirmada con el dump real de
+   * `show running-config` (ver test/fixtures/hioso/show_running-config.txt
+   * y cli_command_tree.txt, "switchport"/"vlan" confirmados como
+   * subcomandos reales en el árbol "?"): primero se asegura que la VLAN
+   * exista en la base global (`vlan database` → `vlan <id> name <nombre>`),
+   * luego se aplica como trunk tageado en la interfaz indicada
+   * (`switchport mode trunk` + `switchport allowed vlan add <id> tagged`).
+   * Mismo patrón de dos pasos (VLAN global + trunk por interfaz) que
+   * ZteC320Driver.configureVlanOnInterface().
+   *
+   * `ConfigureVlanParams` no trae un nombre descriptivo para la VLAN (solo
+   * `vlanId`/`mode`), así que se usa un nombre genérico derivado del ID
+   * (`VLAN<id>`) — el dump real mostró "Internet" como nombre, pero eso es
+   * un dato que no llega hasta este driver.
+   *
+   * `mode: 'UNTAG'` usa "untagged" por simetría directa con el keyword
+   * "tagged" ya confirmado en el equipo real — no hay evidencia capturada
+   * del caso untagged en sí, pero es el par estándar de esta gramática
+   * switchport (mismo patrón que cualquier CLI tipo IOS).
+   */
   async configureVlanOnInterface(params: OltConnectionParams, config: ConfigureVlanParams): Promise<{ ok: boolean; error?: string }> {
-    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'configureVlanOnInterface').message };
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+
+      await session.executeCommand('configure terminal');
+      await session.executeCommand('vlan database');
+      await session.executeCommand(`vlan ${config.vlanId} name VLAN${config.vlanId}`);
+      await session.executeCommand('exit');
+
+      await session.executeCommand(`interface ${config.interfaceName}`);
+      await session.executeCommand('switchport mode trunk');
+      const taggedKeyword = config.mode === 'UNTAG' ? 'untagged' : 'tagged';
+      await session.executeCommand(`switchport allowed vlan add ${config.vlanId} ${taggedKeyword}`);
+      await session.executeCommand('exit');
+
+      await session.executeCommand('exit');
+      await session.executeCommand('write');
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
   }
 
   /**
@@ -442,6 +488,59 @@ export class HiosoDriver implements IOltDriver {
   }
 
   /**
+   * "shutdown"/"no shutdown" dentro de la interfaz indicada — mismo
+   * mecanismo IOS-style ya confirmado para `onu <id> activate/deactivate`
+   * (ver cli_command_tree.txt: "shutdown" y "no" aparecen como subcomandos
+   * reales en `Epon(config-epon1/1)#?`), aplicado aquí a la interfaz física
+   * completa (puerto PON o uplink) en vez de a un ONU individual.
+   *
+   * ADVERTENCIA DE IMPACTO: apagar un puerto PON corta a TODOS los ONUs de
+   * ese puerto, no a uno solo — nunca llamar esto sobre una interfaz con
+   * clientes reales sin confirmación explícita.
+   *
+   * `interfaceName` recibe el mismo formato ya usado por
+   * `discoverInterfaces()`/`configureVlanOnInterface()` (ej. "epon 1/1",
+   * "ten-gigabitethernet 1/2"), así que se usa tal cual sin reprocesar.
+   */
+  async setInterfaceAdminState(params: OltConnectionParams, interfaceName: string, state: 'UP' | 'DOWN'): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await session.executeCommand('configure terminal');
+      await session.executeCommand(`interface ${interfaceName}`);
+      await session.executeCommand(state === 'DOWN' ? 'shutdown' : 'no shutdown');
+      await session.executeCommand('exit');
+      await session.executeCommand('exit');
+      await session.executeCommand('write');
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * Este hardware no tiene un concepto de "perfil DBA" guardado — confirmado
+   * en esta misma sesión: `authorizeOnu()` manda 7 valores crudos de
+   * bandwidth por cada ONU (ver `buildBandwidthCommand`), no referencia
+   * ningún objeto con nombre en la OLT. No hay nada que "asegurar" aquí.
+   */
+  async findTcontProfileByName(params: OltConnectionParams, name: string): Promise<TcontProfile | null> {
+    throw new DriverNotImplementedError(VENDOR, 'findTcontProfileByName');
+  }
+
+  async ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureTcontProfile').message };
+  }
+
+  /** Sin evidencia de que este hardware EPON soporte traducción de VLAN/QinQ. */
+  async configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'configureVlanTranslation').message };
+  }
+
+  /**
    * "delete onu <id>" dentro de la interfaz PON — confirmado con efecto real
    * (removió limpio un binding de prueba creado con "add onu", sin error).
    * "dereg onu <id>" / "dereg <MAC>" aparecen en el árbol "?" pero AMBOS
@@ -486,7 +585,14 @@ export class HiosoDriver implements IOltDriver {
    * pendiente (ver sumtech_olt_driver_vendor_routing), no algo que este
    * driver deba adivinar. Si `managementMethod === 'TR069'`, igual que en
    * ZteC320Driver, esto NO conecta con GenieACS/CpeConfiguratorService —
-   * esa integración sigue fuera de alcance aquí.
+   * esa integración se orquesta aparte desde OnuManagementService.
+   *
+   * Si `config.upKbps`/`config.downKbps` vienen definidos (el usuario eligió
+   * un perfil de velocidad), se agrega "onu <id> bandwidth <7 argumentos>",
+   * gramática completa confirmada contra hardware real (ver
+   * cli_command_tree.txt nota 14): FIR/CIR/PIR de subida + peso de subida +
+   * peso de bajada + PIR/PBS de bajada. Sin perfil, no se toca el límite de
+   * banda del ONU (queda en lo que el equipo traiga por defecto).
    */
   generateAuthorizationScript(config: AuthorizeOnuParams): string[] {
     const slotPort = this.toBareSlotPort(config.ponInterface);
@@ -496,12 +602,42 @@ export class HiosoDriver implements IOltDriver {
       `add onu ${config.onuId} ${config.serialNumber} ${config.modelTypeName}`,
     ];
 
+    const bandwidthCmd = this.buildBandwidthCommand(config.onuId, config.upKbps, config.downKbps);
+    if (bandwidthCmd) {
+      commands.push(bandwidthCmd);
+    }
+
     for (let lanPort = 1; lanPort <= 4; lanPort++) {
       commands.push(`onu ${config.onuId} vlan port ${lanPort} vlan-mode tag pvid ${config.serviceVlan}`);
     }
 
     commands.push('exit', 'exit', 'write');
     return commands;
+  }
+
+  /**
+   * EPON no tiene control absoluto de bajada por-ONU independiente del
+   * puerto PON compartido — el "peso" (1-16) es prioridad de reparto de DBA
+   * entre ONUs del mismo puerto, no una tasa. Sin un control granular por
+   * cliente en la UI hoy para peso/PBS, se usa un peso medio fijo (8 de
+   * 1-16) y PBS de bajada igual al PIR de bajada (mismo valor probado contra
+   * hardware real sin error). FIR=CIR=PIR de subida con el mismo valor:
+   * garantizado y máximo iguales, sin margen de ráfaga configurable todavía.
+   * Rangos (y el clamp correspondiente) tal cual los reportó el equipo real.
+   */
+  private buildBandwidthCommand(onuId: number, upKbps?: number, downKbps?: number): string | null {
+    if (upKbps === undefined && downKbps === undefined) {
+      return null;
+    }
+
+    const DEFAULT_WEIGHT = 8;
+    const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+    const up = clamp(upKbps ?? 960000, 0, 960000);
+    const upPir = clamp(upKbps ?? 1000000, 512, 1000000);
+    const down = clamp(downKbps ?? 1000000, 0, 1000000);
+
+    return `onu ${onuId} bandwidth ${up} ${up} ${upPir} ${DEFAULT_WEIGHT} ${DEFAULT_WEIGHT} ${down} ${down}`;
   }
 
   getCapabilities(): OltDriverCapabilities {
@@ -511,11 +647,13 @@ export class HiosoDriver implements IOltDriver {
       systemInfo: true,
       systemHealth: true,
       discoverInterfaces: true,
+      configureVlan: true,
       onuOpticalPower: true,
       onuDiscovery: true,
       onuAuthorize: true,
       onuAdminState: true,
       onuDelete: true,
+      interfaceAdminState: true,
     };
   }
 }

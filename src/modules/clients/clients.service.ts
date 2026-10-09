@@ -760,7 +760,7 @@ export class ClientsService {
       // 3. OLT_NATIVE si hay ONU vinculada y no hay nodo
       // 4. PPPOE si hay nodo MikroTik
       // 5. NONE
-      let effectiveSuspensionMedium: 'PPPOE' | 'OLT_NATIVE' | 'NONE' = 'NONE';
+      let effectiveSuspensionMedium: 'PPPOE' | 'OLT_NATIVE' | 'DHCP' | 'NONE' = 'NONE';
       if (access?.suspensionMediumOverride) {
         effectiveSuspensionMedium = access.suspensionMediumOverride;
       } else if (node?.suspensionMedium) {

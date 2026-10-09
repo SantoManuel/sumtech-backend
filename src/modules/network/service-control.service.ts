@@ -20,7 +20,7 @@ export interface ServiceControlContext {
 
 export interface ServiceControlResult {
   applied: boolean;
-  medium: 'PPPOE' | 'OLT_NATIVE' | 'NONE';
+  medium: 'PPPOE' | 'OLT_NATIVE' | 'DHCP' | 'NONE';
   verified: boolean;
   errorCode?: string;
   message?: string;
@@ -259,7 +259,7 @@ export class ServiceControlService {
    */
   private async ensureOnline(
     access: NetworkAccessEntity,
-    medium: 'PPPOE' | 'OLT_NATIVE',
+    medium: 'PPPOE' | 'OLT_NATIVE' | 'DHCP',
   ): Promise<{ isOnline: boolean; error?: string }> {
     if (medium === 'PPPOE') {
       if (!access.node || !access.node.managementIp) {
@@ -314,7 +314,7 @@ export class ServiceControlService {
    */
   private async verifyOperation(
     access: NetworkAccessEntity,
-    medium: 'PPPOE' | 'OLT_NATIVE',
+    medium: 'PPPOE' | 'OLT_NATIVE' | 'DHCP',
     operation: 'SUSPEND' | 'RESTORE' | 'DEPROVISION',
   ): Promise<{ verified: boolean }> {
     if (medium === 'PPPOE' && access.node?.managementIp && access.username) {

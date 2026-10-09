@@ -15,6 +15,7 @@ import { NetworkAccessEntity } from './network-access.entity';
 export type NetworkNodeConnectionMethod = 'wireguard' | 'ddns' | 'public_ip' | 'api' | 'ssh';
 export type NetworkNodeStatus = 'ACTIVE' | 'UNREACHABLE' | 'ERROR_AUTH' | 'MAINTENANCE' | 'PROVISIONING';
 export type NetworkNodeTransportType = 'REST' | 'ROUTEROS_API' | 'SSH';
+export type NetworkNodeWanMode = 'STATIC' | 'DHCP_CLIENT' | 'PPPOE_CLIENT';
 
 /**
  * Nodo Mikrotik/NAS que da servicio a uno o varios accesos de red.
@@ -152,7 +153,7 @@ export class NetworkNodeEntity {
     length: 30,
     default: 'PPPOE',
   })
-  suspensionMedium: 'PPPOE' | 'OLT_NATIVE';
+  suspensionMedium: 'PPPOE' | 'OLT_NATIVE' | 'DHCP';
 
   @Column({
     name: 'suspension_mode',
@@ -195,6 +196,33 @@ export class NetworkNodeEntity {
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
+
+  @Column({ name: 'wan_interface_name', type: 'varchar', length: 50, nullable: true })
+  wanInterfaceName?: string;
+
+  @Column({ name: 'wan_mode', type: 'varchar', length: 20, default: 'DHCP_CLIENT' })
+  wanMode: NetworkNodeWanMode;
+
+  @Column({ name: 'wan_static_ip', type: 'varchar', length: 45, nullable: true })
+  wanStaticIp?: string;
+
+  @Column({ name: 'wan_static_gateway', type: 'varchar', length: 45, nullable: true })
+  wanStaticGateway?: string;
+
+  @Column({ name: 'wan_static_dns', type: 'varchar', length: 100, nullable: true })
+  wanStaticDns?: string;
+
+  @Column({ name: 'wan_pppoe_username', type: 'varchar', length: 150, nullable: true })
+  wanPppoeUsername?: string;
+
+  @Column({ name: 'wan_pppoe_password_enc', type: 'text', nullable: true })
+  wanPppoePasswordEnc?: string;
+
+  @Column({ name: 'wan_last_sync_at', type: 'timestamp with time zone', nullable: true })
+  wanLastSyncAt?: Date;
+
+  @Column({ name: 'wan_last_sync_error', type: 'text', nullable: true })
+  wanLastSyncError?: string;
 
   @OneToMany(() => NetworkAccessEntity, (access) => access.node)
   accesses?: NetworkAccessEntity[];

@@ -6,6 +6,7 @@ import { OnuServiceConfigEntity } from '../entities/onu-service-config.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltInterfaceEntity } from '../entities/olt-interface.entity';
 import { OnuTypeEntity } from '../entities/onu-type.entity';
+import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
@@ -14,6 +15,7 @@ import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
+import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
 import {
   IOltDriver,
   OltConnectionParams,
@@ -37,6 +39,8 @@ export class OnuManagementService {
     private readonly ifaceRepository: Repository<OltInterfaceEntity>,
     @InjectRepository(OnuTypeEntity)
     private readonly onuTypeRepository: Repository<OnuTypeEntity>,
+    @InjectRepository(OltSpeedProfileEntity)
+    private readonly speedProfileRepository: Repository<OltSpeedProfileEntity>,
     @InjectRepository(VlanEntity)
     private readonly vlanRepository: Repository<VlanEntity>,
     @InjectRepository(Tr069NetworkEntity)
@@ -48,6 +52,7 @@ export class OnuManagementService {
     private readonly driverRegistry: OltDriverRegistry,
     private readonly reachabilityResolver: ReachabilityResolver,
     private readonly deviceOperationLogger: DeviceOperationLogger,
+    private readonly cpeConfiguratorService: CpeConfiguratorService,
   ) {}
 
   /**
@@ -335,7 +340,60 @@ export class OnuManagementService {
       },
     });
 
-    return this.findById(onu.id);
+    // 4. Empujar WiFi/VLAN/WAN reales al CPE vía GenieACS (RF-OLT-013), solo
+    // si se eligió gestión TR-069. Esto NUNCA debe hacer fallar la
+    // autorización completa: el ONU ya quedó pasando tráfico a nivel OLT en
+    // el paso 1 — este es un paso adicional que depende de que el propio
+    // ONU ya haya hecho su primer Inform hacia nuestro ACS
+    // (ver CpeConfiguratorService.configureCpe -> findDeviceBySerial). Para
+    // hardware donde no hay forma verificada de apuntar el ONU al ACS desde
+    // la OLT (hoy: HiOSO/EPON), esto normalmente fallará la primera vez —
+    // es un estado esperado a comunicar, no un bug que se deba esconder.
+    let cpeConfigured: boolean | undefined;
+    let cpeConfigWarning: string | undefined;
+    if (dto.managementMethod === 'TR069' && dto.tr069NetworkId) {
+      try {
+        const tr069Network = await this.tr069Repository.findOneBy({ id: dto.tr069NetworkId });
+        if (!tr069Network) {
+          throw new Error(`Red TR-069 "${dto.tr069NetworkId}" no encontrada.`);
+        }
+        const onuType = dto.onuTypeId ? await this.onuTypeRepository.findOneBy({ id: dto.onuTypeId }) : null;
+
+        await this.cpeConfiguratorService.configureCpe({
+          serialNumber: onu.serialNumber,
+          vendor: onuType?.vendor,
+          model: onuType?.model,
+          operationMode: dto.operationMode || 'ROUTER',
+          wanMode: dto.wanMode || 'PPPOE',
+          serviceVlan: authParams.serviceVlan,
+          managementServer: {
+            acsUrl: tr069Network.acsUrl,
+            acsUsername: tr069Network.acsUsername || undefined,
+            acsPassword: tr069Network.acsPasswordEnc ? decryptCredential(tr069Network.acsPasswordEnc) : undefined,
+            connReqUsername: tr069Network.connReqUsername || undefined,
+            connReqPassword: tr069Network.connReqPasswordEnc
+              ? decryptCredential(tr069Network.connReqPasswordEnc)
+              : undefined,
+            informIntervalSec: tr069Network.informIntervalSec,
+          },
+        });
+        cpeConfigured = true;
+      } catch (err: any) {
+        cpeConfigured = false;
+        cpeConfigWarning = `ONU autorizada en la OLT. Pendiente de aplicar WiFi/VLAN/WAN vía GenieACS: ${err.message}`;
+        await this.deviceOperationLogger.logEvent({
+          nodeId: olt.viaNodeId || olt.id,
+          eventType: 'PROVISION',
+          status: 'FAILURE',
+          message: `[${olt.vendor}] ONU ${onu.serialNumber} autorizada en la OLT pero no se pudo configurar vía GenieACS: ${err.message}`,
+          actorUserId,
+          rawDetails: { onuId: onu.id, oltId: olt.id, operation: 'authorizeOnu.configureCpe' },
+        });
+      }
+    }
+
+    const saved = await this.findById(onu.id);
+    return { ...saved, cpeConfigured, cpeConfigWarning };
   }
 
   /**
@@ -442,6 +500,22 @@ export class OnuManagementService {
       }
     }
 
+    // Perfil de velocidad (TCONT en GPON, kbps crudos para drivers que lo
+    // necesiten así, ej. EPON) — antes de este fix nunca se leía
+    // dto.speedProfileId, así que ningún fabricante recibía el perfil que el
+    // usuario elegía en el modal (ZTE siempre caía en su default hardcodeado).
+    let tcontProfile: string | undefined;
+    let downKbps: number | undefined;
+    let upKbps: number | undefined;
+    if (dto.speedProfileId) {
+      const profile = await this.speedProfileRepository.findOneBy({ id: dto.speedProfileId });
+      if (profile) {
+        tcontProfile = profile.vendorTcontProfile || undefined;
+        downKbps = profile.downKbps;
+        upKbps = profile.upKbps;
+      }
+    }
+
     return {
       ponInterface,
       onuId,
@@ -449,6 +523,9 @@ export class OnuManagementService {
       serialNumber: onu.serialNumber,
       clientName: dto.clientName || undefined,
       serviceVlan,
+      tcontProfile,
+      downKbps,
+      upKbps,
       managementMethod: dto.managementMethod || 'TR069',
       operationMode: dto.operationMode || 'ROUTER',
       tr069Url,

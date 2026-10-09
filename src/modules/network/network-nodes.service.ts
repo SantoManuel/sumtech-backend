@@ -96,9 +96,11 @@ export class NetworkNodesService {
     }
 
     const apiPasswordEnc = dto.apiPassword ? encryptCredential(dto.apiPassword) : undefined;
+    const wanPppoePasswordEnc = dto.wanPppoePassword ? encryptCredential(dto.wanPppoePassword) : undefined;
+    const { apiPassword: _apiPassword, wanPppoePassword: _wanPppoePassword, ...createDto } = dto;
 
     const node = this.nodeRepository.create({
-      ...dto,
+      ...createDto,
       apiPort: dto.apiPort ?? 443,
       useHttps: dto.useHttps ?? true,
       provisioningMode: 'MANUAL',
@@ -106,6 +108,7 @@ export class NetworkNodesService {
       status: 'PROVISIONING',
       isActive: true,
       apiPasswordEnc,
+      wanPppoePasswordEnc,
     });
 
     return this.nodeRepository.save(node);
@@ -125,8 +128,11 @@ export class NetworkNodesService {
     if (dto.apiPassword) {
       node.apiPasswordEnc = encryptCredential(dto.apiPassword);
     }
+    if (dto.wanPppoePassword) {
+      node.wanPppoePasswordEnc = encryptCredential(dto.wanPppoePassword);
+    }
 
-    const { apiPassword, ...cleanDto } = dto;
+    const { apiPassword, wanPppoePassword, ...cleanDto } = dto;
     Object.assign(node, cleanDto);
 
     return this.nodeRepository.save(node);
