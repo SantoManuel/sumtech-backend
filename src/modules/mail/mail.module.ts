@@ -4,6 +4,11 @@ import { MailerModule } from '@nestjs-modules/mailer';
 import { HandlebarsAdapter } from '@nestjs-modules/mailer/adapters/handlebars.adapter';
 import { join } from 'path';
 import { MailService } from './mail.service';
+import { MailSettingsService } from './mail-settings.service';
+import { MailSettingsController } from './mail-settings.controller';
+import { MailSettingsEntity } from './entities/mail-settings.entity';
+import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
+import { JwtModule } from '@nestjs/jwt';
 
 /**
  * Módulo de correo saliente reutilizable (Gmail SMTP + Nodemailer vía
@@ -20,6 +25,8 @@ import { MailService } from './mail.service';
  */
 @Module({
   imports: [
+    TenantTypeOrmModule.forFeature([MailSettingsEntity]),
+    JwtModule,
     MailerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
@@ -43,7 +50,8 @@ import { MailService } from './mail.service';
       }),
     }),
   ],
-  providers: [MailService],
-  exports: [MailService],
+  controllers: [MailSettingsController],
+  providers: [MailService, MailSettingsService],
+  exports: [MailService, MailSettingsService],
 })
 export class MailModule {}
