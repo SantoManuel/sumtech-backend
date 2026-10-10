@@ -32,14 +32,16 @@ export class MinioStorageService implements OnModuleInit {
   }
 
   async onModuleInit() {
-    try {
-      const exists = await this.client.bucketExists(this.config.bucket);
-      if (!exists) {
-        await this.client.makeBucket(this.config.bucket);
-        this.logger.log(`Bucket "${this.config.bucket}" creado en MinIO.`);
+    for (const bucket of [this.config.bucket, this.config.fiscalDocumentsBucket]) {
+      try {
+        const exists = await this.client.bucketExists(bucket);
+        if (!exists) {
+          await this.client.makeBucket(bucket);
+          this.logger.log(`Bucket "${bucket}" creado en MinIO.`);
+        }
+      } catch (error: any) {
+        this.logger.error(`No se pudo verificar/crear el bucket "${bucket}" de MinIO: ${error.message}`);
       }
-    } catch (error: any) {
-      this.logger.error(`No se pudo verificar/crear el bucket de MinIO: ${error.message}`);
     }
   }
 
@@ -48,20 +50,26 @@ export class MinioStorageService implements OnModuleInit {
    * Si MinIO reporta disco lleno (XMinioStorageFull) o error de I/O,
    * se guarda en fallback local preservando exactamente el mismo objectKey.
    */
-  async uploadBuffer(buffer: Buffer, originalName: string, prefix: string, contentType?: string): Promise<string> {
+  async uploadBuffer(
+    buffer: Buffer,
+    originalName: string,
+    prefix: string,
+    contentType?: string,
+    bucket: string = this.config.bucket,
+  ): Promise<string> {
     const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
     const objectKey = `${prefix}/${randomUUID()}_${safeName}`;
     const metaData = contentType ? { 'Content-Type': contentType } : undefined;
 
     try {
-      await this.client.putObject(this.config.bucket, objectKey, buffer, buffer.length, metaData);
+      await this.client.putObject(bucket, objectKey, buffer, buffer.length, metaData);
       return objectKey;
     } catch (err: any) {
       this.logger.warn(
         `[MinioStorageService] MinIO no disponible para escritura (${err.code || err.message}). Activando almacenamiento local de respaldo para "${objectKey}".`,
       );
       try {
-        const fullLocalPath = path.join(this.fallbackDir, this.config.bucket, objectKey);
+        const fullLocalPath = path.join(this.fallbackDir, bucket, objectKey);
         fs.mkdirSync(path.dirname(fullLocalPath), { recursive: true });
         fs.writeFileSync(fullLocalPath, buffer);
         this.logger.log(`[MinioStorageService] Objeto resguardado exitosamente en almacenamiento local: ${fullLocalPath}`);
@@ -73,11 +81,11 @@ export class MinioStorageService implements OnModuleInit {
     }
   }
 
-  async getPresignedUrl(objectKey: string, expirySeconds = 3600): Promise<string> {
+  async getPresignedUrl(objectKey: string, expirySeconds = 3600, bucket: string = this.config.bucket): Promise<string> {
     try {
-      return await this.client.presignedGetObject(this.config.bucket, objectKey, expirySeconds);
+      return await this.client.presignedGetObject(bucket, objectKey, expirySeconds);
     } catch (err: any) {
-      const fullLocalPath = path.join(this.fallbackDir, this.config.bucket, objectKey);
+      const fullLocalPath = path.join(this.fallbackDir, bucket, objectKey);
       if (fs.existsSync(fullLocalPath)) {
         return `/api/v1/storage/fallback/${objectKey}`;
       }
@@ -90,14 +98,14 @@ export class MinioStorageService implements OnModuleInit {
    * Consulta primero el almacenamiento local de respaldo si existe;
    * de lo contrario, transmite el stream desde MinIO.
    */
-  async getObjectBuffer(objectKey: string): Promise<Buffer> {
-    const fullLocalPath = path.join(this.fallbackDir, this.config.bucket, objectKey);
+  async getObjectBuffer(objectKey: string, bucket: string = this.config.bucket): Promise<Buffer> {
+    const fullLocalPath = path.join(this.fallbackDir, bucket, objectKey);
     if (fs.existsSync(fullLocalPath)) {
       return fs.readFileSync(fullLocalPath);
     }
 
     try {
-      const stream = await this.client.getObject(this.config.bucket, objectKey);
+      const stream = await this.client.getObject(bucket, objectKey);
       const chunks: Buffer[] = [];
       return new Promise((resolve, reject) => {
         stream.on('data', (chunk: Buffer) => chunks.push(chunk));

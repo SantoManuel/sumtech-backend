@@ -20,6 +20,8 @@ import { DataSource } from 'typeorm';
 import { TENANT_DATA_SOURCE } from '../../common/tenancy/tenant-datasource.provider';
 import { Role } from '../../common/enums/role.enum';
 import { BillingSettingsEntity } from '../billing/entities/billing-settings.entity';
+import { MinioStorageService } from '../storage/minio-storage.service';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
 describe('InvoicingService', () => {
   let service: InvoicingService;
@@ -32,6 +34,8 @@ describe('InvoicingService', () => {
   let queryRunnerMock: any;
   let dataSourceMock: any;
   let billingSettingsRepoMock: any;
+  let minioStorageMock: any;
+  let tenantContextMock: any;
 
   beforeEach(async () => {
     sequenceRepo = {
@@ -69,6 +73,7 @@ describe('InvoicingService', () => {
     };
     qrSaleDetailRepo = {
       create: jest.fn((dto: any) => dto),
+      save: jest.fn((entity: any) => Promise.resolve(entity)),
     };
     qrInvoiceRepo = {
       create: jest.fn((dto: any) => dto),
@@ -100,6 +105,14 @@ describe('InvoicingService', () => {
         if (entity === BillingSettingsEntity) return billingSettingsRepoMock;
         return {};
       }),
+    };
+    minioStorageMock = {
+      uploadBuffer: jest.fn().mockResolvedValue('tenant-1/invoices/inv-1/E310000000005.xml'),
+    };
+    tenantContextMock = {
+      hasContext: jest.fn().mockReturnValue(true),
+      getTenantId: jest.fn().mockReturnValue('tenant-1'),
+      getSlug: jest.fn().mockReturnValue('tenant-1-slug'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -155,6 +168,8 @@ describe('InvoicingService', () => {
           },
         },
         { provide: TENANT_DATA_SOURCE, useValue: dataSourceMock },
+        { provide: MinioStorageService, useValue: minioStorageMock },
+        { provide: TenantContextService, useValue: tenantContextMock },
       ],
     }).compile();
 
@@ -1006,6 +1021,112 @@ describe('InvoicingService', () => {
       const result = await service.getInvoiceXml('inv-with-xml');
       expect(result.filename).toBe('E3100000001.xml');
       expect(result.xmlContent).toBe('<ECF>Firmado</ECF>');
+    });
+  });
+
+  describe('archiveSettledInvoice (archivado fiscal en MinIO)', () => {
+    const invoiceConXmlYConstancia: any = {
+      id: 'inv-1',
+      ncfNumber: 'E320000000001',
+      signedXmlContent: '<ECF>Firmado</ECF>',
+      dgiiResponse: { estado: 'ACEPTADO', trackId: 'TRK-1' },
+      paidAt: new Date('2026-10-09T15:30:00'),
+    };
+
+    it('sube el XML firmado y la constancia al bucket fiscal, organizado por año/mes/día de paidAt', async () => {
+      await service.archiveSettledInvoice(invoiceConXmlYConstancia);
+
+      expect(minioStorageMock.uploadBuffer).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'E320000000001.xml',
+        'tenant-1/invoices/2026/10/09',
+        'application/xml',
+        'sumtech-fiscal-documents',
+      );
+      expect(minioStorageMock.uploadBuffer).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'E320000000001-constancia.json',
+        'tenant-1/invoices/2026/10/09',
+        'application/json',
+        'sumtech-fiscal-documents',
+      );
+    });
+
+    it('usa la fecha actual como respaldo si la factura no tiene paidAt (defensivo)', async () => {
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+
+      await service.archiveSettledInvoice({
+        id: 'inv-sin-paidAt',
+        ncfNumber: 'E320000000099',
+        signedXmlContent: '<ECF/>',
+      } as any);
+
+      expect(minioStorageMock.uploadBuffer).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'E320000000099.xml',
+        `tenant-1/invoices/${yyyy}/${mm}/${dd}`,
+        'application/xml',
+        'sumtech-fiscal-documents',
+      );
+    });
+
+    it('no sube nada si no hay contexto de tenant activo (defensivo)', async () => {
+      tenantContextMock.hasContext.mockReturnValue(false);
+
+      await service.archiveSettledInvoice(invoiceConXmlYConstancia);
+
+      expect(minioStorageMock.uploadBuffer).not.toHaveBeenCalled();
+    });
+
+    it('no sube nada si la factura no tiene ni XML firmado ni respuesta DGII', async () => {
+      await service.archiveSettledInvoice({ id: 'inv-2' } as any);
+
+      expect(minioStorageMock.uploadBuffer).not.toHaveBeenCalled();
+    });
+
+    it('nunca propaga un fallo de MinIO — el cobro ya quedó persistido en pos.invoices', async () => {
+      minioStorageMock.uploadBuffer.mockRejectedValue(new Error('MinIO no disponible'));
+
+      await expect(service.archiveSettledInvoice(invoiceConXmlYConstancia)).resolves.toBeUndefined();
+    });
+
+    it('emitDirect() también archiva en MinIO tras su propio commit (hallazgo: antes quedaba fuera del archivado)', async () => {
+      (service as any).clientRepository = {
+        findOne: jest.fn().mockResolvedValue({ id: 'client-1', docType: 'CEDULA', docNumber: '00112223334', name: 'Juan Perez' }),
+      };
+      jest.spyOn(service as any, 'buildEcfPayload').mockResolvedValue({
+        ncfNumber: 'E320000000077',
+        ncfType: 'E32',
+        dgiiStatus: 'ACCEPTED',
+        signedXmlContent: '<ECF>Directo</ECF>',
+        dgiiResponse: { estado: 'ACEPTADO' },
+      });
+
+      const invoice = await service.emitDirect({
+        clientId: 'client-1',
+        ncfType: 'E32',
+        concept: 'Instalación de equipo',
+        subtotal: 1000,
+        paymentMethod: 'CASH',
+      });
+
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+
+      expect(invoice.ncfNumber).toBe('E320000000077');
+      expect(queryRunnerMock.commitTransaction).toHaveBeenCalled();
+      expect(minioStorageMock.uploadBuffer).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'E320000000077.xml',
+        `tenant-1/invoices/${yyyy}/${mm}/${dd}`,
+        'application/xml',
+        'sumtech-fiscal-documents',
+      );
     });
   });
 });

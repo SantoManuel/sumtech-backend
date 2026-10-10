@@ -23,10 +23,14 @@ import { InvoiceReceiptMetadata } from '../printing/pdf-generator.types';
 import { CompanyService } from '../company/company.service';
 import { isOpenInvoiceStatus, OPEN_INVOICE_STATUSES } from './invoice-status.util';
 import { BillingSettingsEntity } from '../billing/entities/billing-settings.entity';
+import { MinioStorageService } from '../storage/minio-storage.service';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { loadMinioConfig, MinioConfig } from '../../config/minio.config';
 
 @Injectable()
 export class InvoicingService {
   private readonly logger = new Logger(InvoicingService.name);
+  private readonly minioConfig: MinioConfig = loadMinioConfig();
 
   constructor(
     @InjectRepository(InvoiceEntity)
@@ -52,6 +56,8 @@ export class InvoicingService {
     private readonly signerService: DgiiSignerService,
     private readonly pdfGenerator: PdfGeneratorService,
     @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
+    private readonly minioStorage: MinioStorageService,
+    private readonly tenantContext: TenantContextService,
     @Optional() private readonly companyService?: CompanyService,
   ) { }
 
@@ -385,6 +391,68 @@ export class InvoicingService {
     });
 
     return invoiceRepo.save(invoice);
+  }
+
+  /**
+   * Archiva una copia del XML firmado y la constancia DGII en MinIO, adicional
+   * (nunca sustituta) a `pos.invoices.signed_xml_content`/`dgii_response`, que
+   * siguen siendo la fuente de verdad. Aislado por tenant vía `tenantId` (UUID
+   * permanente, a diferencia del slug) para que los documentos de un tenant
+   * nunca puedan mezclarse con los de otro. Organizado por fecha de emisión
+   * real (año/mes/día) para poder resolver de inmediato una solicitud de la
+   * DGII por período. Best-effort: un fallo acá jamás debe interrumpir el
+   * cobro ni la emisión del comprobante, porque el dato ya quedó persistido
+   * en la base de datos transaccional del tenant.
+   */
+  private async archiveFiscalDocuments(invoice: InvoiceEntity): Promise<void> {
+    if (!invoice.signedXmlContent && !invoice.dgiiResponse) {
+      return;
+    }
+    if (!this.tenantContext.hasContext()) {
+      return;
+    }
+
+    // `paidAt` (no `issuedAt`, un @CreateDateColumn que se congela en el
+    // INSERT original de la factura PENDING_PAYMENT) es el único campo que
+    // refleja, en los 4 métodos que emiten/liquidan una factura, el momento
+    // real del timbrado ante la DGII.
+    const emittedAt = invoice.paidAt ? new Date(invoice.paidAt) : new Date();
+    const yyyy = emittedAt.getFullYear();
+    const mm = String(emittedAt.getMonth() + 1).padStart(2, '0');
+    const dd = String(emittedAt.getDate()).padStart(2, '0');
+    const basePrefix = `${this.tenantContext.getTenantId()}/invoices/${yyyy}/${mm}/${dd}`;
+    const fileBaseName = invoice.ncfNumber || invoice.id;
+
+    try {
+      if (invoice.signedXmlContent) {
+        await this.minioStorage.uploadBuffer(
+          Buffer.from(invoice.signedXmlContent, 'utf-8'),
+          `${fileBaseName}.xml`,
+          basePrefix,
+          'application/xml',
+          this.minioConfig.fiscalDocumentsBucket,
+        );
+      }
+      if (invoice.dgiiResponse) {
+        await this.minioStorage.uploadBuffer(
+          Buffer.from(JSON.stringify(invoice.dgiiResponse, null, 2), 'utf-8'),
+          `${fileBaseName}-constancia.json`,
+          basePrefix,
+          'application/json',
+          this.minioConfig.fiscalDocumentsBucket,
+        );
+      }
+    } catch (err: any) {
+      this.logger.error(`No se pudo archivar en MinIO la factura ${invoice.id}: ${err.message}`, err.stack);
+    }
+  }
+
+  /**
+   * Punto de entrada público para que otros módulos (ej. PosService, después de
+   * confirmar su propia transacción) disparen el archivado fiscal en MinIO.
+   */
+  async archiveSettledInvoice(invoice: InvoiceEntity): Promise<void> {
+    return this.archiveFiscalDocuments(invoice);
   }
 
   /**
@@ -1058,6 +1126,7 @@ export class InvoicingService {
 
       const savedInvoice = await invoiceRepo.save(invoice);
       await queryRunner.commitTransaction();
+      await this.archiveFiscalDocuments(savedInvoice);
       return savedInvoice;
     } catch (err: any) {
       await queryRunner.rollbackTransaction();
@@ -1130,6 +1199,7 @@ export class InvoicingService {
 
       const settled = await this.settleInvoice(invoiceId, savedSale, ncfType, queryRunner);
       await queryRunner.commitTransaction();
+      await this.archiveFiscalDocuments(settled);
       return settled;
     } catch (err: any) {
       await queryRunner.rollbackTransaction();

@@ -24,6 +24,7 @@ describe('MinioStorageService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     process.env.MINIO_BUCKET = 'sumtech-daily-closures';
+    process.env.MINIO_FISCAL_BUCKET = 'sumtech-fiscal-documents';
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [MinioStorageService],
@@ -43,6 +44,14 @@ describe('MinioStorageService', () => {
       await service.onModuleInit();
 
       expect(makeBucketMock).toHaveBeenCalledWith('sumtech-daily-closures');
+    });
+
+    it('también crea el bucket dedicado de documentos fiscales si no existe', async () => {
+      bucketExistsMock.mockResolvedValue(false);
+
+      await service.onModuleInit();
+
+      expect(makeBucketMock).toHaveBeenCalledWith('sumtech-fiscal-documents');
     });
 
     it('no vuelve a crear el bucket si ya existe', async () => {
@@ -97,6 +106,26 @@ describe('MinioStorageService', () => {
 
       const retrieved = await service.getObjectBuffer(key);
       expect(retrieved.toString('utf-8')).toBe('backup-data');
+    });
+
+    it('sube al bucket explícito indicado en vez del bucket por defecto', async () => {
+      putObjectMock.mockResolvedValue({ etag: 'abc' });
+
+      const key = await service.uploadBuffer(
+        Buffer.from('<xml/>'),
+        'E320001.xml',
+        'tenant-1/invoices/inv-1',
+        'application/xml',
+        'sumtech-fiscal-documents',
+      );
+
+      expect(putObjectMock).toHaveBeenCalledWith(
+        'sumtech-fiscal-documents',
+        key,
+        expect.any(Buffer),
+        6,
+        { 'Content-Type': 'application/xml' },
+      );
     });
   });
 

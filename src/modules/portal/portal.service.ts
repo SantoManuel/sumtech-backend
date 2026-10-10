@@ -416,12 +416,21 @@ export class PortalService {
     const client = await this.clientRepository.findOne({ where: { id: proof.clientId } });
     const ncfType = client?.docType === 'RNC' ? 'E31' : 'E32';
 
-    const [settledSale] = await this.posService.collectInvoices(reviewerUserId, {
-      invoiceIds: [invoiceId],
-      paymentMethod: 'BANK_TRANSFER',
-      ncfType,
-      notes: `Aplicado desde comprobante de depósito ${proof.id} (${proof.bankName} / ${proof.referenceNumber})`,
-    });
+    // skipCashRegisterCheck: esto es una reconciliación de transferencia bancaria ya
+    // confirmada, no un cobro en mostrador — no hay caja/efectivo de por medio, y el
+    // endpoint que llega hasta acá admite AGENTE_CRM, un rol que ni siquiera puede
+    // abrir un turno de caja.
+    const [settledSale] = await this.posService.collectInvoices(
+      reviewerUserId,
+      {
+        invoiceIds: [invoiceId],
+        paymentMethod: 'BANK_TRANSFER',
+        ncfType,
+        notes: `Aplicado desde comprobante de depósito ${proof.id} (${proof.bankName} / ${proof.referenceNumber})`,
+      },
+      [],
+      { skipCashRegisterCheck: true },
+    );
 
     proof.invoiceId = invoiceId;
     await this.depositProofRepository.save(proof);

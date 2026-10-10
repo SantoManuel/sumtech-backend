@@ -268,6 +268,8 @@ describe('PortalService - conciliación de depósitos', () => {
       expect(posService.collectInvoices).toHaveBeenCalledWith(
         'user-1',
         expect.objectContaining({ invoiceIds: ['inv-1'], paymentMethod: 'BANK_TRANSFER' }),
+        [],
+        { skipCashRegisterCheck: true },
       );
       expect(notificationRepo.save).not.toHaveBeenCalled();
     });
@@ -364,6 +366,8 @@ describe('PortalService - conciliación de depósitos', () => {
       expect(posService.collectInvoices).toHaveBeenCalledWith(
         'user-1',
         expect.objectContaining({ ncfType: 'E31' }),
+        [],
+        { skipCashRegisterCheck: true },
       );
     });
 
@@ -377,6 +381,8 @@ describe('PortalService - conciliación de depósitos', () => {
       expect(posService.collectInvoices).toHaveBeenCalledWith(
         'user-1',
         expect.objectContaining({ invoiceIds: ['inv-1'], paymentMethod: 'BANK_TRANSFER' }),
+        [],
+        { skipCashRegisterCheck: true },
       );
       expect(posService.collectInvoices.mock.calls[0][1].cashRegisterId).toBeUndefined();
       expect(invoice.status).toBe('ISSUED');

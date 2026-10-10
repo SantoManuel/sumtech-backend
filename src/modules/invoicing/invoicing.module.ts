@@ -16,6 +16,7 @@ import { DgiiModule } from './dgii/dgii.module';
 import { UsersModule } from '../users/users.module';
 import { PrintingModule } from '../printing/printing.module';
 import { CompanyModule } from '../company/company.module';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { CompanyModule } from '../company/company.module';
     UsersModule,
     PrintingModule,
     CompanyModule,
+    StorageModule,
     JwtModule.register({}),
   ],
   controllers: [InvoicingController],

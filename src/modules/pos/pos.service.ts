@@ -25,6 +25,7 @@ import { AuthService } from '../auth/auth.service';
 import { SaleConfirmedEvent } from './events/sale-confirmed.event';
 import { SystemEvents } from '../../common/enums/system-events.enum';
 import { isOpenInvoiceStatus } from '../invoicing/invoice-status.util';
+import { Role } from '../../common/enums/role.enum';
 
 @Injectable()
 export class PosService {
@@ -82,9 +83,10 @@ export class PosService {
     let registerId = dto.cashRegisterId;
     if (!registerId) {
       const activeReg = await this.getActiveRegister(userId);
-      if (activeReg) {
-        registerId = activeReg.id;
-      }
+      registerId = activeReg?.id;
+    }
+    if (!registerId) {
+      throw new BadRequestException('Debe abrir un turno de caja antes de registrar una venta.');
     }
 
     const queryRunner = this.dataSource.createQueryRunner();
@@ -200,6 +202,11 @@ export class PosService {
       // 6. Commit de la Transacción ACID
       await queryRunner.commitTransaction();
 
+      // 6b. Archivado best-effort del XML firmado + constancia DGII en MinIO,
+      // aislado por tenant — después del commit para nunca archivar un
+      // documento cuya venta termine en rollback.
+      await this.invoicingService.archiveSettledInvoice(invoice);
+
       // 7. Disparar Evento de Dominio Asíncrono
       const eventPayload: SaleConfirmedEvent = {
         saleId: savedSale.id,
@@ -236,7 +243,12 @@ export class PosService {
    * pago mensual recurrente de un servicio ya instalado, sino solo a ventas
    * ad-hoc nuevas.
    */
-  async collectInvoices(userId: string, dto: CollectInvoicesDto): Promise<SaleEntity[]> {
+  async collectInvoices(
+    userId: string,
+    dto: CollectInvoicesDto,
+    roles: string[] = [],
+    options: { skipCashRegisterCheck?: boolean } = {},
+  ): Promise<SaleEntity[]> {
     const invoices = await this.invoiceRepository.find({ where: { id: In(dto.invoiceIds) } });
 
     if (invoices.length !== dto.invoiceIds.length) {
@@ -273,9 +285,11 @@ export class PosService {
     let registerId = dto.cashRegisterId;
     if (!registerId) {
       const activeReg = await this.getActiveRegister(userId);
-      if (activeReg) {
-        registerId = activeReg.id;
-      }
+      registerId = activeReg?.id;
+    }
+    const isFieldCollection = roles.includes(Role.TECNICO);
+    if (!registerId && !isFieldCollection && !options.skipCashRegisterCheck) {
+      throw new BadRequestException('Debe abrir un turno de caja antes de cobrar facturas.');
     }
 
     // Si viene descuento puntual, validarlo y autorizarlo antes de tocar la base de datos
@@ -326,6 +340,7 @@ export class PosService {
     await queryRunner.startTransaction();
 
     const settledSaleIds: string[] = [];
+    const settledInvoices: InvoiceEntity[] = [];
     const affectedContractIds = new Set<string>();
     let reconnectionFeeInvoiceId: string | undefined;
 
@@ -369,7 +384,8 @@ export class PosService {
 
         const savedSale = await queryRunner.manager.getRepository(SaleEntity).save(sale);
 
-        await this.invoicingService.settleInvoice(invoice.id, savedSale, dto.ncfType, queryRunner);
+        const settledInvoice = await this.invoicingService.settleInvoice(invoice.id, savedSale, dto.ncfType, queryRunner);
+        settledInvoices.push(settledInvoice);
 
         settledSaleIds.push(savedSale.id);
         if (invoice.contractId) {
@@ -413,6 +429,7 @@ export class PosService {
         );
 
         reconnectionFeeInvoiceId = feeInvoice.id;
+        settledInvoices.push(feeInvoice);
         settledSaleIds.push(savedFeeSale.id);
         affectedContractIds.add(suspendedContract.id);
       }
@@ -424,6 +441,13 @@ export class PosService {
       throw error;
     } finally {
       await queryRunner.release();
+    }
+
+    // Archivado best-effort del XML firmado + constancia DGII en MinIO,
+    // aislado por tenant — después del commit, una vez confirmado que
+    // ninguna de estas facturas puede ya hacer rollback.
+    for (const settledInvoice of settledInvoices) {
+      await this.invoicingService.archiveSettledInvoice(settledInvoice);
     }
 
     // Emitir evento INVOICE_PAID para cada factura cobrada (RF-BILL-003 / PPPOE-007)

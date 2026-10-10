@@ -108,6 +108,7 @@ describe('PosService', () => {
       settleInvoice: jest.fn().mockImplementation((invoiceId: string, sale: any) =>
         Promise.resolve({ id: invoiceId, saleId: sale.id, status: 'ISSUED', ncfNumber: 'E3200000001' }),
       ),
+      archiveSettledInvoice: jest.fn().mockResolvedValue(undefined),
     };
 
     morosidadService = {
@@ -218,6 +219,29 @@ describe('PosService', () => {
     expect(cashRegisterRepo.save).toHaveBeenCalled();
   });
 
+  it('checkout: rechaza con BadRequestException si no hay turno de caja activo ni cashRegisterId explícito', async () => {
+    cashRegisterRepo.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.checkout('user-1', {
+        clientId: 'client-1',
+        items: [
+          {
+            itemType: 'PLAN_SUBSCRIPTION',
+            concept: 'Internet 100 Mbps',
+            quantity: 1,
+            unitPrice: 1000,
+            itbisAmount: 180,
+          },
+        ],
+        paymentMethod: 'CASH',
+        ncfType: 'E32',
+      } as any),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(queryRunner.startTransaction).not.toHaveBeenCalled();
+  });
+
   describe('collectInvoices', () => {
     const makePendingInvoice = (overrides: Record<string, any> = {}) => ({
       id: 'inv-1',
@@ -270,6 +294,54 @@ describe('PosService', () => {
           ncfType: 'E32',
         } as any),
       ).rejects.toThrow('ya no están pendientes de pago');
+    });
+
+    it('rechaza con BadRequestException si un CAJERO cobra sin turno de caja activo ni cashRegisterId explícito', async () => {
+      invoiceRepo.find.mockResolvedValue([makePendingInvoice()]);
+      cashRegisterRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.collectInvoices(
+          'user-1',
+          { invoiceIds: ['inv-1'], paymentMethod: 'CASH', ncfType: 'E32' } as any,
+          ['CAJERO'],
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(queryRunner.startTransaction).not.toHaveBeenCalled();
+    });
+
+    it('permite a un TECNICO cobrar en campo (Cobro Exprés) sin turno de caja activo', async () => {
+      invoiceRepo.find.mockResolvedValue([makePendingInvoice()]);
+      cashRegisterRepo.findOne.mockResolvedValue(null);
+
+      const result = await service.collectInvoices(
+        'user-1',
+        { invoiceIds: ['inv-1'], paymentMethod: 'CASH', ncfType: 'E32' } as any,
+        ['TECNICO'],
+      );
+
+      expect(result).toHaveLength(1);
+      expect(invoicingService.settleInvoice).toHaveBeenCalledWith(
+        'inv-1',
+        expect.objectContaining({ cashRegisterId: undefined }),
+        'E32',
+        queryRunner,
+      );
+    });
+
+    it('permite saltar el guard de caja con options.skipCashRegisterCheck (reconciliación de transferencia bancaria vía PortalService, sin importar el rol)', async () => {
+      invoiceRepo.find.mockResolvedValue([makePendingInvoice()]);
+      cashRegisterRepo.findOne.mockResolvedValue(null);
+
+      const result = await service.collectInvoices(
+        'user-1',
+        { invoiceIds: ['inv-1'], paymentMethod: 'BANK_TRANSFER', ncfType: 'E32' } as any,
+        [],
+        { skipCashRegisterCheck: true },
+      );
+
+      expect(result).toHaveLength(1);
     });
 
     it('SÍ permite cobrar una factura EN_GRACIA (regresión: no debe volverse incobrable al envejecer)', async () => {

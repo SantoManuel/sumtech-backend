@@ -25,10 +25,15 @@ export class PosController {
   @Post('collect-invoices')
   // TECNICO habilitado para el "Cobro Exprés" en campo — cobra facturas
   // PENDING_PAYMENT ya generadas (nunca crea cargos nuevos), sin caja abierta
-  // (collectInvoices() ya tolera cashRegisterId ausente).
+  // (su rendición de efectivo pasa por la jornada, no por CashRegisterEntity).
+  // ADMIN/GERENTE/CAJERO sí deben tener un turno de caja activo.
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.TECNICO)
-  async collectInvoices(@CurrentUser('sub') userId: string, @Body() dto: CollectInvoicesDto) {
-    return this.posService.collectInvoices(userId, dto);
+  async collectInvoices(
+    @CurrentUser('sub') userId: string,
+    @CurrentUser('roles') roles: string[],
+    @Body() dto: CollectInvoicesDto,
+  ) {
+    return this.posService.collectInvoices(userId, dto, roles);
   }
 
   @Get('sales/:id')
