@@ -69,6 +69,7 @@ import { GenieAcsDeviceEntity } from '../modules/genieacs/entities/genieacs-devi
 import { GenieAcsAuditLogEntity } from '../modules/genieacs/entities/genieacs-audit-log.entity';
 import { ContractSignatureEntity } from '../modules/contract-signatures/entities/contract-signature.entity';
 import { CompanyProfileEntity } from '../modules/company/entities/company-profile.entity';
+import { MailSettingsEntity } from '../modules/mail/entities/mail-settings.entity';
 import { ClientImportBatchEntity } from '../modules/clients/entities/client-import-batch.entity';
 import { ClientImportRowErrorEntity } from '../modules/clients/entities/client-import-row-error.entity';
 
@@ -103,6 +104,7 @@ export const entities = [
   RefreshTokenEntity,
   EmployeeEntity,
   CompanyProfileEntity,
+  MailSettingsEntity,
   BranchEntity,
   // com
   PlanEntity,
