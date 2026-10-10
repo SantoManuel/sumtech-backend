@@ -18,6 +18,7 @@ export class CrmSaleListener {
         event.clientId,
         event.ncfNumber,
         event.grandTotal,
+        event.userId,
       );
       this.logger.log(`✅ Interacción de venta registrada en el historial CRM del cliente.`);
     } catch (error) {

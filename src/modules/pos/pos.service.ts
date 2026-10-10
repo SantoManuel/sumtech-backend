@@ -211,6 +211,7 @@ export class PosService {
       const eventPayload: SaleConfirmedEvent = {
         saleId: savedSale.id,
         clientId: savedSale.clientId,
+        userId,
         planIds: dto.items
           .filter((i) => (i.itemType === 'PLAN_ACTIVATION' || i.itemType === 'PLAN_SUBSCRIPTION') && i.itemId)
           .map((i) => i.itemId!),

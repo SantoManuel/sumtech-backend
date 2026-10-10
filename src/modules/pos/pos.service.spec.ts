@@ -35,6 +35,7 @@ describe('PosService', () => {
   let billingSettingsService: any;
   let dataSource: any;
   let queryRunner: any;
+  let eventEmitterMock: any;
 
   beforeEach(async () => {
     // Memoizado por entidad (no un objeto nuevo en cada llamada): así un test
@@ -150,11 +151,13 @@ describe('PosService', () => {
       findOne: jest.fn().mockResolvedValue(null),
     };
 
+    eventEmitterMock = { emit: jest.fn() };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PosService,
         { provide: TENANT_DATA_SOURCE, useValue: dataSource },
-        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: EventEmitter2, useValue: eventEmitterMock },
         { provide: InventoryService, useValue: inventoryService },
         { provide: InvoicingService, useValue: invoicingService },
         { provide: MorosidadService, useValue: morosidadService },
@@ -205,6 +208,30 @@ describe('PosService', () => {
     expect(invoicingService.emitInvoice).toHaveBeenCalledWith(
       expect.objectContaining({ ncfType: 'E31' }),
       queryRunner,
+    );
+  });
+
+  it('emite SALE_CONFIRMED con el userId real del cajero (bug: CrmSaleListener lo necesita para registrar la interacción en CRM)', async () => {
+    const checkoutDto: any = {
+      clientId: 'client-1',
+      items: [
+        {
+          itemType: 'PLAN_SUBSCRIPTION',
+          concept: 'Internet 100 Mbps',
+          quantity: 1,
+          unitPrice: 1000,
+          itbisAmount: 180,
+        },
+      ],
+      paymentMethod: 'CASH',
+      ncfType: 'E32',
+    };
+
+    await service.checkout('user-admin-1', checkoutDto);
+
+    expect(eventEmitterMock.emit).toHaveBeenCalledWith(
+      SystemEvents.SALE_CONFIRMED,
+      expect.objectContaining({ userId: 'user-admin-1' }),
     );
   });
 
