@@ -204,6 +204,87 @@ describe('AuthService', () => {
       expect(refreshTokenRepository.save).not.toHaveBeenCalled();
     });
 
+    it('ventana de gracia: una segunda pestaña que llega justo después de que la primera ya rotó el mismo token sigue la cadena hasta el sucesor en vez de deslogueado por "reuso" (regresión del bug real reportado)', async () => {
+      const familyId = 'family-dos-pestanas';
+      jwtService.verify.mockReturnValue({ sub: 'user-1', jti: 'jti-1', familyId } as any);
+
+      const originalRow = {
+        id: 'rt-original',
+        userId: 'user-1',
+        familyId,
+        tokenHash: 'hash-original',
+        replacedByTokenHash: 'hash-sucesor',
+        revokedAt: new Date(Date.now() - 2000), // revocado hace 2s (otra pestaña ganó la carrera)
+      };
+      const successorRow = {
+        id: 'rt-sucesor',
+        userId: 'user-1',
+        familyId,
+        tokenHash: 'hash-sucesor',
+        revokedAt: null,
+      };
+
+      refreshTokenRepository.findOne
+        .mockResolvedValueOnce(originalRow) // búsqueda del token presentado (ya revocado)
+        .mockResolvedValueOnce(successorRow); // búsqueda del sucesor vía replacedByTokenHash
+
+      usersService.findById.mockResolvedValue(buildActiveUser() as any);
+
+      const result = await service.refreshToken('raw-refresh-token-tardio');
+
+      expect(result.accessToken).toBeDefined();
+      // Nunca se revoca la familia completa — es una rotación legítima, no robo
+      expect(refreshTokenRepository.update).not.toHaveBeenCalled();
+      // Continúa la cadena desde el SUCESOR (rt-sucesor), no desde el original ya revocado
+      expect(refreshTokenRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'rt-sucesor', revokedAt: expect.any(Date), replacedByTokenHash: expect.any(String) }),
+      );
+    });
+
+    it('fuera de la ventana de gracia, un token revocado hace rato se trata como reuso real aunque tenga sucesor vigente', async () => {
+      const familyId = 'family-reuso-tardio';
+      jwtService.verify.mockReturnValue({ sub: 'user-1', jti: 'jti-1', familyId } as any);
+
+      refreshTokenRepository.findOne
+        .mockResolvedValueOnce({
+          id: 'rt-original',
+          userId: 'user-1',
+          familyId,
+          tokenHash: 'hash-original',
+          replacedByTokenHash: 'hash-sucesor',
+          revokedAt: new Date(Date.now() - 60_000), // revocado hace 60s — fuera de la ventana de 10s
+        })
+        .mockResolvedValueOnce({ id: 'rt-sucesor', userId: 'user-1', familyId, tokenHash: 'hash-sucesor', revokedAt: null });
+
+      await expect(service.refreshToken('raw-refresh-token-viejo')).rejects.toThrow(UnauthorizedException);
+      expect(refreshTokenRepository.update).toHaveBeenCalledWith({ familyId }, { revokedAt: expect.any(Date) });
+    });
+
+    it('dentro de la ventana de gracia pero con el sucesor también revocado, se trata como reuso real', async () => {
+      const familyId = 'family-sucesor-tambien-revocado';
+      jwtService.verify.mockReturnValue({ sub: 'user-1', jti: 'jti-1', familyId } as any);
+
+      refreshTokenRepository.findOne
+        .mockResolvedValueOnce({
+          id: 'rt-original',
+          userId: 'user-1',
+          familyId,
+          tokenHash: 'hash-original',
+          replacedByTokenHash: 'hash-sucesor',
+          revokedAt: new Date(Date.now() - 1000),
+        })
+        .mockResolvedValueOnce({
+          id: 'rt-sucesor',
+          userId: 'user-1',
+          familyId,
+          tokenHash: 'hash-sucesor',
+          revokedAt: new Date(), // el sucesor también ya se usó/revocó
+        });
+
+      await expect(service.refreshToken('raw-refresh-token-cadena-larga')).rejects.toThrow(UnauthorizedException);
+      expect(refreshTokenRepository.update).toHaveBeenCalledWith({ familyId }, { revokedAt: expect.any(Date) });
+    });
+
     it('rechaza un JWT con firma inválida o expirado', async () => {
       jwtService.verify.mockImplementation(() => {
         throw new Error('jwt expired');

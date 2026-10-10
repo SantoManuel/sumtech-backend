@@ -21,6 +21,18 @@ import { MailService } from '../mail/mail.service';
 
 const REFRESH_TOKEN_RETENTION_DAYS = 30;
 
+// Ventana de tolerancia para rotación concurrente del refresh token (ej. dos
+// pestañas del mismo usuario cuyo access token expira casi al mismo tiempo y
+// ambas disparan /auth/refresh con la misma cookie): la segunda petición en
+// llegar encuentra el token ya rotado por la primera y, sin esta ventana, se
+// trataba como robo (reuso) y se revocaba TODA la familia — deslogueando
+// también a la pestaña que SÍ había logrado rotar correctamente. 10 segundos
+// cubre holgadamente la latencia de red real entre dos requests casi
+// simultáneos sin debilitar la detección de robo genuina (un token robado y
+// reproducido mucho después de su rotación real sigue cayendo en el camino
+// de "reuso" normal).
+const REFRESH_REUSE_GRACE_WINDOW_MS = 10_000;
+
 export interface RefreshTokenMetadata {
   userAgent?: string;
   ipAddress?: string;
@@ -164,18 +176,35 @@ export class AuthService {
     }
 
     const tokenHash = createHash('sha256').update(rawRefreshToken).digest('hex');
-    const storedToken = await this.refreshTokenRepository.findOne({ where: { tokenHash } });
+    let storedToken = await this.refreshTokenRepository.findOne({ where: { tokenHash } });
 
     if (!storedToken) {
       throw new UnauthorizedException('Token de refresco inválido o expirado');
     }
 
     if (storedToken.revokedAt) {
-      this.logger.warn(
-        `Reuso de refresh token detectado para userId=${storedToken.userId}, familyId=${storedToken.familyId}. Revocando toda la familia.`,
-      );
-      await this.refreshTokenRepository.update({ familyId: storedToken.familyId }, { revokedAt: new Date() });
-      throw new UnauthorizedException('Sesión inválida — se detectó reuso de un token ya rotado. Vuelve a iniciar sesión.');
+      const msSinceRevoked = Date.now() - storedToken.revokedAt.getTime();
+      const successorHash = storedToken.replacedByTokenHash;
+
+      // Ventana de gracia (ver REFRESH_REUSE_GRACE_WINDOW_MS): esta petición
+      // llegó tarde a una rotación que YA ocurrió hace muy poco (otra pestaña/
+      // request concurrente ganó la carrera) — seguimos la cadena hasta el
+      // sucesor en vez de tratarlo como robo, siempre que ese sucesor siga
+      // vigente. Si el sucesor también está revocado, o pasó la ventana, sí
+      // es reuso real (o un token legítimamente viejo) y se revoca la familia.
+      const successor = successorHash
+        ? await this.refreshTokenRepository.findOne({ where: { tokenHash: successorHash } })
+        : null;
+
+      if (successor && !successor.revokedAt && msSinceRevoked <= REFRESH_REUSE_GRACE_WINDOW_MS) {
+        storedToken = successor;
+      } else {
+        this.logger.warn(
+          `Reuso de refresh token detectado para userId=${storedToken.userId}, familyId=${storedToken.familyId}. Revocando toda la familia.`,
+        );
+        await this.refreshTokenRepository.update({ familyId: storedToken.familyId }, { revokedAt: new Date() });
+        throw new UnauthorizedException('Sesión inválida — se detectó reuso de un token ya rotado. Vuelve a iniciar sesión.');
+      }
     }
 
     const user = await this.usersService.findById(decoded.sub);
