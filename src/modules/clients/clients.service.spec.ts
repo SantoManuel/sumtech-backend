@@ -20,6 +20,8 @@ import { AiChatbotClientService } from '../ai-chatbot/ai-chatbot-client.service'
 import { BillingCycleService } from '../billing/billing-cycle.service';
 import { BillingSettingsService } from '../billing/billing-settings.service';
 import { SuspensionHistoryService } from '../billing/suspension-history.service';
+import { ConfigService } from '@nestjs/config';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
 describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
   let service: ClientsService;
@@ -34,6 +36,8 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
   let billingCycleService: any;
   let billingSettingsService: any;
   let suspensionHistoryService: any;
+  let configService: any;
+  let tenantContext: any;
 
   let userRepo: any;
   let roleRepo: any;
@@ -131,6 +135,13 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       closeSuspension: jest.fn().mockResolvedValue({ id: 'susp-1' }),
       findHistoryForClient: jest.fn().mockResolvedValue([]),
     };
+    configService = {
+      get: jest.fn().mockReturnValue(undefined),
+    };
+    tenantContext = {
+      hasContext: jest.fn().mockReturnValue(false),
+      getSlug: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -152,6 +163,8 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
         { provide: BillingCycleService, useValue: billingCycleService },
         { provide: BillingSettingsService, useValue: billingSettingsService },
         { provide: SuspensionHistoryService, useValue: suspensionHistoryService },
+        { provide: ConfigService, useValue: configService },
+        { provide: TenantContextService, useValue: tenantContext },
       ],
     }).compile();
 
@@ -298,6 +311,40 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
       clientRepo.findOne.mockResolvedValueOnce({ id: 'client-1', addresses: [{ id: 'otra-direccion' }] });
 
       await expect(service.requestGpsLocation('client-1', 'address-inexistente')).rejects.toThrow(NotFoundException);
+    });
+
+    it('usa el host del Origin de la petición para el enlace, en vez de un dominio fijo (bug: apuntaba siempre a localhost:3000)', async () => {
+      clientRepo.findOne.mockResolvedValueOnce({
+        id: 'client-1',
+        name: 'Ana Pérez',
+        phone: '8095551111',
+        addresses: [{ id: 'address-1' }],
+      });
+
+      const result = await service.requestGpsLocation(
+        'client-1',
+        'address-1',
+        'user-1',
+        'https://sumtech.sumtech.com.do',
+      );
+
+      expect(result.link).toBe(`https://sumtech.sumtech.com.do/ubicacion/${result.token}`);
+    });
+
+    it('sin Origin, arma el enlace con el slug del tenant + SAAS_ROOT_DOMAIN (fallback)', async () => {
+      clientRepo.findOne.mockResolvedValueOnce({
+        id: 'client-1',
+        name: 'Ana Pérez',
+        phone: '8095551111',
+        addresses: [{ id: 'address-1' }],
+      });
+      tenantContext.hasContext.mockReturnValue(true);
+      tenantContext.getSlug.mockReturnValue('isp-sabana-yegua');
+      configService.get.mockImplementation((key: string) => (key === 'SAAS_ROOT_DOMAIN' ? 'sumtech.com.do' : undefined));
+
+      const result = await service.requestGpsLocation('client-1', 'address-1', 'user-1');
+
+      expect(result.link).toBe(`https://isp-sabana-yegua.sumtech.com.do/ubicacion/${result.token}`);
     });
 
     it('whatsappSent es false si el envío de WhatsApp falla, pero igual devuelve el enlace generado', async () => {

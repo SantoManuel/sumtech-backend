@@ -109,8 +109,10 @@ export class ClientsController {
     @Param('clientId') clientId: string,
     @Param('addressId') addressId: string,
     @CurrentUser('sub') userId: string,
+    @Req() req: Request,
   ) {
-    return this.clientsService.requestGpsLocation(clientId, addressId, userId);
+    const origin = (req.headers['origin'] || req.headers['referer']) as string | undefined;
+    return this.clientsService.requestGpsLocation(clientId, addressId, userId, origin);
   }
 
   @Get(':id/contracts')

@@ -2,6 +2,8 @@ import { Injectable, NotFoundException, ConflictException, BadRequestException, 
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, FindOptionsWhere, In } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { ClientEntity } from './entities/client.entity';
@@ -76,6 +78,8 @@ export class ClientsService {
     private readonly billingCycleService: BillingCycleService,
     private readonly billingSettingsService: BillingSettingsService,
     private readonly suspensionHistoryService: SuspensionHistoryService,
+    private readonly configService: ConfigService,
+    private readonly tenantContext: TenantContextService,
     @Optional() private readonly companyService?: CompanyService,
     @Optional() private readonly serviceControlService?: ServiceControlService,
   ) {}
@@ -299,6 +303,7 @@ export class ClientsService {
     clientId: string,
     addressId: string,
     requestedByUserId?: string,
+    origin?: string,
   ): Promise<{ token: string; link: string; expiresAt: Date; whatsappSent: boolean }> {
     const client = await this.findById(clientId);
     const address = client.addresses?.find((a) => a.id === addressId);
@@ -318,8 +323,30 @@ export class ClientsService {
     });
     await this.gpsRequestRepository.save(gpsRequest);
 
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const link = `${frontendUrl}/ubicacion/${token}`;
+    // Resolución dinámica de la URL base (mismo criterio que AuthService.requestPasswordReset):
+    // 1. Si la petición trae cabecera Origin/Referer (ej. "https://sumtech.sumtech.com.do"),
+    //    se usa exactamente ese protocolo+host — así el enlace siempre apunta al dominio
+    //    real del tenant que lo generó, sin importar si es el dominio custom (*.sumtech.com.do)
+    //    o el dinámico de Coolify (*.app.sumtech.com).
+    // 2. Fallback: slug del tenant + SAAS_ROOT_DOMAIN del entorno.
+    const slug = this.tenantContext.hasContext() ? this.tenantContext.getSlug() : null;
+    let baseUrl = '';
+    if (origin) {
+      try {
+        const parsedOrigin = new URL(origin);
+        baseUrl = `${parsedOrigin.protocol}//${parsedOrigin.host}`;
+      } catch {
+        baseUrl = '';
+      }
+    }
+    if (!baseUrl) {
+      const rawRootDomain = this.configService.get<string>('SAAS_ROOT_DOMAIN') || 'localhost:3000';
+      const rootDomain = rawRootDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+      const isLocal = rootDomain.includes('localhost') || rootDomain.includes('127.0.0.1');
+      const protocol = isLocal ? 'http' : 'https';
+      baseUrl = slug ? `${protocol}://${slug}.${rootDomain}` : `${protocol}://${rootDomain}`;
+    }
+    const link = `${baseUrl}/ubicacion/${token}`;
 
     const message = `Hola ${client.name}, para completar tu instalación necesitamos tu ubicación GPS. Por favor comparte tu ubicación abriendo este enlace desde tu celular: ${link}\n\nEste enlace vence en 24 horas.`;
     const whatsappSent = await this.aiChatbotClient.sendWhatsAppMessage(client.phone, message);
