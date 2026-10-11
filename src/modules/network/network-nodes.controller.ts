@@ -7,12 +7,16 @@ import {
   Body,
   Param,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { NetworkNodesService } from './network-nodes.service';
+import { NetworkNodesExportService } from './services/network-nodes-export.service';
 import { CreateNetworkNodeDto } from './dto/create-network-node.dto';
 import { UpdateNetworkNodeDto } from './dto/update-network-node.dto';
 import { ListNetworkNodesDto } from './dto/list-network-nodes.dto';
+import { ExportNetworkNodesDto } from './dto/export-network-nodes.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { AuthGuard } from '../../common/guards/auth.guard';
@@ -36,6 +40,7 @@ import { SyncCatalogProfilesDto } from './dto/sync-catalog-profiles.dto';
 export class NetworkNodesController {
   constructor(
     private readonly networkNodesService: NetworkNodesService,
+    private readonly networkNodesExportService: NetworkNodesExportService,
     private readonly pppManagementService: PppManagementService,
     private readonly infrastructureService: NetworkNodeInfrastructureService,
     private readonly portalManagerService: SuspensionPortalManagerService,
@@ -51,6 +56,19 @@ export class NetworkNodesController {
           ? listNetworkNodesDto.isActive
           : !listNetworkNodesDto.includeInactive;
     return this.networkNodesService.findAll(listNetworkNodesDto, activeOnly);
+  }
+
+  // Debe declararse antes de ':id' — mismo motivo que en ClientsController.
+  @Get('export')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async exportNodes(@Query() dto: ExportNetworkNodesDto, @Res() res: Response) {
+    const result = await this.networkNodesExportService.export(dto);
+    res.set({
+      'Content-Type': result.contentType,
+      'Content-Disposition': `attachment; filename="${result.filename}"`,
+      'Content-Length': result.buffer.length,
+    });
+    res.end(result.buffer);
   }
 
   @Post('test-connection')

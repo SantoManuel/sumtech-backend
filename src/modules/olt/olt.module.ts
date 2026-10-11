@@ -33,6 +33,7 @@ import { OltCatalogsService } from './services/olt-catalogs.service';
 import { OltNatManagerService } from './services/olt-nat-manager.service';
 import { OnuManagementService } from './services/onu-management.service';
 import { OltMonitoringService } from './services/olt-monitoring.service';
+import { OltExportService } from './services/olt-export.service';
 import { OltPermissionGuard } from './guards/olt-permission.guard';
 import { OltController } from './olt.controller';
 import { OnuController } from './onu.controller';
@@ -73,6 +74,7 @@ import { OnuController } from './onu.controller';
     OltNatManagerService,
     OnuManagementService,
     OltMonitoringService,
+    OltExportService,
     OltPermissionGuard,
     routerOsClientFactoryProvider,
   ],

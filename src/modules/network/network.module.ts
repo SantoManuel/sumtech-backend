@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ZonesService } from './zones.service';
 import { ZonesController } from './zones.controller';
 import { NetworkNodesService } from './network-nodes.service';
+import { NetworkNodesExportService } from './services/network-nodes-export.service';
 import { NetworkNodesController } from './network-nodes.controller';
 import { NetworkProvisioningService } from './network-provisioning.service';
 import { NetworkProvisioningPortRegistry } from './network-provisioning-port.registry';
@@ -74,6 +75,7 @@ import { PendingOperationsController } from './pending-operations.controller';
   providers: [
     ZonesService,
     NetworkNodesService,
+    NetworkNodesExportService,
     NetworkProvisioningService,
     ServiceControlService,
     NetworkOpsProcessor,

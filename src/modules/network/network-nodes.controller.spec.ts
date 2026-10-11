@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { NetworkNodesController } from './network-nodes.controller';
 import { NetworkNodesService } from './network-nodes.service';
+import { NetworkNodesExportService } from './services/network-nodes-export.service';
 import { PppManagementService } from './services/ppp-management.service';
 import { NetworkNodeInfrastructureService } from './services/network-node-infrastructure.service';
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
@@ -15,6 +16,7 @@ import { Role } from '../../common/enums/role.enum';
 describe('NetworkNodesController', () => {
   let controller: NetworkNodesController;
   let service: any;
+  let exportService: any;
   let infrastructureService: any;
   const reflector = new Reflector();
 
@@ -26,6 +28,10 @@ describe('NetworkNodesController', () => {
       update: jest.fn().mockResolvedValue({ id: 'node-1', name: 'Actualizado' }),
       deactivate: jest.fn().mockResolvedValue({ id: 'node-1', isActive: false }),
       reactivate: jest.fn().mockResolvedValue({ id: 'node-1', isActive: true }),
+    };
+
+    exportService = {
+      export: jest.fn().mockResolvedValue({ buffer: Buffer.from('csv'), filename: 'routers-mikrotik.csv', contentType: 'text/csv; charset=utf-8' }),
     };
 
     const pppManagementService = {
@@ -51,6 +57,7 @@ describe('NetworkNodesController', () => {
       controllers: [NetworkNodesController],
       providers: [
         { provide: NetworkNodesService, useValue: service },
+        { provide: NetworkNodesExportService, useValue: exportService },
         { provide: PppManagementService, useValue: pppManagementService },
         { provide: NetworkNodeInfrastructureService, useValue: infrastructureService },
         { provide: SuspensionPortalManagerService, useValue: suspensionPortalService },
@@ -141,6 +148,37 @@ describe('NetworkNodesController', () => {
     expect(infrastructureService.ensureFirewallBaseline).toHaveBeenCalledWith('node-1', 'admin-1');
   });
 
+  describe('exportNodes', () => {
+    it('delega en NetworkNodesExportService.export con el DTO', async () => {
+      const dto: any = { status: 'ACTIVE' };
+      const res: any = { set: jest.fn(), end: jest.fn() };
+
+      await controller.exportNodes(dto, res);
+
+      expect(exportService.export).toHaveBeenCalledWith(dto);
+    });
+
+    it('setea Content-Type, Content-Disposition (attachment) y Content-Length, y escribe el buffer', async () => {
+      const dto: any = {};
+      const res: any = { set: jest.fn(), end: jest.fn() };
+      const buffer = Buffer.from('csv-content');
+      exportService.export.mockResolvedValueOnce({
+        buffer,
+        filename: 'routers-mikrotik_20261010_2100.csv',
+        contentType: 'text/csv; charset=utf-8',
+      });
+
+      await controller.exportNodes(dto, res);
+
+      expect(res.set).toHaveBeenCalledWith({
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="routers-mikrotik_20261010_2100.csv"',
+        'Content-Length': buffer.length,
+      });
+      expect(res.end).toHaveBeenCalledWith(buffer);
+    });
+  });
+
   describe('metadatos de guards (roles)', () => {
     it('todos los endpoints exigen rol ADMIN o GERENTE', () => {
       expect(reflector.get(ROLES_KEY, controller.findAll)).toEqual([Role.ADMIN, Role.GERENTE]);
@@ -149,6 +187,7 @@ describe('NetworkNodesController', () => {
       expect(reflector.get(ROLES_KEY, controller.update)).toEqual([Role.ADMIN, Role.GERENTE]);
       expect(reflector.get(ROLES_KEY, controller.deactivate)).toEqual([Role.ADMIN, Role.GERENTE]);
       expect(reflector.get(ROLES_KEY, controller.reactivate)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.exportNodes)).toEqual([Role.ADMIN, Role.GERENTE]);
     });
 
     it('ningún endpoint es público: este catálogo es interno, no de cara al cliente', () => {

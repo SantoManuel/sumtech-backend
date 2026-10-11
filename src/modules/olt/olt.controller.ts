@@ -7,9 +7,11 @@ import {
   Body,
   Param,
   Query,
+  Res,
   UseGuards,
   Req,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { SaasFeatureGuard } from '../../common/guards/saas-feature.guard';
@@ -20,11 +22,13 @@ import { OltManagementService } from './services/olt-management.service';
 import { OltCatalogsService } from './services/olt-catalogs.service';
 import { OltNatManagerService } from './services/olt-nat-manager.service';
 import { OltMonitoringService } from './services/olt-monitoring.service';
+import { OltExportService } from './services/olt-export.service';
 import { OltDriverRegistry } from './drivers/olt-driver.registry';
 import { OltPermissionGuard, RequireOltAction } from './guards/olt-permission.guard';
 import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from './dto/speed-profile.dto';
 import { CreateTr069NetworkDto } from './dto/create-tr069-network.dto';
 import { UpdateTr069NetworkDto } from './dto/update-tr069-network.dto';
+import { ExportOltsDto } from './dto/export-olts.dto';
 
 @Controller('olt')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -35,6 +39,7 @@ export class OltController {
     private readonly catalogsService: OltCatalogsService,
     private readonly natService: OltNatManagerService,
     private readonly monitoringService: OltMonitoringService,
+    private readonly oltExportService: OltExportService,
     private readonly driverRegistry: OltDriverRegistry,
   ) {}
 
@@ -46,6 +51,21 @@ export class OltController {
   @RequireOltAction('VIEW')
   async findAllOlts(@Query('activeOnly') activeOnly?: string) {
     return this.oltService.findAll(activeOnly === 'true');
+  }
+
+  // Debe declararse antes de 'olts/:id' — mismo motivo que en ClientsController.
+  // Sin @RequireOltAction: solo ADMIN/GERENTE pueden exportar (ver @Roles), y
+  // ese rol ya pasa libre el OltPermissionGuard sin necesidad del decorator.
+  @Get('olts/export')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async exportOlts(@Query() dto: ExportOltsDto, @Res() res: Response) {
+    const result = await this.oltExportService.export(dto);
+    res.set({
+      'Content-Type': result.contentType,
+      'Content-Disposition': `attachment; filename="${result.filename}"`,
+      'Content-Length': result.buffer.length,
+    });
+    res.end(result.buffer);
   }
 
   /**
