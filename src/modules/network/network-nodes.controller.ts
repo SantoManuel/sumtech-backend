@@ -29,6 +29,7 @@ import { NetworkNodeInfrastructureService } from './services/network-node-infras
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
 import { SyncNodeVlanDto } from './dto/sync-node-vlan.dto';
 import { EnsureDhcpServerDto } from './dto/ensure-dhcp-server.dto';
+import { EnsurePppoeServerDto } from './dto/ensure-pppoe-server.dto';
 import { EnsureAcsAutoProvisioningDto } from './dto/ensure-acs-auto-provisioning.dto';
 import { CreateRouterOsProfileDto, UpdateRouterOsProfileDto } from './dto/routeros-profile.dto';
 import { SyncCatalogProfilesDto } from './dto/sync-catalog-profiles.dto';
@@ -183,6 +184,17 @@ export class NetworkNodesController {
     @CurrentUser('sub') userId?: string,
   ) {
     return this.infrastructureService.ensureDhcpServerForVlan(id, vlanId, dto, userId);
+  }
+
+  @Post(':id/vlans/:vlanId/pppoe-server')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async ensureNodeVlanPppoeServer(
+    @Param('id') id: string,
+    @Param('vlanId') vlanId: string,
+    @Body() dto: EnsurePppoeServerDto,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.infrastructureService.ensurePppoeServerForVlan(id, vlanId, dto, userId);
   }
 
   @Post(':id/nat/ensure-masquerade')

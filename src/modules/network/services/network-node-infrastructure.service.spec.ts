@@ -311,6 +311,67 @@ describe('NetworkNodeInfrastructureService', () => {
     });
   });
 
+  describe('ensurePppoeServerForVlan', () => {
+    it('lanza NotFoundException si la VLAN no está sincronizada para ese nodo', async () => {
+      nodeVlanRepo.findOne = jest.fn().mockResolvedValue(null);
+
+      await expect(service.ensurePppoeServerForVlan('node-1', 'vlan-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('llama a ensurePppoeServer en el cliente y loguea SUCCESS', async () => {
+      nodeVlanRepo.findOne = jest.fn().mockResolvedValue({
+        id: 'nv-1',
+        nodeId: 'node-1',
+        vlanId: 'vlan-1',
+        vlan: { vlanId: 400, name: 'Clientes Internet' },
+        node,
+      });
+
+      const ensurePppoeServer = jest.fn().mockResolvedValue({
+        id: '*1',
+        serviceName: 'pppoe-vlan400',
+        interface: 'vlan400',
+        defaultProfile: 'default',
+      });
+      clientFactory.mockReturnValue({ ensurePppoeServer });
+
+      const result = await service.ensurePppoeServerForVlan('node-1', 'vlan-1', {
+        serviceName: 'pppoe-vlan400',
+        defaultProfile: 'default',
+      }, 'admin-1');
+
+      expect(ensurePppoeServer).toHaveBeenCalledWith({
+        serviceName: 'pppoe-vlan400',
+        interfaceName: 'vlan400',
+        defaultProfile: 'default',
+        oneSessionPerHost: true,
+        authentication: undefined,
+      });
+      expect(result.server.id).toBe('*1');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'SUCCESS', nodeId: 'node-1' }),
+      );
+    });
+
+    it('loguea FAILURE y relanza si el cliente RouterOS falla', async () => {
+      nodeVlanRepo.findOne = jest.fn().mockResolvedValue({
+        id: 'nv-1',
+        nodeId: 'node-1',
+        vlanId: 'vlan-1',
+        vlan: { vlanId: 400, name: 'Clientes Internet' },
+        node,
+      });
+
+      const ensurePppoeServer = jest.fn().mockRejectedValue(new Error('Conexión perdida'));
+      clientFactory.mockReturnValue({ ensurePppoeServer });
+
+      await expect(service.ensurePppoeServerForVlan('node-1', 'vlan-1')).rejects.toThrow('Conexión perdida');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'FAILURE', nodeId: 'node-1' }),
+      );
+    });
+  });
+
   it('es idempotente: si ya existe un registro para ese nodo+VLAN, lo actualiza en vez de crear uno nuevo', async () => {
     nodeVlanRepo.findOneBy.mockResolvedValue({
       id: 'nv-existing',
@@ -330,3 +391,4 @@ describe('NetworkNodeInfrastructureService', () => {
     expect(nodeVlanRepo.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'nv-existing', uplinkInterface: 'ether5' }));
   });
 });
+

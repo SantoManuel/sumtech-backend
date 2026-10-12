@@ -120,6 +120,7 @@ export class OltCatalogsService {
     }
 
     // Aplicación en vivo en la OLT mediante comando Telnet
+    let hardwareError: string | null = null;
     if (applyToHardware && iface.olt) {
       try {
         const driver = this.driverRegistry.resolve(iface.olt.vendor);
@@ -137,15 +138,23 @@ export class OltCatalogsService {
             mode,
           },
         );
-        mapping.applyStatus = result.ok ? 'APPLIED' : 'ERROR';
-      } catch {
-        // Incluye UnknownOltVendorError (vendor no reconocido) y fallas de
-        // comunicación real — ambas quedan como ERROR, nunca como APPLIED falso.
+        if (result.ok) {
+          mapping.applyStatus = 'APPLIED';
+        } else {
+          mapping.applyStatus = 'ERROR';
+          hardwareError = result.error || 'Error aplicando VLAN en hardware OLT';
+        }
+      } catch (err: any) {
         mapping.applyStatus = 'ERROR';
+        hardwareError = err.message || 'Error de conexión o vendor no soportado';
       }
     }
 
-    return this.ifaceVlanRepository.save(mapping);
+    const saved = await this.ifaceVlanRepository.save(mapping);
+    if (hardwareError) {
+      throw new BadRequestException(`No se pudo aplicar la VLAN en el hardware OLT: ${hardwareError}`);
+    }
+    return saved;
   }
 
   /**

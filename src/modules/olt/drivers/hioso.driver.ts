@@ -26,12 +26,11 @@ const VENDOR = 'HIOSO';
  * Solo las operaciones cubiertas por reconocimiento real de CLI (ver
  * test/fixtures/hioso/cli_command_tree.txt) están implementadas:
  * testConnection, getSystemInfo, getSystemHealth, discoverInterfaces,
+ * configureVlanOnInterface (trunk uplink/PON con switchport allowed vlan add),
  * getOnuOpticalPower, getUnconfiguredOnus, authorizeOnu, setOnuAdminState,
- * deleteOnu. El resto sigue lanzando DriverNotImplementedError: getCards()
+ * deleteOnu, setInterfaceAdminState. Solo getCards() lanza DriverNotImplementedError
  * porque este hardware no tiene chasis modular (no hay comando equivalente
- * a "show card"), y configureVlanOnInterface() (VLAN en un puerto
- * uplink/NNI, no en un ONU) porque no hay ningún comando verificado para
- * eso todavía — ver getCapabilities().
+ * a "show card" de ZTE) — ver getCapabilities().
  */
 @Injectable()
 export class HiosoDriver implements IOltDriver {

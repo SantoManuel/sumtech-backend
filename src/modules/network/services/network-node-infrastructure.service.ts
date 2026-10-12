@@ -22,6 +22,13 @@ export interface EnsureDhcpServerForVlanOptions {
   leaseTimeSec?: number;
 }
 
+export interface EnsurePppoeServerForVlanOptions {
+  serviceName?: string;
+  defaultProfile?: string;
+  oneSessionPerHost?: boolean;
+  authentication?: string;
+}
+
 /** "10.20.0.1/24" -> "10.20.0.0/24" (dirección de red, requerida por /ip/dhcp-server/network). */
 function networkAddressFromGatewayCidr(gatewayCidr: string): string {
   const [ip, prefixStr] = gatewayCidr.split('/');
@@ -206,6 +213,63 @@ export class NetworkNodeInfrastructureService {
         message: `Error asegurando servidor DHCP para VLAN ${nodeVlan.vlan.vlanId} en "${node.name}": ${err.message}`,
         actorUserId,
         rawDetails: { nodeId: node.id, vlanId, operation: 'ensureDhcpServerForVlan' },
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Asegura el servidor PPPoE sobre la sub-interfaz VLAN ya sincronizada
+   * en el router (ej. "vlan400"). Permite que los ONUs/routers clientes negocien
+   * sesión PPPoE sobre esa VLAN.
+   */
+  async ensurePppoeServerForVlan(
+    nodeId: string,
+    vlanId: string,
+    options?: EnsurePppoeServerForVlanOptions,
+    actorUserId?: string,
+  ): Promise<{ nodeVlan: NetworkNodeVlanEntity; server: any }> {
+    const nodeVlan = await this.nodeVlanRepository.findOne({ where: { nodeId, vlanId }, relations: ['vlan', 'node'] });
+    if (!nodeVlan) {
+      throw new NotFoundException(
+        `No hay una VLAN sincronizada para este nodo todavía — sincroniza primero la VLAN en el router.`,
+      );
+    }
+
+    const node = nodeVlan.node || (await this.nodeRepository.findOneBy({ id: nodeId }))!;
+    const interfaceName = `vlan${nodeVlan.vlan.vlanId}`;
+    const serviceName = options?.serviceName || `pppoe-vlan${nodeVlan.vlan.vlanId}`;
+    const defaultProfile = options?.defaultProfile || 'default';
+
+    try {
+      const client = await this.resolveClient(node);
+
+      const server = await client.ensurePppoeServer({
+        serviceName,
+        interfaceName,
+        defaultProfile,
+        oneSessionPerHost: options?.oneSessionPerHost ?? true,
+        authentication: options?.authentication,
+      });
+
+      await this.deviceOperationLogger.logEvent({
+        nodeId: node.id,
+        eventType: 'COMMAND',
+        status: 'SUCCESS',
+        message: `Servidor PPPoE asegurado para VLAN ${nodeVlan.vlan.vlanId} en "${node.name}" sobre interfaz ${interfaceName}.`,
+        actorUserId,
+        rawDetails: { nodeId: node.id, vlanId, interfaceName, serviceName, operation: 'ensurePppoeServerForVlan' },
+      });
+
+      return { nodeVlan, server };
+    } catch (err: any) {
+      await this.deviceOperationLogger.logEvent({
+        nodeId: node.id,
+        eventType: 'COMMAND',
+        status: 'FAILURE',
+        message: `Error asegurando servidor PPPoE para VLAN ${nodeVlan.vlan.vlanId} en "${node.name}": ${err.message}`,
+        actorUserId,
+        rawDetails: { nodeId: node.id, vlanId, interfaceName, operation: 'ensurePppoeServerForVlan' },
       });
       throw err;
     }

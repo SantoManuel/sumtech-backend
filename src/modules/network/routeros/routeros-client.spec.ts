@@ -809,4 +809,100 @@ describe('RouterOsClient', () => {
       );
     });
   });
+
+  describe('findPppoeServerByInterface', () => {
+    it('retorna el servidor PPPoE configurado en la interfaz', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            '.id': '*1',
+            'service-name': 'pppoe-vlan400',
+            interface: 'vlan400',
+            'default-profile': 'default',
+            'one-session-per-host': 'yes',
+            disabled: false,
+          },
+        ],
+      });
+
+      const result = await client.findPppoeServerByInterface('vlan400');
+
+      expect(result).toEqual({
+        id: '*1',
+        serviceName: 'pppoe-vlan400',
+        interface: 'vlan400',
+        defaultProfile: 'default',
+        disabled: false,
+        oneSessionPerHost: true,
+        authentication: undefined,
+      });
+      expect(http.get).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/pppoe-server/server',
+        expect.objectContaining({ params: { interface: 'vlan400' } }),
+      );
+    });
+
+    it('retorna null si no hay servidor PPPoE en la interfaz', async () => {
+      http.get.mockResolvedValue({ data: [] });
+
+      const result = await client.findPppoeServerByInterface('vlan500');
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('ensurePppoeServer', () => {
+    it('retorna el servidor existente sin llamar a PUT si ya está configurado', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            '.id': '*1',
+            'service-name': 'pppoe-vlan400',
+            interface: 'vlan400',
+            'default-profile': 'default',
+            disabled: false,
+            'one-session-per-host': 'yes',
+          },
+        ],
+      });
+
+      const result = await client.ensurePppoeServer({
+        interfaceName: 'vlan400',
+      });
+
+      expect(result.id).toBe('*1');
+      expect(http.put).not.toHaveBeenCalled();
+    });
+
+    it('crea el servidor PPPoE mediante PUT si no existe en la interfaz', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({
+        data: {
+          '.id': '*2',
+          'service-name': 'pppoe-vlan400',
+        },
+      });
+
+      const result = await client.ensurePppoeServer({
+        interfaceName: 'vlan400',
+        serviceName: 'pppoe-vlan400',
+        defaultProfile: 'plan-50m',
+        oneSessionPerHost: true,
+      });
+
+      expect(result.id).toBe('*2');
+      expect(result.serviceName).toBe('pppoe-vlan400');
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/pppoe-server/server',
+        {
+          'service-name': 'pppoe-vlan400',
+          interface: 'vlan400',
+          'default-profile': 'plan-50m',
+          'one-session-per-host': 'yes',
+          disabled: 'no',
+        },
+        expect.anything(),
+      );
+    });
+  });
 });

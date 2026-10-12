@@ -52,6 +52,8 @@ export type RouterOsClientLike = Pick<
   | 'ensureSimpleQueue'
   | 'setSimpleQueueDisabled'
   | 'ensureAcsAutoProvisioning'
+  | 'findPppoeServerByInterface'
+  | 'ensurePppoeServer'
 >;
 
 export type RouterOsClientFactory = (config: RouterOsClientConfig) => RouterOsClientLike;

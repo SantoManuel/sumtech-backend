@@ -121,6 +121,24 @@ export interface EnsurePppoeClientOptions {
   addDefaultRoute?: boolean;
 }
 
+export interface RouterOsPppoeServer {
+  id: string;
+  serviceName: string;
+  interface: string;
+  defaultProfile: string;
+  disabled: boolean;
+  oneSessionPerHost?: boolean;
+  authentication?: string;
+}
+
+export interface EnsurePppoeServerOptions {
+  serviceName?: string;
+  interfaceName: string;
+  defaultProfile?: string;
+  oneSessionPerHost?: boolean;
+  authentication?: string;
+}
+
 export interface RouterOsRoute {
   id: string;
   dstAddress: string;
@@ -1008,6 +1026,77 @@ export class RouterOsClient {
       );
       const data = response.data;
       return { id: data?.['.id'] || '', name: data?.name || name };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Busca un servidor PPPoE ya configurado sobre una interfaz (/interface/pppoe-server/server). */
+  async findPppoeServerByInterface(interfaceName: string): Promise<RouterOsPppoeServer | null> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('interface/pppoe-server/server'), {
+        ...this.buildRequestConfig(),
+        params: { interface: interfaceName },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const match = results.find((entry: any) => entry?.interface === interfaceName);
+    if (!match) {
+      return null;
+    }
+    return {
+      id: match['.id'],
+      serviceName: match['service-name'] || match.name || '',
+      interface: match.interface,
+      defaultProfile: match['default-profile'] || 'default',
+      disabled: match.disabled === true || match.disabled === 'true',
+      oneSessionPerHost:
+        match['one-session-per-host'] === true ||
+        match['one-session-per-host'] === 'yes' ||
+        match['one-session-per-host'] === 'true',
+      authentication: match.authentication,
+    };
+  }
+
+  /** Asegura un servidor PPPoE sobre una interfaz (idempotente: no duplica si ya existe). */
+  async ensurePppoeServer(options: EnsurePppoeServerOptions): Promise<RouterOsPppoeServer> {
+    const existing = await this.findPppoeServerByInterface(options.interfaceName);
+    if (existing) {
+      return existing;
+    }
+    const serviceName = options.serviceName || `pppoe-${options.interfaceName}`;
+    const defaultProfile = options.defaultProfile || 'default';
+    const oneSessionPerHost = options.oneSessionPerHost !== false ? 'yes' : 'no';
+
+    const payload: Record<string, string> = {
+      'service-name': serviceName,
+      interface: options.interfaceName,
+      'default-profile': defaultProfile,
+      'one-session-per-host': oneSessionPerHost,
+      disabled: 'no',
+    };
+    if (options.authentication) {
+      payload.authentication = options.authentication;
+    }
+
+    try {
+      const response = await this.http.put(
+        this.buildUrl('interface/pppoe-server/server'),
+        payload,
+        this.buildRequestConfig(),
+      );
+      const data = response.data;
+      return {
+        id: data?.['.id'] || '',
+        serviceName: data?.['service-name'] || serviceName,
+        interface: options.interfaceName,
+        defaultProfile,
+        disabled: false,
+        oneSessionPerHost: options.oneSessionPerHost !== false,
+      };
     } catch (error) {
       throw new Error(this.describeError(error));
     }

@@ -387,5 +387,73 @@ describe('OltCatalogsService', () => {
       await expect(service.syncSpeedProfileToOlt('olt-1', 'prof-1')).rejects.toThrow(BadRequestException);
     });
   });
+
+  describe('assignVlanToInterface', () => {
+    const mockIface = {
+      id: 'iface-1',
+      name: 'ten-gigabitethernet 1/1',
+      olt: {
+        vendor: 'HIOSO',
+        host: '10.0.0.10',
+        port: 23,
+        username: 'admin',
+        passwordEnc: 'mock-enc',
+      },
+    };
+    const mockVlan = { id: 'vlan-1', vlanId: 400, name: 'Internet' };
+
+    it('asigna la VLAN a la interfaz sin aplicar en hardware (applyToHardware = false)', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      vlanRepo.findOneBy.mockResolvedValue(mockVlan);
+      ifaceVlanRepo.findOneBy.mockResolvedValue(null);
+      ifaceVlanRepo.create.mockImplementation((dto) => dto);
+      ifaceVlanRepo.save.mockImplementation((entity) => Promise.resolve(entity));
+
+      const res = await service.assignVlanToInterface('iface-1', 'vlan-1', 'TAG', false);
+
+      expect(res.interfaceId).toBe('iface-1');
+      expect(res.vlanId).toBe('vlan-1');
+      expect(res.mode).toBe('TAG');
+      expect(res.applyStatus).toBe('PENDING');
+      expect(driverRegistry.resolve).not.toHaveBeenCalled();
+    });
+
+    it('aplica la VLAN en la OLT HiOSO mediante driver cuando applyToHardware = true', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      vlanRepo.findOneBy.mockResolvedValue(mockVlan);
+      ifaceVlanRepo.findOneBy.mockResolvedValue(null);
+      ifaceVlanRepo.create.mockImplementation((dto) => dto);
+      ifaceVlanRepo.save.mockImplementation((entity) => Promise.resolve(entity));
+
+      const configureVlanOnInterface = jest.fn().mockResolvedValue({ ok: true });
+      driverRegistry.resolve.mockReturnValue({ configureVlanOnInterface });
+
+      const res = await service.assignVlanToInterface('iface-1', 'vlan-1', 'TAG', true);
+
+      expect(configureVlanOnInterface).toHaveBeenCalledWith(
+        expect.objectContaining({ host: '10.0.0.10', port: 23, username: 'admin' }),
+        { interfaceName: 'ten-gigabitethernet 1/1', vlanId: 400, mode: 'TAG' },
+      );
+      expect(res.applyStatus).toBe('APPLIED');
+    });
+
+    it('marca ERROR y lanza BadRequestException si el comando en la OLT falla', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      vlanRepo.findOneBy.mockResolvedValue(mockVlan);
+      ifaceVlanRepo.findOneBy.mockResolvedValue(null);
+      ifaceVlanRepo.create.mockImplementation((dto) => dto);
+      ifaceVlanRepo.save.mockImplementation((entity) => Promise.resolve(entity));
+
+      const configureVlanOnInterface = jest.fn().mockResolvedValue({ ok: false, error: '% Vlan already exists' });
+      driverRegistry.resolve.mockReturnValue({ configureVlanOnInterface });
+
+      await expect(service.assignVlanToInterface('iface-1', 'vlan-1', 'TAG', true)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(ifaceVlanRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ applyStatus: 'ERROR' }),
+      );
+    });
+  });
 });
 
