@@ -16,6 +16,7 @@ import { ReachabilityResolver } from '../../network-connectivity/services/reacha
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import {
   IOltDriver,
   OltConnectionParams,
@@ -53,6 +54,7 @@ export class OnuManagementService {
     private readonly reachabilityResolver: ReachabilityResolver,
     private readonly deviceOperationLogger: DeviceOperationLogger,
     private readonly cpeConfiguratorService: CpeConfiguratorService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   /**
@@ -398,6 +400,12 @@ export class OnuManagementService {
           serialNumber: onu.serialNumber,
           vendor: onuType?.vendor,
           model: onuType?.model,
+          // Dispara el tag TENANT:<slug> en GenieACS (ver
+          // CpeConfiguratorService.configureCpe) — único mecanismo real para
+          // saber a qué tenant pertenece un CPE, dado que GenieACS no expone
+          // el Host de la conexión TR-069 a su lógica de negocio (un dominio
+          // por tenant sería cosmético, no cambia esto).
+          tenantSlug: this.tenantContext.getSlug(),
           operationMode: dto.operationMode || 'ROUTER',
           wanMode: dto.wanMode || 'PPPOE',
           serviceVlan: authParams.serviceVlan,

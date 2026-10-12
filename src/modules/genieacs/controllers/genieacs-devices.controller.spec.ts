@@ -62,9 +62,9 @@ describe('GenieAcsDevicesController', () => {
         {
           provide: TenantContextService,
           useValue: {
-            hasContext: jest.fn().mockReturnValue(false),
+            hasContext: jest.fn().mockReturnValue(true),
             getTenantId: jest.fn(),
-            getSlug: jest.fn(),
+            getSlug: jest.fn().mockReturnValue('sumtech'),
           },
         },
       ],
@@ -81,6 +81,29 @@ describe('GenieAcsDevicesController', () => {
     expect(devices[0].ip).toBe('10.15.160.45');
     expect(devices[0].isOnline).toBe(true);
     expect(devices[0].tags).toContain('BOOTSTRAPPED');
+  });
+
+  it('filtra la consulta a GenieACS por el tag TENANT:<slug> del tenant actual (aislamiento multi-tenant)', async () => {
+    await controller.getDevices();
+    expect(mockClient.getDevices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.objectContaining({ 'Tags.TENANT:sumtech': true }),
+      }),
+    );
+  });
+
+  it('combina el filtro de tenant con la búsqueda por texto vía $and', async () => {
+    await controller.getDevices('Huawei');
+    expect(mockClient.getDevices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.objectContaining({
+          $and: [
+            { 'Tags.TENANT:sumtech': true },
+            expect.objectContaining({ $or: expect.any(Array) }),
+          ],
+        }),
+      }),
+    );
   });
 
   it('debe solicitar refresco al configurador', async () => {

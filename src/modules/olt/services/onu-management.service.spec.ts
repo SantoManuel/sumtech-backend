@@ -16,6 +16,7 @@ import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { UnknownOltVendorError, DriverNotImplementedError } from '../ports/olt-driver.port';
 
 describe('OnuManagementService', () => {
@@ -35,6 +36,7 @@ describe('OnuManagementService', () => {
   let reachabilityResolver: any;
   let deviceOperationLogger: any;
   let cpeConfiguratorService: any;
+  let tenantContext: any;
 
   const mockOlt: Partial<OltEntity> = {
     id: 'olt-uuid-1',
@@ -163,6 +165,10 @@ describe('OnuManagementService', () => {
       configureCpe: jest.fn().mockResolvedValue({ success: true, deviceId: 'dev-1', appliedParametersCount: 3, verification: {}, message: 'ok' }),
     };
 
+    tenantContext = {
+      getSlug: jest.fn().mockReturnValue('sumtech'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OnuManagementService,
@@ -180,6 +186,7 @@ describe('OnuManagementService', () => {
         { provide: ReachabilityResolver, useValue: reachabilityResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
         { provide: CpeConfiguratorService, useValue: cpeConfiguratorService },
+        { provide: TenantContextService, useValue: tenantContext },
       ],
     }).compile();
 
@@ -393,6 +400,7 @@ describe('OnuManagementService', () => {
           serialNumber: mockOnu.serialNumber,
           operationMode: 'BRIDGE',
           wanMode: 'DHCP',
+          tenantSlug: 'sumtech',
           managementServer: expect.objectContaining({ acsUrl: 'http://10.46.0.1:7547/' }),
         }),
       );

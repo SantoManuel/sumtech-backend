@@ -26,7 +26,7 @@ export class CreateTr069NetworkDto {
   @IsIn(['DHCP_SERVER', 'STATIC', 'RELAY'])
   dhcpMode?: 'DHCP_SERVER' | 'STATIC' | 'RELAY';
 
-  /** URL del ACS (GenieACS CWMP) que los CPEs de esta red deben usar, ej. "http://66.94.107.219:7547". */
+  /** URL del ACS (GenieACS CWMP) que los CPEs de esta red deben usar, ej. "http://acs.sumtech.com.do:7547". */
   @IsNotEmpty({ message: 'La URL del ACS es requerida' })
   @IsString()
   @MaxLength(255)

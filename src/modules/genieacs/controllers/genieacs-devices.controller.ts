@@ -21,6 +21,7 @@ import { GENIEACS_CLIENT } from '../genieacs-client-factory';
 import { GenieAcsClient } from '../genieacs-client';
 import { CpeConfiguratorService } from '../services/cpe-configurator.service';
 import { CpeConfigurationInput } from '../services/cpe-parameter-mapper';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 
 @Controller('genieacs/devices')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard)
@@ -33,6 +34,7 @@ export class GenieAcsDevicesController {
     @Inject(GENIEACS_CLIENT)
     private readonly client: GenieAcsClient | null,
     private readonly cpeConfigurator: CpeConfiguratorService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   private getClient(): GenieAcsClient {
@@ -54,15 +56,31 @@ export class GenieAcsDevicesController {
     @Query('limit') limit?: number,
   ) {
     const client = this.getClient();
-    let query: any = undefined;
 
+    // GenieACS es una sola instancia compartida entre tenants (sin concepto
+    // propio de tenant) — el único aislamiento real es el tag TENANT:<slug>
+    // que CpeConfiguratorService.configureCpe() ya escribe al autorizar un
+    // ONU (ver OnuManagementService.authorizeOnu). Sin este filtro, cualquier
+    // tenant vería los CPEs de todos los demás.
+    // Mismo formato/normalización que CpeConfiguratorService.configureCpe()
+    // usa al escribir el tag (toLowerCase().trim()) — si no coinciden
+    // exactamente, el filtro nunca encuentra nada.
+    const tenantTag = `TENANT:${this.tenantContext.getSlug().toLowerCase().trim()}`;
+    const tenantFilter = { [`Tags.${tenantTag}`]: true };
+
+    let query: any = tenantFilter;
     if (search) {
       const q = search.trim();
       query = {
-        $or: [
-          { '_deviceId._SerialNumber': { $regex: q, $options: 'i' } },
-          { '_deviceId._Manufacturer': { $regex: q, $options: 'i' } },
-          { _id: { $regex: q, $options: 'i' } },
+        $and: [
+          tenantFilter,
+          {
+            $or: [
+              { '_deviceId._SerialNumber': { $regex: q, $options: 'i' } },
+              { '_deviceId._Manufacturer': { $regex: q, $options: 'i' } },
+              { _id: { $regex: q, $options: 'i' } },
+            ],
+          },
         ],
       };
     }
