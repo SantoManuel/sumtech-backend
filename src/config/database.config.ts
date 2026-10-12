@@ -61,6 +61,7 @@ import { MunicipalityEntity } from '../modules/geography/entities/municipality.e
 import { SectorEntity } from '../modules/geography/entities/sector.entity';
 import { ZoneEntity } from '../modules/network/entities/zone.entity';
 import { NetworkNodeEntity } from '../modules/network/entities/network-node.entity';
+import { NetworkNodeVlanEntity } from '../modules/network/entities/network-node-vlan.entity';
 import { NetworkAccessEntity } from '../modules/network/entities/network-access.entity';
 import { ProvisioningAuditLogEntity } from '../modules/network/entities/provisioning-audit-log.entity';
 import { DeviceLogEntity } from '../modules/network/entities/device-log.entity';
@@ -95,6 +96,7 @@ export const entities = [
   // net
   ZoneEntity,
   NetworkNodeEntity,
+  NetworkNodeVlanEntity,
   NetworkAccessEntity,
   ProvisioningAuditLogEntity,
   // sec
