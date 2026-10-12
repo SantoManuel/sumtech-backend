@@ -64,6 +64,8 @@ describe('OnuManagementService', () => {
       findOne: jest.fn(),
       findOneBy: jest.fn(),
       save: jest.fn((entity) => Promise.resolve({ ...entity, id: entity.id || 'saved-onu-id' })),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
       create: jest.fn((dto) => ({ ...dto })),
       createQueryBuilder: jest.fn(() => ({
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -251,7 +253,7 @@ describe('OnuManagementService', () => {
       expect(telemetry.rxPowerDbm).toBe(-19.80);
       expect(telemetry.txPowerDbm).toBe(2.15);
       expect(telemetry.signalStatus).toBe('OPTIMAL');
-      expect(onuRepo.save).toHaveBeenCalled();
+      expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', expect.objectContaining({ rxPowerDbm: -19.80, txPowerDbm: 2.15 }));
     });
 
     it('clasifica potencia menor a -27 dBm como CRITICAL_LOW', async () => {
@@ -311,7 +313,8 @@ describe('OnuManagementService', () => {
 
       expect(zteDriver.authorizeOnu).toHaveBeenCalled();
       expect(configRepo.save).toHaveBeenCalled();
-      expect(onuRepo.save).toHaveBeenCalledWith(
+      expect(onuRepo.update).toHaveBeenCalledWith(
+        'onu-uuid-1',
         expect.objectContaining({
           status: 'ACTIVE',
         }),
@@ -412,7 +415,7 @@ describe('OnuManagementService', () => {
 
       expect((result as any).cpeConfigured).toBe(false);
       expect((result as any).cpeConfigWarning).toContain('ONU autorizada en la OLT');
-      expect(onuRepo.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'ACTIVE' }));
+      expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', expect.objectContaining({ status: 'ACTIVE' }));
     });
 
     it('con managementMethod OMCI, nunca llama a CpeConfiguratorService', async () => {

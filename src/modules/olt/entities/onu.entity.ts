@@ -108,12 +108,16 @@ export class OnuEntity {
 
   // Sin cascade: OnuManagementService.authorizeOnu() ya gestiona
   // explícitamente el insert/update de onu_service_config vía su propio
-  // repositorio. Con cascade:true, el posterior onuRepository.save(onu) (con
-  // onu.serviceConfig todavía apuntando al objeto OBSOLETO cargado antes de
-  // esa actualización) hacía que TypeORM reintentara persistir esa relación
-  // en la misma transacción, generando un segundo UPDATE sobre la misma fila
-  // con datos corruptos (onu_id null / uuid vacío) — causa real de los 500
-  // en POST /olt/onus/:id/authorize.
+  // repositorio. Quitar cascade NO fue suficiente por sí solo — TypeORM
+  // igual compara esta relación inversa contra el estado real en BD al
+  // hacer onuRepository.save(onu), y si onu.serviceConfig (cargado por el
+  // findById() de ANTES de crear/actualizar la fila real) no coincide con lo
+  // que ve ahora, la trata como huérfana y emite "UPDATE onu_service_config
+  // SET onu_id = NULL" (orphanedRowAction por defecto) — eso es lo que
+  // violaba el NOT NULL, no el cascade. El arreglo real: en
+  // authorizeOnu()/blockOnu()/unblockOnu()/getOpticalTelemetry() se cambió
+  // onuRepository.save(onu) por onuRepository.update(onu.id, {...}), que
+  // nunca toca relaciones.
   @OneToOne(() => OnuServiceConfigEntity, (cfg) => cfg.onu)
   serviceConfig?: OnuServiceConfigEntity;
 

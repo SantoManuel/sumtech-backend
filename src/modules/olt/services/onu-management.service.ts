@@ -230,7 +230,14 @@ export class OnuManagementService {
       onu.txPowerDbm = power.txDbm;
     }
     onu.lastSeenAt = new Date();
-    await this.onuRepository.save(onu);
+    // .update() en vez de save(onu): ver nota en authorizeOnu() sobre por qué
+    // save() de una entidad con la relación serviceConfig cargada puede
+    // disparar un UPDATE accidental sobre onu_service_config.
+    await this.onuRepository.update(onu.id, {
+      rxPowerDbm: onu.rxPowerDbm,
+      txPowerDbm: onu.txPowerDbm,
+      lastSeenAt: onu.lastSeenAt,
+    });
 
     return {
       onuId: onu.id,
@@ -325,12 +332,17 @@ export class OnuManagementService {
       config.desiredVersion = config.appliedVersion;
       config.applyStatus = 'APPLIED';
     }
-    // No reasignar onu.serviceConfig aquí: la relación ya no tiene cascade
-    // (ver nota en onu.entity.ts) precisamente para que el save() de más
-    // abajo no reintente persistir esta misma fila por su cuenta.
     await this.configRepository.save(config);
 
     // 3. Actualizar estado de la ONU en net.onus
+    // .update() en vez de save(onu): onu.serviceConfig quedó cargado (join de
+    // findById) desde ANTES de crear/actualizar `config` arriba — save(onu)
+    // reconsulta la relación OneToOne inversa y, al verla distinta de la fila
+    // que acabamos de insertar/tocar en onu_service_config, TypeORM la trata
+    // como huérfana y emite "UPDATE onu_service_config SET onu_id = NULL"
+    // (orphanedRowAction por defecto), lo que viola el NOT NULL de esa
+    // columna — causa real de los 500 intermitentes en este endpoint. update()
+    // es un UPDATE de columnas directo, nunca toca relaciones.
     onu.status = 'ACTIVE';
     onu.authorizedAt = new Date();
     onu.authorizedByUserId = actorUserId;
@@ -338,7 +350,14 @@ export class OnuManagementService {
     onu.onuTypeId = dto.onuTypeId || onu.onuTypeId;
     if (dto.onuIndex) onu.onuIndex = dto.onuIndex;
 
-    await this.onuRepository.save(onu);
+    await this.onuRepository.update(onu.id, {
+      status: onu.status,
+      authorizedAt: onu.authorizedAt,
+      authorizedByUserId: onu.authorizedByUserId,
+      contractId: onu.contractId,
+      onuTypeId: onu.onuTypeId,
+      onuIndex: onu.onuIndex,
+    });
 
     await this.deviceOperationLogger.logEvent({
       nodeId: olt.viaNodeId || olt.id,
@@ -427,7 +446,7 @@ export class OnuManagementService {
     }
 
     onu.status = 'BLOCKED';
-    await this.onuRepository.save(onu);
+    await this.onuRepository.update(onu.id, { status: onu.status });
 
     await this.deviceOperationLogger.logEvent({
       nodeId: onu.olt.viaNodeId || onu.olt.id,
@@ -456,7 +475,7 @@ export class OnuManagementService {
     }
 
     onu.status = 'ACTIVE';
-    await this.onuRepository.save(onu);
+    await this.onuRepository.update(onu.id, { status: onu.status });
 
     await this.deviceOperationLogger.logEvent({
       nodeId: onu.olt.viaNodeId || onu.olt.id,
