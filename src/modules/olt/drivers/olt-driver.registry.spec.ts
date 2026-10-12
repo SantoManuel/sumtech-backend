@@ -67,6 +67,25 @@ describe('OltDriverRegistry', () => {
     });
   });
 
+  describe('attachCapabilities() — usado por OltManagementService y OnuManagementService.findById', () => {
+    it('adjunta las capacidades reales del fabricante a cualquier entidad con vendor', () => {
+      const entity = { id: 'olt-1', vendor: 'ZTE' };
+
+      const result = registry.attachCapabilities(entity);
+
+      expect(result).toBe(entity); // Object.assign muta y retorna el mismo objeto
+      expect(result.capabilities).toEqual(zteDriver.getCapabilities());
+    });
+
+    it('nunca hereda capacidades de otro fabricante para un vendor desconocido — todo en false', () => {
+      const entity = { id: 'olt-2', vendor: 'MARCA-DESCONOCIDA' };
+
+      const result = registry.attachCapabilities(entity);
+
+      expect(Object.values(result.capabilities).every((v) => v === false)).toBe(true);
+    });
+  });
+
   describe('integración — una OLT HiOSO jamás ejecuta código de ZteC320Driver', () => {
     it('resolve(HIOSO).testConnection() nunca invoca ZteC320Driver.prototype.testConnection', async () => {
       const zteSpy = jest.spyOn(ZteC320Driver.prototype, 'testConnection');

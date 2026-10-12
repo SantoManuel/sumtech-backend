@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { NotFoundException, BadRequestException, HttpException } from '@nestjs/common';
 import { OnuManagementService } from './onu-management.service';
 import { OnuEntity } from '../entities/onu.entity';
 import { OnuServiceConfigEntity } from '../entities/onu-service-config.entity';
@@ -16,7 +16,7 @@ import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
-import { UnknownOltVendorError } from '../ports/olt-driver.port';
+import { UnknownOltVendorError, DriverNotImplementedError } from '../ports/olt-driver.port';
 
 describe('OnuManagementService', () => {
   let service: OnuManagementService;
@@ -143,6 +143,7 @@ describe('OnuManagementService', () => {
 
     driverRegistry = {
       resolve: jest.fn().mockReturnValue(zteDriver),
+      attachCapabilities: jest.fn((entity) => Object.assign(entity, { capabilities: { onuDelete: true } })),
     };
 
     reachabilityResolver = {
@@ -475,6 +476,63 @@ describe('OnuManagementService', () => {
 
       await expect(service.blockOnu('onu-uuid-1', 'admin-id')).rejects.toThrow(BadRequestException);
       expect(zteDriver.setOnuAdminState).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findById', () => {
+    it('adjunta las capacidades reales del fabricante a onu.olt', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, olt: { ...mockOlt } });
+
+      const result = await service.findById('onu-uuid-1');
+
+      expect(driverRegistry.attachCapabilities).toHaveBeenCalledWith(result.olt);
+      expect((result.olt as any).capabilities).toEqual({ onuDelete: true });
+    });
+
+    it('lanza NotFoundException si la ONU no existe', async () => {
+      onuRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.findById('inexistente')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('deleteOnu', () => {
+    it('elimina la ONU en la OLT y borra el registro local', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      onuRepo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+      zteDriver.deleteOnu.mockResolvedValue({ ok: true });
+
+      const result = await service.deleteOnu('onu-uuid-1', 'admin-id');
+
+      expect(result.success).toBe(true);
+      expect(zteDriver.deleteOnu).toHaveBeenCalledWith(expect.anything(), 'gpon-olt_1/1/1', 1);
+      expect(onuRepo.delete).toHaveBeenCalledWith({ id: 'onu-uuid-1' });
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'COMMAND', status: 'SUCCESS' }),
+      );
+    });
+
+    it('lanza BadRequestException y no borra el registro si el driver falla', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      onuRepo.delete = jest.fn();
+      zteDriver.deleteOnu.mockResolvedValue({ ok: false, error: 'Timeout de Telnet' });
+
+      await expect(service.deleteOnu('onu-uuid-1', 'admin-id')).rejects.toThrow(BadRequestException);
+      expect(onuRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('traduce DriverNotImplementedError a un 501 explícito para fabricantes sin soporte (ej. Huawei/HSGQ)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      zteDriver.deleteOnu.mockRejectedValue(new DriverNotImplementedError('HUAWEI', 'deleteOnu'));
+
+      let caught: any;
+      try {
+        await service.deleteOnu('onu-uuid-1', 'admin-id');
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(HttpException);
+      expect(caught.getStatus()).toBe(501);
     });
   });
 });

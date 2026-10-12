@@ -146,6 +146,9 @@ export class OnuManagementService {
     if (!onu) {
       throw new NotFoundException(`ONU no encontrada: ${id}`);
     }
+    if (onu.olt) {
+      this.driverRegistry.attachCapabilities(onu.olt);
+    }
     return onu;
   }
 
@@ -465,6 +468,48 @@ export class OnuManagementService {
     });
 
     return { success: true, status: 'ACTIVE', message: 'ONU reactivada correctamente en la OLT.' };
+  }
+
+  /**
+   * Elimina el registro de la ONU en la OLT (RF-OLT-017 extendido): libera el
+   * onuId para que la ONU física vuelva a aparecer en "Bandeja Sin
+   * Configurar" en el próximo escaneo. A diferencia de block/unblock (que
+   * solo cortan tráfico), esto es la única forma de revertir una
+   * autorización mal hecha (VLAN/TR-069/perfil equivocado) sin dejar el
+   * puerto PON ocupado por una config que ya no sirve.
+   */
+  async deleteOnu(id: string, actorUserId?: string) {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+    const driver = this.resolveDriver(olt);
+    const connParams = await this.resolveOltConnectionParams(olt);
+
+    const ponInterface = onu.ponInterface?.name || 'gpon-olt_1/1/1';
+    const parts = onu.onuIndex.split(':');
+    const onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
+
+    const result = await this.callDriver(() => driver.deleteOnu(connParams, ponInterface, onuId));
+    if (!result.ok) {
+      throw new BadRequestException(`No se pudo eliminar la ONU en la OLT: ${result.error}`);
+    }
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `[${olt.vendor}] ONU ${onu.serialNumber} eliminada de ${ponInterface}:${onuId}. Libre para re-escanear.`,
+      actorUserId,
+      rawDetails: { onuId: onu.id, oltId: olt.id, vendor: olt.vendor, driverName: driver.constructor.name, operation: 'deleteOnu' },
+    });
+
+    // onu_service_config tiene onDelete: 'CASCADE' hacia esta fila — no hace
+    // falta borrarlo aparte.
+    await this.onuRepository.delete({ id: onu.id });
+
+    return {
+      success: true,
+      message: 'ONU eliminada de la OLT. Ya puede volver a escanearse desde "Bandeja Sin Configurar".',
+    };
   }
 
   private buildOnuTarget(onu: OnuEntity): string {

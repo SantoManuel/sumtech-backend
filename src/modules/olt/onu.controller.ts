@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
   Body,
   Param,
   Query,
@@ -125,5 +126,19 @@ export class OnuController {
   @OltIdFrom('ONU_ID_PARAM')
   async unblockOnu(@Param('id') id: string, @Req() req: any) {
     return this.onuService.unblockOnu(id, req.user?.id);
+  }
+
+  /**
+   * Elimina el registro de la ONU en la OLT y en la BD, liberando el onuId
+   * para que vuelva a aparecer en "Bandeja Sin Configurar" (revertir una
+   * autorización mal hecha). Mismo nivel de permiso que authorize/preview-script
+   * (CONFIGURE), no OPERATE: borrar la config es tan sensible como crearla.
+   */
+  @Delete(':id')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async deleteOnu(@Param('id') id: string, @Req() req: any) {
+    return this.onuService.deleteOnu(id, req.user?.id);
   }
 }

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { IOltDriver, OltDriverCapabilities, UnknownOltVendorError } from '../ports/olt-driver.port';
+import { IOltDriver, OltDriverCapabilities, NO_DRIVER_CAPABILITIES, UnknownOltVendorError } from '../ports/olt-driver.port';
 import { ZteC320Driver } from './zte-c320.driver';
 import { HuaweiMa5800Driver } from './huawei-ma5800.driver';
 import { HiosoDriver } from './hioso.driver';
@@ -53,5 +53,21 @@ export class OltDriverRegistry {
       { vendor: 'HIOSO', capabilities: this.hiosoDriver.getCapabilities() },
       { vendor: 'HSGQ', capabilities: this.hsgqDriver.getCapabilities() },
     ];
+  }
+
+  /**
+   * Adjunta las capacidades reales del fabricante a cualquier entidad con
+   * `vendor` (OLT u ONU con su OLT embebida) — mismo criterio honesto que
+   * `resolve()`: un vendor desconocido nunca hereda capacidades de otro
+   * fabricante, cae en NO_DRIVER_CAPABILITIES (todo en false).
+   */
+  attachCapabilities<T extends { vendor: string }>(entity: T): T & { capabilities: OltDriverCapabilities } {
+    let capabilities: OltDriverCapabilities;
+    try {
+      capabilities = this.resolve(entity.vendor).getCapabilities();
+    } catch {
+      capabilities = { ...NO_DRIVER_CAPABILITIES };
+    }
+    return Object.assign(entity, { capabilities });
   }
 }
