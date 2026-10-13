@@ -47,10 +47,12 @@ describe('NetworkNodesController', () => {
     infrastructureService = {
       listVlans: jest.fn().mockResolvedValue([]),
       syncVlan: jest.fn().mockResolvedValue({ id: 'nv-1', applyStatus: 'APPLIED' }),
+      desyncVlan: jest.fn().mockResolvedValue(undefined),
       ensureWan: jest.fn().mockResolvedValue({ id: 'node-1', wanLastSyncAt: new Date() }),
       ensureNatMasquerade: jest.fn().mockResolvedValue({ id: 'node-1' }),
       ensureFirewallBaseline: jest.fn().mockResolvedValue({ id: 'node-1' }),
       ensureDhcpServerForVlan: jest.fn().mockResolvedValue({ id: 'nv-1' }),
+      getReconciliationStatus: jest.fn().mockResolvedValue({ vlans: [], nat: true, firewall: true }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -146,6 +148,18 @@ describe('NetworkNodesController', () => {
   it('ensureNodeFirewallBaseline delega en NetworkNodeInfrastructureService.ensureFirewallBaseline', async () => {
     await controller.ensureNodeFirewallBaseline('node-1', 'admin-1');
     expect(infrastructureService.ensureFirewallBaseline).toHaveBeenCalledWith('node-1', 'admin-1');
+  });
+
+  it('desyncNodeVlan delega en NetworkNodeInfrastructureService.desyncVlan y responde {ok: true}', async () => {
+    const result = await controller.desyncNodeVlan('node-1', 'vlan-1', 'admin-1');
+    expect(infrastructureService.desyncVlan).toHaveBeenCalledWith('node-1', 'vlan-1', 'admin-1');
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('getNodeReconciliationStatus delega en NetworkNodeInfrastructureService.getReconciliationStatus', async () => {
+    const result = await controller.getNodeReconciliationStatus('node-1');
+    expect(infrastructureService.getReconciliationStatus).toHaveBeenCalledWith('node-1');
+    expect(result).toEqual({ vlans: [], nat: true, firewall: true });
   });
 
   describe('exportNodes', () => {

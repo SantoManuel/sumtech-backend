@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, Inject } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
@@ -90,6 +90,10 @@ export class NetworkNodeInfrastructureService {
     }
 
     let record = await this.nodeVlanRepository.findOneBy({ nodeId, vlanId });
+    // Resync explícito del usuario sobre una VLAN que ya estaba aplicada con
+    // otro gateway -- a diferencia de una colisión accidental, aquí se
+    // permite reemplazar la IP en el router (ver ensureIpAddress allowReplace).
+    const isGatewayChange = Boolean(record && options.gatewayCidr && record.gatewayCidr !== options.gatewayCidr);
     if (!record) {
       record = this.nodeVlanRepository.create({
         nodeId,
@@ -116,7 +120,7 @@ export class NetworkNodeInfrastructureService {
       });
 
       if (options.gatewayCidr) {
-        await client.ensureIpAddress(interfaceName, options.gatewayCidr, `Sumtech - Gateway ${vlan.name}`);
+        await client.ensureIpAddress(interfaceName, options.gatewayCidr, `Sumtech - Gateway ${vlan.name}`, isGatewayChange);
       }
 
       record.applyStatus = 'APPLIED';
@@ -155,6 +159,69 @@ export class NetworkNodeInfrastructureService {
 
   async listVlans(nodeId: string): Promise<NetworkNodeVlanEntity[]> {
     return this.nodeVlanRepository.find({ where: { nodeId }, relations: ['vlan'], order: { createdAt: 'ASC' } });
+  }
+
+  /**
+   * Revierte una sincronización de VLAN: borra la IP de gateway (si tenía) y
+   * la sub-interfaz en RouterOS, y el registro local. Rechaza con 409 si la
+   * interfaz todavía tiene un servidor PPPoE o DHCP asegurado encima -- eso
+   * dejaría ese servidor apuntando a una interfaz inexistente en el router.
+   */
+  async desyncVlan(nodeId: string, vlanId: string, actorUserId?: string): Promise<void> {
+    const nodeVlan = await this.nodeVlanRepository.findOne({ where: { nodeId, vlanId }, relations: ['vlan', 'node'] });
+    if (!nodeVlan) {
+      throw new NotFoundException(`No hay una VLAN sincronizada con id ${vlanId} para este nodo.`);
+    }
+
+    const node = nodeVlan.node || (await this.nodeRepository.findOneBy({ id: nodeId }))!;
+    const interfaceName = `vlan${nodeVlan.vlan.vlanId}`;
+    const client = await this.resolveClient(node);
+
+    const [pppoeServer, dhcpServer] = await Promise.all([
+      client.findPppoeServerByInterface(interfaceName),
+      client.findDhcpServerByInterface(interfaceName),
+    ]);
+    if (pppoeServer || dhcpServer) {
+      const found = [pppoeServer && 'servidor PPPoE', dhcpServer && 'servidor DHCP'].filter(Boolean).join(' y ');
+      throw new ConflictException(
+        `No se puede eliminar la VLAN ${nodeVlan.vlan.vlanId}: todavía tiene un ${found} asegurado sobre ${interfaceName}. Elimínalo primero en RouterOS.`,
+      );
+    }
+
+    try {
+      if (nodeVlan.gatewayCidr) {
+        const ipAddress = await client.findIpAddressByInterface(interfaceName);
+        if (ipAddress) {
+          await client.removeIpAddress(ipAddress.id);
+        }
+      }
+
+      const vlanInterface = await client.findVlanInterfaceByVlanId(nodeVlan.vlan.vlanId);
+      if (vlanInterface) {
+        await client.removeVlanInterface(vlanInterface.id);
+      }
+
+      await this.nodeVlanRepository.delete(nodeVlan.id);
+
+      await this.deviceOperationLogger.logEvent({
+        nodeId: node.id,
+        eventType: 'COMMAND',
+        status: 'SUCCESS',
+        message: `VLAN ${nodeVlan.vlan.vlanId} (${nodeVlan.vlan.name}) des-sincronizada de "${node.name}".`,
+        actorUserId,
+        rawDetails: { nodeId: node.id, vlanId, interfaceName, operation: 'desyncVlan' },
+      });
+    } catch (err: any) {
+      await this.deviceOperationLogger.logEvent({
+        nodeId: node.id,
+        eventType: 'COMMAND',
+        status: 'FAILURE',
+        message: `Error des-sincronizando VLAN ${nodeVlan.vlan.vlanId} en "${node.name}": ${err.message}`,
+        actorUserId,
+        rawDetails: { nodeId: node.id, vlanId, interfaceName, operation: 'desyncVlan' },
+      });
+      throw err;
+    }
   }
 
   /**
@@ -293,6 +360,10 @@ export class NetworkNodeInfrastructureService {
       const client = await this.resolveClient(node);
       await client.ensureNatMasquerade(node.wanInterfaceName, 'sumtech-nat-masquerade');
 
+      node.natLastSyncAt = new Date();
+      node.natLastSyncError = undefined;
+      await this.nodeRepository.save(node);
+
       await this.deviceOperationLogger.logEvent({
         nodeId: node.id,
         eventType: 'COMMAND',
@@ -304,6 +375,10 @@ export class NetworkNodeInfrastructureService {
 
       return node;
     } catch (err: any) {
+      node.natLastSyncAt = new Date();
+      node.natLastSyncError = err.message;
+      await this.nodeRepository.save(node);
+
       await this.deviceOperationLogger.logEvent({
         nodeId: node.id,
         eventType: 'COMMAND',
@@ -331,6 +406,10 @@ export class NetworkNodeInfrastructureService {
       const client = await this.resolveClient(node);
       await client.ensureFirewallBaseline();
 
+      node.firewallBaselineLastSyncAt = new Date();
+      node.firewallBaselineLastSyncError = undefined;
+      await this.nodeRepository.save(node);
+
       await this.deviceOperationLogger.logEvent({
         nodeId: node.id,
         eventType: 'COMMAND',
@@ -342,6 +421,10 @@ export class NetworkNodeInfrastructureService {
 
       return node;
     } catch (err: any) {
+      node.firewallBaselineLastSyncAt = new Date();
+      node.firewallBaselineLastSyncError = err.message;
+      await this.nodeRepository.save(node);
+
       await this.deviceOperationLogger.logEvent({
         nodeId: node.id,
         eventType: 'COMMAND',
@@ -352,6 +435,57 @@ export class NetworkNodeInfrastructureService {
       });
       throw err;
     }
+  }
+
+  /**
+   * Reconciliación de solo lectura: confirma contra el router real si lo que
+   * Postgres cree aplicado (VLANs sincronizadas, NAT masquerade, firewall
+   * baseline) sigue existiendo de verdad -- cubre el caso de que alguien
+   * haya tocado el MikroTik a mano por WinBox por fuera del ERP. No escribe
+   * nada, no dispara DeviceOperationLogger (igual que getIpAddresses()).
+   */
+  async getReconciliationStatus(nodeId: string): Promise<{
+    vlans: Array<{ vlanId: string; vlanNumber: number; existsInRouter: boolean; gatewayMatches: boolean | null }>;
+    nat: boolean;
+    firewall: boolean;
+  }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    const nodeVlans = await this.nodeVlanRepository.find({ where: { nodeId }, relations: ['vlan'] });
+
+    const vlans = await Promise.all(
+      nodeVlans.map(async (nv) => {
+        const vlanInterface = await client.findVlanInterfaceByVlanId(nv.vlan.vlanId);
+        let gatewayMatches: boolean | null = null;
+        if (vlanInterface && nv.gatewayCidr) {
+          const ip = await client.findIpAddressByInterface(`vlan${nv.vlan.vlanId}`);
+          gatewayMatches = Boolean(ip && ip.address === nv.gatewayCidr);
+        }
+        return {
+          vlanId: nv.vlanId,
+          vlanNumber: nv.vlan.vlanId,
+          existsInRouter: Boolean(vlanInterface),
+          gatewayMatches,
+        };
+      }),
+    );
+
+    const [natRule, filterRules] = await Promise.all([
+      client.findNatRuleByComment('sumtech-nat-masquerade'),
+      Promise.all([
+        client.findFilterRuleByComment('sumtech-baseline-established'),
+        client.findFilterRuleByComment('sumtech-baseline-drop-invalid'),
+      ]),
+    ]);
+
+    return {
+      vlans,
+      nat: Boolean(natRule),
+      firewall: filterRules.every(Boolean),
+    };
   }
 
   /**

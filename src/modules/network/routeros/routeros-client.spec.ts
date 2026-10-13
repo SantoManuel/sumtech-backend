@@ -432,6 +432,51 @@ describe('RouterOsClient', () => {
         /ya tiene la IP/,
       );
     });
+
+    it('ensureIpAddress con allowReplace=true borra la IP vieja y pone la nueva en vez de lanzar', async () => {
+      http.get.mockResolvedValue({
+        data: [{ '.id': '*7', address: '10.20.0.5/24', interface: 'vlan400-clientes' }],
+      });
+      http.delete.mockResolvedValue({ data: {} });
+      http.put.mockResolvedValue({ data: { '.id': '*9', address: '10.20.0.1/24', interface: 'vlan400-clientes' } });
+
+      const result = await client.ensureIpAddress('vlan400-clientes', '10.20.0.1/24', 'Gateway VLAN 400', true);
+
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/address/*7',
+        expect.anything(),
+      );
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/address',
+        { address: '10.20.0.1/24', interface: 'vlan400-clientes', comment: 'Gateway VLAN 400' },
+        expect.anything(),
+      );
+      expect(result.address).toBe('10.20.0.1/24');
+    });
+  });
+
+  describe('removeIpAddress / removeVlanInterface', () => {
+    it('removeIpAddress elimina por id llamando a DELETE /rest/ip/address/{id}', async () => {
+      http.delete.mockResolvedValue({ data: {} });
+
+      await client.removeIpAddress('*7');
+
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/address/*7',
+        expect.anything(),
+      );
+    });
+
+    it('removeVlanInterface elimina por id llamando a DELETE /rest/interface/vlan/{id}', async () => {
+      http.delete.mockResolvedValue({ data: {} });
+
+      await client.removeVlanInterface('*5');
+
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/vlan/*5',
+        expect.anything(),
+      );
+    });
   });
 
   describe('ensureDhcpClient', () => {

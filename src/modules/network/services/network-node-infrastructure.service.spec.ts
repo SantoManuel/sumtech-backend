@@ -29,9 +29,11 @@ describe('NetworkNodeInfrastructureService', () => {
     };
     nodeVlanRepo = {
       findOneBy: jest.fn().mockResolvedValue(null),
+      findOne: jest.fn(),
       create: jest.fn((dto) => ({ ...dto })),
       save: jest.fn((entity) => Promise.resolve({ ...entity, id: entity.id || 'nv-1' })),
       find: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
     };
     vlanRepo = { findOneBy: jest.fn().mockResolvedValue(vlan) };
     clientFactory = jest.fn();
@@ -87,7 +89,7 @@ describe('NetworkNodeInfrastructureService', () => {
       parentInterface: 'ether5',
       comment: 'Sumtech - Clientes Internet',
     });
-    expect(ensureIpAddress).toHaveBeenCalledWith('vlan400', '10.20.0.1/24', 'Sumtech - Gateway Clientes Internet');
+    expect(ensureIpAddress).toHaveBeenCalledWith('vlan400', '10.20.0.1/24', 'Sumtech - Gateway Clientes Internet', false);
     expect(result.applyStatus).toBe('APPLIED');
     expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'SUCCESS', nodeId: 'node-1' }),
@@ -227,15 +229,27 @@ describe('NetworkNodeInfrastructureService', () => {
       await expect(service.ensureNatMasquerade('node-1')).rejects.toThrow(BadRequestException);
     });
 
-    it('llama ensureNatMasquerade del cliente con la interfaz WAN y loguea SUCCESS', async () => {
+    it('llama ensureNatMasquerade del cliente con la interfaz WAN, persiste natLastSyncAt y loguea SUCCESS', async () => {
       const ensureNatMasquerade = jest.fn().mockResolvedValue(undefined);
       clientFactory.mockReturnValue({ ensureNatMasquerade });
       nodeRepo.findOneBy.mockResolvedValue({ ...node, wanInterfaceName: 'ether1' });
 
-      await service.ensureNatMasquerade('node-1', 'admin-1');
+      const result = await service.ensureNatMasquerade('node-1', 'admin-1');
 
       expect(ensureNatMasquerade).toHaveBeenCalledWith('ether1', 'sumtech-nat-masquerade');
+      expect(result.natLastSyncAt).toBeInstanceOf(Date);
+      expect(result.natLastSyncError).toBeUndefined();
       expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'SUCCESS' }));
+    });
+
+    it('si el router rechaza la operación, persiste natLastSyncError y relanza', async () => {
+      const ensureNatMasquerade = jest.fn().mockRejectedValue(new Error('timeout'));
+      clientFactory.mockReturnValue({ ensureNatMasquerade });
+      nodeRepo.findOneBy.mockResolvedValue({ ...node, wanInterfaceName: 'ether1' });
+
+      await expect(service.ensureNatMasquerade('node-1')).rejects.toThrow('timeout');
+      expect(nodeRepo.save).toHaveBeenCalledWith(expect.objectContaining({ natLastSyncError: 'timeout' }));
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILURE' }));
     });
   });
 
@@ -245,22 +259,140 @@ describe('NetworkNodeInfrastructureService', () => {
       await expect(service.ensureFirewallBaseline('node-x')).rejects.toThrow(NotFoundException);
     });
 
-    it('llama ensureFirewallBaseline del cliente y loguea SUCCESS', async () => {
+    it('llama ensureFirewallBaseline del cliente, persiste firewallBaselineLastSyncAt y loguea SUCCESS', async () => {
       const ensureFirewallBaseline = jest.fn().mockResolvedValue(undefined);
       clientFactory.mockReturnValue({ ensureFirewallBaseline });
 
-      await service.ensureFirewallBaseline('node-1', 'admin-1');
+      const result = await service.ensureFirewallBaseline('node-1', 'admin-1');
 
       expect(ensureFirewallBaseline).toHaveBeenCalled();
+      expect(result.firewallBaselineLastSyncAt).toBeInstanceOf(Date);
       expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'SUCCESS' }));
     });
 
-    it('loguea FAILURE y relanza si el router rechaza la operación', async () => {
+    it('loguea FAILURE, persiste firewallBaselineLastSyncError y relanza si el router rechaza la operación', async () => {
       const ensureFirewallBaseline = jest.fn().mockRejectedValue(new Error('timeout'));
       clientFactory.mockReturnValue({ ensureFirewallBaseline });
 
       await expect(service.ensureFirewallBaseline('node-1')).rejects.toThrow('timeout');
+      expect(nodeRepo.save).toHaveBeenCalledWith(expect.objectContaining({ firewallBaselineLastSyncError: 'timeout' }));
       expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILURE' }));
+    });
+  });
+
+  describe('desyncVlan', () => {
+    it('lanza NotFoundException si no hay una VLAN sincronizada para ese nodo', async () => {
+      nodeVlanRepo.findOne.mockResolvedValue(null);
+      await expect(service.desyncVlan('node-1', 'vlan-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('rechaza con ConflictException si ya tiene un servidor PPPoE asegurado encima', async () => {
+      nodeVlanRepo.findOne.mockResolvedValue({ id: 'nv-1', nodeId: 'node-1', vlanId: 'vlan-1', vlan, node, gatewayCidr: '10.20.0.1/24' });
+      clientFactory.mockReturnValue({
+        findPppoeServerByInterface: jest.fn().mockResolvedValue({ id: '*1' }),
+        findDhcpServerByInterface: jest.fn().mockResolvedValue(null),
+      });
+
+      await expect(service.desyncVlan('node-1', 'vlan-1')).rejects.toThrow(/servidor PPPoE/);
+      expect(nodeVlanRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('rechaza con ConflictException si ya tiene un servidor DHCP asegurado encima', async () => {
+      nodeVlanRepo.findOne.mockResolvedValue({ id: 'nv-1', nodeId: 'node-1', vlanId: 'vlan-1', vlan, node, gatewayCidr: '10.20.0.1/24' });
+      clientFactory.mockReturnValue({
+        findPppoeServerByInterface: jest.fn().mockResolvedValue(null),
+        findDhcpServerByInterface: jest.fn().mockResolvedValue({ id: '*1', name: 'dhcp-vlan400' }),
+      });
+
+      await expect(service.desyncVlan('node-1', 'vlan-1')).rejects.toThrow(/servidor DHCP/);
+      expect(nodeVlanRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('sin servidores dependientes: borra la IP de gateway, la sub-interfaz y el registro local, loguea SUCCESS', async () => {
+      nodeVlanRepo.findOne.mockResolvedValue({ id: 'nv-1', nodeId: 'node-1', vlanId: 'vlan-1', vlan, node, gatewayCidr: '10.20.0.1/24' });
+      const removeIpAddress = jest.fn().mockResolvedValue(undefined);
+      const removeVlanInterface = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({
+        findPppoeServerByInterface: jest.fn().mockResolvedValue(null),
+        findDhcpServerByInterface: jest.fn().mockResolvedValue(null),
+        findIpAddressByInterface: jest.fn().mockResolvedValue({ id: '*2', address: '10.20.0.1/24', interface: 'vlan400' }),
+        findVlanInterfaceByVlanId: jest.fn().mockResolvedValue({ id: '*1', name: 'vlan400', vlanId: 400, interface: 'ether5' }),
+        removeIpAddress,
+        removeVlanInterface,
+      });
+
+      await service.desyncVlan('node-1', 'vlan-1', 'admin-1');
+
+      expect(removeIpAddress).toHaveBeenCalledWith('*2');
+      expect(removeVlanInterface).toHaveBeenCalledWith('*1');
+      expect(nodeVlanRepo.delete).toHaveBeenCalledWith('nv-1');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'SUCCESS' }));
+    });
+
+    it('sin gatewayCidr: no intenta borrar una IP', async () => {
+      nodeVlanRepo.findOne.mockResolvedValue({ id: 'nv-1', nodeId: 'node-1', vlanId: 'vlan-1', vlan, node, gatewayCidr: undefined });
+      const removeIpAddress = jest.fn();
+      const findIpAddressByInterface = jest.fn();
+      clientFactory.mockReturnValue({
+        findPppoeServerByInterface: jest.fn().mockResolvedValue(null),
+        findDhcpServerByInterface: jest.fn().mockResolvedValue(null),
+        findIpAddressByInterface,
+        findVlanInterfaceByVlanId: jest.fn().mockResolvedValue(null),
+        removeIpAddress,
+        removeVlanInterface: jest.fn(),
+      });
+
+      await service.desyncVlan('node-1', 'vlan-1');
+
+      expect(findIpAddressByInterface).not.toHaveBeenCalled();
+      expect(removeIpAddress).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getReconciliationStatus', () => {
+    it('lanza NotFoundException si el nodo no existe', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.getReconciliationStatus('node-x')).rejects.toThrow(NotFoundException);
+    });
+
+    it('reporta VLANs, NAT y firewall como existentes cuando el router los confirma', async () => {
+      nodeVlanRepo.find.mockResolvedValue([
+        { id: 'nv-1', vlanId: 'vlan-1', gatewayCidr: '10.20.0.1/24', vlan },
+      ]);
+      clientFactory.mockReturnValue({
+        findVlanInterfaceByVlanId: jest.fn().mockResolvedValue({ id: '*1', name: 'vlan400', vlanId: 400, interface: 'ether5' }),
+        findIpAddressByInterface: jest.fn().mockResolvedValue({ id: '*2', address: '10.20.0.1/24', interface: 'vlan400' }),
+        findNatRuleByComment: jest.fn().mockResolvedValue({ id: '*3' }),
+        findFilterRuleByComment: jest.fn().mockResolvedValue({ id: '*4' }),
+      });
+
+      const result = await service.getReconciliationStatus('node-1');
+
+      expect(result.vlans).toEqual([
+        { vlanId: 'vlan-1', vlanNumber: 400, existsInRouter: true, gatewayMatches: true },
+      ]);
+      expect(result.nat).toBe(true);
+      expect(result.firewall).toBe(true);
+    });
+
+    it('reporta divergencias: VLAN borrada del router, gateway distinto, NAT y firewall ausentes', async () => {
+      nodeVlanRepo.find.mockResolvedValue([
+        { id: 'nv-1', vlanId: 'vlan-1', gatewayCidr: '10.20.0.1/24', vlan },
+      ]);
+      clientFactory.mockReturnValue({
+        findVlanInterfaceByVlanId: jest.fn().mockResolvedValue(null),
+        findIpAddressByInterface: jest.fn().mockResolvedValue(null),
+        findNatRuleByComment: jest.fn().mockResolvedValue(null),
+        findFilterRuleByComment: jest.fn().mockResolvedValue(null),
+      });
+
+      const result = await service.getReconciliationStatus('node-1');
+
+      expect(result.vlans).toEqual([
+        { vlanId: 'vlan-1', vlanNumber: 400, existsInRouter: false, gatewayMatches: null },
+      ]);
+      expect(result.nat).toBe(false);
+      expect(result.firewall).toBe(false);
     });
   });
 
@@ -370,6 +502,42 @@ describe('NetworkNodeInfrastructureService', () => {
         expect.objectContaining({ status: 'FAILURE', nodeId: 'node-1' }),
       );
     });
+  });
+
+  it('resync con un gatewayCidr distinto al ya guardado pasa allowReplace=true a ensureIpAddress', async () => {
+    nodeVlanRepo.findOneBy.mockResolvedValue({
+      id: 'nv-existing',
+      nodeId: 'node-1',
+      vlanId: 'vlan-1',
+      uplinkInterface: 'ether5',
+      gatewayCidr: '10.20.0.1/24',
+      applyStatus: 'APPLIED',
+    });
+    const ensureVlanInterface = jest.fn().mockResolvedValue({});
+    const ensureIpAddress = jest.fn().mockResolvedValue({});
+    clientFactory.mockReturnValue({ ensureVlanInterface, ensureIpAddress });
+
+    await service.syncVlan('node-1', 'vlan-1', { uplinkInterface: 'ether5', gatewayCidr: '10.20.0.99/24' });
+
+    expect(ensureIpAddress).toHaveBeenCalledWith('vlan400', '10.20.0.99/24', 'Sumtech - Gateway Clientes Internet', true);
+  });
+
+  it('resync con el MISMO gatewayCidr no activa allowReplace', async () => {
+    nodeVlanRepo.findOneBy.mockResolvedValue({
+      id: 'nv-existing',
+      nodeId: 'node-1',
+      vlanId: 'vlan-1',
+      uplinkInterface: 'ether5',
+      gatewayCidr: '10.20.0.1/24',
+      applyStatus: 'APPLIED',
+    });
+    const ensureVlanInterface = jest.fn().mockResolvedValue({});
+    const ensureIpAddress = jest.fn().mockResolvedValue({});
+    clientFactory.mockReturnValue({ ensureVlanInterface, ensureIpAddress });
+
+    await service.syncVlan('node-1', 'vlan-1', { uplinkInterface: 'ether5', gatewayCidr: '10.20.0.1/24' });
+
+    expect(ensureIpAddress).toHaveBeenCalledWith('vlan400', '10.20.0.1/24', 'Sumtech - Gateway Clientes Internet', false);
   });
 
   it('es idempotente: si ya existe un registro para ese nodo+VLAN, lo actualiza en vez de crear uno nuevo', async () => {

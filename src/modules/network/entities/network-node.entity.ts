@@ -228,6 +228,18 @@ export class NetworkNodeEntity {
   @Column({ name: 'wan_last_sync_error', type: 'text', nullable: true })
   wanLastSyncError?: string;
 
+  @Column({ name: 'nat_last_sync_at', type: 'timestamp with time zone', nullable: true })
+  natLastSyncAt?: Date;
+
+  @Column({ name: 'nat_last_sync_error', type: 'text', nullable: true })
+  natLastSyncError?: string;
+
+  @Column({ name: 'firewall_baseline_last_sync_at', type: 'timestamp with time zone', nullable: true })
+  firewallBaselineLastSyncAt?: Date;
+
+  @Column({ name: 'firewall_baseline_last_sync_error', type: 'text', nullable: true })
+  firewallBaselineLastSyncError?: string;
+
   @OneToMany(() => NetworkAccessEntity, (access) => access.node)
   accesses?: NetworkAccessEntity[];
 

@@ -169,6 +169,17 @@ export class NetworkNodesController {
     return this.infrastructureService.syncVlan(id, vlanId, dto, userId);
   }
 
+  @Delete(':id/vlans/:vlanId')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async desyncNodeVlan(
+    @Param('id') id: string,
+    @Param('vlanId') vlanId: string,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    await this.infrastructureService.desyncVlan(id, vlanId, userId);
+    return { ok: true };
+  }
+
   @Post(':id/wan/sync')
   @Roles(Role.ADMIN, Role.GERENTE)
   async syncNodeWan(@Param('id') id: string, @CurrentUser('sub') userId?: string) {
@@ -207,6 +218,13 @@ export class NetworkNodesController {
   @Roles(Role.ADMIN, Role.GERENTE)
   async ensureNodeFirewallBaseline(@Param('id') id: string, @CurrentUser('sub') userId?: string) {
     return this.infrastructureService.ensureFirewallBaseline(id, userId);
+  }
+
+  /** Reconciliación de solo lectura: confirma contra el router real si VLANs/NAT/Firewall siguen aplicados. */
+  @Get(':id/infrastructure/reconcile')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeReconciliationStatus(@Param('id') id: string) {
+    return this.infrastructureService.getReconciliationStatus(id);
   }
 
   /** Diagnóstico de topología real: IPs configuradas en el router (ej. confirmar el gateway real de una LAN). */

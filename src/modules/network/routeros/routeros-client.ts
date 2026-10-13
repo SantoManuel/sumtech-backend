@@ -754,17 +754,24 @@ export class RouterOsClient {
   /**
    * Asegura que una interfaz tenga la IP indicada asignada (idempotente por
    * interfaz — no permite dos IPs distintas en la misma interfaz vía este
-   * método, asume una IP de gateway por VLAN).
+   * método, asume una IP de gateway por VLAN). Si `allowReplace` es true y ya
+   * había otra IP asignada, la reemplaza (DELETE + PUT) en vez de lanzar —
+   * uso explícito: una resincronización donde el usuario corrige a propósito
+   * un gateway mal tipeado, no una colisión accidental.
    */
-  async ensureIpAddress(interfaceName: string, address: string, comment?: string): Promise<RouterOsIpAddress> {
+  async ensureIpAddress(interfaceName: string, address: string, comment?: string, allowReplace = false): Promise<RouterOsIpAddress> {
     const existing = await this.findIpAddressByInterface(interfaceName);
     if (existing) {
       if (existing.address !== address) {
-        throw new Error(
-          `La interfaz "${interfaceName}" ya tiene la IP "${existing.address}" asignada (se esperaba "${address}") — no se sobreescribe automáticamente.`,
-        );
+        if (!allowReplace) {
+          throw new Error(
+            `La interfaz "${interfaceName}" ya tiene la IP "${existing.address}" asignada (se esperaba "${address}") — no se sobreescribe automáticamente.`,
+          );
+        }
+        await this.removeIpAddress(existing.id);
+      } else {
+        return existing;
       }
-      return existing;
     }
 
     const payload: Record<string, string> = { address, interface: interfaceName };
@@ -779,6 +786,30 @@ export class RouterOsClient {
         interface: data?.interface || interfaceName,
         comment: data?.comment,
       };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Elimina una IP asignada en RouterOS por su .id (/ip/address). */
+  async removeIpAddress(addressId: string): Promise<void> {
+    try {
+      await this.http.delete(
+        this.buildUrl(`ip/address/${encodeURIComponent(addressId)}`),
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Elimina una sub-interfaz VLAN en RouterOS por su .id (/interface/vlan). */
+  async removeVlanInterface(vlanInterfaceId: string): Promise<void> {
+    try {
+      await this.http.delete(
+        this.buildUrl(`interface/vlan/${encodeURIComponent(vlanInterfaceId)}`),
+        this.buildRequestConfig(),
+      );
     } catch (error) {
       throw new Error(this.describeError(error));
     }
@@ -1333,8 +1364,8 @@ export class RouterOsClient {
     }
   }
 
-  /** Busca una regla NAT existente por su comentario (idempotencia real, a diferencia de addFirewallNatRule). */
-  private async findNatRuleByComment(comment: string): Promise<{ id: string } | null> {
+  /** Busca una regla NAT existente por su comentario (idempotencia real, a diferencia de addFirewallNatRule). Pública: también la usa la reconciliación de solo lectura. */
+  async findNatRuleByComment(comment: string): Promise<{ id: string } | null> {
     let response;
     try {
       response = await this.http.get(this.buildUrl('ip/firewall/nat'), this.buildRequestConfig());
@@ -1368,8 +1399,8 @@ export class RouterOsClient {
     }
   }
 
-  /** Busca una regla filter existente por su comentario. */
-  private async findFilterRuleByComment(comment: string): Promise<{ id: string } | null> {
+  /** Busca una regla filter existente por su comentario. Pública: también la usa la reconciliación de solo lectura. */
+  async findFilterRuleByComment(comment: string): Promise<{ id: string } | null> {
     let response;
     try {
       response = await this.http.get(this.buildUrl('ip/firewall/filter'), this.buildRequestConfig());
