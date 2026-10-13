@@ -11,6 +11,8 @@ import { ContractEntity } from '../clients/entities/contract.entity';
 import { ClientEntity } from '../clients/entities/client.entity';
 import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { EmployeeEntity } from '../employees/entities/employee.entity';
+import { PlanEntity } from '../plans/entities/plan.entity';
+import { ServiceFeeEntity } from '../plans/entities/service-fee.entity';
 import { InventoryModule } from '../inventory/inventory.module';
 import { InvoicingModule } from '../invoicing/invoicing.module';
 import { BillingModule } from '../billing/billing.module';
@@ -28,6 +30,8 @@ import { AuthModule } from '../auth/auth.module';
       ClientEntity,
       InvoiceEntity,
       EmployeeEntity,
+      PlanEntity,
+      ServiceFeeEntity,
     ]),
     InventoryModule,
     InvoicingModule,

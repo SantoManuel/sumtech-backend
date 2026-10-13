@@ -120,6 +120,9 @@ export class InvoiceEntity {
   @Column({ name: 'cdt_amount', type: 'decimal', precision: 12, scale: 2, default: 0 })
   cdtAmount: number;
 
+  @Column({ name: 'isc_amount', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  iscAmount: number;
+
   @Column({ name: 'grand_total', type: 'decimal', precision: 12, scale: 2, nullable: true })
   grandTotal?: number;
 

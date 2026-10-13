@@ -7,6 +7,7 @@ import { BillingSettingsEntity } from './entities/billing-settings.entity';
 import { SuspensionHistoryEntity } from './entities/suspension-history.entity';
 import { NetworkAccessEntity } from '../network/entities/network-access.entity';
 import { BillingCycleService } from './billing-cycle.service';
+import { TaxCalculationService } from './tax-calculation.service';
 import { BillingSettingsService } from './billing-settings.service';
 import { MorosidadService } from './morosidad.service';
 import { SuspensionHistoryService } from './suspension-history.service';
@@ -31,11 +32,12 @@ import { NetworkModule } from '../network/network.module';
   controllers: [BillingController],
   providers: [
     BillingCycleService,
+    TaxCalculationService,
     BillingSettingsService,
     MorosidadService,
     SuspensionHistoryService,
     BillingReactivationListener,
   ],
-  exports: [BillingCycleService, BillingSettingsService, MorosidadService, SuspensionHistoryService],
+  exports: [BillingCycleService, TaxCalculationService, BillingSettingsService, MorosidadService, SuspensionHistoryService],
 })
 export class BillingModule {}

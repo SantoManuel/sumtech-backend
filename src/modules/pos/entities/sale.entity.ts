@@ -90,6 +90,12 @@ export class SaleEntity {
   @Column({ name: 'itbis_total', type: 'decimal', precision: 12, scale: 2 })
   itbisTotal: number;
 
+  @Column({ name: 'cdt_amount', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  cdtAmount: number;
+
+  @Column({ name: 'isc_total', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  iscTotal: number;
+
   @Column({ name: 'grand_total', type: 'decimal', precision: 12, scale: 2 })
   grandTotal: number;
 

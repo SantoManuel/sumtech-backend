@@ -131,6 +131,10 @@ export class InvoicingService {
       // 45, código DGII '002') u otro impuesto adicional propio de la factura.
       cdtAmount?: number;
       cdtTasa?: number;
+      // ISC a las Telecomunicaciones (Ley 253-12, código DGII '004' —
+      // "Servicios de Telecomunicaciones", ver ecf-31.xsd).
+      iscAmount?: number;
+      iscTasa?: number;
     },
     queryRunner?: QueryRunner,
   ) {
@@ -181,8 +185,12 @@ export class InvoicingService {
     }
 
     const cdtAmount = Number(options?.cdtAmount || 0);
-    if (cdtAmount > 0) {
-      ecfItems[0].tiposImpuestoAdicional = ['002'];
+    const iscAmount = Number(options?.iscAmount || 0);
+    const tiposImpuestoAdicional: string[] = [];
+    if (cdtAmount > 0) tiposImpuestoAdicional.push('002');
+    if (iscAmount > 0) tiposImpuestoAdicional.push('004');
+    if (tiposImpuestoAdicional.length > 0) {
+      ecfItems[0].tiposImpuestoAdicional = tiposImpuestoAdicional;
     }
 
     const dgiiCfg = await this.dgiiClient.getConfig();
@@ -217,8 +225,12 @@ export class InvoicingService {
       razonModificacion: options?.razonModificacion,
       indicadorNotaCredito: options?.indicadorNotaCredito,
       items: ecfItems,
-      impuestosAdicionales:
-        cdtAmount > 0 ? [{ tipoImpuesto: '002', tasa: Number(options?.cdtTasa || 0), monto: cdtAmount }] : undefined,
+      impuestosAdicionales: (() => {
+        const list: Array<{ tipoImpuesto: string; tasa: number; monto: number }> = [];
+        if (cdtAmount > 0) list.push({ tipoImpuesto: '002', tasa: Number(options?.cdtTasa || 0), monto: cdtAmount });
+        if (iscAmount > 0) list.push({ tipoImpuesto: '004', tasa: Number(options?.iscTasa || 0), monto: iscAmount });
+        return list.length > 0 ? list : undefined;
+      })(),
       fechaVencimientoSecuencia: sequenceExpiryDate,
     };
 
@@ -257,6 +269,10 @@ export class InvoicingService {
           montoGravadoTotal: Number(sale.subtotal),
           montoGravadoI1: Number(sale.subtotal),
           totalItbis1: Number(sale.itbisTotal),
+          impuestosAdicionales: [
+            { tipoImpuesto: '002', monto: cdtAmount },
+            { tipoImpuesto: '004', monto: iscAmount },
+          ],
         },
       );
 
@@ -326,7 +342,17 @@ export class InvoicingService {
       throw new ConflictException(`La venta ${dto.saleId} ya cuenta con una factura emitida (${existingInvoice.ncfNumber})`);
     }
 
-    const ecfPayload = await this.buildEcfPayload(sale, dto.ncfType, dto, queryRunner);
+    // Ventas ad-hoc de POS también pueden llevar CDT/ISC (ver PosService.checkout
+    // y TaxCalculationService) — antes de este fix, sale.cdtAmount se calculaba
+    // pero nunca se leía aquí, así que nunca llegaba al XML de la DGII ni a la
+    // factura impresa en esta ruta.
+    const cdtAmount = Number(sale.cdtAmount || 0);
+    const iscAmount = Number(sale.iscTotal || 0);
+    const saleSubtotal = Number(sale.subtotal || 0);
+    const cdtTasa = cdtAmount > 0 && saleSubtotal > 0 ? (cdtAmount / saleSubtotal) * 100 : 0;
+    const iscTasa = iscAmount > 0 && saleSubtotal > 0 ? (iscAmount / saleSubtotal) * 100 : 0;
+
+    const ecfPayload = await this.buildEcfPayload(sale, dto.ncfType, { cdtAmount, cdtTasa, iscAmount, iscTasa }, queryRunner);
 
     // Venta+factura ad-hoc (hardware/instalación/reparación): se paga y se timbra
     // atómicamente, sin pasar por el estado PENDING_PAYMENT.
@@ -337,6 +363,8 @@ export class InvoicingService {
       status: 'ISSUED',
       subtotal: Number(sale.subtotal),
       itbisTotal: Number(sale.itbisTotal),
+      cdtAmount,
+      iscAmount,
       grandTotal: Number(sale.grandTotal),
       paidAt: new Date(),
       ...ecfPayload,
@@ -379,10 +407,12 @@ export class InvoicingService {
     }
 
     const cdtAmount = Number(invoice.cdtAmount || 0);
+    const iscAmount = Number(invoice.iscAmount || 0);
     const invoiceSubtotal = Number(invoice.subtotal || 0);
     const cdtTasa = cdtAmount > 0 && invoiceSubtotal > 0 ? (cdtAmount / invoiceSubtotal) * 100 : 0;
+    const iscTasa = iscAmount > 0 && invoiceSubtotal > 0 ? (iscAmount / invoiceSubtotal) * 100 : 0;
 
-    const ecfPayload = await this.buildEcfPayload(sale, ncfType, { cdtAmount, cdtTasa }, queryRunner);
+    const ecfPayload = await this.buildEcfPayload(sale, ncfType, { cdtAmount, cdtTasa, iscAmount, iscTasa }, queryRunner);
 
     Object.assign(invoice, ecfPayload, {
       saleId: sale.id,
@@ -573,6 +603,8 @@ export class InvoicingService {
         userId: requestingUserId,
         subtotal: Number(original.subtotal || 0),
         itbisTotal: Number(original.itbisTotal || 0),
+        cdtAmount: Number(original.cdtAmount || 0),
+        iscTotal: Number(original.iscAmount || 0),
         grandTotal: Number(original.grandTotal || 0),
         paymentMethod: original.sale?.paymentMethod || 'CASH',
         status: 'PAID',
@@ -582,8 +614,10 @@ export class InvoicingService {
       const savedCreditSale = await saleRepo.save(creditSale);
 
       const cdtAmount = Number(original.cdtAmount || 0);
+      const iscAmount = Number(original.iscAmount || 0);
       const originalSubtotal = Number(original.subtotal || 0);
       const cdtTasa = cdtAmount > 0 && originalSubtotal > 0 ? (cdtAmount / originalSubtotal) * 100 : 0;
+      const iscTasa = iscAmount > 0 && originalSubtotal > 0 ? (iscAmount / originalSubtotal) * 100 : 0;
 
       const ecfPayload = await this.buildEcfPayload(
         savedCreditSale,
@@ -596,6 +630,8 @@ export class InvoicingService {
           indicadorNotaCredito,
           cdtAmount,
           cdtTasa,
+          iscAmount,
+          iscTasa,
         },
         queryRunner,
       );
@@ -612,6 +648,7 @@ export class InvoicingService {
         subtotal: originalSubtotal,
         itbisTotal: Number(original.itbisTotal || 0),
         cdtAmount,
+        iscAmount,
         grandTotal: Number(original.grandTotal || 0),
         concept: `Nota de Crédito — Anulación de factura ${original.ncfNumber}`,
         paidAt: new Date(),
@@ -978,6 +1015,8 @@ export class InvoicingService {
           subtotal: Number(sale?.subtotal ?? invoice.subtotal ?? 0),
           discountAmount: Number(sale?.discountAmount || 0),
           itbisTotal: Number(sale?.itbisTotal ?? invoice.itbisTotal ?? 0),
+          cdtAmount: Number(sale?.cdtAmount ?? invoice.cdtAmount ?? 0),
+          iscAmount: Number(sale?.iscTotal ?? invoice.iscAmount ?? 0),
           grandTotal: Number(sale?.grandTotal ?? invoice.grandTotal ?? 0),
           cashier: sale?.user?.username || 'Caja Sumtech',
           details: saleDetails,
@@ -991,7 +1030,9 @@ export class InvoicingService {
     const contract = invoice.contract;
     const subtotal = Number(invoice.subtotal || 0);
     const itbisTotal = Number(invoice.itbisTotal || 0);
-    const grandTotal = Number(invoice.grandTotal || (subtotal + itbisTotal));
+    const cdtAmount = Number(invoice.cdtAmount || 0);
+    const iscAmount = Number(invoice.iscAmount || 0);
+    const grandTotal = Number(invoice.grandTotal || (subtotal + itbisTotal + cdtAmount + iscAmount));
     const concept = invoice.concept || (contract?.plan?.name ? `${contract.plan.name} - Mensualidad de servicio` : 'Cargo recurrente de servicio');
 
     let billingPeriod = 'Mes Actual';
@@ -1029,6 +1070,8 @@ export class InvoicingService {
         subtotal,
         discountAmount: 0,
         itbisTotal,
+        cdtAmount,
+        iscAmount,
         grandTotal,
         cashier: 'Facturación Automática',
         details: [

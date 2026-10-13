@@ -11,6 +11,9 @@ import { ContractEntity } from '../clients/entities/contract.entity';
 import { ClientEntity } from '../clients/entities/client.entity';
 import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { EmployeeEntity } from '../employees/entities/employee.entity';
+import { PlanEntity } from '../plans/entities/plan.entity';
+import { ServiceFeeEntity } from '../plans/entities/service-fee.entity';
+import { TaxCalculationService } from '../billing/tax-calculation.service';
 import { CheckoutDto } from './dto/checkout.dto';
 import { CollectInvoicesDto } from './dto/collect-invoices.dto';
 import { OpenCashRegisterDto, CloseCashRegisterDto } from './dto/cash-register.dto';
@@ -40,6 +43,7 @@ export class PosService {
     private readonly billingSettingsService: BillingSettingsService,
     private readonly usersService: UsersService,
     private readonly authService: AuthService,
+    private readonly taxCalculationService: TaxCalculationService,
     @InjectRepository(SaleEntity)
     private readonly saleRepository: Repository<SaleEntity>,
     @InjectRepository(CashRegisterEntity)
@@ -54,6 +58,10 @@ export class PosService {
     private readonly cashStationRepository: Repository<CashStationEntity>,
     @InjectRepository(EmployeeEntity)
     private readonly employeeRepository: Repository<EmployeeEntity>,
+    @InjectRepository(PlanEntity)
+    private readonly planRepository: Repository<PlanEntity>,
+    @InjectRepository(ServiceFeeEntity)
+    private readonly serviceFeeRepository: Repository<ServiceFeeEntity>,
   ) {}
 
   /**
@@ -120,16 +128,50 @@ export class PosService {
         await this.inventoryService.reserveStockForSale(hardwareItems, queryRunner);
       }
 
-      // 3. Calcular montos
+      // 3. Calcular montos — el servidor es la autoridad fiscal: recalcula
+      // ITBIS/CDT/ISC por línea según el plan/cargo de servicio real en catálogo
+      // en vez de confiar en lo que mande el frontend (que solo sirve como hint
+      // para la UI). Ver TaxCalculationService y Plan_Implementacion_CDT_ISC_Impuestos.md.
+      const planIds = [...new Set(dto.items.filter((i) => i.itemType === 'PLAN_SUBSCRIPTION' || i.itemType === 'PLAN_ACTIVATION').map((i) => i.itemId).filter(Boolean))] as string[];
+      const feeIds = [...new Set(dto.items.filter((i) => i.itemType === 'INSTALLATION_FEE' || i.itemType === 'REPAIR_FEE').map((i) => i.itemId).filter(Boolean))] as string[];
+
+      const plansById = new Map(
+        planIds.length
+          ? (await queryRunner.manager.getRepository(PlanEntity).findBy({ id: In(planIds) })).map((p) => [p.id, p])
+          : [],
+      );
+      const feesById = new Map(
+        feeIds.length
+          ? (await queryRunner.manager.getRepository(ServiceFeeEntity).findBy({ id: In(feeIds) })).map((f) => [f.id, f])
+          : [],
+      );
+
       let subtotal = 0;
       let itbisTotal = 0;
+      let cdtTotal = 0;
+      let iscTotal = 0;
       const details: SaleDetailEntity[] = [];
 
       for (const item of dto.items) {
         const itemSubtotal = Number(item.unitPrice) * item.quantity;
-        const itemItbis = Number(item.itbisAmount) || 0;
+        const { itbisAmount: itemItbis, cdtAmount: itemCdt, iscAmount: itemIsc } = this.taxCalculationService.calculateTaxes({
+          itemType: item.itemType,
+          subtotal: itemSubtotal,
+          plan: item.itemId ? plansById.get(item.itemId) : undefined,
+          serviceFee: item.itemId ? feesById.get(item.itemId) : undefined,
+        });
+
+        const clientItbis = Number(item.itbisAmount) || 0;
+        if (Math.abs(clientItbis - itemItbis) > 0.01) {
+          this.logger.warn(
+            `Discrepancia de ITBIS en checkout (concepto "${item.concept}"): frontend envió ${clientItbis}, servidor calculó ${itemItbis}. Se usa el valor del servidor.`,
+          );
+        }
+
         subtotal += itemSubtotal;
         itbisTotal += itemItbis;
+        cdtTotal += itemCdt;
+        iscTotal += itemIsc;
 
         const detail = queryRunner.manager.getRepository(SaleDetailEntity).create({
           itemType: item.itemType,
@@ -138,10 +180,15 @@ export class PosService {
           quantity: item.quantity,
           unitPrice: Number(item.unitPrice),
           itbisAmount: itemItbis,
+          cdtAmount: itemCdt,
+          iscAmount: itemIsc,
           subtotal: itemSubtotal,
         });
         details.push(detail);
       }
+      itbisTotal = Number(itbisTotal.toFixed(2));
+      cdtTotal = Number(cdtTotal.toFixed(2));
+      iscTotal = Number(iscTotal.toFixed(2));
 
       let discount = 0;
       const discountType: 'FIXED' | 'PERCENTAGE' = dto.discountType || 'FIXED';
@@ -167,7 +214,7 @@ export class PosService {
         });
       }
 
-      const grandTotal = Math.max(0, Number((subtotal + itbisTotal - discount).toFixed(2)));
+      const grandTotal = Math.max(0, Number((subtotal + itbisTotal + cdtTotal + iscTotal - discount).toFixed(2)));
 
       // 4. Crear Venta
       const sale = queryRunner.manager.getRepository(SaleEntity).create({
@@ -184,6 +231,8 @@ export class PosService {
         discountReason: discount > 0 ? dto.discountReason : undefined,
         discountAuthorizedById: authorizedSupervisorId || undefined,
         itbisTotal,
+        cdtAmount: cdtTotal,
+        iscTotal,
         grandTotal,
         paymentMethod: dto.paymentMethod,
         status: 'PAID',
@@ -277,7 +326,10 @@ export class PosService {
         );
       }
       const [contractId] = distinctContractIds;
-      suspendedContract = await this.contractRepository.findOneBy({ id: contractId as string });
+      suspendedContract = await this.contractRepository.findOne({
+        where: { id: contractId as string },
+        relations: ['plan'],
+      });
       if (!suspendedContract || suspendedContract.status !== 'SUSPENDED') {
         throw new BadRequestException('El cargo de reconexión solo aplica a un contrato actualmente SUSPENDED');
       }
@@ -351,7 +403,12 @@ export class PosService {
         const currentDiscount = isDiscountTarget ? targetInvoiceDiscount : 0;
         const subtotalNum = Number(invoice.subtotal || 0);
         const itbisNum = Number(invoice.itbisTotal || 0);
-        const currentGrandTotal = Math.max(0, Number((subtotalNum + itbisNum - currentDiscount).toFixed(2)));
+        // El CDT/ISC ya vienen calculados desde que la factura recurrente se
+        // generó (BillingCycleService) — aquí solo se propagan a la Venta para
+        // que la factura impresa y el e-CF los reflejen (antes se perdían).
+        const cdtNum = Number(invoice.cdtAmount || 0);
+        const iscNum = Number(invoice.iscAmount || 0);
+        const currentGrandTotal = Math.max(0, Number((subtotalNum + itbisNum + cdtNum + iscNum - currentDiscount).toFixed(2)));
 
         const detail = queryRunner.manager.getRepository(SaleDetailEntity).create({
           itemType: 'PLAN_SUBSCRIPTION',
@@ -359,6 +416,8 @@ export class PosService {
           quantity: 1,
           unitPrice: subtotalNum,
           itbisAmount: itbisNum,
+          cdtAmount: cdtNum,
+          iscAmount: iscNum,
           subtotal: subtotalNum,
         });
 
@@ -376,6 +435,8 @@ export class PosService {
           discountReason: isDiscountTarget ? discountReason : undefined,
           discountAuthorizedById: isDiscountTarget ? (discountAuthorizedSupervisorId || undefined) : undefined,
           itbisTotal: itbisNum,
+          cdtAmount: cdtNum,
+          iscTotal: iscNum,
           grandTotal: currentGrandTotal,
           paymentMethod: dto.paymentMethod,
           status: 'PAID',
@@ -397,7 +458,14 @@ export class PosService {
       if (suspendedContract) {
         const settings = await this.billingSettingsService.getSettings();
         const feeAmount = Number(settings.reconnectionFeeAmount);
-        const feeItbis = Number((feeAmount * 0.18).toFixed(2));
+        // El cargo de reconexión reactiva el servicio del plan contratado, así
+        // que lleva las mismas tasas de ese plan (ITBIS/CDT/ISC) — antes el
+        // ITBIS quedaba fijo en 18% y CDT/ISC nunca se aplicaban.
+        const { itbisAmount: feeItbis, cdtAmount: feeCdt, iscAmount: feeIsc } = this.taxCalculationService.calculateTaxes({
+          itemType: 'RECONNECTION_FEE',
+          subtotal: feeAmount,
+          plan: suspendedContract.plan,
+        });
 
         const feeDetail = queryRunner.manager.getRepository(SaleDetailEntity).create({
           itemType: 'RECONNECTION_FEE',
@@ -405,6 +473,8 @@ export class PosService {
           quantity: 1,
           unitPrice: feeAmount,
           itbisAmount: feeItbis,
+          cdtAmount: feeCdt,
+          iscAmount: feeIsc,
           subtotal: feeAmount,
         });
 
@@ -416,7 +486,9 @@ export class PosService {
           subtotal: feeAmount,
           discountAmount: 0,
           itbisTotal: feeItbis,
-          grandTotal: Number((feeAmount + feeItbis).toFixed(2)),
+          cdtAmount: feeCdt,
+          iscTotal: feeIsc,
+          grandTotal: Number((feeAmount + feeItbis + feeCdt + feeIsc).toFixed(2)),
           paymentMethod: dto.paymentMethod,
           status: 'PAID',
           notes: dto.notes,

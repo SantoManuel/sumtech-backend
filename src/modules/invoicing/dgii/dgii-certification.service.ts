@@ -2173,6 +2173,8 @@ export class DgiiCertificationService {
         subtotal,
         discountAmount: 0,
         itbisTotal,
+        cdtAmount: 0,
+        iscAmount: 0,
         grandTotal: montoTotal,
         cashier: 'Caja Homologación DGII',
         details: [

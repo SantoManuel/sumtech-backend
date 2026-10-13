@@ -38,6 +38,12 @@ export class UpdatePlanDto {
   cdtRate?: number;
 
   @IsOptional()
+  @IsNumber()
+  @Min(0, { message: 'El ISC no puede ser negativo' })
+  @Max(0.9999, { message: 'El ISC no puede superar 99.99%' })
+  iscRate?: number;
+
+  @IsOptional()
   @IsString()
   description?: string;
 

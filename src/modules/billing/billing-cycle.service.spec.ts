@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BillingCycleService } from './billing-cycle.service';
+import { TaxCalculationService } from './tax-calculation.service';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { SystemEvents } from '../../common/enums/system-events.enum';
@@ -47,6 +48,7 @@ describe('BillingCycleService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BillingCycleService,
+        TaxCalculationService,
         { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
         { provide: getRepositoryToken(InvoiceEntity), useValue: invoiceRepo },
         { provide: EventEmitter2, useValue: eventEmitter },
@@ -83,6 +85,7 @@ describe('BillingCycleService', () => {
     expect(savedInvoice.subtotal).toBe(2000);
     expect(savedInvoice.itbisTotal).toBe(360); // 2000 * 0.18
     expect(savedInvoice.cdtAmount).toBe(40); // 2000 * 0.02
+    expect(savedInvoice.iscAmount).toBe(0); // plan INTERNET, sin iscRate
     expect(savedInvoice.grandTotal).toBe(2400); // 2000 + 360 + 40
     expect(savedInvoice.concept).toContain('Fibra 100 Mbps');
     expect(savedInvoice.concept).toContain('septiembre de 2026');
@@ -209,7 +212,35 @@ describe('BillingCycleService', () => {
     expect(savedInvoice.subtotal).toBe(1000);
     expect(savedInvoice.itbisTotal).toBe(0);
     expect(savedInvoice.cdtAmount).toBe(0);
+    expect(savedInvoice.iscAmount).toBe(0);
     expect(savedInvoice.grandTotal).toBe(1000);
+  });
+
+  it('agrega ISC 10% cuando el plan es de TV/DUAL (Ley 253-12)', async () => {
+    contractRepo.find.mockResolvedValue([
+      makeContract({
+        billingDay: 15,
+        plan: {
+          id: 'plan-3',
+          name: 'Dúo Fibra + TV',
+          monthlyPrice: 3000,
+          itbisRate: 0.18,
+          cdtRate: 0.02,
+          iscRate: 0.1,
+        } as any,
+      }),
+    ]);
+    const referenceDate = new Date(2026, 8, 15);
+
+    const result = await service.runBillingCycle(referenceDate);
+
+    expect(result.generated).toBe(1);
+    const savedInvoice = invoiceRepo.create.mock.calls[0][0];
+    expect(savedInvoice.subtotal).toBe(3000);
+    expect(savedInvoice.itbisTotal).toBe(540); // 3000 * 0.18
+    expect(savedInvoice.cdtAmount).toBe(60); // 3000 * 0.02
+    expect(savedInvoice.iscAmount).toBe(300); // 3000 * 0.10
+    expect(savedInvoice.grandTotal).toBe(3900); // 3000 + 540 + 60 + 300
   });
 
   it('no procesa contratos si no hay contratos ACTIVE', async () => {

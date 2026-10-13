@@ -61,9 +61,14 @@ export class PlansService {
         ? dto.pppProfileId.trim()
         : null;
 
+    // El acceso a Internet está excluido del ISC de telecomunicaciones (Ley
+    // 253-12); TV/DUAL sí lo llevan. El usuario puede pisar este default.
+    const defaultIscRate = dto.serviceType === 'INTERNET' ? 0 : 0.1;
+
     const plan = this.planRepository.create({
       ...dto,
       itbisRate: dto.itbisRate !== undefined ? dto.itbisRate : 0.18,
+      iscRate: dto.iscRate !== undefined ? dto.iscRate : defaultIscRate,
       oltSpeedProfileId: sanitizedOlt,
       pppProfileId: sanitizedPpp,
       isActive: true,

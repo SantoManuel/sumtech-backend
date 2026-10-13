@@ -8,6 +8,7 @@ import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { SystemEvents } from '../../common/enums/system-events.enum';
 import { InvoiceGeneratedEvent } from './events/invoice-generated.event';
 import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
+import { TaxCalculationService } from './tax-calculation.service';
 import { BillingSettingsEntity } from './entities/billing-settings.entity';
 import {
   daysBetween,
@@ -40,6 +41,7 @@ export class BillingCycleService {
     private readonly invoiceRepository: Repository<InvoiceEntity>,
     private readonly eventEmitter: EventEmitter2,
     private readonly tenantIterator: TenantIteratorService,
+    private readonly taxCalculationService: TaxCalculationService,
   ) {}
 
   // Este cron corre en background, sin request/tenant asociado — a diferencia
@@ -122,9 +124,12 @@ export class BillingCycleService {
 
     const plan = contract.plan;
     const subtotal = Number(plan.monthlyPrice);
-    const itbisTotal = Number((subtotal * Number(plan.itbisRate)).toFixed(2));
-    const cdtAmount = Number((subtotal * Number(plan.cdtRate)).toFixed(2));
-    const grandTotal = Number((subtotal + itbisTotal + cdtAmount).toFixed(2));
+    const { itbisAmount: itbisTotal, cdtAmount, iscAmount } = this.taxCalculationService.calculateTaxes({
+      itemType: 'PLAN_SUBSCRIPTION',
+      subtotal,
+      plan,
+    });
+    const grandTotal = Number((subtotal + itbisTotal + cdtAmount + iscAmount).toFixed(2));
     const periodLabel = new Date(year, month, 1).toLocaleDateString('es-DO', {
       month: 'long',
       year: 'numeric',
@@ -139,6 +144,7 @@ export class BillingCycleService {
         subtotal,
         itbisTotal,
         cdtAmount,
+        iscAmount,
         grandTotal,
         dueDate: dueDateStr,
         billingPeriodStart: periodStartStr,
@@ -211,9 +217,12 @@ export class BillingCycleService {
 
     const monthlyPrice = Number(plan.monthlyPrice);
     const subtotal = Number(((monthlyPrice / cycleDays) * effectiveDaysUsed).toFixed(2));
-    const itbisTotal = Number((subtotal * Number(plan.itbisRate)).toFixed(2));
-    const cdtAmount = Number((subtotal * Number(plan.cdtRate)).toFixed(2));
-    const grandTotal = Number((subtotal + itbisTotal + cdtAmount).toFixed(2));
+    const { itbisAmount: itbisTotal, cdtAmount, iscAmount } = this.taxCalculationService.calculateTaxes({
+      itemType: 'PLAN_SUBSCRIPTION',
+      subtotal,
+      plan,
+    });
+    const grandTotal = Number((subtotal + itbisTotal + cdtAmount + iscAmount).toFixed(2));
     const periodLabel = new Date(year, month, 1).toLocaleDateString('es-DO', {
       month: 'long',
       year: 'numeric',
@@ -230,6 +239,7 @@ export class BillingCycleService {
         subtotal,
         itbisTotal,
         cdtAmount,
+        iscAmount,
         grandTotal,
         dueDate: contract.startDate,
         billingPeriodStart: periodStartStr,

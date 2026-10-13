@@ -36,6 +36,12 @@ export class SaleDetailEntity {
   @Column({ name: 'itbis_amount', type: 'decimal', precision: 10, scale: 2, default: 0.00 })
   itbisAmount: number;
 
+  @Column({ name: 'cdt_amount', type: 'decimal', precision: 10, scale: 2, default: 0 })
+  cdtAmount: number;
+
+  @Column({ name: 'isc_amount', type: 'decimal', precision: 10, scale: 2, default: 0 })
+  iscAmount: number;
+
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   subtotal: number;
 }

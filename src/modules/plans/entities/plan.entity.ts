@@ -28,6 +28,12 @@ export class PlanEntity {
   @Column({ name: 'cdt_rate', type: 'decimal', precision: 4, scale: 2, default: 0.02 })
   cdtRate: number;
 
+  // ISC a las Telecomunicaciones (Ley 253-12): 10% en TV/DUAL, 0% en INTERNET
+  // puro (el acceso a Internet está excluido del ISC). Default lo fija
+  // PlansService.create() según serviceType; aquí solo queda el 0 "seguro".
+  @Column({ name: 'isc_rate', type: 'decimal', precision: 4, scale: 2, default: 0 })
+  iscRate: number;
+
   @Column({ type: 'text', nullable: true })
   description?: string | null;
 

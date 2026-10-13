@@ -324,6 +324,7 @@ export class ClientsImportProcessor extends WorkerHost {
               subtotal: saldo,
               itbisTotal: 0,
               cdtAmount: 0,
+              iscAmount: 0, // saldo migrado de un sistema anterior, no es un servicio nuevo facturable
               grandTotal: saldo,
               concept: SALDO_INICIAL_CONCEPT,
             }),

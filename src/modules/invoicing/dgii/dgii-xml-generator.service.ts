@@ -1096,6 +1096,9 @@ export class DgiiXmlGeneratorService {
       totalItbis1?: number;
       tipoIngresos?: string;
       tipoPago?: string;
+      // CDT ('002') / ISC a telecomunicaciones ('004') u otro impuesto adicional
+      // de la factura — ver CodificacionTipoImpuestosType / ImpuestosAdicionalesType.
+      impuestosAdicionales?: Array<{ tipoImpuesto: string; monto: number }>;
     },
   ): string {
     const cleanEncf = (eNcf || '').trim().toUpperCase();
@@ -1133,6 +1136,22 @@ export class DgiiXmlGeneratorService {
     if (itbisVal > 0) {
       totalesXml += `<TotalITBIS>${this.formatDecimal(itbisVal)}</TotalITBIS>`;
       totalesXml += `<TotalITBIS1>${this.formatDecimal(extraOptions?.totalItbis1 ?? itbisVal)}</TotalITBIS1>`;
+    }
+    // CDT/ISC — orden del XSD oficial: MontoImpuestoAdicional e ImpuestosAdicionales
+    // van ANTES de MontoTotal (rfce-32.xsd:64-80).
+    const impuestosAdicionales = (extraOptions?.impuestosAdicionales || []).filter((t) => Number(t.monto) > 0);
+    if (impuestosAdicionales.length > 0) {
+      const montoImpuestoAdicional = impuestosAdicionales.reduce((sum, t) => sum + Number(t.monto), 0);
+      totalesXml += `<MontoImpuestoAdicional>${this.formatDecimal(montoImpuestoAdicional)}</MontoImpuestoAdicional>`;
+      totalesXml += '<ImpuestosAdicionales>';
+      impuestosAdicionales.forEach((tax) => {
+        totalesXml +=
+          '<ImpuestoAdicional>' +
+          `<TipoImpuesto>${this.escapeXml(tax.tipoImpuesto)}</TipoImpuesto>` +
+          `<OtrosImpuestosAdicionales>${this.formatDecimal(tax.monto)}</OtrosImpuestosAdicionales>` +
+          '</ImpuestoAdicional>';
+      });
+      totalesXml += '</ImpuestosAdicionales>';
     }
     totalesXml += `<MontoTotal>${this.formatDecimal(montoTotalVal)}</MontoTotal>`;
     totalesXml += '</Totales>';

@@ -395,6 +395,14 @@ export class PdfGeneratorService {
       ['Subtotal Exento:', formatNumber(subtotalExento)],
       [subtotalGravado > 0 ? 'Total ITBIS (18%):' : 'Total ITBIS:', formatNumber(metadata.sale.itbisTotal)],
     ];
+    // CDT/ISC solo se muestran si aplican — antes se sumaban al total sin
+    // desglosarse, así que el total impreso no cuadraba con las líneas de arriba.
+    if (Number(metadata.sale.cdtAmount) > 0) {
+      totalsLines.push(['CDT:', formatNumber(metadata.sale.cdtAmount)]);
+    }
+    if (Number(metadata.sale.iscAmount) > 0) {
+      totalsLines.push(['ISC Telecomunicaciones:', formatNumber(metadata.sale.iscAmount)]);
+    }
     let totalsY = footerTop;
     totalsLines.forEach(([label, value]) => {
       doc.text(label, totalsBoxX, totalsY, { width: totalsBoxWidth - 90, continued: false });
@@ -677,6 +685,13 @@ export class PdfGeneratorService {
     } else {
       y = twoCol('Subtotal Gravado:', formatNumber(subtotalGravado || metadata.sale.subtotal), y, false, 0.65, 7.5) + 3;
       y = twoCol('ITBIS Facturado (18%):', formatNumber(metadata.sale.itbisTotal), y, false, 0.65, 7.5) + 3;
+    }
+    // CDT/ISC — antes se sumaban al total sin desglosarse en el recibo térmico.
+    if (Number(metadata.sale.cdtAmount) > 0) {
+      y = twoCol('CDT:', formatNumber(metadata.sale.cdtAmount), y, false, 0.65, 7.5) + 3;
+    }
+    if (Number(metadata.sale.iscAmount) > 0) {
+      y = twoCol('ISC Telecomunicaciones:', formatNumber(metadata.sale.iscAmount), y, false, 0.65, 7.5) + 3;
     }
 
     y = drawSolidDivider(y);

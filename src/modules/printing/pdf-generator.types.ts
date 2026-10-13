@@ -50,6 +50,8 @@ export interface InvoiceReceiptMetadata {
     subtotal: number;
     discountAmount: number;
     itbisTotal: number;
+    cdtAmount: number;
+    iscAmount: number;
     grandTotal: number;
     cashier: string;
     details: Array<{

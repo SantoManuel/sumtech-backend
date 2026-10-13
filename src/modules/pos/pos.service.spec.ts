@@ -13,10 +13,13 @@ import { ContractEntity } from '../clients/entities/contract.entity';
 import { ClientEntity } from '../clients/entities/client.entity';
 import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { EmployeeEntity } from '../employees/entities/employee.entity';
+import { PlanEntity } from '../plans/entities/plan.entity';
+import { ServiceFeeEntity } from '../plans/entities/service-fee.entity';
 import { InventoryService } from '../inventory/inventory.service';
 import { InvoicingService } from '../invoicing/invoicing.service';
 import { MorosidadService } from '../billing/morosidad.service';
 import { BillingSettingsService } from '../billing/billing-settings.service';
+import { TaxCalculationService } from '../billing/tax-calculation.service';
 import { UsersService } from '../users/users.service';
 import { AuthService } from '../auth/auth.service';
 
@@ -90,8 +93,12 @@ describe('PosService', () => {
     };
 
     contractRepo = {
+      // checkout() llama findOne({ where: { id } }) solo para el ajuste de
+      // billingDay; collectInvoices() (cargo de reconexión) llama
+      // findOne({ where: { id }, relations: ['plan'] }) — ambos comparten este
+      // mock por defecto, así que cada describe('applyReconnectionFee', ...)
+      // lo sobreescribe con el contrato SUSPENDED + plan que necesita.
       findOne: jest.fn().mockResolvedValue({ id: 'contract-1', billingDay: 15 }),
-      findOneBy: jest.fn().mockResolvedValue({ id: 'contract-1', clientId: 'client-1', status: 'SUSPENDED' }),
       save: jest.fn((dto) => Promise.resolve(dto)),
     };
 
@@ -151,6 +158,14 @@ describe('PosService', () => {
       findOne: jest.fn().mockResolvedValue(null),
     };
 
+    const planRepo: any = {
+      findBy: jest.fn().mockResolvedValue([]),
+    };
+
+    const serviceFeeRepo: any = {
+      findBy: jest.fn().mockResolvedValue([]),
+    };
+
     eventEmitterMock = { emit: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -164,6 +179,7 @@ describe('PosService', () => {
         { provide: BillingSettingsService, useValue: billingSettingsService },
         { provide: UsersService, useValue: usersService },
         { provide: AuthService, useValue: authService },
+        TaxCalculationService,
         { provide: getRepositoryToken(SaleEntity), useValue: saleRepo },
         { provide: getRepositoryToken(CashRegisterEntity), useValue: cashRegisterRepo },
         { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
@@ -171,6 +187,8 @@ describe('PosService', () => {
         { provide: getRepositoryToken(InvoiceEntity), useValue: invoiceRepo },
         { provide: getRepositoryToken(CashStationEntity), useValue: cashStationRepo },
         { provide: getRepositoryToken(EmployeeEntity), useValue: employeeRepo },
+        { provide: getRepositoryToken(PlanEntity), useValue: planRepo },
+        { provide: getRepositoryToken(ServiceFeeEntity), useValue: serviceFeeRepo },
       ],
     }).compile();
 
@@ -476,6 +494,12 @@ describe('PosService', () => {
     describe('applyReconnectionFee', () => {
       it('cobra el cargo de reconexión configurado junto con las facturas del lote y reactiva pasando el id de la factura del cargo', async () => {
         invoiceRepo.find.mockResolvedValue([makePendingInvoice({ contractId: 'contract-1' })]);
+        contractRepo.findOne.mockResolvedValue({
+          id: 'contract-1',
+          clientId: 'client-1',
+          status: 'SUSPENDED',
+          plan: { itbisRate: 0.18, cdtRate: 0.02, iscRate: 0 },
+        });
 
         const result = await service.collectInvoices('user-1', {
           cashRegisterId: 'cr-1',
@@ -496,6 +520,12 @@ describe('PosService', () => {
 
       it('el monto del cargo se calcula desde BillingSettingsEntity.reconnectionFeeAmount, no de un valor fijo en el código', async () => {
         invoiceRepo.find.mockResolvedValue([makePendingInvoice({ contractId: 'contract-1' })]);
+        contractRepo.findOne.mockResolvedValue({
+          id: 'contract-1',
+          clientId: 'client-1',
+          status: 'SUSPENDED',
+          plan: { itbisRate: 0.18, cdtRate: 0.02, iscRate: 0 },
+        });
         const settingsSpy = jest.fn().mockResolvedValue({ reconnectionFeeAmount: 750 });
         (service as any).billingSettingsService = { getSettings: settingsSpy };
 
@@ -515,7 +545,7 @@ describe('PosService', () => {
 
       it('rechaza con BadRequestException si el contrato de las facturas no está SUSPENDED', async () => {
         invoiceRepo.find.mockResolvedValue([makePendingInvoice({ contractId: 'contract-1' })]);
-        contractRepo.findOneBy.mockResolvedValue({ id: 'contract-1', clientId: 'client-1', status: 'ACTIVE' });
+        contractRepo.findOne.mockResolvedValue({ id: 'contract-1', clientId: 'client-1', status: 'ACTIVE' });
 
         await expect(
           service.collectInvoices('user-1', {
@@ -545,7 +575,7 @@ describe('PosService', () => {
 
       it('sin applyReconnectionFee no valida el estado del contrato ni cobra ningún cargo adicional', async () => {
         invoiceRepo.find.mockResolvedValue([makePendingInvoice({ contractId: 'contract-1' })]);
-        contractRepo.findOneBy.mockClear();
+        contractRepo.findOne.mockClear();
 
         const result = await service.collectInvoices('user-1', {
           cashRegisterId: 'cr-1',
@@ -555,7 +585,7 @@ describe('PosService', () => {
         } as any);
 
         expect(result).toHaveLength(1);
-        expect(contractRepo.findOneBy).not.toHaveBeenCalled();
+        expect(contractRepo.findOne).not.toHaveBeenCalled();
       });
     });
 

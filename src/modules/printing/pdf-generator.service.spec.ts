@@ -97,6 +97,8 @@ describe('PdfGeneratorService', () => {
         subtotal: 1500,
         discountAmount: 0,
         itbisTotal: 270,
+        cdtAmount: 0,
+        iscAmount: 0,
         grandTotal: 1770,
         cashier: 'Caja Principal',
         details: [
@@ -179,6 +181,8 @@ describe('PdfGeneratorService', () => {
           ...metadata.sale,
           subtotal: 1600,
           itbisTotal: 270,
+          cdtAmount: 0,
+          iscAmount: 0,
           grandTotal: 1870,
           details: [
             { concept: 'Plan Fibra 100 Mbps', quantity: 1, unitPrice: 1500, itbisAmount: 270, subtotal: 1500, unidadMedida: 'SERV' },
@@ -195,6 +199,36 @@ describe('PdfGeneratorService', () => {
       expect(text).toContain('Total ITBIS (18%)');
     });
 
+    it('muestra CDT e ISC como líneas separadas cuando la factura los lleva (antes se perdían dentro del total)', async () => {
+      const withCdtAndIsc: InvoiceReceiptMetadata = {
+        ...metadata,
+        sale: {
+          ...metadata.sale,
+          subtotal: 3000,
+          itbisTotal: 540,
+          cdtAmount: 60,
+          iscAmount: 300,
+          grandTotal: 3900,
+          details: [
+            { concept: 'Dúo Fibra + TV', quantity: 1, unitPrice: 3000, itbisAmount: 540, subtotal: 3000, unidadMedida: 'SERV' },
+          ],
+        },
+      };
+
+      const text = extractPdfText(await service.generateInvoiceA4Pdf(withCdtAndIsc));
+      expect(text).toContain('CDT');
+      expect(text).toContain('ISC');
+      expect(text).toContain('60.00');
+      expect(text).toContain('300.00');
+      expect(text).toContain('3,900.00');
+    });
+
+    it('no muestra líneas de CDT/ISC cuando ambos son 0', async () => {
+      const text = extractPdfText(await service.generateInvoiceA4Pdf(metadata));
+      expect(text).not.toContain('CDT');
+      expect(text).not.toContain('ISC');
+    });
+
     it('etiqueta "Total ITBIS:" sin porcentaje cuando la factura es totalmente exenta', async () => {
       const allExempt: InvoiceReceiptMetadata = {
         ...metadata,
@@ -202,6 +236,8 @@ describe('PdfGeneratorService', () => {
           ...metadata.sale,
           subtotal: 1,
           itbisTotal: 0,
+          cdtAmount: 0,
+          iscAmount: 0,
           grandTotal: 1,
           details: [{ concept: 'Servicio exento', quantity: 1, unitPrice: 1, itbisAmount: 0, subtotal: 1, unidadMedida: 'SERV' }],
         },
@@ -367,6 +403,8 @@ describe('PdfGeneratorService', () => {
         subtotal: 5000,
         discountAmount: 0,
         itbisTotal: 900,
+        cdtAmount: 0,
+        iscAmount: 0,
         grandTotal: 5900,
         cashier: 'Caja Principal',
         details: [
@@ -412,6 +450,27 @@ describe('PdfGeneratorService', () => {
       const text = extractPdfText(await service.generateInvoiceThermalPdf(nc));
       expect(text).toContain('NCF Modificado: E310000000001');
       expect(text).toContain('Descuento comercial aplicado');
+    });
+
+    it('muestra CDT e ISC en el recibo térmico cuando la venta los lleva', async () => {
+      const withCdtAndIsc: InvoiceReceiptMetadata = {
+        ...metadata,
+        sale: {
+          ...metadata.sale,
+          subtotal: 3000,
+          itbisTotal: 540,
+          cdtAmount: 60,
+          iscAmount: 300,
+          grandTotal: 3900,
+          details: [
+            { concept: 'Dúo Fibra + TV', quantity: 1, unitPrice: 3000, itbisAmount: 540, subtotal: 3000, unidadMedida: 'SERV' },
+          ],
+        },
+      };
+      const text = extractPdfText(await service.generateInvoiceThermalPdf(withCdtAndIsc));
+      expect(text).toContain('CDT');
+      expect(text).toContain('ISC');
+      expect(text).toContain('3,900.00');
     });
   });
 
