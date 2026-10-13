@@ -126,7 +126,22 @@ export class OnuManagementService {
       );
     }
 
-    return qb.getMany();
+    const onus = await qb.getMany();
+
+    // Forma limpia (sn/ponPort/onuId), misma convención ya usada en
+    // ClientsService.getClientServices() — el selector de ONU del modal
+    // "Configurar Acceso de Red" espera estos nombres, no los de la entidad
+    // cruda (serialNumber/ponInterface/onuIndex), o se ve vacío en la UI.
+    return onus.map((onu) => ({
+      id: onu.id,
+      sn: onu.serialNumber,
+      olt: onu.olt ? { id: onu.olt.id, name: onu.olt.name } : undefined,
+      ponPort: onu.ponInterface?.name,
+      onuId: onu.onuIndex,
+      status: onu.status,
+      contractId: onu.contractId,
+      contractNumber: onu.contract?.contractNumber,
+    }));
   }
 
   async findById(id: string) {

@@ -197,6 +197,25 @@ describe('OnuManagementService', () => {
     expect(service).toBeDefined();
   });
 
+  describe('findAll', () => {
+    it('devuelve la forma limpia (sn/ponPort/onuId) que espera el selector de ONU del modal de acceso de red, no la entidad cruda (serialNumber/ponInterface/onuIndex)', async () => {
+      const result = await service.findAll();
+
+      expect(result).toEqual([
+        {
+          id: 'onu-uuid-1',
+          sn: 'ZTEGC0123456',
+          olt: { id: 'olt-uuid-1', name: 'OLT Central ZTE C320' },
+          ponPort: 'gpon-olt_1/1/1',
+          onuId: 'gpon-onu_1/1/1:1',
+          status: 'UNCONFIGURED',
+          contractId: undefined,
+          contractNumber: undefined,
+        },
+      ]);
+    });
+  });
+
   describe('findUnconfigured', () => {
     it('retorna las ONUs con status UNCONFIGURED', async () => {
       onuRepo.find.mockResolvedValue([mockOnu]);
