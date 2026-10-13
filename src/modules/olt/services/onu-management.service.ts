@@ -135,6 +135,12 @@ export class OnuManagementService {
     return onus.map((onu) => ({
       id: onu.id,
       sn: onu.serialNumber,
+      // `onu.vendor` se fija al momento del descubrimiento (ej. "HIOSO") y
+      // existe siempre, aunque la ONU todavía no tenga un `onuType` de
+      // catálogo asignado (eso solo pasa al autorizarla con un tipo
+      // específico) — por eso se exponen ambos, no solo uno.
+      vendor: onu.vendor,
+      model: onu.onuType ? `${onu.onuType.vendor} ${onu.onuType.model}` : undefined,
       olt: onu.olt ? { id: onu.olt.id, name: onu.olt.name } : undefined,
       ponPort: onu.ponInterface?.name,
       onuId: onu.onuIndex,

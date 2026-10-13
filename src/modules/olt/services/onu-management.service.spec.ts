@@ -205,6 +205,8 @@ describe('OnuManagementService', () => {
         {
           id: 'onu-uuid-1',
           sn: 'ZTEGC0123456',
+          vendor: 'ZTE',
+          model: undefined,
           olt: { id: 'olt-uuid-1', name: 'OLT Central ZTE C320' },
           ponPort: 'gpon-olt_1/1/1',
           onuId: 'gpon-onu_1/1/1:1',
@@ -213,6 +215,21 @@ describe('OnuManagementService', () => {
           contractNumber: undefined,
         },
       ]);
+    });
+
+    it('incluye el modelo (vendor+model del catálogo) cuando la ONU ya tiene un onuType asignado', async () => {
+      onuRepo.createQueryBuilder = jest.fn(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([
+          { ...mockOnu, onuType: { vendor: 'HiOSO', model: 'ONU-01G' } },
+        ]),
+      }));
+
+      const result = await service.findAll();
+
+      expect(result[0].model).toBe('HiOSO ONU-01G');
     });
   });
 
