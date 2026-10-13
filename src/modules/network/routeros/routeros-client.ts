@@ -32,6 +32,8 @@ export interface RouterOsPppProfile {
   localAddress?: string;
   remoteAddress?: string;
   onlyOne?: boolean;
+  /** Servidores DNS entregados al cliente por IPCP, formato RouterOS "8.8.8.8,1.1.1.1". Sin esto el cliente PPPoE no puede resolver nombres de dominio (ej. para TR-069/ACS). */
+  dnsServer?: string;
 }
 
 export interface RouterOsIpPool {
@@ -68,6 +70,7 @@ export interface EnsureProfileOptions {
   localAddress?: string;
   remoteAddress?: string;
   onlyOne?: boolean;
+  dnsServer?: string;
 }
 
 export interface RouterOsConnectionResult {
@@ -392,6 +395,7 @@ export class RouterOsClient {
       localAddress: match['local-address'],
       remoteAddress: match['remote-address'],
       onlyOne: match['only-one'] !== undefined ? (match['only-one'] === true || match['only-one'] === 'yes') : undefined,
+      dnsServer: match['dns-server'],
     };
   }
 
@@ -413,6 +417,7 @@ export class RouterOsClient {
       localAddress: entry['local-address'],
       remoteAddress: entry['remote-address'],
       onlyOne: entry['only-one'] !== undefined ? (entry['only-one'] === true || entry['only-one'] === 'yes') : undefined,
+      dnsServer: entry['dns-server'],
     }));
   }
 
@@ -484,6 +489,7 @@ export class RouterOsClient {
     if (options?.localAddress) payload['local-address'] = options.localAddress;
     if (options?.remoteAddress) payload['remote-address'] = options.remoteAddress;
     if (options?.onlyOne !== undefined) payload['only-one'] = options.onlyOne ? 'yes' : 'no';
+    if (options?.dnsServer) payload['dns-server'] = options.dnsServer;
 
     try {
       const response = await this.http.put(this.buildUrl('ppp/profile'), payload, this.buildRequestConfig());
@@ -496,6 +502,7 @@ export class RouterOsClient {
         localAddress: created?.['local-address'] ?? options?.localAddress,
         remoteAddress: created?.['remote-address'] ?? options?.remoteAddress,
         onlyOne: options?.onlyOne,
+        dnsServer: created?.['dns-server'] ?? options?.dnsServer,
       };
     } catch (error) {
       throw new Error(this.describeError(error));
@@ -514,6 +521,7 @@ export class RouterOsClient {
     if (options?.localAddress !== undefined) payload['local-address'] = options.localAddress;
     if (options?.remoteAddress !== undefined) payload['remote-address'] = options.remoteAddress;
     if (options?.onlyOne !== undefined) payload['only-one'] = options.onlyOne ? 'yes' : 'no';
+    if (options?.dnsServer !== undefined) payload['dns-server'] = options.dnsServer;
 
     try {
       await this.http.patch(
@@ -543,7 +551,8 @@ export class RouterOsClient {
       existing.rateLimit !== rateLimit ||
       (options?.parentQueue && existing.parentQueue !== options.parentQueue) ||
       (options?.localAddress && existing.localAddress !== options.localAddress) ||
-      (options?.remoteAddress && existing.remoteAddress !== options.remoteAddress);
+      (options?.remoteAddress && existing.remoteAddress !== options.remoteAddress) ||
+      (options?.dnsServer !== undefined && existing.dnsServer !== options.dnsServer);
 
     if (needsUpdate) {
       await this.updateProfile(existing.id, rateLimit, options);
@@ -555,6 +564,7 @@ export class RouterOsClient {
       parentQueue: options?.parentQueue ?? existing.parentQueue,
       localAddress: options?.localAddress ?? existing.localAddress,
       remoteAddress: options?.remoteAddress ?? existing.remoteAddress,
+      dnsServer: options?.dnsServer ?? existing.dnsServer,
     };
   }
 

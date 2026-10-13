@@ -22,6 +22,7 @@ export interface EnrichedRouterOsProfile {
   localAddress?: string;
   remoteAddress?: string;
   onlyOne?: boolean;
+  dnsServer?: string;
   secretsCount: number;
   dynamicIpCount: number;
   staticIpCount: number;
@@ -210,6 +211,7 @@ export class PppManagementService {
 
     const targetPool = dto?.poolOverride?.trim() || node.defaultPppPool || undefined;
     const targetQueue = dto?.parentQueueOverride?.trim() || node.defaultParentQueue || undefined;
+    const targetDns = dto?.dnsServersOverride?.trim() || node.defaultDnsServers || undefined;
 
     const results: Array<{
       planId: string;
@@ -232,6 +234,7 @@ export class PppManagementService {
           parentQueue: targetQueue,
           remoteAddress: targetPool,
           onlyOne: true,
+          dnsServer: targetDns,
         });
         results.push({
           planId: plan.id,
@@ -326,6 +329,7 @@ export class PppManagementService {
         localAddress: p.localAddress,
         remoteAddress: p.remoteAddress,
         onlyOne: p.onlyOne,
+        dnsServer: p.dnsServer,
         secretsCount: matchingSecrets.length,
         dynamicIpCount,
         staticIpCount,
@@ -379,6 +383,7 @@ export class PppManagementService {
       localAddress: dto.localAddress || undefined,
       remoteAddress: dto.remoteAddress || undefined,
       onlyOne: dto.onlyOne !== undefined ? dto.onlyOne : true,
+      dnsServer: dto.dnsServer || undefined,
     });
 
     await this.deviceOperationLogger.logEvent({
@@ -412,6 +417,7 @@ export class PppManagementService {
       localAddress: dto.localAddress,
       remoteAddress: dto.remoteAddress,
       onlyOne: dto.onlyOne,
+      dnsServer: dto.dnsServer,
     });
 
     await this.deviceOperationLogger.logEvent({

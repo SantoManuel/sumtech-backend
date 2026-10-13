@@ -127,6 +127,9 @@ export class NetworkNodeEntity {
   @Column({ name: 'default_ppp_pool', type: 'varchar', length: 100, nullable: true })
   defaultPppPool?: string;
 
+  @Column({ name: 'default_dns_servers', type: 'varchar', length: 255, nullable: true })
+  defaultDnsServers?: string;
+
   @Column({ name: 'last_error_code', type: 'varchar', length: 50, nullable: true })
   lastErrorCode?: string;
 

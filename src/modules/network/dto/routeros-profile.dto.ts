@@ -27,6 +27,11 @@ export class CreateRouterOsProfileDto {
   @IsBoolean()
   @IsOptional()
   onlyOne?: boolean;
+
+  /** Servidores DNS entregados al cliente por IPCP (ej. "8.8.8.8,1.1.1.1"). Sin esto el cliente no puede resolver nombres de dominio (ej. para TR-069/ACS). */
+  @IsString()
+  @IsOptional()
+  dnsServer?: string;
 }
 
 export class UpdateRouterOsProfileDto {
@@ -49,4 +54,8 @@ export class UpdateRouterOsProfileDto {
   @IsBoolean()
   @IsOptional()
   onlyOne?: boolean;
+
+  @IsString()
+  @IsOptional()
+  dnsServer?: string;
 }

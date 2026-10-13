@@ -17,6 +17,11 @@ export class SyncCatalogProfilesDto {
   @IsOptional()
   parentQueueOverride?: string;
 
+  /** Sobrescribe los servidores DNS predeterminados del nodo para este lote de perfiles (ej. "8.8.8.8,1.1.1.1"). */
+  @IsString()
+  @IsOptional()
+  dnsServersOverride?: string;
+
   /** Indica si se debe asegurar la existencia del perfil de suspensión preventiva 'Sumtech-Corte' (256k/256k). Por defecto: true. */
   @IsBoolean()
   @IsOptional()
