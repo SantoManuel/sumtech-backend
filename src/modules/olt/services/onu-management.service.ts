@@ -10,6 +10,7 @@ import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
+import { NetworkAccessEntity } from '../../network/entities/network-access.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
@@ -50,6 +51,8 @@ export class OnuManagementService {
     private readonly nodeRepository: Repository<NetworkNodeEntity>,
     @InjectRepository(ContractEntity)
     private readonly contractRepository: Repository<ContractEntity>,
+    @InjectRepository(NetworkAccessEntity)
+    private readonly networkAccessRepository: Repository<NetworkAccessEntity>,
     private readonly driverRegistry: OltDriverRegistry,
     private readonly reachabilityResolver: ReachabilityResolver,
     private readonly deviceOperationLogger: DeviceOperationLogger,
@@ -403,6 +406,24 @@ export class OnuManagementService {
           throw new Error(`Red TR-069 "${dto.tr069NetworkId}" no encontrada.`);
         }
         const onuType = dto.onuTypeId ? await this.onuTypeRepository.findOneBy({ id: dto.onuTypeId }) : null;
+        const wanMode = dto.wanMode || 'PPPOE';
+
+        // PPPoE: usuario/contraseña vienen del network_access ya vinculado al
+        // contrato (única fuente de verdad, ver Plan_Implementacion_Red_RF.md
+        // §8 Fase 8) -- nunca se piden de nuevo en este modal para no terminar
+        // con dos credenciales PPPoE distintas (la del secret en RouterOS y la
+        // que el propio ONU usa) para el mismo acceso.
+        let pppoeUsername: string | undefined;
+        let pppoePassword: string | undefined;
+        if (wanMode === 'PPPOE' && dto.contractId) {
+          const networkAccess = await this.networkAccessRepository.findOneBy({ contractId: dto.contractId });
+          if (networkAccess) {
+            pppoeUsername = networkAccess.username || undefined;
+            pppoePassword = networkAccess.pppoePasswordEnc
+              ? decryptCredential(networkAccess.pppoePasswordEnc)
+              : undefined;
+          }
+        }
 
         await this.cpeConfiguratorService.configureCpe({
           serialNumber: onu.serialNumber,
@@ -415,7 +436,12 @@ export class OnuManagementService {
           // por tenant sería cosmético, no cambia esto).
           tenantSlug: this.tenantContext.getSlug(),
           operationMode: dto.operationMode || 'ROUTER',
-          wanMode: dto.wanMode || 'PPPOE',
+          wanMode,
+          pppoeUsername,
+          pppoePassword,
+          wanStaticIp: wanMode === 'STATIC' ? dto.wanStaticIp : undefined,
+          wanStaticMask: wanMode === 'STATIC' ? dto.wanStaticMask : undefined,
+          wanStaticGw: wanMode === 'STATIC' ? dto.wanStaticGw : undefined,
           serviceVlan: authParams.serviceVlan,
           managementServer: {
             acsUrl: tr069Network.acsUrl,

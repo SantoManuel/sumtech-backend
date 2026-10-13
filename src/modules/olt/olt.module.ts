@@ -18,6 +18,7 @@ import { OnuEntity } from './entities/onu.entity';
 import { OnuServiceConfigEntity } from './entities/onu-service-config.entity';
 import { OltMetricEntity } from './entities/olt-metric.entity';
 import { NetworkNodeEntity } from '../network/entities/network-node.entity';
+import { NetworkAccessEntity } from '../network/entities/network-access.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { CompanyProfileEntity } from '../company/entities/company-profile.entity';
 import { PlanEntity } from '../plans/entities/plan.entity';
@@ -53,6 +54,7 @@ import { OnuController } from './onu.controller';
       OnuServiceConfigEntity,
       OltMetricEntity,
       NetworkNodeEntity,
+      NetworkAccessEntity,
       ContractEntity,
       CompanyProfileEntity,
       PlanEntity,

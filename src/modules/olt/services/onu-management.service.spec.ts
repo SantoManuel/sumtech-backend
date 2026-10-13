@@ -11,6 +11,7 @@ import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
+import { NetworkAccessEntity } from '../../network/entities/network-access.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
@@ -18,6 +19,7 @@ import { DeviceOperationLogger } from '../../network-connectivity/services/devic
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { UnknownOltVendorError, DriverNotImplementedError } from '../ports/olt-driver.port';
+import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
 
 describe('OnuManagementService', () => {
   let service: OnuManagementService;
@@ -31,6 +33,7 @@ describe('OnuManagementService', () => {
   let tr069Repo: any;
   let nodeRepo: any;
   let contractRepo: any;
+  let networkAccessRepo: any;
   let zteDriver: any;
   let driverRegistry: any;
   let reachabilityResolver: any;
@@ -135,6 +138,10 @@ describe('OnuManagementService', () => {
       }),
     };
 
+    networkAccessRepo = {
+      findOneBy: jest.fn().mockResolvedValue(null),
+    };
+
     zteDriver = {
       getUnconfiguredOnus: jest.fn(),
       getOnuOpticalPower: jest.fn(),
@@ -182,6 +189,7 @@ describe('OnuManagementService', () => {
         { provide: getRepositoryToken(Tr069NetworkEntity), useValue: tr069Repo },
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
         { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
+        { provide: getRepositoryToken(NetworkAccessEntity), useValue: networkAccessRepo },
         { provide: OltDriverRegistry, useValue: driverRegistry },
         { provide: ReachabilityResolver, useValue: reachabilityResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
@@ -420,6 +428,102 @@ describe('OnuManagementService', () => {
       );
       expect((result as any).cpeConfigured).toBe(true);
       expect((result as any).cpeConfigWarning).toBeUndefined();
+    });
+
+    it('con wanMode PPPOE y contractId, resuelve usuario/contraseña desde el network_access ya vinculado (fuente única de verdad)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+      networkAccessRepo.findOneBy.mockResolvedValue({
+        contractId: 'contract-1',
+        username: 'cliente123',
+        pppoePasswordEnc: encryptCredential('ClavePppoeReal!'),
+      });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        tr069NetworkId: 'tr069-1',
+        contractId: 'contract-1',
+        managementMethod: 'TR069',
+        wanMode: 'PPPOE',
+      });
+
+      expect(networkAccessRepo.findOneBy).toHaveBeenCalledWith({ contractId: 'contract-1' });
+      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          wanMode: 'PPPOE',
+          pppoeUsername: 'cliente123',
+          pppoePassword: 'ClavePppoeReal!',
+        }),
+      );
+    });
+
+    it('con wanMode PPPOE pero sin network_access para ese contrato, no rompe y manda las credenciales undefined', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+      networkAccessRepo.findOneBy.mockResolvedValue(null);
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        tr069NetworkId: 'tr069-1',
+        contractId: 'contract-1',
+        managementMethod: 'TR069',
+        wanMode: 'PPPOE',
+      });
+
+      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pppoeUsername: undefined,
+          pppoePassword: undefined,
+        }),
+      );
+    });
+
+    it('con wanMode STATIC, pasa wanStaticIp/Mask/Gw tal cual al configurador CPE', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        tr069NetworkId: 'tr069-1',
+        managementMethod: 'TR069',
+        wanMode: 'STATIC',
+        wanStaticIp: '200.1.1.50',
+        wanStaticMask: '255.255.255.0',
+        wanStaticGw: '200.1.1.1',
+      });
+
+      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          wanMode: 'STATIC',
+          wanStaticIp: '200.1.1.50',
+          wanStaticMask: '255.255.255.0',
+          wanStaticGw: '200.1.1.1',
+        }),
+      );
+      expect(networkAccessRepo.findOneBy).not.toHaveBeenCalled();
+    });
+
+    it('con wanMode DHCP, no consulta network_access ni manda campos de estática', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        tr069NetworkId: 'tr069-1',
+        contractId: 'contract-1',
+        managementMethod: 'TR069',
+        wanMode: 'DHCP',
+      });
+
+      expect(networkAccessRepo.findOneBy).not.toHaveBeenCalled();
+      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          wanMode: 'DHCP',
+          wanStaticIp: undefined,
+          wanStaticMask: undefined,
+          wanStaticGw: undefined,
+        }),
+      );
     });
 
     it('si GenieACS todavía no conoce el ONU, no falla la autorización completa — agrega cpeConfigWarning', async () => {
