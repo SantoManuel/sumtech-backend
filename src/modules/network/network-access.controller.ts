@@ -30,9 +30,14 @@ export class NetworkAccessController {
     @Body() dto: UpsertNetworkAccessDto,
     @CurrentUser('sub') userId?: string,
   ) {
-    if (userId !== undefined) {
-      return this.provisioningService.upsertConfiguration(clientId, contractId, dto, userId);
-    }
-    return this.provisioningService.upsertConfiguration(clientId, contractId, dto);
+    const access = userId !== undefined
+      ? await this.provisioningService.upsertConfiguration(clientId, contractId, dto, userId)
+      : await this.provisioningService.upsertConfiguration(clientId, contractId, dto);
+
+    // Nunca se devuelve el cifrado al cliente — solo si hay una contraseña
+    // configurada, para que la UI pueda mostrar "configurada" sin exponer ni
+    // el texto plano ni el propio blob cifrado.
+    const { pppoePasswordEnc, ...rest } = access;
+    return { ...rest, hasPppoePassword: Boolean(pppoePasswordEnc) };
   }
 }

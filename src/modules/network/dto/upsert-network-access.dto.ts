@@ -18,6 +18,12 @@ export class UpsertNetworkAccessDto {
   @MaxLength(150, { message: 'El usuario no puede superar 150 caracteres' })
   username?: string;
 
+  /** Texto plano — el servicio lo cifra antes de guardarlo en pppoePasswordEnc. Vacío/omitido no borra el existente. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(150, { message: 'La contraseña no puede superar 150 caracteres' })
+  pppoePassword?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(50, { message: 'El alias de servicio no puede superar 50 caracteres' })

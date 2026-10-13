@@ -40,7 +40,20 @@ describe('NetworkAccessController', () => {
     const result = await controller.upsert('client-1', 'contract-1', dto as any);
 
     expect(service.upsertConfiguration).toHaveBeenCalledWith('client-1', 'contract-1', dto);
-    expect(result).toEqual({ id: 'access-1', connectionStatus: 'ACTIVE' });
+    // pppoePasswordEnc nunca debe llegar al cliente HTTP; se reemplaza por hasPppoePassword
+    expect(result).toEqual({ id: 'access-1', connectionStatus: 'ACTIVE', hasPppoePassword: false });
+  });
+
+  it('nunca devuelve pppoePasswordEnc, aunque el servicio lo incluya en la entidad', async () => {
+    service.upsertConfiguration.mockResolvedValueOnce({
+      id: 'access-2',
+      connectionStatus: 'ACTIVE',
+      pppoePasswordEnc: 'iv:tag:ciphertext',
+    });
+    const result = await controller.upsert('client-1', 'contract-1', { nodeId: 'node-1' } as any);
+
+    expect(result).not.toHaveProperty('pppoePasswordEnc');
+    expect(result).toEqual({ id: 'access-2', connectionStatus: 'ACTIVE', hasPppoePassword: true });
   });
 
   it('exige rol ADMIN o GERENTE', () => {

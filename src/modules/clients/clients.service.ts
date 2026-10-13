@@ -108,7 +108,27 @@ export class ClientsService {
     }
 
     const [data, total] = await query.getManyAndCount();
+    for (const client of data) {
+      for (const contract of client.contracts || []) {
+        this.sanitizeNetworkAccessSecret(contract.networkAccess);
+      }
+    }
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  /**
+   * El cifrado de la contraseña PPPoE nunca debe llegar al cliente HTTP — ni
+   * el texto plano ni el propio blob cifrado (mismo criterio que
+   * acsPassword/connReqPassword en TR-069: nunca se re-emite, solo se
+   * sobrescribe si se manda uno nuevo). Se reemplaza por un booleano para que
+   * la UI pueda distinguir "ya tiene contraseña" de "nunca se configuró".
+   */
+  private sanitizeNetworkAccessSecret(
+    access?: (ContractEntity['networkAccess'] & { hasPppoePassword?: boolean }) | null,
+  ): void {
+    if (!access) return;
+    access.hasPppoePassword = Boolean((access as { pppoePasswordEnc?: string }).pppoePasswordEnc);
+    delete (access as { pppoePasswordEnc?: string }).pppoePasswordEnc;
   }
 
   async findById(id: string): Promise<ClientEntity> {
@@ -130,6 +150,11 @@ export class ClientsService {
     if (!client) {
       throw new NotFoundException(`Cliente con ID ${id} no encontrado`);
     }
+
+    for (const contract of client.contracts || []) {
+      this.sanitizeNetworkAccessSecret(contract.networkAccess);
+    }
+
     return client;
   }
 

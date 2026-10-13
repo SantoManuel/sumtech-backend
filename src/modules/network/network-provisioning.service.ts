@@ -10,6 +10,7 @@ import { NetworkProvisioningPortRegistry } from './network-provisioning-port.reg
 import { UpsertNetworkAccessDto } from './dto/upsert-network-access.dto';
 import { FindAuditLogDto } from './dto/find-audit-log.dto';
 import { buildRouterProfileName } from './routeros/router-profile-name.util';
+import { encryptCredential } from '../network-connectivity/utils/crypto.util';
 
 type AuditAction = 'CREATE' | 'PROVISION' | 'SUSPEND' | 'RESTORE' | 'DEPROVISION' | 'SYNC_PROFILE';
 
@@ -153,6 +154,13 @@ export class NetworkProvisioningService {
     if (dto.ipAddress !== undefined) access.ipAddress = dto.ipAddress;
     if (dto.macAddress !== undefined) access.macAddress = dto.macAddress;
     if (dto.vlanId !== undefined) access.vlanId = dto.vlanId;
+    // Sin esto, el secret PPPoE siempre caía al fallback hardcodeado de
+    // RouterOsProvisioningAdapter.provision() ('SumtechPass2026!') para TODO
+    // cliente — ninguna contraseña real era alcanzable desde la app.
+    const passwordChanged = Boolean(dto.pppoePassword);
+    if (dto.pppoePassword) {
+      access.pppoePasswordEnc = encryptCredential(dto.pppoePassword);
+    }
 
     const saved = await this.accessRepository.save(access);
 
@@ -163,6 +171,11 @@ export class NetworkProvisioningService {
     if (wasPending && ((saved.nodeId && saved.username) || saved.onuId || dhcpReady)) {
       const actor = actorUserId ? `USER:${actorUserId}` : 'ADMIN';
       await this.transition(saved, 'PROVISION', 'ACTIVE', (port, acc) => port.provision(acc), undefined, actor, actorUserId);
+    } else if (!wasPending && passwordChanged && saved.nodeId && saved.username) {
+      // Acceso ya ACTIVE pero se cambió la contraseña: hay que empujarla de
+      // verdad al secret real en RouterOS, no solo guardarla cifrada en la BD.
+      const actor = actorUserId ? `USER:${actorUserId}` : 'ADMIN';
+      await this.transition(saved, 'PROVISION', saved.connectionStatus, (port, acc) => port.provision(acc), 'Rotación de contraseña PPPoE', actor, actorUserId);
     }
 
     // Cada vez que se configura/edita el acceso (nodo o usuario nuevos), se

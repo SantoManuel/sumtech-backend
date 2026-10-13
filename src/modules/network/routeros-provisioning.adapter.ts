@@ -188,6 +188,7 @@ export class RouterOsProvisioningAdapter extends NetworkProvisioningPort {
           parentQueue: node.defaultParentQueue || undefined,
           remoteAddress: node.defaultPppPool || undefined,
           onlyOne: true,
+          dnsServer: node.defaultDnsServers || undefined,
         },
       );
 
