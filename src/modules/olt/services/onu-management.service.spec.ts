@@ -198,38 +198,16 @@ describe('OnuManagementService', () => {
   });
 
   describe('findAll', () => {
-    it('devuelve la forma limpia (sn/ponPort/onuId) que espera el selector de ONU del modal de acceso de red, no la entidad cruda (serialNumber/ponInterface/onuIndex)', async () => {
+    it('devuelve la entidad cruda (serialNumber/mac/onuIndex/ponInterface/onuType/rxPowerDbm/contract) sin mapear -- la tabla "ONUs / Fibra" de red/page.tsx y el selector de ConfigureNetworkAccessModal leen estos mismos nombres', async () => {
       const result = await service.findAll();
 
-      expect(result).toEqual([
-        {
-          id: 'onu-uuid-1',
-          sn: 'ZTEGC0123456',
-          vendor: 'ZTE',
-          model: undefined,
-          olt: { id: 'olt-uuid-1', name: 'OLT Central ZTE C320' },
-          ponPort: 'gpon-olt_1/1/1',
-          onuId: 'gpon-onu_1/1/1:1',
-          status: 'UNCONFIGURED',
-          contractId: undefined,
-          contractNumber: undefined,
-        },
-      ]);
-    });
-
-    it('incluye el modelo (vendor+model del catálogo) cuando la ONU ya tiene un onuType asignado', async () => {
-      onuRepo.createQueryBuilder = jest.fn(() => ({
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([
-          { ...mockOnu, onuType: { vendor: 'HiOSO', model: 'ONU-01G' } },
-        ]),
-      }));
-
-      const result = await service.findAll();
-
-      expect(result[0].model).toBe('HiOSO ONU-01G');
+      expect(result).toEqual([mockOnu]);
+      // Campos puntuales que ambas vistas consumidoras leen directo de la
+      // entidad -- una "forma limpia" que los renombre rompe alguna de las
+      // dos en silencio (ya pasó una vez, ver commit de este archivo).
+      expect(result[0].serialNumber).toBe('ZTEGC0123456');
+      expect(result[0].onuIndex).toBe('gpon-onu_1/1/1:1');
+      expect(result[0].ponInterface).toEqual({ id: 'iface-1', name: 'gpon-olt_1/1/1' });
     });
   });
 

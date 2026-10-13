@@ -126,28 +126,15 @@ export class OnuManagementService {
       );
     }
 
-    const onus = await qb.getMany();
-
-    // Forma limpia (sn/ponPort/onuId), misma convención ya usada en
-    // ClientsService.getClientServices() — el selector de ONU del modal
-    // "Configurar Acceso de Red" espera estos nombres, no los de la entidad
-    // cruda (serialNumber/ponInterface/onuIndex), o se ve vacío en la UI.
-    return onus.map((onu) => ({
-      id: onu.id,
-      sn: onu.serialNumber,
-      // `onu.vendor` se fija al momento del descubrimiento (ej. "HIOSO") y
-      // existe siempre, aunque la ONU todavía no tenga un `onuType` de
-      // catálogo asignado (eso solo pasa al autorizarla con un tipo
-      // específico) — por eso se exponen ambos, no solo uno.
-      vendor: onu.vendor,
-      model: onu.onuType ? `${onu.onuType.vendor} ${onu.onuType.model}` : undefined,
-      olt: onu.olt ? { id: onu.olt.id, name: onu.olt.name } : undefined,
-      ponPort: onu.ponInterface?.name,
-      onuId: onu.onuIndex,
-      status: onu.status,
-      contractId: onu.contractId,
-      contractNumber: onu.contract?.contractNumber,
-    }));
+    // Entidad cruda (serialNumber/mac/onuIndex/ponInterface/onuType/rxPowerDbm/
+    // contract.client/...) -- NO mapear a una forma "limpia" aquí: la tabla
+    // "ONUs / Fibra" de /dashboard/red (fetchAllOnus en red/page.tsx) ya
+    // depende de estos nombres exactos desde antes de este método existir.
+    // El selector de ONU de ConfigureNetworkAccessModal (el otro consumidor
+    // de este mismo endpoint) lee estos mismos nombres crudos — no renombrar
+    // sin verificar AMBOS consumidores primero (ver git blame de este bloque:
+    // una mapeada "forma limpia" aquí rompió esa tabla en silencio).
+    return qb.getMany();
   }
 
   async findById(id: string) {
