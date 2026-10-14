@@ -159,5 +159,21 @@ describe('GenieAcsWifiService', () => {
 
       expect(client.setWifiCredentials).toHaveBeenCalledWith('00259E-ONT-16', true, credentials);
     });
+
+    it('registra el actor como CLIENTE por defecto (autogestión del portal)', async () => {
+      resolver.resolveForContract.mockResolvedValue(makeDevice());
+
+      await service.changeWifiCredentials('contract-1', credentials);
+
+      expect(auditRepo.save).toHaveBeenCalledWith(expect.objectContaining({ actor: 'CLIENTE' }));
+    });
+
+    it('registra el actor como STAFF cuando lo cambia un admin desde el panel (no el cliente)', async () => {
+      resolver.resolveForContract.mockResolvedValue(makeDevice());
+
+      await service.changeWifiCredentials('contract-1', credentials, 'STAFF');
+
+      expect(auditRepo.save).toHaveBeenCalledWith(expect.objectContaining({ actor: 'STAFF' }));
+    });
   });
 });

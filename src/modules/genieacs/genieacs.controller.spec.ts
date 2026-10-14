@@ -5,12 +5,14 @@ import { ConfigService } from '@nestjs/config';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { GenieAcsController } from './genieacs.controller';
 import { GenieAcsMonitoringService } from './genieacs-monitoring.service';
+import { GenieAcsWifiService } from './genieacs-wifi.service';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 
 describe('GenieAcsController', () => {
   let controller: GenieAcsController;
   let service: any;
+  let wifiService: any;
   const reflector = new Reflector();
 
   beforeEach(async () => {
@@ -18,11 +20,16 @@ describe('GenieAcsController', () => {
       getLiveStatus: jest.fn().mockResolvedValue({ linked: false }),
       rebootDevice: jest.fn().mockResolvedValue(undefined),
     };
+    wifiService = {
+      getWifiStatus: jest.fn().mockResolvedValue({ linked: false }),
+      changeWifiCredentials: jest.fn().mockResolvedValue({ ssid: 'Casa-Nueva', ssid5g: undefined }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [GenieAcsController],
       providers: [
         { provide: GenieAcsMonitoringService, useValue: service },
+        { provide: GenieAcsWifiService, useValue: wifiService },
         { provide: JwtService, useValue: { verify: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: TenantContextService, useValue: { hasContext: jest.fn().mockReturnValue(false), getTenantId: jest.fn(), getSlug: jest.fn() } },
@@ -58,5 +65,35 @@ describe('GenieAcsController', () => {
 
   it('exige rol ADMIN o GERENTE en reboot', () => {
     expect(reflector.get(ROLES_KEY, controller.reboot)).toEqual([Role.ADMIN, Role.GERENTE]);
+  });
+
+  it('getWifi delega en el servicio de WiFi con el contractId', async () => {
+    wifiService.getWifiStatus.mockResolvedValue({ linked: true, ssid: 'Casa-Juan' });
+
+    const result = await controller.getWifi('11111111-1111-4111-8111-111111111111');
+
+    expect(wifiService.getWifiStatus).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
+    expect(result).toEqual({ linked: true, ssid: 'Casa-Juan' });
+  });
+
+  it('changeWifi delega en el servicio marcando el actor como STAFF (no pide contraseña de cuenta)', async () => {
+    const result = await controller.changeWifi('11111111-1111-4111-8111-111111111111', {
+      ssid: 'Casa-Nueva',
+      ssid5g: 'Casa-Nueva-5G',
+      password: 'ClaveSegura123',
+    });
+
+    expect(wifiService.changeWifiCredentials).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      { ssid: 'Casa-Nueva', ssid5g: 'Casa-Nueva-5G', password: 'ClaveSegura123' },
+      'STAFF',
+    );
+    expect(result.success).toBe(true);
+    expect(result.ssid).toBe('Casa-Nueva');
+  });
+
+  it('exige rol ADMIN o GERENTE en getWifi y changeWifi', () => {
+    expect(reflector.get(ROLES_KEY, controller.getWifi)).toEqual([Role.ADMIN, Role.GERENTE]);
+    expect(reflector.get(ROLES_KEY, controller.changeWifi)).toEqual([Role.ADMIN, Role.GERENTE]);
   });
 });

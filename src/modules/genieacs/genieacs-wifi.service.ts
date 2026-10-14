@@ -47,7 +47,11 @@ export class GenieAcsWifiService {
     return { linked: true, ssid: device.ssid ?? undefined, ssid5g: device.ssid5g ?? undefined, lastSyncError: device.lastSyncError };
   }
 
-  async changeWifiCredentials(contractId: string, credentials: WifiCredentialsInput): Promise<GenieAcsDeviceEntity> {
+  async changeWifiCredentials(
+    contractId: string,
+    credentials: WifiCredentialsInput,
+    actor: 'CLIENTE' | 'STAFF' = 'CLIENTE',
+  ): Promise<GenieAcsDeviceEntity> {
     const device = await this.resolver.resolveForContract(contractId);
     if (!device || !device.genieacsDeviceId) {
       throw new NotFoundException(
@@ -82,13 +86,13 @@ export class GenieAcsWifiService {
       device.lastSyncError = null;
       const saved = await this.deviceRepository.save(device);
 
-      await this.recordAudit(contractId, genieacsDeviceId, 'OK', undefined, oldSsid, credentials.ssid);
+      await this.recordAudit(contractId, genieacsDeviceId, 'OK', undefined, oldSsid, credentials.ssid, actor);
       return saved;
     } catch (error) {
       const message = (error as Error).message;
       device.lastSyncError = message;
       await this.deviceRepository.save(device);
-      await this.recordAudit(contractId, genieacsDeviceId, 'ERROR', message, oldSsid, credentials.ssid);
+      await this.recordAudit(contractId, genieacsDeviceId, 'ERROR', message, oldSsid, credentials.ssid, actor);
       this.logger.error(`Error cambiando el WiFi del contrato ${contractId}: ${message}`);
       throw new BadGatewayException(`No se pudo aplicar el cambio de WiFi: ${message}`);
     }
@@ -101,13 +105,14 @@ export class GenieAcsWifiService {
     errorMessage: string | undefined,
     oldSsid: string | undefined,
     newSsid: string,
+    actor: 'CLIENTE' | 'STAFF',
   ): Promise<void> {
     await this.auditRepository.save(
       this.auditRepository.create({
         contractId,
         genieacsDeviceId,
         action: 'WIFI_CHANGE',
-        actor: 'CLIENTE',
+        actor,
         result,
         errorMessage,
         oldSsid,

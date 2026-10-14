@@ -204,7 +204,11 @@ export class GenieAcsDevicesController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   async rebootDevice(@Param('id') id: string) {
     const client = this.getClient();
-    await client.rebootDevice(id);
+    try {
+      await client.rebootDevice(id);
+    } catch (err: any) {
+      throw new ServiceUnavailableException(err.message);
+    }
     return {
       success: true,
       message: 'Orden de reinicio enviada al equipo.',

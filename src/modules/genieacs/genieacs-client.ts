@@ -47,6 +47,16 @@ export class GenieAcsClient {
   // no es una recomendación general, es la realidad operativa de este stack.
   private static readonly insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 
+  /**
+   * Timeout para tareas con `connection_request=true` (reboot, factoryReset,
+   * setParameterValues, refreshObject, setWifiCredentials): GenieACS espera
+   * sincrónicamente la sesión CWMP completa contra el CPE real antes de
+   * responder — verificado contra la instancia real que esto tarda bastante
+   * más que los 8s del timeout por defecto, incluso cuando la tarea sí se
+   * entrega con éxito.
+   */
+  private static readonly CONNECTION_REQUEST_TIMEOUT_MS = 30000;
+
   constructor(
     private readonly config: GenieAcsClientConfig,
     private readonly http: Pick<AxiosInstance, 'get' | 'post' | 'delete'> = axios,
@@ -153,7 +163,7 @@ export class GenieAcsClient {
       await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
         { name: 'setParameterValues', parameterValues },
-        this.buildRequestConfig(),
+        this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
       await this.http.post(
         this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tags/WIFI_CUSTOMIZED`),
@@ -187,7 +197,7 @@ export class GenieAcsClient {
       await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
         { name: 'reboot' },
-        this.buildRequestConfig(),
+        this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
     } catch (error) {
       throw new Error(this.describeError(error));
@@ -220,7 +230,7 @@ export class GenieAcsClient {
       await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
         { name: 'setParameterValues', parameterValues },
-        this.buildRequestConfig(),
+        this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
     } catch (error) {
       throw new Error(this.describeError(error));
@@ -257,7 +267,7 @@ export class GenieAcsClient {
       await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
         { name: 'getParameterValues', parameterNames },
-        this.buildRequestConfig(),
+        this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
     } catch (error) {
       throw new Error(this.describeError(error));
@@ -270,7 +280,7 @@ export class GenieAcsClient {
       await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
         { name: 'factoryReset' },
-        this.buildRequestConfig(),
+        this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
     } catch (error) {
       throw new Error(this.describeError(error));
@@ -313,10 +323,19 @@ export class GenieAcsClient {
     return `${base}/api/v1/${resourcePath}/`;
   }
 
-  private buildRequestConfig() {
+  /**
+   * timeoutMs por defecto (8s): correcto para lecturas simples contra la
+   * propia base de GenieACS. Las llamadas con `connection_request=true`
+   * esperan sincrónicamente a que GenieACS complete todo el intercambio
+   * CWMP real contra el CPE (auth digest, entrega de la tarea, cierre de
+   * sesión) — 8s se queda corto ahí y revienta con un 500 genérico aunque
+   * la tarea igual se haya encolado y vaya a aplicar en la próxima sesión.
+   * Ver CONNECTION_REQUEST_TIMEOUT_MS para esos casos.
+   */
+  private buildRequestConfig(overrideTimeoutMs?: number) {
     return {
       headers: { 'X-API-Key': this.config.apiKey },
-      timeout: this.config.timeoutMs ?? 8000,
+      timeout: overrideTimeoutMs ?? this.config.timeoutMs ?? 8000,
       httpsAgent: GenieAcsClient.insecureHttpsAgent,
     };
   }
