@@ -34,7 +34,7 @@ describe('GenieAcsDevicesController', () => {
               },
             },
           },
-          Tags: { BOOTSTRAPPED: true, ONLINE: true },
+          _tags: ['BOOTSTRAPPED', 'ONLINE'],
         },
       ]),
       rebootDevice: jest.fn().mockResolvedValue(undefined),
@@ -87,7 +87,7 @@ describe('GenieAcsDevicesController', () => {
     await controller.getDevices();
     expect(mockClient.getDevices).toHaveBeenCalledWith(
       expect.objectContaining({
-        query: expect.objectContaining({ 'Tags.TENANT:sumtech': true }),
+        query: expect.objectContaining({ _tags: 'TENANT:sumtech' }),
       }),
     );
   });
@@ -98,7 +98,7 @@ describe('GenieAcsDevicesController', () => {
       expect.objectContaining({
         query: expect.objectContaining({
           $and: [
-            { 'Tags.TENANT:sumtech': true },
+            { _tags: 'TENANT:sumtech' },
             expect.objectContaining({ $or: expect.any(Array) }),
           ],
         }),

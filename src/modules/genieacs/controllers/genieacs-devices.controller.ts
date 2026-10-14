@@ -65,8 +65,13 @@ export class GenieAcsDevicesController {
     // Mismo formato/normalización que CpeConfiguratorService.configureCpe()
     // usa al escribir el tag (toLowerCase().trim()) — si no coinciden
     // exactamente, el filtro nunca encuentra nada.
+    //
+    // GenieACS 1.2.9 guarda los tags como un arreglo de strings en "_tags"
+    // (confirmado contra la instancia real), no como un objeto de booleanos
+    // "Tags.<tag>": true — ese esquema es de versiones más viejas. Con el
+    // esquema viejo este filtro nunca encontraba nada, para ningún tenant.
     const tenantTag = `TENANT:${this.tenantContext.getSlug().toLowerCase().trim()}`;
-    const tenantFilter = { [`Tags.${tenantTag}`]: true };
+    const tenantFilter = { _tags: tenantTag };
 
     let query: any = tenantFilter;
     if (search) {
@@ -110,11 +115,10 @@ export class GenieAcsDevicesController {
         doc._ip ||
         'N/A';
 
-      // Extraer tags activos
-      const tags =
-        doc.Tags && typeof doc.Tags === 'object'
-          ? Object.keys(doc.Tags).filter((k) => doc.Tags[k] === true)
-          : [];
+      // Extraer tags activos — GenieACS 1.2.9 los guarda como arreglo en
+      // "_tags" (ver nota sobre tenantFilter más arriba), no como objeto de
+      // booleanos "Tags".
+      const tags = Array.isArray(doc._tags) ? doc._tags : [];
 
       return {
         deviceId: doc._id,
