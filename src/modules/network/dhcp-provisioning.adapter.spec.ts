@@ -131,6 +131,93 @@ describe('DhcpProvisioningAdapter', () => {
     });
   });
 
+  describe('suspend / restore con suspensionMode NOTICE_PORTAL', () => {
+    it('suspend NO deshabilita lease/queue -- las deja activas y agrega la IP a sumtech-suspendidos', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(makeNode({ suspensionMode: 'NOTICE_PORTAL' }));
+      const setLeaseDisabled = jest.fn().mockResolvedValue(undefined);
+      const setSimpleQueueDisabled = jest.fn().mockResolvedValue(undefined);
+      const addAddressListEntry = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({
+        findStaticLeaseByMac: jest.fn().mockResolvedValue({ id: '*1', disabled: false }),
+        setLeaseDisabled,
+        findSimpleQueueByName: jest.fn().mockResolvedValue({ id: '*2', disabled: false }),
+        setSimpleQueueDisabled,
+        addAddressListEntry,
+      });
+
+      const result = await adapter.suspend(makeAccess());
+
+      expect(result.ok).toBe(true);
+      expect(setLeaseDisabled).not.toHaveBeenCalled();
+      expect(setSimpleQueueDisabled).not.toHaveBeenCalled();
+      expect(addAddressListEntry).toHaveBeenCalledWith('sumtech-suspendidos', '10.20.0.50', 'SUSPENDIDO-AA:BB:CC:DD:EE:FF');
+    });
+
+    it('suspend en modo portal reactiva lease/queue si estaban deshabilitadas por una suspensión dura previa', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(makeNode({ suspensionMode: 'NOTICE_PORTAL' }));
+      const setLeaseDisabled = jest.fn().mockResolvedValue(undefined);
+      const setSimpleQueueDisabled = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({
+        findStaticLeaseByMac: jest.fn().mockResolvedValue({ id: '*1', disabled: true }),
+        setLeaseDisabled,
+        findSimpleQueueByName: jest.fn().mockResolvedValue({ id: '*2', disabled: true }),
+        setSimpleQueueDisabled,
+        addAddressListEntry: jest.fn().mockResolvedValue(undefined),
+      });
+
+      const result = await adapter.suspend(makeAccess());
+
+      expect(result.ok).toBe(true);
+      expect(setLeaseDisabled).toHaveBeenCalledWith('*1', false);
+      expect(setSimpleQueueDisabled).toHaveBeenCalledWith('*2', false);
+    });
+
+    it('suspend en modo portal falla con mensaje claro si no hay IP asignada', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(makeNode({ suspensionMode: 'NOTICE_PORTAL' }));
+      clientFactory.mockReturnValue({});
+
+      const result = await adapter.suspend(makeAccess({ ipAddress: undefined }));
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/IP asignada/);
+    });
+
+    it('restore siempre intenta remover la IP de sumtech-suspendidos, sin importar el modo actual del nodo', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(makeNode({ suspensionMode: 'NOTICE_PORTAL' }));
+      const removeAddressListEntry = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({
+        findStaticLeaseByMac: jest.fn().mockResolvedValue({ id: '*1', disabled: true }),
+        setLeaseDisabled: jest.fn().mockResolvedValue(undefined),
+        findSimpleQueueByName: jest.fn().mockResolvedValue({ id: '*2', disabled: true }),
+        setSimpleQueueDisabled: jest.fn().mockResolvedValue(undefined),
+        removeAddressListEntry,
+      });
+
+      const result = await adapter.restore(makeAccess());
+
+      expect(result.ok).toBe(true);
+      expect(removeAddressListEntry).toHaveBeenCalledWith('sumtech-suspendidos', '10.20.0.50');
+    });
+
+    it('deprovision siempre hace corte duro y limpia la address-list, sin importar el modo', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(makeNode({ suspensionMode: 'NOTICE_PORTAL' }));
+      const setLeaseDisabled = jest.fn().mockResolvedValue(undefined);
+      const removeAddressListEntry = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({
+        findStaticLeaseByMac: jest.fn().mockResolvedValue({ id: '*1', disabled: false }),
+        setLeaseDisabled,
+        findSimpleQueueByName: jest.fn().mockResolvedValue(null),
+        removeAddressListEntry,
+      });
+
+      const result = await adapter.deprovision(makeAccess());
+
+      expect(result.ok).toBe(true);
+      expect(setLeaseDisabled).toHaveBeenCalledWith('*1', true);
+      expect(removeAddressListEntry).toHaveBeenCalledWith('sumtech-suspendidos', '10.20.0.50');
+    });
+  });
+
   describe('syncProfile', () => {
     it('asegura la simple-queue con rate-limit simétrico sobre la IP/32 del cliente', async () => {
       const ensureSimpleQueue = jest.fn().mockResolvedValue({});

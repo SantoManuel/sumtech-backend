@@ -60,16 +60,82 @@ export class DhcpProvisioningAdapter extends NetworkProvisioningPort {
     }
   }
 
+  /**
+   * Suspende el servicio DHCP:
+   * - Modo DISABLED/DISABLE_SECRET: deshabilita la lease y la simple-queue (corte duro, sin IP).
+   * - Modo NOTICE_PORTAL: mantiene la lease y la queue activas (el cliente conserva su IP) y
+   *   agrega esa IP a la address-list `sumtech-suspendidos` -- las mismas reglas de firewall/NAT
+   *   que ya instala SuspensionPortalManagerService para PPPoE redirigen por IP, no por medio,
+   *   así que no hace falta nada nuevo en el router, solo poblar la lista para este medio.
+   */
   async suspend(access: NetworkAccessEntity): Promise<ProvisioningResult> {
+    const resolved = await this.resolveNodeClientAndServer(access);
+    if (!resolved.ok) return resolved;
+    const { node, client } = resolved;
+
+    if (node.suspensionMode === 'NOTICE_PORTAL') {
+      if (!access.ipAddress) {
+        return { ok: false, error: 'Medio DHCP requiere una IP asignada al acceso para aplicar el portal de aviso.' };
+      }
+      try {
+        const lease = await client.findStaticLeaseByMac(access.macAddress!);
+        if (lease && lease.disabled) {
+          await client.setLeaseDisabled(lease.id, false);
+        }
+        const queue = await client.findSimpleQueueByName(this.queueName(access));
+        if (queue && queue.disabled) {
+          await client.setSimpleQueueDisabled(queue.id, false);
+        }
+        await client.addAddressListEntry('sumtech-suspendidos', access.ipAddress, `SUSPENDIDO-${access.macAddress}`);
+        return { ok: true };
+      } catch (err: any) {
+        return { ok: false, error: err.message };
+      }
+    }
+
     return this.setDisabled(access, true);
   }
 
+  /**
+   * Reactiva el servicio DHCP: rehabilita lease/queue y, por las dudas, siempre intenta
+   * remover la IP de `sumtech-suspendidos` -- idempotente (no revienta si no estaba) y
+   * cubre el caso de que el modo del nodo haya cambiado entre la suspensión y la restauración.
+   */
   async restore(access: NetworkAccessEntity): Promise<ProvisioningResult> {
-    return this.setDisabled(access, false);
+    const res = await this.setDisabled(access, false);
+    if (!res.ok) return res;
+
+    if (access.ipAddress) {
+      const resolved = await this.resolveNodeClientAndServer(access);
+      if (resolved.ok) {
+        try {
+          await resolved.client.removeAddressListEntry('sumtech-suspendidos', access.ipAddress);
+        } catch {
+          // No crítico: si falla la limpieza de la lista, la reactivación de lease/queue ya se aplicó.
+        }
+      }
+    }
+
+    return { ok: true };
   }
 
+  /** Desaprovisiona (fin de contrato): siempre corte duro, sin importar el modo -- y limpia la address-list. */
   async deprovision(access: NetworkAccessEntity): Promise<ProvisioningResult> {
-    return this.setDisabled(access, true);
+    const res = await this.setDisabled(access, true);
+    if (!res.ok) return res;
+
+    if (access.ipAddress) {
+      const resolved = await this.resolveNodeClientAndServer(access);
+      if (resolved.ok) {
+        try {
+          await resolved.client.removeAddressListEntry('sumtech-suspendidos', access.ipAddress);
+        } catch {
+          // No crítico.
+        }
+      }
+    }
+
+    return { ok: true };
   }
 
   /**
