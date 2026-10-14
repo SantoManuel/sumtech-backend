@@ -202,6 +202,60 @@ describe('GenieAcsClient', () => {
         client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'X', password: 'ClaveSegura123' }),
       ).rejects.toThrow(/500/);
     });
+
+    it('lanza error si GenieACS respondió 2xx pero el CPE rechazó la clave (fault real de setParameterValues)', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-123' } });
+      http.get.mockResolvedValue({
+        data: [
+          {
+            _id: '00259E-ONT-16:task_task-123',
+            message: 'Invalid arguments',
+            detail: {
+              faultCode: '9003',
+              faultString: 'Invalid arguments',
+              setParameterValuesFault: [
+                {
+                  parameterName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.KeyPassphrase',
+                  faultCode: '9007',
+                  faultString: 'Invalid parameter value',
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      await expect(
+        client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'X', password: '12345678' }),
+      ).rejects.toThrow(/Invalid parameter value/);
+
+      // No debe marcar WIFI_CUSTOMIZED si el CPE rechazó el cambio real.
+      expect(http.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('no revienta si GenieACS no devolvió el _id de la tarea (no se puede verificar, no se asume fallo)', async () => {
+      http.post.mockResolvedValue({ data: {} });
+
+      await client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'X', password: 'ClaveSegura123' });
+
+      expect(http.get).not.toHaveBeenCalled();
+      expect(http.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('confirma éxito (sin fault registrado) y sí marca WIFI_CUSTOMIZED', async () => {
+      http.post.mockResolvedValue({ data: { _id: 'task-456' } });
+      http.get.mockResolvedValue({ data: [] });
+
+      await client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'X', password: 'ClaveSegura123' });
+
+      expect(http.get).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/faults/',
+        expect.objectContaining({
+          params: { query: JSON.stringify({ _id: '00259E-ONT-16:task_task-456' }) },
+        }),
+      );
+      expect(http.post).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('clearWifiCustomization', () => {

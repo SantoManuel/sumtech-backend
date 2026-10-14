@@ -160,11 +160,13 @@ export class GenieAcsClient {
     }
 
     try {
-      await this.http.post(
+      const taskResponse = await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
         { name: 'setParameterValues', parameterValues },
         this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
+      await this.assertTaskSucceeded(deviceId, (taskResponse as any).data?._id);
+
       await this.http.post(
         this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tags/WIFI_CUSTOMIZED`),
         {},
@@ -173,6 +175,36 @@ export class GenieAcsClient {
     } catch (error) {
       throw new Error(this.describeError(error));
     }
+  }
+
+  /**
+   * `connection_request=true` responde 2xx en cuanto GenieACS logra abrir la
+   * sesión CWMP contra el CPE — eso NO significa que la tarea en sí haya
+   * tenido éxito: un `SetParameterValues` puede volver con un fault (ej.
+   * 9007 "Invalid parameter value" cuando el CPE rechaza una clave WiFi por
+   * no cumplir su política de complejidad) y GenieACS igual responde 200,
+   * porque la sesión como tal sí se completó. Verificado contra la
+   * instancia real: sin este chequeo, un rechazo del equipo queda reportado
+   * como éxito silencioso. GenieACS registra el fault en `/faults` con id
+   * `<deviceId>:task_<taskId>` — si existe, la tarea falló de verdad.
+   */
+  private async assertTaskSucceeded(deviceId: string, taskId?: string): Promise<void> {
+    if (!taskId) {
+      return;
+    }
+    const faultId = `${deviceId}:task_${taskId}`;
+    const response = await this.http.get(this.buildUrl('faults'), {
+      ...this.buildRequestConfig(),
+      params: { query: JSON.stringify({ _id: faultId }) },
+    });
+    const faults = Array.isArray(response.data) ? response.data : [];
+    if (faults.length === 0) {
+      return;
+    }
+    const fault = faults[0];
+    const paramFault = fault?.detail?.setParameterValuesFault?.[0];
+    const reason = paramFault?.faultString || fault?.message || 'el equipo rechazó el cambio';
+    throw new Error(`El equipo rechazó el cambio (${reason}).`);
   }
 
   /**
