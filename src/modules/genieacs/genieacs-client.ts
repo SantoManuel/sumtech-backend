@@ -1,5 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import * as https from 'https';
+import * as crypto from 'crypto';
+import { Logger } from '@nestjs/common';
 
 export interface GenieAcsClientConfig {
   /** Base de la NBI detrás de nginx, ej. "https://genieacs.sumtech.local" — SIN "/api/v1" al final. */
@@ -46,6 +48,7 @@ export class GenieAcsClient {
   // Certificado autofirmado del servidor GenieACS de Sumtech (ver Fase 00) —
   // no es una recomendación general, es la realidad operativa de este stack.
   private static readonly insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+  private readonly logger = new Logger(GenieAcsClient.name);
 
   /**
    * Timeout para tareas con `connection_request=true` (reboot, factoryReset,
@@ -139,9 +142,15 @@ export class GenieAcsClient {
     // En TR-098, los Huawei EchoLife/EPON de este tenant (BeaconType
     // "WPAand11i", modo mixto WPA/WPA2) rechazan con fault 9007 cualquier
     // escritura directa a WLANConfiguration.{i}.KeyPassphrase -- verificado
-    // contra ambas ONUs reales. El nodo que sí aceptan es el de la rama
-    // PreSharedKey (WLANConfiguration.{i}.PreSharedKey.1.KeyPassphrase),
-    // que TR-098 define como el objeto de credenciales WPA/11i propiamente.
+    // contra ambas ONUs reales. El nodo que sí aceptan sin fault es el de la
+    // rama PreSharedKey (WLANConfiguration.{i}.PreSharedKey.1.KeyPassphrase),
+    // pero aceptarlo SIN fault no implica que el radio lo aplique: verificado
+    // en vivo que el cliente real sigue sin poder conectarse con la clave
+    // "nueva" hasta que además se entrega el PSK ya derivado en hexadecimal
+    // (PreSharedKey.1.PreSharedKey, ver computeWpaPsk) y el equipo se
+    // reinicia -- un simple Enable=false/true del radio NO alcanza, hace
+    // falta el reboot completo (probado: la clave hex sola bastó, no fue
+    // necesario repetir con ambos cambios en requests separados).
     const parameterValues: Array<[string, string, string]> = isTR181
       ? [
           ['Device.WiFi.SSID.1.SSID', credentials.ssid, 'xsd:string'],
@@ -152,6 +161,11 @@ export class GenieAcsClient {
           [
             'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase',
             credentials.password,
+            'xsd:string',
+          ],
+          [
+            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
+            computeWpaPsk(credentials.ssid, credentials.password),
             'xsd:string',
           ],
         ];
@@ -171,6 +185,13 @@ export class GenieAcsClient {
               'xsd:string',
             ],
       );
+      if (!isTR181) {
+        parameterValues.push([
+          'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.PreSharedKey',
+          computeWpaPsk(credentials.ssid5g, credentials.password),
+          'xsd:string',
+        ]);
+      }
     }
 
     try {
@@ -186,6 +207,21 @@ export class GenieAcsClient {
         {},
         this.buildRequestConfig(),
       );
+
+      if (!isTR181) {
+        // El radio no recarga el PSK nuevo solo con el SetParameterValues de
+        // arriba -- probado en vivo que ni siquiera un Enable=false/true del
+        // WLANConfiguration alcanza, hace falta el reboot completo del CPE.
+        // Best-effort: si el reboot falla no se revierte el cambio (la clave
+        // ya quedó guardada), solo se registra para que soporte lo reintente.
+        try {
+          await this.rebootDevice(deviceId);
+        } catch (rebootError) {
+          this.logger.warn(
+            `La clave WiFi de ${deviceId} se guardó pero el reinicio automático falló: ${this.describeError(rebootError)}. El cliente seguirá con la clave anterior hasta reiniciar el equipo manualmente.`,
+          );
+        }
+      }
     } catch (error) {
       throw new Error(this.describeError(error));
     }
@@ -424,4 +460,18 @@ function parseOpticalRxPower(rawValue: string | undefined): number | undefined {
   }
   const parsed = parseFloat(rawValue);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Deriva el PSK WPA2 en hexadecimal (256 bits) a partir del passphrase ASCII
+ * y el SSID, según el estándar 802.11i (PBKDF2-HMAC-SHA1, 4096 iteraciones,
+ * SSID como salt). Necesario porque los Huawei EchoLife/EPON de este tenant
+ * (BeaconType "WPAand11i") no derivan el PSK ellos mismos al recibir el
+ * passphrase por TR-069 -- aceptan la escritura sin fault pero el radio
+ * sigue usando la clave vieja hasta que se les entrega también el PSK ya
+ * calculado. Verificado en vivo: sin esto, el cliente real no logra
+ * conectarse con la contraseña "nueva" pese a que GenieACS no reporta error.
+ */
+function computeWpaPsk(ssid: string, password: string): string {
+  return crypto.pbkdf2Sync(password, ssid, 4096, 32, 'sha1').toString('hex');
 }

@@ -1,4 +1,9 @@
+import * as crypto from 'crypto';
 import { GenieAcsClient } from './genieacs-client';
+
+function wpaPsk(ssid: string, password: string): string {
+  return crypto.pbkdf2Sync(password, ssid, 4096, 32, 'sha1').toString('hex');
+}
 
 describe('GenieAcsClient', () => {
   let http: { get: jest.Mock; post: jest.Mock; delete: jest.Mock };
@@ -125,7 +130,7 @@ describe('GenieAcsClient', () => {
   });
 
   describe('setWifiCredentials', () => {
-    it('en TR-098, hace PATCH-equivalente (setParameterValues) sobre WLANConfiguration.1 y marca WIFI_CUSTOMIZED', async () => {
+    it('en TR-098, hace PATCH-equivalente (setParameterValues) sobre WLANConfiguration.1, incluye el PSK hex derivado, marca WIFI_CUSTOMIZED y reinicia el equipo', async () => {
       http.post.mockResolvedValue({ data: {} });
 
       await client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'MiCasa', password: 'ClaveSegura123' });
@@ -141,6 +146,11 @@ describe('GenieAcsClient', () => {
               'ClaveSegura123',
               'xsd:string',
             ],
+            [
+              'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
+              wpaPsk('MiCasa', 'ClaveSegura123'),
+              'xsd:string',
+            ],
           ],
         },
         expect.anything(),
@@ -148,6 +158,11 @@ describe('GenieAcsClient', () => {
       expect(http.post).toHaveBeenCalledWith(
         'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tags/WIFI_CUSTOMIZED/',
         {},
+        expect.anything(),
+      );
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
+        { name: 'reboot' },
         expect.anything(),
       );
     });
@@ -186,6 +201,11 @@ describe('GenieAcsClient', () => {
           [
             'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.KeyPassphrase',
             'ClaveSegura123',
+            'xsd:string',
+          ],
+          [
+            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.PreSharedKey',
+            wpaPsk('MiCasa_5G', 'ClaveSegura123'),
             'xsd:string',
           ],
         ]),
@@ -247,10 +267,11 @@ describe('GenieAcsClient', () => {
       await client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'X', password: 'ClaveSegura123' });
 
       expect(http.get).not.toHaveBeenCalled();
-      expect(http.post).toHaveBeenCalledTimes(2);
+      // setParameterValues + tag WIFI_CUSTOMIZED + reboot (reinicio obligatorio para que el radio tome el PSK nuevo).
+      expect(http.post).toHaveBeenCalledTimes(3);
     });
 
-    it('confirma éxito (sin fault registrado) y sí marca WIFI_CUSTOMIZED', async () => {
+    it('confirma éxito (sin fault registrado), marca WIFI_CUSTOMIZED y reinicia el equipo', async () => {
       http.post.mockResolvedValue({ data: { _id: 'task-456' } });
       http.get.mockResolvedValue({ data: [] });
 
@@ -262,7 +283,25 @@ describe('GenieAcsClient', () => {
           params: { query: JSON.stringify({ _id: '00259E-ONT-16:task_task-456' }) },
         }),
       );
-      expect(http.post).toHaveBeenCalledTimes(2);
+      expect(http.post).toHaveBeenCalledTimes(3);
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
+        { name: 'reboot' },
+        expect.anything(),
+      );
+    });
+
+    it('no revienta si el reinicio automático falla -- la clave ya quedó guardada, solo se registra el warning', async () => {
+      http.post.mockImplementation((url: string, body: any) => {
+        if (body?.name === 'reboot') {
+          return Promise.reject({ response: { status: 500, data: {} } });
+        }
+        return Promise.resolve({ data: {} });
+      });
+
+      await expect(
+        client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'X', password: 'ClaveSegura123' }),
+      ).resolves.toBeUndefined();
     });
   });
 
