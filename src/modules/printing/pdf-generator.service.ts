@@ -165,6 +165,18 @@ function formatNumber(value: number): string {
   return Number(value || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Tasa efectiva real (monto/base*100) para mostrar "ITBIS (18%)"/"CDT (2%)"/
+// "ISC (10%)" en vez de un porcentaje hardcodeado -- las 3 tasas son
+// configurables por plan/cargo de servicio (ver TaxCalculationService), así
+// que un texto fijo se desincroniza en cuanto alguien cambia la tasa.
+function taxRateLabel(amount: number, base: number): string {
+  if (!(base > 0) || !(amount > 0)) return '';
+  const rate = (amount / base) * 100;
+  const rounded = Math.round(rate * 100) / 100;
+  const text = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  return ` (${text}%)`;
+}
+
 function formatDate(value: Date | string | undefined): string {
   if (!value) return 'N/A';
   const date = typeof value === 'string' ? new Date(value) : value;
@@ -390,18 +402,20 @@ export class PdfGeneratorService {
     const totalsBoxX = marginX + 280;
     const totalsBoxWidth = contentWidth - 280;
     doc.font('Helvetica').fontSize(9);
+    const taxBase = subtotalGravado || Number(metadata.sale.subtotal) || 0;
     const totalsLines: Array<[string, string]> = [
       ['Subtotal Gravado:', formatNumber(subtotalGravado)],
       ['Subtotal Exento:', formatNumber(subtotalExento)],
-      [subtotalGravado > 0 ? 'Total ITBIS (18%):' : 'Total ITBIS:', formatNumber(metadata.sale.itbisTotal)],
+      [`Total ITBIS${taxRateLabel(metadata.sale.itbisTotal, taxBase) || (subtotalGravado > 0 ? ' (18%)' : '')}:`, formatNumber(metadata.sale.itbisTotal)],
     ];
     // CDT/ISC solo se muestran si aplican — antes se sumaban al total sin
     // desglosarse, así que el total impreso no cuadraba con las líneas de arriba.
+    // Orden fijo: ITBIS, CDT, ISC (siempre en ese orden cuando aplican).
     if (Number(metadata.sale.cdtAmount) > 0) {
-      totalsLines.push(['CDT:', formatNumber(metadata.sale.cdtAmount)]);
+      totalsLines.push([`CDT${taxRateLabel(metadata.sale.cdtAmount, taxBase)}:`, formatNumber(metadata.sale.cdtAmount)]);
     }
     if (Number(metadata.sale.iscAmount) > 0) {
-      totalsLines.push(['ISC Telecomunicaciones:', formatNumber(metadata.sale.iscAmount)]);
+      totalsLines.push([`ISC${taxRateLabel(metadata.sale.iscAmount, taxBase)}:`, formatNumber(metadata.sale.iscAmount)]);
     }
     let totalsY = footerTop;
     totalsLines.forEach(([label, value]) => {
@@ -675,23 +689,25 @@ export class PdfGeneratorService {
       }
     });
 
+    const thermalTaxBase = subtotalGravado || Number(metadata.sale.subtotal) || 0;
     if (subtotalGravado > 0 && subtotalExento > 0) {
       y = twoCol('Subtotal Gravado:', formatNumber(subtotalGravado), y, false, 0.65, 7.5) + 3;
       y = twoCol('Subtotal Exento:', formatNumber(subtotalExento), y, false, 0.65, 7.5) + 3;
-      y = twoCol('ITBIS Facturado (18%):', formatNumber(metadata.sale.itbisTotal), y, false, 0.65, 7.5) + 3;
+      y = twoCol(`ITBIS${taxRateLabel(metadata.sale.itbisTotal, thermalTaxBase) || ' (18%)'}:`, formatNumber(metadata.sale.itbisTotal), y, false, 0.65, 7.5) + 3;
     } else if (subtotalExento > 0 && subtotalGravado === 0) {
       y = twoCol('Subtotal Exento:', formatNumber(subtotalExento), y, false, 0.65, 7.5) + 3;
       y = twoCol('Total ITBIS:', formatNumber(metadata.sale.itbisTotal), y, false, 0.65, 7.5) + 3;
     } else {
       y = twoCol('Subtotal Gravado:', formatNumber(subtotalGravado || metadata.sale.subtotal), y, false, 0.65, 7.5) + 3;
-      y = twoCol('ITBIS Facturado (18%):', formatNumber(metadata.sale.itbisTotal), y, false, 0.65, 7.5) + 3;
+      y = twoCol(`ITBIS${taxRateLabel(metadata.sale.itbisTotal, thermalTaxBase) || ' (18%)'}:`, formatNumber(metadata.sale.itbisTotal), y, false, 0.65, 7.5) + 3;
     }
     // CDT/ISC — antes se sumaban al total sin desglosarse en el recibo térmico.
+    // Orden fijo: ITBIS, CDT, ISC (siempre en ese orden cuando aplican).
     if (Number(metadata.sale.cdtAmount) > 0) {
-      y = twoCol('CDT:', formatNumber(metadata.sale.cdtAmount), y, false, 0.65, 7.5) + 3;
+      y = twoCol(`CDT${taxRateLabel(metadata.sale.cdtAmount, thermalTaxBase)}:`, formatNumber(metadata.sale.cdtAmount), y, false, 0.65, 7.5) + 3;
     }
     if (Number(metadata.sale.iscAmount) > 0) {
-      y = twoCol('ISC Telecomunicaciones:', formatNumber(metadata.sale.iscAmount), y, false, 0.65, 7.5) + 3;
+      y = twoCol(`ISC${taxRateLabel(metadata.sale.iscAmount, thermalTaxBase)}:`, formatNumber(metadata.sale.iscAmount), y, false, 0.65, 7.5) + 3;
     }
 
     y = drawSolidDivider(y);

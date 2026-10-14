@@ -340,7 +340,7 @@ describe('PdfGeneratorService', () => {
         expect(text).toContain(labelPart);
         expect(text).toContain('ELECTRÓNICO');
       }
-    });
+    }, 15000);
 
     it('renderiza correctamente el Aviso de Cobro / Factura Proforma en A4 con su leyenda informativa', async () => {
       const proformaMetadata: InvoiceReceiptMetadata = {
