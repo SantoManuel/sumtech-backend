@@ -100,18 +100,18 @@ describe('GenieAcsWifiService', () => {
       );
     });
 
-    it('lanza ConflictException (rate limit) si el último cambio fue hace menos de 10 minutos', async () => {
+    it('lanza ConflictException (rate limit) si el último cambio fue hace menos de 1 minuto', async () => {
       resolver.resolveForContract.mockResolvedValue(
-        makeDevice({ lastWifiChangeAt: new Date(Date.now() - 2 * 60 * 1000) }),
+        makeDevice({ lastWifiChangeAt: new Date(Date.now() - 20 * 1000) }),
       );
 
       await expect(service.changeWifiCredentials('contract-1', credentials)).rejects.toThrow(ConflictException);
       expect(client.setWifiCredentials).not.toHaveBeenCalled();
     });
 
-    it('permite el cambio si el último fue hace más de 10 minutos', async () => {
+    it('permite el cambio si el último fue hace más de 1 minuto', async () => {
       resolver.resolveForContract.mockResolvedValue(
-        makeDevice({ lastWifiChangeAt: new Date(Date.now() - 11 * 60 * 1000) }),
+        makeDevice({ lastWifiChangeAt: new Date(Date.now() - 2 * 60 * 1000) }),
       );
 
       const result = await service.changeWifiCredentials('contract-1', credentials);

@@ -15,8 +15,8 @@ import { GenieAcsDeviceResolverService } from './genieacs-device-resolver.servic
 import { GenieAcsClient, WifiCredentialsInput } from './genieacs-client';
 import { GENIEACS_CLIENT } from './genieacs-client-factory';
 
-/** 10 minutos — evita que un ciclo de reintentos o un abuso reinicie el CPE del cliente una y otra vez. */
-const WIFI_CHANGE_RATE_LIMIT_MS = 10 * 60 * 1000;
+/** 1 minuto — evita que un ciclo de reintentos o un abuso reinicie el CPE del cliente una y otra vez. */
+const WIFI_CHANGE_RATE_LIMIT_MS = 60 * 1000;
 
 /**
  * Autogestión de WiFi del cliente (Fase 02). Deliberadamente NO sabe nada de
