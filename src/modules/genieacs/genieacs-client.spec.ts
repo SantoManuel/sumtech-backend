@@ -136,7 +136,11 @@ describe('GenieAcsClient', () => {
           name: 'setParameterValues',
           parameterValues: [
             ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID', 'MiCasa', 'xsd:string'],
-            ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.KeyPassphrase', 'ClaveSegura123', 'xsd:string'],
+            [
+              'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase',
+              'ClaveSegura123',
+              'xsd:string',
+            ],
           ],
         },
         expect.anything(),
@@ -179,7 +183,11 @@ describe('GenieAcsClient', () => {
       expect(body.parameterValues).toEqual(
         expect.arrayContaining([
           ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.SSID', 'MiCasa_5G', 'xsd:string'],
-          ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.KeyPassphrase', 'ClaveSegura123', 'xsd:string'],
+          [
+            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.KeyPassphrase',
+            'ClaveSegura123',
+            'xsd:string',
+          ],
         ]),
       );
     });

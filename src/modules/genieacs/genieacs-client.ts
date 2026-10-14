@@ -136,6 +136,12 @@ export class GenieAcsClient {
    * quien llama debe resolverlo antes (ver GenieAcsDeviceResolverService).
    */
   async setWifiCredentials(deviceId: string, isTR181: boolean, credentials: WifiCredentialsInput): Promise<void> {
+    // En TR-098, los Huawei EchoLife/EPON de este tenant (BeaconType
+    // "WPAand11i", modo mixto WPA/WPA2) rechazan con fault 9007 cualquier
+    // escritura directa a WLANConfiguration.{i}.KeyPassphrase -- verificado
+    // contra ambas ONUs reales. El nodo que sí aceptan es el de la rama
+    // PreSharedKey (WLANConfiguration.{i}.PreSharedKey.1.KeyPassphrase),
+    // que TR-098 define como el objeto de credenciales WPA/11i propiamente.
     const parameterValues: Array<[string, string, string]> = isTR181
       ? [
           ['Device.WiFi.SSID.1.SSID', credentials.ssid, 'xsd:string'],
@@ -143,7 +149,11 @@ export class GenieAcsClient {
         ]
       : [
           ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID', credentials.ssid, 'xsd:string'],
-          ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.KeyPassphrase', credentials.password, 'xsd:string'],
+          [
+            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase',
+            credentials.password,
+            'xsd:string',
+          ],
         ];
 
     if (credentials.ssid5g) {
@@ -155,7 +165,11 @@ export class GenieAcsClient {
       parameterValues.push(
         isTR181
           ? ['Device.WiFi.AccessPoint.2.Security.KeyPassphrase', credentials.password, 'xsd:string']
-          : ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.KeyPassphrase', credentials.password, 'xsd:string'],
+          : [
+              'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.KeyPassphrase',
+              credentials.password,
+              'xsd:string',
+            ],
       );
     }
 
