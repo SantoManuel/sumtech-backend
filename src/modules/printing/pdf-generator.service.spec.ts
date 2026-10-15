@@ -747,4 +747,107 @@ describe('PdfGeneratorService', () => {
       expect(text).toContain('Cliente 80');
     });
   });
+
+  describe('generateEquipmentListPdf', () => {
+    const company = {
+      rnc: '131000000',
+      razonSocial: 'SUMTECH TELECOM S.R.L.',
+      nombreComercial: 'SUMTECH FIBRA & TV',
+      direccion: 'Av. 27 de Febrero, Santo Domingo',
+      telefono: '809-555-0199',
+      correo: 'facturacion@sumtech.com.do',
+    };
+
+    function makeRow(overrides: Partial<import('./pdf-generator.types').EquipmentListPdfRow> = {}) {
+      return {
+        serial: 'SN-00123',
+        mac: 'AA:BB:CC:DD:EE:FF',
+        producto: 'ONU GPON XYZ',
+        sku: 'ONU-100',
+        categoria: 'ONU',
+        proveedor: 'Huawei RD',
+        ubicacion: 'En almacén — Almacén Central',
+        condicion: 'NEW',
+        ...overrides,
+      };
+    }
+
+    it('genera un PDF válido (firma %PDF-)', async () => {
+      const buffer = await service.generateEquipmentListPdf({
+        company,
+        rows: [makeRow()],
+        totalExportado: 1,
+        generatedByUsername: 'admin1',
+        generatedAt: new Date('2026-03-01T10:00:00Z'),
+        filtersSummary: 'Ninguno',
+      });
+      expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    });
+
+    it('incluye el nombre de la empresa, el título, el total, el usuario y el resumen de filtros', async () => {
+      const buffer = await service.generateEquipmentListPdf({
+        company,
+        rows: [makeRow()],
+        totalExportado: 1,
+        generatedByUsername: 'admin1',
+        generatedAt: new Date('2026-03-01T10:00:00Z'),
+        filtersSummary: 'Almacén: Central · Categoría: ONU',
+      });
+      const text = extractPdfText(buffer).replace(/\s+/g, ' ');
+      expect(text).toContain('SUMTECH TELECOM S.R.L.');
+      expect(text).toContain('TRAZABILIDAD DE EQUIPOS');
+      expect(text).toContain('Total exportado: 1');
+      expect(text).toContain('admin1');
+      expect(text).toContain('Almacén: Central');
+    });
+
+    it('renderiza el encabezado de la tabla y los valores de cada fila (serial, MAC, SKU, proveedor)', async () => {
+      const buffer = await service.generateEquipmentListPdf({
+        company,
+        rows: [makeRow({ serial: 'SN-UNO' }), makeRow({ serial: 'SN-DOS' })],
+        totalExportado: 2,
+        generatedByUsername: 'admin1',
+        generatedAt: new Date('2026-03-01T10:00:00Z'),
+        filtersSummary: 'Ninguno',
+      });
+      const text = extractPdfText(buffer).replace(/\s+/g, ' ');
+      expect(text).toContain('Serial');
+      expect(text).toContain('MAC');
+      expect(text).toContain('SKU');
+      expect(text).toContain('Proveedor');
+      expect(text).toContain('SN-UNO');
+      expect(text).toContain('SN-DOS');
+      expect(text).toContain('ONU-100');
+    });
+
+    it('con 0 filas muestra un mensaje de "sin resultados" en vez de una tabla vacía silenciosa', async () => {
+      const buffer = await service.generateEquipmentListPdf({
+        company,
+        rows: [],
+        totalExportado: 0,
+        generatedByUsername: 'admin1',
+        generatedAt: new Date('2026-03-01T10:00:00Z'),
+        filtersSummary: 'Categoría: Router',
+      });
+      const text = extractPdfText(buffer).replace(/\s+/g, ' ');
+      expect(text).toContain('No se encontraron equipos');
+    });
+
+    it('pagina automáticamente cuando el listado no cabe en una sola hoja, numerando "Página X de Y"', async () => {
+      const manyRows = Array.from({ length: 80 }, (_, i) => makeRow({ serial: `SN-${i + 1}` }));
+      const buffer = await service.generateEquipmentListPdf({
+        company,
+        rows: manyRows,
+        totalExportado: manyRows.length,
+        generatedByUsername: 'admin1',
+        generatedAt: new Date('2026-03-01T10:00:00Z'),
+        filtersSummary: 'Ninguno',
+      });
+
+      expect(countPdfPages(buffer)).toBeGreaterThan(1);
+      const text = extractPdfText(buffer).replace(/\s+/g, ' ');
+      expect(text).toContain('Página 1 de');
+      expect(text).toContain('SN-80');
+    });
+  });
 });

@@ -3,6 +3,7 @@ import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module'
 import { JwtModule } from '@nestjs/jwt';
 import { InventoryService } from './inventory.service';
 import { InventoryController } from './inventory.controller';
+import { InventoryImportController } from './inventory-import.controller';
 import { ProductEntity } from './entities/product.entity';
 import { SerialNumberEntity } from './entities/serial-number.entity';
 import { StockMovementEntity } from './entities/stock-movement.entity';
@@ -18,6 +19,11 @@ import { ConsumableStockService } from './services/consumable-stock.service';
 import { DispatchService } from './services/dispatch.service';
 import { EmployeeEntity } from '../employees/entities/employee.entity';
 import { UsersModule } from '../users/users.module';
+import { PrintingModule } from '../printing/printing.module';
+import { CompanyModule } from '../company/company.module';
+import { InventoryExportService } from './services/inventory-export.service';
+import { ProductsImportService } from './import/products-import.service';
+import { SerialsImportService } from './import/serials-import.service';
 
 @Module({
   imports: [
@@ -35,10 +41,20 @@ import { UsersModule } from '../users/users.module';
       EmployeeEntity,
     ]),
     UsersModule,
+    PrintingModule,
+    CompanyModule,
     JwtModule.register({}),
   ],
-  controllers: [InventoryController],
-  providers: [InventoryService, EquipmentMovementService, ConsumableStockService, DispatchService],
+  controllers: [InventoryController, InventoryImportController],
+  providers: [
+    InventoryService,
+    EquipmentMovementService,
+    ConsumableStockService,
+    DispatchService,
+    InventoryExportService,
+    ProductsImportService,
+    SerialsImportService,
+  ],
   exports: [InventoryService, EquipmentMovementService, ConsumableStockService, DispatchService],
 })
 export class InventoryModule {}

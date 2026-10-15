@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Res, UseGuards, ForbiddenException } from '@nestjs/common';
+import { Response } from 'express';
 import { InventoryService } from './inventory.service';
 import { EquipmentMovementService } from './services/equipment-movement.service';
 import { ConsumableStockService } from './services/consumable-stock.service';
@@ -11,6 +12,8 @@ import { RecordMovementDto } from './dto/record-movement.dto';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 import { CreateDispatchDto, AddDispatchLineDto, RespondDispatchDto, FilterDispatchDto } from './dto/dispatch.dto';
 import { FilterProductDto, FilterSerialDto } from './dto/filter-inventory.dto';
+import { ExportEquipmentDto } from './dto/export-equipment.dto';
+import { InventoryExportService } from './services/inventory-export.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import {
   AssignTechnicianDto,
@@ -51,6 +54,7 @@ export class InventoryController {
     private readonly equipmentMovementService: EquipmentMovementService,
     private readonly consumableStockService: ConsumableStockService,
     private readonly dispatchService: DispatchService,
+    private readonly inventoryExportService: InventoryExportService,
   ) {}
 
   private isAdminRole(roles: string[] | undefined): boolean {
@@ -228,6 +232,28 @@ export class InventoryController {
       filterDto.employeeId = currentEmployeeId;
     }
     return this.equipmentMovementService.findEquipment(filterDto);
+  }
+
+  // Debe declararse antes de 'equipment/:id' — mismo motivo que ClientsController.
+  @Get('equipment/export')
+  @Roles(...READ_ROLES)
+  async exportEquipment(
+    @Query() dto: ExportEquipmentDto,
+    @CurrentUser('username') username: string,
+    @CurrentUser('employeeId') currentEmployeeId: string,
+    @CurrentUser('roles') roles: string[],
+    @Res() res: Response,
+  ) {
+    if (this.isFieldTechnicianOnly(roles)) {
+      dto.employeeId = currentEmployeeId;
+    }
+    const result = await this.inventoryExportService.export(dto, username);
+    res.set({
+      'Content-Type': result.contentType,
+      'Content-Disposition': `attachment; filename="${result.filename}"`,
+      'Content-Length': result.buffer.length,
+    });
+    res.end(result.buffer);
   }
 
   @Get('equipment/:id')

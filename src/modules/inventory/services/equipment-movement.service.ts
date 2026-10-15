@@ -540,21 +540,22 @@ export class EquipmentMovementService {
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
-  async findEquipment(filter: FilterSerialDto) {
-    const page = filter.page || 1;
-    const limit = filter.limit || 10;
-    const skip = (page - 1) * limit;
-
+  /**
+   * Arma (sin paginar) la query filtrada de equipos serializados — compartida
+   * entre `findEquipment` (paginado, para la grilla) y `exportEquipment` (todo
+   * el resultado, para CSV/PDF), así los dos caminos nunca pueden divergir en
+   * qué filtros aplican.
+   */
+  private buildEquipmentFilterQuery(filter: FilterSerialDto) {
     const query = this.serialRepository
       .createQueryBuilder('s')
       .leftJoinAndSelect('s.product', 'product')
       .leftJoinAndSelect('product.category', 'category')
+      .leftJoinAndSelect('product.supplier', 'supplier')
       .leftJoinAndSelect('s.client', 'client')
       .leftJoinAndSelect('s.currentEmployee', 'employee')
       .leftJoinAndSelect('employee.user', 'employeeUser')
-      .leftJoinAndSelect('s.currentWarehouse', 'warehouse')
-      .skip(skip)
-      .take(limit);
+      .leftJoinAndSelect('s.currentWarehouse', 'warehouse');
 
     if (filter.productId) query.andWhere('s.productId = :productId', { productId: filter.productId });
     if (filter.locationType) query.andWhere('s.locationType = :locationType', { locationType: filter.locationType });
@@ -564,17 +565,44 @@ export class EquipmentMovementService {
     if (filter.clientId) query.andWhere('s.clientId = :clientId', { clientId: filter.clientId });
     if (filter.status) query.andWhere('s.status = :status', { status: filter.status });
     if (filter.articleType) query.andWhere('category.articleType = :articleType', { articleType: filter.articleType });
+    if (filter.categoryId) query.andWhere('category.id = :categoryId', { categoryId: filter.categoryId });
+    if (filter.supplierId) query.andWhere('supplier.id = :supplierId', { supplierId: filter.supplierId });
+    if (filter.sku) query.andWhere('product.sku = :sku', { sku: filter.sku });
     if (filter.search) {
       query.andWhere(
-        '(s.serialNumber ILIKE :search OR s.macAddress ILIKE :search OR product.name ILIKE :search OR product.model ILIKE :search OR product.brand ILIKE :search)',
+        '(s.serialNumber ILIKE :search OR s.macAddress ILIKE :search OR product.name ILIKE :search OR product.model ILIKE :search OR product.brand ILIKE :search OR product.sku ILIKE :search OR product.barcode ILIKE :search)',
         {
           search: `%${filter.search}%`,
         },
       );
     }
 
+    return query;
+  }
+
+  async findEquipment(filter: FilterSerialDto) {
+    const page = filter.page || 1;
+    const limit = filter.limit || 10;
+    const skip = (page - 1) * limit;
+
+    const query = this.buildEquipmentFilterQuery(filter).skip(skip).take(limit);
+
     const [data, total] = await query.orderBy('s.serialNumber', 'ASC').getManyAndCount();
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  /**
+   * Devuelve TODAS las unidades que matcheen el filtro (sin paginar) para
+   * exportación CSV/PDF — los mismos filtros que `findEquipment`, pero sin
+   * límite de página. Se usa un límite duro de seguridad para no intentar
+   * cargar en memoria un volumen irrazonable de filas en un solo request.
+   */
+  async exportEquipment(filter: FilterSerialDto): Promise<SerialNumberEntity[]> {
+    const EXPORT_HARD_LIMIT = 50000;
+    return this.buildEquipmentFilterQuery(filter)
+      .orderBy('s.serialNumber', 'ASC')
+      .take(EXPORT_HARD_LIMIT)
+      .getMany();
   }
 
   async findById(equipmentItemId: string): Promise<SerialNumberEntity> {

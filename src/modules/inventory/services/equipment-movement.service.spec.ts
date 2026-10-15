@@ -675,7 +675,7 @@ describe('EquipmentMovementService', () => {
       expect(qb.take).toHaveBeenCalledWith(15);
       expect(qb.andWhere).toHaveBeenCalledWith('s.productId = :productId', { productId: 'prod-uuid-1' });
       expect(qb.andWhere).toHaveBeenCalledWith(
-        '(s.serialNumber ILIKE :search OR s.macAddress ILIKE :search OR product.name ILIKE :search OR product.model ILIKE :search OR product.brand ILIKE :search)',
+        '(s.serialNumber ILIKE :search OR s.macAddress ILIKE :search OR product.name ILIKE :search OR product.model ILIKE :search OR product.brand ILIKE :search OR product.sku ILIKE :search OR product.barcode ILIKE :search)',
         { search: '%HG8145%' },
       );
       expect(result).toEqual({
@@ -692,6 +692,76 @@ describe('EquipmentMovementService', () => {
         limit: 15,
         totalPages: 1,
       });
+    });
+
+    it('aplica el filtro de categoría (categoryId)', async () => {
+      const qb: any = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      serialRepository.createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      await service.findEquipment({ page: 1, limit: 15, categoryId: 'cat-onu' } as any);
+
+      expect(qb.andWhere).toHaveBeenCalledWith('category.id = :categoryId', { categoryId: 'cat-onu' });
+    });
+
+    it('aplica el filtro de proveedor (supplierId) con join a product.supplier', async () => {
+      const qb: any = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      serialRepository.createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      await service.findEquipment({ page: 1, limit: 15, supplierId: 'sup-huawei' } as any);
+
+      expect(qb.leftJoinAndSelect).toHaveBeenCalledWith('product.supplier', 'supplier');
+      expect(qb.andWhere).toHaveBeenCalledWith('supplier.id = :supplierId', { supplierId: 'sup-huawei' });
+    });
+
+    it('aplica el filtro exacto de SKU', async () => {
+      const qb: any = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      serialRepository.createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      await service.findEquipment({ page: 1, limit: 15, sku: 'ONU-100' } as any);
+
+      expect(qb.andWhere).toHaveBeenCalledWith('product.sku = :sku', { sku: 'ONU-100' });
+    });
+  });
+
+  describe('exportEquipment', () => {
+    it('devuelve todas las filas que matcheen el filtro, sin paginar', async () => {
+      const equipos = [{ id: 'eq-1' }, { id: 'eq-2' }];
+      const qb: any = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue(equipos),
+      };
+      serialRepository.createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      const result = await service.exportEquipment({ warehouseId: 'wh-1' } as any);
+
+      expect(qb.skip).toBeUndefined(); // exportEquipment nunca debe paginar
+      expect(qb.andWhere).toHaveBeenCalledWith('s.currentWarehouseId = :warehouseId', { warehouseId: 'wh-1' });
+      expect(qb.take).toHaveBeenCalledWith(50000);
+      expect(result).toEqual(equipos);
     });
   });
 });

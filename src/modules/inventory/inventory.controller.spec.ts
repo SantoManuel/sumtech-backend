@@ -22,11 +22,13 @@ describe('InventoryController — control de acceso por propiedad', () => {
     };
     consumableStockService = { getTechnicianStock: jest.fn().mockResolvedValue(['stock']) };
     dispatchService = { findAll: jest.fn().mockResolvedValue(['despacho']) };
+    const inventoryExportService = { export: jest.fn() };
     controller = new InventoryController(
       {} as any,
       equipmentMovementService,
       consumableStockService,
       dispatchService,
+      inventoryExportService as any,
     );
   });
 

@@ -93,6 +93,27 @@ export interface ClientsListPdfData {
   filtersSummary: string;
 }
 
+export interface EquipmentListPdfRow {
+  serial: string;
+  mac: string;
+  producto: string;
+  sku: string;
+  categoria: string;
+  proveedor: string;
+  ubicacion: string;
+  condicion: string;
+}
+
+export interface EquipmentListPdfData {
+  company: CompanyPdfInfo;
+  rows: EquipmentListPdfRow[];
+  totalExportado: number;
+  generatedByUsername: string;
+  generatedAt: Date;
+  /** Texto legible de los filtros aplicados (ej. "Almacén: Central · Categoría: ONU"), o 'Ninguno'. */
+  filtersSummary: string;
+}
+
 export interface ContractPdfData {
   company: CompanyPdfInfo;
   contract: {

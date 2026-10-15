@@ -58,6 +58,10 @@ export class InventoryService {
       query.andWhere('p.categoryId = :categoryId', { categoryId: filterDto.categoryId });
     }
 
+    if (filterDto.requiresSerial !== undefined) {
+      query.andWhere('p.requiresSerial = :requiresSerial', { requiresSerial: filterDto.requiresSerial });
+    }
+
     if (filterDto.search) {
       query.andWhere(
         '(p.name ILIKE :search OR p.sku ILIKE :search OR p.brand ILIKE :search OR p.model ILIKE :search)',

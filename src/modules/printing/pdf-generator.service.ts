@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as PDFDocument from 'pdfkit';
 import * as QRCode from 'qrcode';
 import { CONTRACT_CLAUSES_PLACEHOLDER } from './contract-clauses.constant';
-import { ClientsListPdfData, CompanyPdfInfo, ContractPdfData, InvoiceReceiptMetadata } from './pdf-generator.types';
+import { ClientsListPdfData, CompanyPdfInfo, ContractPdfData, EquipmentListPdfData, InvoiceReceiptMetadata } from './pdf-generator.types';
 
 const NCF_TYPE_LABELS: Record<string, string> = {
   E31: 'FACTURA DE CRÉDITO FISCAL ELECTRÓNICA',
@@ -986,6 +986,97 @@ export class PdfGeneratorService {
 
     if (data.rows.length === 0) {
       doc.font('Helvetica-Oblique').fontSize(9).text('No se encontraron clientes con los filtros aplicados.', marginX, rowY + 10);
+    }
+
+    const pageRange = doc.bufferedPageRange();
+    for (let i = pageRange.start; i < pageRange.start + pageRange.count; i++) {
+      doc.switchToPage(i);
+      doc
+        .font('Helvetica')
+        .fontSize(7.5)
+        .fillColor('#64748b')
+        .text(`Página ${i + 1} de ${pageRange.count}`, marginX, doc.page.height - 30, {
+          width: contentWidth,
+          align: 'center',
+        });
+    }
+
+    return this.streamToBuffer(doc);
+  }
+
+  /** Listado exportable de equipos serializados (Trazabilidad de Equipos) — mismo esquema que generateClientsListPdf. */
+  async generateEquipmentListPdf(data: EquipmentListPdfData): Promise<Buffer> {
+    const doc = new (PDFDocument as any)({
+      size: 'A4',
+      layout: 'landscape',
+      margin: 30,
+      compress: false,
+      bufferPages: true,
+    }) as PDFKit.PDFDocument;
+    const marginX = 30;
+    const contentWidth = doc.page.width - marginX * 2;
+    const bottomLimit = doc.page.height - 45;
+
+    const columns: Array<{ key: keyof EquipmentListPdfData['rows'][number]; label: string; width: number }> = [
+      { key: 'serial', label: 'Serial', width: 100 },
+      { key: 'mac', label: 'MAC', width: 92 },
+      { key: 'producto', label: 'Producto', width: 150 },
+      { key: 'sku', label: 'SKU', width: 70 },
+      { key: 'categoria', label: 'Categoría', width: 90 },
+      { key: 'proveedor', label: 'Proveedor', width: 110 },
+      { key: 'ubicacion', label: 'Ubicación / Custodia', width: 120 },
+      { key: 'condicion', label: 'Condición', width: 86 },
+    ];
+
+    const drawPageHeader = (): number => {
+      const top = 30;
+      this.drawCompanyHeader(doc, data.company, marginX, top, 320);
+
+      const rightX = marginX + 330;
+      const rightWidth = contentWidth - 330;
+      doc.font('Helvetica-Bold').fontSize(13).text('TRAZABILIDAD DE EQUIPOS', rightX, top, { width: rightWidth, align: 'right' });
+      doc
+        .font('Helvetica')
+        .fontSize(8)
+        .text(`Generado: ${formatDateTime(data.generatedAt)}`, rightX, top + 20, { width: rightWidth, align: 'right' });
+      doc.text(`Por: ${data.generatedByUsername}`, rightX, top + 32, { width: rightWidth, align: 'right' });
+      doc.text(`Total exportado: ${data.totalExportado}`, rightX, top + 44, { width: rightWidth, align: 'right' });
+      doc
+        .font('Helvetica-Oblique')
+        .fontSize(7.5)
+        .text(`Filtros: ${data.filtersSummary}`, rightX, top + 58, { width: rightWidth, align: 'right' });
+
+      return this.drawTableHeaderRow(doc, columns, marginX, top + 90, contentWidth);
+    };
+
+    let rowY = drawPageHeader();
+    doc.font('Helvetica').fontSize(7.5).fillColor('#000000');
+
+    data.rows.forEach((row) => {
+      const productoHeight = doc.heightOfString(row.producto || '', { width: columns[2].width - 8 });
+      const rowHeight = Math.max(14, productoHeight + 6);
+
+      if (rowY + rowHeight > bottomLimit) {
+        doc.addPage();
+        rowY = drawPageHeader();
+        doc.font('Helvetica').fontSize(7.5).fillColor('#000000');
+      }
+
+      let colX = marginX;
+      columns.forEach((col) => {
+        doc.text(String(row[col.key] ?? ''), colX + 4, rowY + 4, { width: col.width - 8 });
+        colX += col.width;
+      });
+      doc
+        .moveTo(marginX, rowY + rowHeight)
+        .lineTo(marginX + contentWidth, rowY + rowHeight)
+        .strokeColor('#e2e8f0')
+        .stroke();
+      rowY += rowHeight;
+    });
+
+    if (data.rows.length === 0) {
+      doc.font('Helvetica-Oblique').fontSize(9).text('No se encontraron equipos con los filtros aplicados.', marginX, rowY + 10);
     }
 
     const pageRange = doc.bufferedPageRange();

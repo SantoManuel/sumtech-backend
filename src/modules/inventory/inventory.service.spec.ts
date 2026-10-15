@@ -224,4 +224,39 @@ describe('InventoryService.productsAndSuppliers', () => {
   });
 });
 
+describe('InventoryService.findAllProducts', () => {
+  let productRepository: any;
+  let service: InventoryService;
+  let qb: any;
+
+  beforeEach(() => {
+    qb = {
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+    };
+    productRepository = { createQueryBuilder: jest.fn().mockReturnValue(qb) };
+
+    service = new InventoryService({} as any, {} as any, productRepository, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+  });
+
+  it('sin filtro requiresSerial no agrega la cláusula WHERE correspondiente', async () => {
+    await service.findAllProducts({ page: 1, limit: 10 } as any);
+    expect(qb.andWhere).not.toHaveBeenCalledWith('p.requiresSerial = :requiresSerial', expect.anything());
+  });
+
+  it('requiresSerial=true filtra solo productos serializables', async () => {
+    await service.findAllProducts({ page: 1, limit: 10, requiresSerial: true } as any);
+    expect(qb.andWhere).toHaveBeenCalledWith('p.requiresSerial = :requiresSerial', { requiresSerial: true });
+  });
+
+  it('requiresSerial=false filtra solo productos a granel', async () => {
+    await service.findAllProducts({ page: 1, limit: 10, requiresSerial: false } as any);
+    expect(qb.andWhere).toHaveBeenCalledWith('p.requiresSerial = :requiresSerial', { requiresSerial: false });
+  });
+});
+
 
