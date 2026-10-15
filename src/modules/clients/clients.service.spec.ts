@@ -90,6 +90,7 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
     };
     invoiceRepo = {
       find: jest.fn().mockResolvedValue([]),
+      findAndCount: jest.fn().mockResolvedValue([[], 0]),
     };
     planRepo = {
       findOneBy: jest.fn().mockResolvedValue({ id: 'plan-1', name: 'Fibra 100', isActive: true }),
@@ -793,6 +794,29 @@ describe('ClientsService - contratos y facturas (Fase 5 backend)', () => {
 
       const call = invoiceRepo.find.mock.calls[0][0];
       expect(call.where.status).not.toBe('ISSUED');
+    });
+
+    it('devuelve resultado paginado { data, total, page, limit, totalPages } cuando se envía page y limit', async () => {
+      const mockInvoices = [{ id: 'inv-1', clientId: 'client-1' }, { id: 'inv-2', clientId: 'client-1' }];
+      invoiceRepo.findAndCount.mockResolvedValue([mockInvoices, 25]);
+
+      const result: any = await service.getClientInvoices('client-1', undefined, false, 2, 10);
+
+      expect(invoiceRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { clientId: 'client-1' },
+          skip: 10,
+          take: 10,
+          order: { issuedAt: 'DESC' },
+        }),
+      );
+      expect(result).toEqual({
+        data: mockInvoices,
+        total: 25,
+        page: 2,
+        limit: 10,
+        totalPages: 3,
+      });
     });
   });
 

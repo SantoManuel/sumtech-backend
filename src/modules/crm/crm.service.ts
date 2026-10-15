@@ -402,7 +402,31 @@ export class CrmService {
   // Interacciones / actividades / conversación de WhatsApp
   // ---------------------------------------------------------------------
 
-  async findInteractionsByClient(clientId: string) {
+  async findInteractionsByClient(
+    clientId: string,
+    page?: number,
+    limit?: number,
+  ): Promise<InteractionEntity[] | { data: InteractionEntity[]; total: number; page: number; limit: number; totalPages: number }> {
+    if (page !== undefined || limit !== undefined) {
+      const currentPage = Math.max(1, Number(page) || 1);
+      const currentLimit = Math.max(1, Number(limit) || 10);
+      const skip = (currentPage - 1) * currentLimit;
+      const [data, total] = await this.interactionRepository.findAndCount({
+        where: { clientId },
+        relations: ['user'],
+        order: { createdAt: 'DESC' },
+        skip,
+        take: currentLimit,
+      });
+      return {
+        data,
+        total,
+        page: currentPage,
+        limit: currentLimit,
+        totalPages: Math.ceil(total / currentLimit),
+      };
+    }
+
     return this.interactionRepository.find({
       where: { clientId },
       relations: ['user'],

@@ -762,7 +762,13 @@ export class ClientsService {
     });
   }
 
-  async getClientInvoices(clientId: string, status?: string, openOnly?: boolean): Promise<InvoiceEntity[]> {
+  async getClientInvoices(
+    clientId: string,
+    status?: string,
+    openOnly?: boolean,
+    page?: number,
+    limit?: number,
+  ): Promise<InvoiceEntity[] | { data: InvoiceEntity[]; total: number; page: number; limit: number; totalPages: number }> {
     await this.findById(clientId);
     const where: FindOptionsWhere<InvoiceEntity> = { clientId };
     if (openOnly) {
@@ -773,6 +779,27 @@ export class ClientsService {
     } else if (status) {
       where.status = status as InvoiceEntity['status'];
     }
+
+    if (page !== undefined || limit !== undefined) {
+      const currentPage = Math.max(1, Number(page) || 1);
+      const currentLimit = Math.max(1, Number(limit) || 10);
+      const skip = (currentPage - 1) * currentLimit;
+      const [data, total] = await this.invoiceRepository.findAndCount({
+        where,
+        relations: ['contract', 'contract.plan'],
+        order: { issuedAt: 'DESC' },
+        skip,
+        take: currentLimit,
+      });
+      return {
+        data,
+        total,
+        page: currentPage,
+        limit: currentLimit,
+        totalPages: Math.ceil(total / currentLimit),
+      };
+    }
+
     return this.invoiceRepository.find({
       where,
       relations: ['contract', 'contract.plan'],

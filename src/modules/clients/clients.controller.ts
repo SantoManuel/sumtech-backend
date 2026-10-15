@@ -222,7 +222,11 @@ export class ClientsController {
     @Param('id') id: string,
     @Query('status') status?: string,
     @Query('openOnly') openOnly?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.clientsService.getClientInvoices(id, status, openOnly === 'true');
+    const pageNum = page ? parseInt(page, 10) : undefined;
+    const limitNum = limit ? parseInt(limit, 10) : undefined;
+    return this.clientsService.getClientInvoices(id, status, openOnly === 'true', pageNum, limitNum);
   }
 }

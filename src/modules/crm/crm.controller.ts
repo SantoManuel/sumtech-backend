@@ -189,8 +189,14 @@ export class CrmController {
 
   @Get('interactions/client/:clientId')
   @Roles(Role.ADMIN, Role.GERENTE, Role.AGENTE_CRM, Role.CAJERO)
-  async findInteractions(@Param('clientId') clientId: string) {
-    return this.crmService.findInteractionsByClient(clientId);
+  async findInteractions(
+    @Param('clientId') clientId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const pageNum = page ? parseInt(page, 10) : undefined;
+    const limitNum = limit ? parseInt(limit, 10) : undefined;
+    return this.crmService.findInteractionsByClient(clientId, pageNum, limitNum);
   }
 
   @Post('interactions')

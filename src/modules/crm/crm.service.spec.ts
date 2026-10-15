@@ -61,6 +61,7 @@ describe('CrmService', () => {
     };
     interactionRepo = {
       find: jest.fn().mockResolvedValue([]),
+      findAndCount: jest.fn().mockResolvedValue([[], 0]),
       create: jest.fn((dto: any) => dto),
       save: jest.fn((entity: any) => Promise.resolve({ id: 'interaction-1', ...entity })),
     };
@@ -709,4 +710,43 @@ describe('CrmService', () => {
       expect(result).toEqual({ found: false, conversation: null });
     });
   });
+
+  describe('findInteractionsByClient', () => {
+    it('devuelve arreglo simple cuando no se pasan page ni limit (retrocompatibilidad)', async () => {
+      const mockList = [{ id: 'int-1', clientId: 'client-1' }];
+      interactionRepo.find.mockResolvedValue(mockList);
+
+      const result = await service.findInteractionsByClient('client-1');
+
+      expect(interactionRepo.find).toHaveBeenCalledWith({
+        where: { clientId: 'client-1' },
+        relations: ['user'],
+        order: { createdAt: 'DESC' },
+      });
+      expect(result).toEqual(mockList);
+    });
+
+    it('devuelve objeto paginado { data, total, page, limit, totalPages } cuando se envía page o limit', async () => {
+      const mockList = [{ id: 'int-1', clientId: 'client-1' }, { id: 'int-2', clientId: 'client-1' }];
+      interactionRepo.findAndCount.mockResolvedValue([mockList, 15]);
+
+      const result: any = await service.findInteractionsByClient('client-1', 2, 5);
+
+      expect(interactionRepo.findAndCount).toHaveBeenCalledWith({
+        where: { clientId: 'client-1' },
+        relations: ['user'],
+        order: { createdAt: 'DESC' },
+        skip: 5,
+        take: 5,
+      });
+      expect(result).toEqual({
+        data: mockList,
+        total: 15,
+        page: 2,
+        limit: 5,
+        totalPages: 3,
+      });
+    });
+  });
 });
+
