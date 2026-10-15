@@ -20,6 +20,8 @@ import { PlatformDashboardService } from './platform-dashboard.service';
 import { PlatformDashboardController } from './platform-dashboard.controller';
 import { PlatformAuditService } from './platform-audit.service';
 import { PlatformAuditLogsController } from './platform-audit-logs.controller';
+import { PortalRedirectService } from './portal-redirect.service';
+import { PortalRedirectController } from './portal-redirect.controller';
 import { MailModule } from '../mail/mail.module';
 
 @Module({
@@ -39,6 +41,7 @@ import { MailModule } from '../mail/mail.module';
     SupportAccessController,
     PlatformDashboardController,
     PlatformAuditLogsController,
+    PortalRedirectController,
   ],
   providers: [
     PlatformAuthService,
@@ -51,6 +54,7 @@ import { MailModule } from '../mail/mail.module';
     SaasSubscriptionsService,
     SupportAccessService,
     PlatformDashboardService,
+    PortalRedirectService,
   ],
   exports: [
     PlatformAuthService,

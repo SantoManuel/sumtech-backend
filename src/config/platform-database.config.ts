@@ -9,6 +9,7 @@ import { PlatformUserEntity } from '../modules/platform/entities/platform-user.e
 import { SupportAccessSessionEntity } from '../modules/platform/entities/support-access-session.entity';
 import { PlatformAuditLogEntity } from '../modules/platform/entities/platform-audit-log.entity';
 import { TenantTunnelAllocationEntity } from '../modules/platform/entities/tenant-tunnel-allocation.entity';
+import { NodePortalRegistryEntity } from '../modules/platform/entities/node-portal-registry.entity';
 
 // Entidades de la DB de plataforma (sumtech_platform) — completamente separada
 // de las entidades de tenant en database.config.ts. Nunca deben mezclarse.
@@ -20,6 +21,7 @@ export const platformEntities = [
   SupportAccessSessionEntity,
   PlatformAuditLogEntity,
   TenantTunnelAllocationEntity,
+  NodePortalRegistryEntity,
 ];
 
 // Reutiliza el mismo servidor Postgres (DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD)

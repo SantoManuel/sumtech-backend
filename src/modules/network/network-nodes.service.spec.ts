@@ -11,6 +11,8 @@ import { WireguardManagerService } from '../network-connectivity/services/wiregu
 import { WireGuardHubClient } from '../network-connectivity/services/wireguard-hub-client.service';
 import { DeviceHealthService } from '../network-connectivity/services/device-health.service';
 import { DeviceOperationLogger } from '../network-connectivity/services/device-operation-logger.service';
+import { NodePortalRegistryEntity } from '../platform/entities/node-portal-registry.entity';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 
 describe('NetworkNodesService', () => {
   let service: NetworkNodesService;
@@ -19,6 +21,7 @@ describe('NetworkNodesService', () => {
   let queryBuilder: any;
   let wireguardPeerRepo: any;
   let wireGuardHubClient: any;
+  let portalRegistryRepo: any;
 
   const makeNode = (overrides: Partial<NetworkNodeEntity> = {}): NetworkNodeEntity =>
     ({
@@ -97,6 +100,17 @@ describe('NetworkNodesService', () => {
       logEvent: jest.fn().mockResolvedValue({}),
     };
 
+    portalRegistryRepo = {
+      findOneBy: jest.fn().mockResolvedValue(null),
+      create: jest.fn((dto: any) => dto),
+      save: jest.fn((entity: any) => Promise.resolve(entity)),
+      remove: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const tenantContext = {
+      getTenantId: jest.fn().mockReturnValue('tenant-1'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         NetworkNodesService,
@@ -104,11 +118,13 @@ describe('NetworkNodesService', () => {
         { provide: getRepositoryToken(ZoneEntity), useValue: zoneRepo },
         { provide: getRepositoryToken(NetworkAccessEntity), useValue: accessRepo },
         { provide: getRepositoryToken(WireguardPeerEntity), useValue: wireguardPeerRepo },
+        { provide: getRepositoryToken(NodePortalRegistryEntity, 'platform'), useValue: portalRegistryRepo },
         { provide: ConnectionTestService, useValue: connectionTestService },
         { provide: WireguardManagerService, useValue: wireguardManagerService },
         { provide: WireGuardHubClient, useValue: wireGuardHubClient },
         { provide: DeviceHealthService, useValue: deviceHealthService },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
+        { provide: TenantContextService, useValue: tenantContext },
       ],
     }).compile();
 
@@ -308,6 +324,105 @@ describe('NetworkNodesService', () => {
 
       expect(result.success).toBe(true);
       expect(nodeRepo.save).toHaveBeenCalled();
+    });
+
+    it('limpia el registro de portal cautivo del nodo eliminado', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1', isActive: true }));
+      portalRegistryRepo.findOneBy.mockResolvedValue({ id: 'reg-1', nodeId: 'node-1', publicIp: '190.0.0.1' });
+
+      await service.delete('node-1');
+
+      expect(portalRegistryRepo.findOneBy).toHaveBeenCalledWith({ nodeId: 'node-1' });
+      expect(portalRegistryRepo.remove).toHaveBeenCalledWith({ id: 'reg-1', nodeId: 'node-1', publicIp: '190.0.0.1' });
+    });
+  });
+
+  describe('sincronización con platform.node_portal_registry', () => {
+    it('create con publicIp crea una fila nueva en el registro central', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      portalRegistryRepo.findOneBy.mockResolvedValue(null);
+
+      const result = await service.create({ name: 'Nuevo Nodo', publicIp: '190.0.0.5' });
+
+      expect(portalRegistryRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 'tenant-1', nodeId: result.id, publicIp: '190.0.0.5' }),
+      );
+    });
+
+    it('create sin publicIp no toca el registro', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+
+      await service.create({ name: 'Nuevo Nodo' });
+
+      expect(portalRegistryRepo.save).not.toHaveBeenCalled();
+      // Igual intenta limpiar por si acaso (no-op porque findOneBy devuelve null).
+      expect(portalRegistryRepo.findOneBy).toHaveBeenCalledWith({ nodeId: expect.any(String) });
+    });
+
+    it('update que agrega publicIp a un nodo que no tenía fila crea una nueva', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1' }));
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      portalRegistryRepo.findOneBy.mockResolvedValue(null);
+
+      await service.update('node-1', { publicIp: '190.0.0.9' });
+
+      expect(portalRegistryRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 'tenant-1', nodeId: 'node-1', publicIp: '190.0.0.9' }),
+      );
+    });
+
+    it('update que cambia publicIp actualiza la fila existente del mismo nodo en vez de duplicarla', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1' }));
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      const existing = { id: 'reg-1', nodeId: 'node-1', publicIp: '190.0.0.1', tenantId: 'tenant-1' };
+      portalRegistryRepo.findOneBy.mockImplementation(({ publicIp, nodeId }: any) => {
+        if (nodeId === 'node-1') return Promise.resolve(existing);
+        return Promise.resolve(null);
+      });
+
+      await service.update('node-1', { publicIp: '190.0.0.99' });
+
+      expect(portalRegistryRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'reg-1', nodeId: 'node-1', publicIp: '190.0.0.99' }),
+      );
+      expect(portalRegistryRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('update que limpia publicIp (string vacío) borra la fila del registro', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-1' }));
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      const existing = { id: 'reg-1', nodeId: 'node-1', publicIp: '190.0.0.1' };
+      portalRegistryRepo.findOneBy.mockResolvedValue(existing);
+
+      await service.update('node-1', { publicIp: '' });
+
+      expect(portalRegistryRepo.remove).toHaveBeenCalledWith(existing);
+      expect(portalRegistryRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('si la IP pública ya estaba asignada a OTRO nodo, se la reasigna (borra la vieja y crea la nueva)', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode({ id: 'node-2' }));
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      const conflicting = { id: 'reg-old', nodeId: 'node-1', publicIp: '190.0.0.1' };
+      portalRegistryRepo.findOneBy.mockImplementation(({ publicIp, nodeId }: any) => {
+        if (publicIp === '190.0.0.1' && nodeId === undefined) return Promise.resolve(conflicting);
+        if (nodeId === 'node-2') return Promise.resolve(null);
+        return Promise.resolve(null);
+      });
+
+      await service.update('node-2', { publicIp: '190.0.0.1' });
+
+      expect(portalRegistryRepo.remove).toHaveBeenCalledWith(conflicting);
+      expect(portalRegistryRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 'tenant-1', nodeId: 'node-2', publicIp: '190.0.0.1' }),
+      );
+    });
+
+    it('un fallo al sincronizar el registro no revienta el guardado del nodo (best-effort)', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      portalRegistryRepo.findOneBy.mockRejectedValue(new Error('DB de plataforma caída'));
+
+      await expect(service.create({ name: 'Nuevo Nodo', publicIp: '190.0.0.5' })).resolves.toBeDefined();
     });
   });
 

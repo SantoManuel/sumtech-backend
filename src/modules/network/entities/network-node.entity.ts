@@ -187,6 +187,21 @@ export class NetworkNodeEntity {
   @Column({ name: 'portal_port', type: 'int', default: 80 })
   portalPort: number;
 
+  /**
+   * IP pública real con la que este router sale a Internet (la que verá
+   * cualquier servidor externo como origen del tráfico de sus clientes, por
+   * el masquerade/NAT de salida estándar que ya hace para toda su LAN) --
+   * distinta de `managementIp`/`wireguardIp`, que son para que NOSOTROS
+   * lleguemos a administrar el equipo, no necesariamente la misma interfaz.
+   * Se replica a `platform.node_portal_registry` (ver NetworkNodesService)
+   * para que el redirector público (`/platform/portal-redirect`) pueda
+   * identificar de qué tenant es un cliente suspendido en modo Portal de
+   * Aviso SOLO por su IP de origen, sin tocar Traefik ni redesplegar nada
+   * cada vez que un tenant nuevo activa el portal cautivo.
+   */
+  @Column({ name: 'public_ip', type: 'varchar', length: 45, nullable: true })
+  publicIp?: string;
+
   @Column({ name: 'last_sync_at', type: 'timestamp with time zone', nullable: true })
   lastSyncAt?: Date;
 

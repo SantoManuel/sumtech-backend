@@ -133,6 +133,11 @@ export class UpdateNetworkNodeDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(45, { message: 'La IP pública no puede superar 45 caracteres' })
+  publicIp?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(50)
   wanInterfaceName?: string;
 

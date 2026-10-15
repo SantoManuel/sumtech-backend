@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
+import { NodePortalRegistryEntity } from '../platform/entities/node-portal-registry.entity';
 import { ZonesService } from './zones.service';
 import { ZonesController } from './zones.controller';
 import { NetworkNodesService } from './network-nodes.service';
@@ -58,6 +60,7 @@ import { PendingOperationsController } from './pending-operations.controller';
       PlanEntity,
       VlanEntity,
     ]),
+    TypeOrmModule.forFeature([NodePortalRegistryEntity], 'platform'),
     BullModule.registerQueue({ name: NETWORK_OPS_QUEUE }),
     NetworkConnectivityModule,
     UsersModule,

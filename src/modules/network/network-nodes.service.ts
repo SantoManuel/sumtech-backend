@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ConflictException,
   BadRequestException,
@@ -10,6 +11,8 @@ import { NetworkNodeEntity } from './entities/network-node.entity';
 import { ZoneEntity } from './entities/zone.entity';
 import { NetworkAccessEntity } from './entities/network-access.entity';
 import { WireguardPeerEntity } from './entities/wireguard-peer.entity';
+import { NodePortalRegistryEntity } from '../platform/entities/node-portal-registry.entity';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { CreateNetworkNodeDto } from './dto/create-network-node.dto';
 import { UpdateNetworkNodeDto } from './dto/update-network-node.dto';
 import { ListNetworkNodesDto } from './dto/list-network-nodes.dto';
@@ -24,6 +27,8 @@ const HANDSHAKE_STALE_AFTER_MS = 180_000;
 
 @Injectable()
 export class NetworkNodesService {
+  private readonly logger = new Logger(NetworkNodesService.name);
+
   constructor(
     @InjectRepository(NetworkNodeEntity)
     private readonly nodeRepository: Repository<NetworkNodeEntity>,
@@ -33,11 +38,14 @@ export class NetworkNodesService {
     private readonly accessRepository: Repository<NetworkAccessEntity>,
     @InjectRepository(WireguardPeerEntity)
     private readonly wireguardPeerRepository: Repository<WireguardPeerEntity>,
+    @InjectRepository(NodePortalRegistryEntity, 'platform')
+    private readonly portalRegistryRepository: Repository<NodePortalRegistryEntity>,
     private readonly connectionTestService: ConnectionTestService,
     private readonly wireguardManagerService: WireguardManagerService,
     private readonly wireGuardHubClient: WireGuardHubClient,
     private readonly deviceHealthService: DeviceHealthService,
     private readonly deviceOperationLogger: DeviceOperationLogger,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   async findAll(dto?: ListNetworkNodesDto, activeOnly = false) {
@@ -111,7 +119,9 @@ export class NetworkNodesService {
       wanPppoePasswordEnc,
     });
 
-    return this.nodeRepository.save(node);
+    const saved = await this.nodeRepository.save(node);
+    await this.syncPortalRegistry(saved);
+    return saved;
   }
 
   async update(id: string, dto: UpdateNetworkNodeDto): Promise<NetworkNodeEntity> {
@@ -135,7 +145,9 @@ export class NetworkNodesService {
     const { apiPassword, wanPppoePassword, ...cleanDto } = dto;
     Object.assign(node, cleanDto);
 
-    return this.nodeRepository.save(node);
+    const saved = await this.nodeRepository.save(node);
+    await this.syncPortalRegistry(saved);
+    return saved;
   }
 
   async delete(id: string): Promise<{ success: boolean; message: string }> {
@@ -157,8 +169,68 @@ export class NetworkNodesService {
     node.deletedAt = new Date();
     node.isActive = false;
     await this.nodeRepository.save(node);
+    await this.removeFromPortalRegistry(node.id);
 
     return { success: true, message: `Nodo ${node.name} eliminado correctamente` };
+  }
+
+  /**
+   * Replica `node.publicIp` a `platform.node_portal_registry` -- índice
+   * central cross-tenant que usa el redirector público del portal cautivo
+   * (`/platform/portal-redirect`) para saber a qué tenant pertenece un
+   * cliente suspendido SOLO por la IP de origen del router. Best-effort:
+   * si falla, no revierte el guardado del nodo (ya persistido) -- el portal
+   * cautivo de ESE nodo específico simplemente no resolverá hasta la
+   * próxima edición exitosa, que es preferible a bloquear la gestión normal
+   * del nodo por un problema en la DB de plataforma.
+   */
+  private async syncPortalRegistry(node: NetworkNodeEntity): Promise<void> {
+    try {
+      if (!node.publicIp) {
+        await this.removeFromPortalRegistry(node.id);
+        return;
+      }
+
+      const tenantId = this.tenantContext.getTenantId();
+
+      // La IP pública es UNIQUE a nivel de plataforma: si otro nodo (de este
+      // tenant o de otro) ya la tenía registrada, se reasigna a este -- un
+      // router cambiando de IP pública es un caso real, no un error.
+      const existingByIp = await this.portalRegistryRepository.findOneBy({ publicIp: node.publicIp });
+      if (existingByIp && existingByIp.nodeId !== node.id) {
+        await this.portalRegistryRepository.remove(existingByIp);
+      }
+
+      const existingForNode = await this.portalRegistryRepository.findOneBy({ nodeId: node.id });
+      if (existingForNode) {
+        existingForNode.publicIp = node.publicIp;
+        existingForNode.tenantId = tenantId;
+        await this.portalRegistryRepository.save(existingForNode);
+      } else {
+        await this.portalRegistryRepository.save(
+          this.portalRegistryRepository.create({
+            tenantId,
+            nodeId: node.id,
+            publicIp: node.publicIp,
+          }),
+        );
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `No se pudo sincronizar la IP pública del nodo "${node.name}" con el registro de portal cautivo: ${err.message}`,
+      );
+    }
+  }
+
+  private async removeFromPortalRegistry(nodeId: string): Promise<void> {
+    try {
+      const existing = await this.portalRegistryRepository.findOneBy({ nodeId });
+      if (existing) {
+        await this.portalRegistryRepository.remove(existing);
+      }
+    } catch (err: any) {
+      this.logger.warn(`No se pudo limpiar el registro de portal cautivo del nodo ${nodeId}: ${err.message}`);
+    }
   }
 
   async deactivate(id: string): Promise<NetworkNodeEntity> {

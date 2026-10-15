@@ -118,6 +118,11 @@ export class CreateNetworkNodeDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(45, { message: 'La IP pública no puede superar 45 caracteres' })
+  publicIp?: string;
+
+  @IsOptional()
+  @IsString()
   @IsIn(['MANUAL', 'ROUTEROS'], {
     message: 'provisioningMode debe ser MANUAL o ROUTEROS',
   })
