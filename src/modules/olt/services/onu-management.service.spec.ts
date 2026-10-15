@@ -10,11 +10,10 @@ import { OnuTypeEntity } from '../entities/onu-type.entity';
 import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
-import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { NetworkAccessEntity } from '../../network/entities/network-access.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
-import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
@@ -31,12 +30,11 @@ describe('OnuManagementService', () => {
   let speedProfileRepo: any;
   let vlanRepo: any;
   let tr069Repo: any;
-  let nodeRepo: any;
   let contractRepo: any;
   let networkAccessRepo: any;
   let zteDriver: any;
   let driverRegistry: any;
-  let reachabilityResolver: any;
+  let connectionResolver: any;
   let deviceOperationLogger: any;
   let cpeConfiguratorService: any;
   let tenantContext: any;
@@ -133,10 +131,6 @@ describe('OnuManagementService', () => {
       findOne: jest.fn().mockResolvedValue(mockTr069Data),
     };
 
-    nodeRepo = {
-      findOneBy: jest.fn().mockResolvedValue(null),
-    };
-
     contractRepo = {
       findOne: jest.fn().mockResolvedValue({
         id: 'contract-1',
@@ -164,10 +158,12 @@ describe('OnuManagementService', () => {
       attachCapabilities: jest.fn((entity) => Object.assign(entity, { capabilities: { onuDelete: true } })),
     };
 
-    reachabilityResolver = {
-      resolveReachability: jest.fn().mockResolvedValue({
-        directIp: '10.0.0.10',
+    connectionResolver = {
+      resolve: jest.fn().mockResolvedValue({
+        host: '10.0.0.10',
         port: 23,
+        username: 'admin',
+        password: 'decrypted-admin-pass',
       }),
     };
 
@@ -194,11 +190,10 @@ describe('OnuManagementService', () => {
         { provide: getRepositoryToken(OltSpeedProfileEntity), useValue: speedProfileRepo },
         { provide: getRepositoryToken(VlanEntity), useValue: vlanRepo },
         { provide: getRepositoryToken(Tr069NetworkEntity), useValue: tr069Repo },
-        { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
         { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
         { provide: getRepositoryToken(NetworkAccessEntity), useValue: networkAccessRepo },
         { provide: OltDriverRegistry, useValue: driverRegistry },
-        { provide: ReachabilityResolver, useValue: reachabilityResolver },
+        { provide: OltConnectionResolverService, useValue: connectionResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
         { provide: CpeConfiguratorService, useValue: cpeConfiguratorService },
         { provide: TenantContextService, useValue: tenantContext },

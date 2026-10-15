@@ -6,9 +6,8 @@ import { OltManagementService } from './olt-management.service';
 import { OltEntity } from '../entities/olt.entity';
 import { OltRolePermissionEntity } from '../entities/olt-role-permission.entity';
 import { OltInterfaceEntity } from '../entities/olt-interface.entity';
-import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
-import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 
 describe('OltManagementService', () => {
@@ -16,10 +15,9 @@ describe('OltManagementService', () => {
   let oltRepo: any;
   let permRepo: any;
   let ifaceRepo: any;
-  let nodeRepo: any;
   let zteDriver: any;
   let driverRegistry: any;
-  let reachabilityResolver: any;
+  let connectionResolver: any;
   let deviceOperationLogger: any;
 
   const mockOlt = {
@@ -37,13 +35,6 @@ describe('OltManagementService', () => {
     status: 'ACTIVO',
     connectionStatus: 'DESCONECTADO',
   } as unknown as OltEntity;
-
-  const mockNode = {
-    id: 'node-1',
-    name: 'RB Core',
-    managementIp: '10.0.0.1',
-    apiPort: 8729,
-  } as NetworkNodeEntity;
 
   /** Query builder encadenable: resuelve getManyAndCount/getMany con los valores dados, registra los where/andWhere aplicados. */
   const makeQueryBuilder = (manyAndCountResult: [any[], number], manyResult: any[]) => {
@@ -82,9 +73,6 @@ describe('OltManagementService', () => {
       create: jest.fn((dto) => dto),
       save: jest.fn((dto) => Promise.resolve(dto)),
     };
-    nodeRepo = {
-      findOneBy: jest.fn().mockResolvedValue(mockNode),
-    };
     zteDriver = {
       testConnection: jest.fn().mockResolvedValue({ ok: true, latencyMs: 45 }),
       getSystemInfo: jest.fn().mockResolvedValue({ uptime: '15d 4h', firmwareVersion: 'V1.2.5P3' }),
@@ -107,8 +95,13 @@ describe('OltManagementService', () => {
     driverRegistry = {
       resolve: jest.fn().mockReturnValue(zteDriver),
     };
-    reachabilityResolver = {
-      resolveEndpoint: jest.fn().mockResolvedValue({ host: '10.0.0.1', port: 8729, useHttps: false }),
+    connectionResolver = {
+      resolve: jest.fn().mockResolvedValue({
+        host: '10.0.0.1',
+        port: 2323,
+        username: 'smartoltuser',
+        password: 'decrypted-pass',
+      }),
     };
     deviceOperationLogger = {
       logEvent: jest.fn().mockResolvedValue(undefined),
@@ -120,9 +113,8 @@ describe('OltManagementService', () => {
         { provide: getRepositoryToken(OltEntity), useValue: oltRepo },
         { provide: getRepositoryToken(OltRolePermissionEntity), useValue: permRepo },
         { provide: getRepositoryToken(OltInterfaceEntity), useValue: ifaceRepo },
-        { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
         { provide: OltDriverRegistry, useValue: driverRegistry },
-        { provide: ReachabilityResolver, useValue: reachabilityResolver },
+        { provide: OltConnectionResolverService, useValue: connectionResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
       ],
     }).compile();

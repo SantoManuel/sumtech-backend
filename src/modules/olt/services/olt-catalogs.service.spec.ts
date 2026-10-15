@@ -10,6 +10,7 @@ import { OnuTypeEntity } from '../entities/onu-type.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
+import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { UnknownOltVendorError } from '../ports/olt-driver.port';
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
@@ -24,6 +25,7 @@ describe('OltCatalogsService', () => {
   let planRepo: any;
   let driverRegistry: any;
   let oltRepo: any;
+  let connectionResolver: any;
 
   beforeEach(async () => {
     vlanRepo = {
@@ -71,6 +73,15 @@ describe('OltCatalogsService', () => {
         ensureTcontProfile: jest.fn().mockResolvedValue({ ok: true }),
       }),
     };
+    // Por defecto se comporta como una OLT DIRECT (host/port tal cual) --
+    // las pruebas de VIA_MIKROTIK lo sobreescriben explícitamente para
+    // probar que el servicio usa lo que devuelve el resolver, no los
+    // campos crudos de la OLT (ver olt-connection-resolver.service.ts).
+    connectionResolver = {
+      resolve: jest.fn((olt: any) =>
+        Promise.resolve({ host: olt.host, port: olt.port, username: olt.username, password: 'decrypted-password' }),
+      ),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -84,6 +95,7 @@ describe('OltCatalogsService', () => {
         { provide: getRepositoryToken(OltEntity), useValue: oltRepo },
         { provide: getRepositoryToken(PlanEntity), useValue: planRepo },
         { provide: OltDriverRegistry, useValue: driverRegistry },
+        { provide: OltConnectionResolverService, useValue: connectionResolver },
       ],
     }).compile();
 
@@ -329,6 +341,41 @@ describe('OltCatalogsService', () => {
 
       await expect(service.setInterfaceAdminState('iface-1', 'DOWN')).rejects.toThrow(BadRequestException);
     });
+
+    it('OLT VIA_MIKROTIK: usa el host/puerto resueltos por OltConnectionResolverService, no la IP privada cruda de la OLT (regresión del bug real en OLT-Azua_)', async () => {
+      const viaMikrotikOlt = {
+        id: 'olt-azua',
+        vendor: 'HIOSO',
+        host: '192.168.0.88', // IP privada de la OLT detrás del MikroTik -- NUNCA debe llegar al driver
+        port: 23,
+        connectionMethod: 'VIA_MIKROTIK',
+        viaNodeId: 'node-azua-centro',
+        natPort: 2324,
+        username: 'admin',
+        passwordEnc: 'enc',
+      };
+      ifaceRepo.findOne.mockResolvedValue({ id: 'iface-1', name: 'epon 1/1', adminState: 'UP', olt: viaMikrotikOlt });
+      connectionResolver.resolve.mockResolvedValue({
+        host: '172.16.100.5', // IP del MikroTik en el túnel WireGuard -- la correcta
+        port: 2324, // nat_port de la OLT, no su puerto crudo (23)
+        username: 'admin',
+        password: 'decrypted-password',
+      });
+      const setInterfaceAdminState = jest.fn().mockResolvedValue({ ok: true });
+      driverRegistry.resolve.mockReturnValue({ setInterfaceAdminState });
+
+      await service.setInterfaceAdminState('iface-1', 'DOWN');
+
+      expect(connectionResolver.resolve).toHaveBeenCalledWith(viaMikrotikOlt);
+      expect(setInterfaceAdminState).toHaveBeenCalledWith(
+        expect.objectContaining({ host: '172.16.100.5', port: 2324 }),
+        'epon 1/1',
+        'DOWN',
+      );
+      const [calledParams] = setInterfaceAdminState.mock.calls[0];
+      expect(calledParams.host).not.toBe('192.168.0.88');
+      expect(calledParams.port).not.toBe(23);
+    });
   });
 
   describe('syncSpeedProfileToOlt', () => {
@@ -385,6 +432,39 @@ describe('OltCatalogsService', () => {
       });
 
       await expect(service.syncSpeedProfileToOlt('olt-1', 'prof-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('OLT VIA_MIKROTIK: usa el host/puerto resueltos por OltConnectionResolverService, no la IP privada cruda de la OLT', async () => {
+      const viaMikrotikOlt = {
+        id: 'olt-azua',
+        name: 'OLT-Azua_',
+        vendor: 'HIOSO',
+        host: '192.168.0.88',
+        port: 23,
+        connectionMethod: 'VIA_MIKROTIK',
+        viaNodeId: 'node-azua-centro',
+        natPort: 2324,
+        username: 'admin',
+        passwordEnc: 'enc',
+      };
+      oltRepo.findOneBy.mockResolvedValue(viaMikrotikOlt);
+      speedProfileRepo.findOneBy.mockResolvedValue(profile);
+      connectionResolver.resolve.mockResolvedValue({
+        host: '172.16.100.5',
+        port: 2324,
+        username: 'admin',
+        password: 'decrypted-password',
+      });
+      const ensureTcontProfile = jest.fn().mockResolvedValue({ ok: true });
+      driverRegistry.resolve.mockReturnValue({ ensureTcontProfile });
+
+      await service.syncSpeedProfileToOlt('olt-1', 'prof-1');
+
+      expect(connectionResolver.resolve).toHaveBeenCalledWith(viaMikrotikOlt);
+      expect(ensureTcontProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ host: '172.16.100.5', port: 2324 }),
+        { name: 'FIXED5M', fixedKbps: 5000 },
+      );
     });
   });
 
@@ -453,6 +533,48 @@ describe('OltCatalogsService', () => {
       expect(ifaceVlanRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ applyStatus: 'ERROR' }),
       );
+    });
+
+    it('OLT VIA_MIKROTIK: usa el host/puerto resueltos por OltConnectionResolverService, no la IP privada cruda de la OLT (regresión del 400 real contra epon 1/1 de OLT-Azua_)', async () => {
+      const viaMikrotikIface = {
+        id: 'iface-1',
+        name: 'epon 1/1',
+        olt: {
+          id: 'olt-azua',
+          vendor: 'HIOSO',
+          host: '192.168.0.88',
+          port: 23,
+          connectionMethod: 'VIA_MIKROTIK',
+          viaNodeId: 'node-azua-centro',
+          natPort: 2324,
+          username: 'admin',
+          passwordEnc: 'enc',
+        },
+      };
+      ifaceRepo.findOne.mockResolvedValue(viaMikrotikIface);
+      vlanRepo.findOneBy.mockResolvedValue(mockVlan);
+      ifaceVlanRepo.findOneBy.mockResolvedValue(null);
+      ifaceVlanRepo.create.mockImplementation((dto) => dto);
+      ifaceVlanRepo.save.mockImplementation((entity) => Promise.resolve(entity));
+      connectionResolver.resolve.mockResolvedValue({
+        host: '172.16.100.5',
+        port: 2324,
+        username: 'admin',
+        password: 'decrypted-password',
+      });
+      const configureVlanOnInterface = jest.fn().mockResolvedValue({ ok: true });
+      driverRegistry.resolve.mockReturnValue({ configureVlanOnInterface });
+
+      const res = await service.assignVlanToInterface('iface-1', 'vlan-1', 'TAG', true);
+
+      expect(connectionResolver.resolve).toHaveBeenCalledWith(viaMikrotikIface.olt);
+      expect(configureVlanOnInterface).toHaveBeenCalledWith(
+        expect.objectContaining({ host: '172.16.100.5', port: 2324 }),
+        { interfaceName: 'epon 1/1', vlanId: 400, mode: 'TAG' },
+      );
+      const [calledParams] = configureVlanOnInterface.mock.calls[0];
+      expect(calledParams.host).not.toBe('192.168.0.88');
+      expect(res.applyStatus).toBe('APPLIED');
     });
   });
 });

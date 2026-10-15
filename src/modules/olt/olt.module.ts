@@ -31,6 +31,7 @@ import { OltDriverRegistry } from './drivers/olt-driver.registry';
 
 import { OltManagementService } from './services/olt-management.service';
 import { OltCatalogsService } from './services/olt-catalogs.service';
+import { OltConnectionResolverService } from './services/olt-connection-resolver.service';
 import { OltNatManagerService } from './services/olt-nat-manager.service';
 import { OnuManagementService } from './services/onu-management.service';
 import { OltMonitoringService } from './services/olt-monitoring.service';
@@ -73,6 +74,7 @@ import { OnuController } from './onu.controller';
     OltDriverRegistry,
     OltManagementService,
     OltCatalogsService,
+    OltConnectionResolverService,
     OltNatManagerService,
     OnuManagementService,
     OltMonitoringService,

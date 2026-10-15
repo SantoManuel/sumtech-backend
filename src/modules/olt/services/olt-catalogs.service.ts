@@ -9,8 +9,9 @@ import { OnuTypeEntity } from '../entities/onu-type.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
+import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { UnknownOltVendorError } from '../ports/olt-driver.port';
-import { decryptCredential, encryptCredential } from '../../network-connectivity/utils/crypto.util';
+import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from '../dto/speed-profile.dto';
@@ -37,6 +38,7 @@ export class OltCatalogsService {
     @InjectRepository(PlanEntity)
     private readonly planRepository: Repository<PlanEntity>,
     private readonly driverRegistry: OltDriverRegistry,
+    private readonly connectionResolver: OltConnectionResolverService,
   ) {}
 
   // ══════════════════════════════════════════════════
@@ -124,20 +126,12 @@ export class OltCatalogsService {
     if (applyToHardware && iface.olt) {
       try {
         const driver = this.driverRegistry.resolve(iface.olt.vendor);
-        const password = decryptCredential(iface.olt.passwordEnc);
-        const result = await driver.configureVlanOnInterface(
-          {
-            host: iface.olt.host,
-            port: iface.olt.port || 23,
-            username: iface.olt.username,
-            password,
-          },
-          {
-            interfaceName: iface.name,
-            vlanId: vlan.vlanId,
-            mode,
-          },
-        );
+        const connParams = await this.connectionResolver.resolve(iface.olt);
+        const result = await driver.configureVlanOnInterface(connParams, {
+          interfaceName: iface.name,
+          vlanId: vlan.vlanId,
+          mode,
+        });
         if (result.ok) {
           mapping.applyStatus = 'APPLIED';
         } else {
@@ -177,12 +171,8 @@ export class OltCatalogsService {
       throw err;
     }
 
-    const password = decryptCredential(iface.olt.passwordEnc);
-    const result = await driver.setInterfaceAdminState(
-      { host: iface.olt.host, port: iface.olt.port || 23, username: iface.olt.username, password },
-      iface.name,
-      state,
-    );
+    const connParams = await this.connectionResolver.resolve(iface.olt);
+    const result = await driver.setInterfaceAdminState(connParams, iface.name, state);
 
     if (!result.ok) {
       throw new BadRequestException(`No se pudo cambiar el estado de la interfaz: ${result.error}`);
@@ -226,11 +216,11 @@ export class OltCatalogsService {
       throw err;
     }
 
-    const password = decryptCredential(olt.passwordEnc);
-    const result = await driver.ensureTcontProfile(
-      { host: olt.host, port: olt.port || 23, username: olt.username, password },
-      { name: profile.vendorTcontProfile, fixedKbps: profile.upKbps },
-    );
+    const connParams = await this.connectionResolver.resolve(olt);
+    const result = await driver.ensureTcontProfile(connParams, {
+      name: profile.vendorTcontProfile,
+      fixedKbps: profile.upKbps,
+    });
 
     if (!result.ok) {
       throw new BadRequestException(`No se pudo sincronizar el perfil en la OLT: ${result.error}`);

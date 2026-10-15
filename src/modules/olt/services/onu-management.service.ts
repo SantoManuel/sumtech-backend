@@ -10,18 +10,16 @@ import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { ListUnconfiguredOnusDto, ListOnusDto } from '../dto/list-onus.dto';
-import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { NetworkAccessEntity } from '../../network/entities/network-access.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
-import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import {
   IOltDriver,
-  OltConnectionParams,
   AuthorizeOnuParams,
   DriverNotImplementedError,
   UnknownOltVendorError,
@@ -48,14 +46,12 @@ export class OnuManagementService {
     private readonly vlanRepository: Repository<VlanEntity>,
     @InjectRepository(Tr069NetworkEntity)
     private readonly tr069Repository: Repository<Tr069NetworkEntity>,
-    @InjectRepository(NetworkNodeEntity)
-    private readonly nodeRepository: Repository<NetworkNodeEntity>,
     @InjectRepository(ContractEntity)
     private readonly contractRepository: Repository<ContractEntity>,
     @InjectRepository(NetworkAccessEntity)
     private readonly networkAccessRepository: Repository<NetworkAccessEntity>,
     private readonly driverRegistry: OltDriverRegistry,
-    private readonly reachabilityResolver: ReachabilityResolver,
+    private readonly connectionResolver: OltConnectionResolverService,
     private readonly deviceOperationLogger: DeviceOperationLogger,
     private readonly cpeConfiguratorService: CpeConfiguratorService,
     private readonly tenantContext: TenantContextService,
@@ -199,7 +195,7 @@ export class OnuManagementService {
     if (!olt) throw new NotFoundException(`OLT no encontrada: ${oltId}`);
 
     const driver = this.resolveDriver(olt);
-    const connParams = await this.resolveOltConnectionParams(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
     const discovered = await this.callDriver(() => driver.getUnconfiguredOnus(connParams));
 
     const savedOnus: OnuEntity[] = [];
@@ -254,7 +250,7 @@ export class OnuManagementService {
   async getOpticalTelemetry(id: string) {
     const onu = await this.findById(id);
     const driver = this.resolveDriver(onu.olt);
-    const connParams = await this.resolveOltConnectionParams(onu.olt);
+    const connParams = await this.connectionResolver.resolve(onu.olt);
 
     const onuTarget = onu.onuIndex.startsWith('gpon-onu_')
       ? onu.onuIndex
@@ -321,7 +317,7 @@ export class OnuManagementService {
     const onu = await this.findById(id);
     const olt = onu.olt;
     const driver = this.resolveDriver(olt);
-    const connParams = await this.resolveOltConnectionParams(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
 
     const authParams = await this.buildAuthorizeParams(onu, dto);
 
@@ -505,7 +501,7 @@ export class OnuManagementService {
   async blockOnu(id: string, actorUserId?: string) {
     const onu = await this.findById(id);
     const driver = this.resolveDriver(onu.olt);
-    const connParams = await this.resolveOltConnectionParams(onu.olt);
+    const connParams = await this.connectionResolver.resolve(onu.olt);
 
     const target = this.buildOnuTarget(onu);
     const result = await driver.setOnuAdminState(connParams, target, 'BLOCKED');
@@ -534,7 +530,7 @@ export class OnuManagementService {
   async unblockOnu(id: string, actorUserId?: string) {
     const onu = await this.findById(id);
     const driver = this.resolveDriver(onu.olt);
-    const connParams = await this.resolveOltConnectionParams(onu.olt);
+    const connParams = await this.connectionResolver.resolve(onu.olt);
 
     const target = this.buildOnuTarget(onu);
     const result = await driver.setOnuAdminState(connParams, target, 'ACTIVE');
@@ -569,7 +565,7 @@ export class OnuManagementService {
     const onu = await this.findById(id);
     const olt = onu.olt;
     const driver = this.resolveDriver(olt);
-    const connParams = await this.resolveOltConnectionParams(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
 
     const ponInterface = onu.ponInterface?.name || 'gpon-olt_1/1/1';
     const parts = onu.onuIndex.split(':');
@@ -675,34 +671,6 @@ export class OnuManagementService {
       operationMode: dto.operationMode || 'ROUTER',
       tr069Url,
       tr069Vlan,
-    };
-  }
-
-  private async resolveOltConnectionParams(olt: OltEntity): Promise<OltConnectionParams> {
-    let host = olt.host;
-    let port = olt.port || 23;
-
-    if (olt.connectionMethod === 'VIA_MIKROTIK') {
-      if (!olt.viaNodeId) {
-        throw new BadRequestException(`La OLT "${olt.name}" no tiene router MikroTik de salto configurado.`);
-      }
-      const node = await this.nodeRepository.findOneBy({ id: olt.viaNodeId });
-      if (!node) throw new NotFoundException('Router MikroTik de salto no encontrado.');
-
-      const endpoint = await this.reachabilityResolver.resolveEndpoint(node);
-      host = endpoint.host;
-      port = olt.natPort || 2323;
-    }
-
-    const password = decryptCredential(olt.passwordEnc);
-    const enablePassword = olt.enablePasswordEnc ? decryptCredential(olt.enablePasswordEnc) : undefined;
-
-    return {
-      host,
-      port,
-      username: olt.username,
-      password,
-      enablePassword,
     };
   }
 }

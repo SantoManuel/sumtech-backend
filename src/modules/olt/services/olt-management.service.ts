@@ -5,14 +5,12 @@ import { OltEntity } from '../entities/olt.entity';
 import { ListOltsDto } from '../dto/list-olts.dto';
 import { OltRolePermissionEntity } from '../entities/olt-role-permission.entity';
 import { OltInterfaceEntity } from '../entities/olt-interface.entity';
-import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
-import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { encryptCredential, decryptCredential } from '../../network-connectivity/utils/crypto.util';
 import {
   IOltDriver,
-  OltConnectionParams,
   OltDriverCapabilities,
   NO_DRIVER_CAPABILITIES,
   DriverNotImplementedError,
@@ -30,10 +28,8 @@ export class OltManagementService {
     private readonly permRepository: Repository<OltRolePermissionEntity>,
     @InjectRepository(OltInterfaceEntity)
     private readonly ifaceRepository: Repository<OltInterfaceEntity>,
-    @InjectRepository(NetworkNodeEntity)
-    private readonly nodeRepository: Repository<NetworkNodeEntity>,
     private readonly driverRegistry: OltDriverRegistry,
-    private readonly reachabilityResolver: ReachabilityResolver,
+    private readonly connectionResolver: OltConnectionResolverService,
     private readonly deviceOperationLogger: DeviceOperationLogger,
   ) {}
 
@@ -242,7 +238,7 @@ export class OltManagementService {
   async testConnection(id: string, actorUserId?: string) {
     const olt = await this.findById(id);
     const driver = this.resolveDriver(olt);
-    const connParams = await this.resolveOltConnectionParams(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
 
     const start = Date.now();
     const test = await driver.testConnection(connParams);
@@ -296,7 +292,7 @@ export class OltManagementService {
   async discoverInterfaces(id: string, actorUserId?: string) {
     const olt = await this.findById(id);
     const driver = this.resolveDriver(olt);
-    const connParams = await this.resolveOltConnectionParams(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
 
     const start = Date.now();
     const discovered = await this.callDriver(() => driver.discoverInterfaces(connParams));
@@ -339,37 +335,5 @@ export class OltManagementService {
     });
 
     return this.ifaceRepository.find({ where: { oltId: olt.id }, order: { name: 'ASC' } });
-  }
-
-  /**
-   * Resuelve el host y puerto reales según el connection_method de la OLT.
-   */
-  private async resolveOltConnectionParams(olt: OltEntity): Promise<OltConnectionParams> {
-    let host = olt.host;
-    let port = olt.port || 23;
-
-    if (olt.connectionMethod === 'VIA_MIKROTIK') {
-      if (!olt.viaNodeId) {
-        throw new BadRequestException(`La OLT "${olt.name}" usa VIA_MIKROTIK pero no tiene viaNodeId.`);
-      }
-      const node = await this.nodeRepository.findOneBy({ id: olt.viaNodeId });
-      if (!node) {
-        throw new NotFoundException(`Router MikroTik asignado no encontrado.`);
-      }
-      const endpoint = await this.reachabilityResolver.resolveEndpoint(node);
-      host = endpoint.host;
-      port = olt.natPort || 2323;
-    }
-
-    const password = decryptCredential(olt.passwordEnc);
-    const enablePassword = olt.enablePasswordEnc ? decryptCredential(olt.enablePasswordEnc) : undefined;
-
-    return {
-      host,
-      port,
-      username: olt.username,
-      password,
-      enablePassword,
-    };
   }
 }
