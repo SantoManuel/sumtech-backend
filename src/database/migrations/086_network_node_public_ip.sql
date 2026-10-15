@@ -22,5 +22,8 @@
 ALTER TABLE "net"."network_nodes"
   ADD COLUMN IF NOT EXISTS "public_ip" VARCHAR(45) NULL;
 
+-- OJO: apply-migrations.ts quita comentarios SQL con una regex ("--.*$") que
+-- no distingue si el "--" está dentro de un string entre comillas -- por eso
+-- este texto evita esa secuencia (la truncaría a mitad de la cadena).
 COMMENT ON COLUMN "net"."network_nodes"."public_ip" IS
-  'IP pública con la que este router sale a Internet (masquerade de salida) -- usada para identificar el tenant en el redirector público del portal cautivo, no para administración (eso es managementIp/wireguardIp).';
+  'IP pública con la que este router sale a Internet (masquerade de salida), usada para identificar el tenant en el redirector público del portal cautivo (no es para administración, eso es managementIp/wireguardIp).';
