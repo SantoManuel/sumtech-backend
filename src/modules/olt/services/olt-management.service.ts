@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException, BadRequestException, HttpExcepti
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OltEntity } from '../entities/olt.entity';
+import { ListOltsDto } from '../dto/list-olts.dto';
 import { OltRolePermissionEntity } from '../entities/olt-role-permission.entity';
 import { OltInterfaceEntity } from '../entities/olt-interface.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
@@ -36,14 +37,62 @@ export class OltManagementService {
     private readonly deviceOperationLogger: DeviceOperationLogger,
   ) {}
 
-  async findAll(activeOnly = false) {
-    const where = activeOnly ? { isActive: true } : {};
-    const olts = await this.oltRepository.find({
-      where,
-      relations: ['viaNode', 'zone', 'rolePermissions', 'interfaces'],
-      order: { name: 'ASC' },
-    });
-    return olts.map((olt) => this.attachCapabilities(olt));
+  async findAll(dto?: ListOltsDto) {
+    const page = dto?.page || 1;
+    const limit = dto?.limit || 20;
+    const skip = (page - 1) * limit;
+
+    // Paginación en dos pasos: `interfaces`/`rolePermissions` son relaciones
+    // OneToMany, así que un skip/take directo sobre una query con
+    // leftJoinAndSelect sobre ellas pagina FILAS del join (multiplicadas por
+    // cada interfaz/permiso), no OLTs -- una OLT con 5 interfaces consumiría
+    // 5 cupos del LIMIT real. Primero se resuelven los IDs de la página
+    // (sin esas relaciones multiplicadoras) y luego se cargan completos.
+    const idQuery = this.oltRepository
+      .createQueryBuilder('olt')
+      .select('olt.id')
+      .skip(skip)
+      .take(limit);
+
+    if (dto?.activeOnly) {
+      idQuery.andWhere('olt.isActive = :active', { active: true });
+    }
+    if (dto?.vendor) {
+      idQuery.andWhere('olt.vendor = :vendor', { vendor: dto.vendor });
+    }
+    if (dto?.connectionStatus) {
+      idQuery.andWhere('olt.connectionStatus = :connectionStatus', { connectionStatus: dto.connectionStatus });
+    }
+    if (dto?.search) {
+      idQuery.andWhere('(olt.name ILIKE :search OR olt.host ILIKE :search OR olt.model ILIKE :search)', {
+        search: `%${dto.search}%`,
+      });
+    }
+
+    const [idRows, total] = await idQuery.orderBy('olt.name', 'ASC').getManyAndCount();
+    const ids = idRows.map((row) => row.id);
+
+    if (ids.length === 0) {
+      return { data: [], total, page, limit, totalPages: Math.ceil(total / limit) };
+    }
+
+    const olts = await this.oltRepository
+      .createQueryBuilder('olt')
+      .leftJoinAndSelect('olt.viaNode', 'viaNode')
+      .leftJoinAndSelect('olt.zone', 'zone')
+      .leftJoinAndSelect('olt.rolePermissions', 'rolePermissions')
+      .leftJoinAndSelect('olt.interfaces', 'interfaces')
+      .where('olt.id IN (:...ids)', { ids })
+      .orderBy('olt.name', 'ASC')
+      .getMany();
+
+    return {
+      data: olts.map((olt) => this.attachCapabilities(olt)),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async findById(id: string) {

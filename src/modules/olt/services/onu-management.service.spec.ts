@@ -40,6 +40,7 @@ describe('OnuManagementService', () => {
   let deviceOperationLogger: any;
   let cpeConfiguratorService: any;
   let tenantContext: any;
+  let onuQueryBuilder: any;
 
   const mockOlt: Partial<OltEntity> = {
     id: 'olt-uuid-1',
@@ -72,13 +73,19 @@ describe('OnuManagementService', () => {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
       delete: jest.fn().mockResolvedValue({ affected: 1 }),
       create: jest.fn((dto) => ({ ...dto })),
-      createQueryBuilder: jest.fn(() => ({
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([mockOnu]),
-      })),
+      findAndCount: jest.fn().mockResolvedValue([[mockOnu], 1]),
+      createQueryBuilder: jest.fn(),
     };
+    onuQueryBuilder = {
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([mockOnu]),
+      getManyAndCount: jest.fn().mockResolvedValue([[mockOnu], 1]),
+    };
+    onuRepo.createQueryBuilder.mockReturnValue(onuQueryBuilder);
 
     configRepo = {
       findOneBy: jest.fn(),
@@ -206,31 +213,59 @@ describe('OnuManagementService', () => {
   });
 
   describe('findAll', () => {
-    it('devuelve la entidad cruda (serialNumber/mac/onuIndex/ponInterface/onuType/rxPowerDbm/contract) sin mapear -- la tabla "ONUs / Fibra" de red/page.tsx y el selector de ConfigureNetworkAccessModal leen estos mismos nombres', async () => {
+    it('devuelve {data,total,page,limit,totalPages} con la entidad cruda (serialNumber/mac/onuIndex/ponInterface/onuType/rxPowerDbm/contract) sin mapear -- la tabla "ONUs / Fibra" de red/page.tsx y el selector de ConfigureNetworkAccessModal leen estos mismos nombres', async () => {
       const result = await service.findAll();
 
-      expect(result).toEqual([mockOnu]);
+      expect(result.total).toBe(1);
+      expect(result.page).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(result.totalPages).toBe(1);
+      expect(result.data).toEqual([mockOnu]);
       // Campos puntuales que ambas vistas consumidoras leen directo de la
       // entidad -- una "forma limpia" que los renombre rompe alguna de las
       // dos en silencio (ya pasó una vez, ver commit de este archivo).
-      expect(result[0].serialNumber).toBe('ZTEGC0123456');
-      expect(result[0].onuIndex).toBe('gpon-onu_1/1/1:1');
-      expect(result[0].ponInterface).toEqual({ id: 'iface-1', name: 'gpon-olt_1/1/1' });
+      expect(result.data[0].serialNumber).toBe('ZTEGC0123456');
+      expect(result.data[0].onuIndex).toBe('gpon-onu_1/1/1:1');
+      expect(result.data[0].ponInterface).toEqual({ id: 'iface-1', name: 'gpon-olt_1/1/1' });
+    });
+
+    it('aplica page/limit explícitos con skip/take', async () => {
+      await service.findAll({ page: 3, limit: 10 } as any);
+
+      expect(onuQueryBuilder.skip).toHaveBeenCalledWith(20);
+      expect(onuQueryBuilder.take).toHaveBeenCalledWith(10);
     });
   });
 
   describe('findUnconfigured', () => {
-    it('retorna las ONUs con status UNCONFIGURED', async () => {
-      onuRepo.find.mockResolvedValue([mockOnu]);
+    it('retorna las ONUs con status UNCONFIGURED paginadas', async () => {
+      onuRepo.findAndCount.mockResolvedValue([[mockOnu], 1]);
 
-      const result = await service.findUnconfigured('olt-uuid-1');
+      const result = await service.findUnconfigured({ oltId: 'olt-uuid-1' } as any);
 
-      expect(result).toHaveLength(1);
-      expect(onuRepo.find).toHaveBeenCalledWith({
+      expect(result.data).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.page).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(result.totalPages).toBe(1);
+      expect(onuRepo.findAndCount).toHaveBeenCalledWith({
         where: { status: 'UNCONFIGURED', oltId: 'olt-uuid-1' },
         relations: ['olt', 'ponInterface'],
         order: { detectedAt: 'DESC' },
+        skip: 0,
+        take: 20,
       });
+    });
+
+    it('aplica page/limit explícitos', async () => {
+      onuRepo.findAndCount.mockResolvedValue([[], 45]);
+
+      const result = await service.findUnconfigured({ page: 2, limit: 20 } as any);
+
+      expect(onuRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 20, take: 20 }),
+      );
+      expect(result.totalPages).toBe(3);
     });
   });
 

@@ -45,6 +45,24 @@ describe('OltManagementService', () => {
     apiPort: 8729,
   } as NetworkNodeEntity;
 
+  /** Query builder encadenable: resuelve getManyAndCount/getMany con los valores dados, registra los where/andWhere aplicados. */
+  const makeQueryBuilder = (manyAndCountResult: [any[], number], manyResult: any[]) => {
+    const calls: { andWhere: any[]; orderBy: any[] } = { andWhere: [], orderBy: [] };
+    const qb: any = {
+      select: jest.fn().mockReturnThis(),
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn((...args: any[]) => { calls.andWhere.push(args); return qb; }),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      orderBy: jest.fn((...args: any[]) => { calls.orderBy.push(args); return qb; }),
+      getManyAndCount: jest.fn().mockResolvedValue(manyAndCountResult),
+      getMany: jest.fn().mockResolvedValue(manyResult),
+      __calls: calls,
+    };
+    return qb;
+  };
+
   beforeEach(async () => {
     oltRepo = {
       find: jest.fn().mockResolvedValue([mockOlt]),
@@ -52,6 +70,7 @@ describe('OltManagementService', () => {
       findOneBy: jest.fn().mockResolvedValue(mockOlt),
       create: jest.fn((dto) => dto),
       save: jest.fn((dto) => Promise.resolve({ id: 'olt-1', ...dto })),
+      createQueryBuilder: jest.fn(),
     };
     permRepo = {
       create: jest.fn((dto) => dto),
@@ -113,6 +132,85 @@ describe('OltManagementService', () => {
 
   it('debe estar definido', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('findAll (paginación)', () => {
+    it('devuelve el contrato paginado {data,total,page,limit,totalPages} con los valores por defecto (page=1, limit=20)', async () => {
+      const idQb = makeQueryBuilder([[{ id: 'olt-1' }], 1], []);
+      const detailQb = makeQueryBuilder([[], 0], [mockOlt]);
+      oltRepo.createQueryBuilder.mockReturnValueOnce(idQb).mockReturnValueOnce(detailQb);
+
+      const result = await service.findAll();
+
+      expect(result.page).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(result.total).toBe(1);
+      expect(result.totalPages).toBe(1);
+      expect(result.data).toHaveLength(1);
+      expect((result.data[0] as any).capabilities).toBeDefined();
+    });
+
+    it('aplica skip/take según page y limit explícitos', async () => {
+      const idQb = makeQueryBuilder([[{ id: 'olt-2' }], 25], []);
+      const detailQb = makeQueryBuilder([[], 0], [mockOlt]);
+      oltRepo.createQueryBuilder.mockReturnValueOnce(idQb).mockReturnValueOnce(detailQb);
+
+      const result = await service.findAll({ page: 2, limit: 10 } as any);
+
+      expect(idQb.skip).toHaveBeenCalledWith(10);
+      expect(idQb.take).toHaveBeenCalledWith(10);
+      expect(result.totalPages).toBe(3);
+    });
+
+    it('filtra por activeOnly, vendor y search', async () => {
+      const idQb = makeQueryBuilder([[{ id: 'olt-1' }], 1], []);
+      const detailQb = makeQueryBuilder([[], 0], [mockOlt]);
+      oltRepo.createQueryBuilder.mockReturnValueOnce(idQb).mockReturnValueOnce(detailQb);
+
+      await service.findAll({ activeOnly: true, vendor: 'ZTE', search: 'Toros' } as any);
+
+      expect(idQb.andWhere).toHaveBeenCalledWith('olt.isActive = :active', { active: true });
+      expect(idQb.andWhere).toHaveBeenCalledWith('olt.vendor = :vendor', { vendor: 'ZTE' });
+      expect(idQb.andWhere).toHaveBeenCalledWith(
+        '(olt.name ILIKE :search OR olt.host ILIKE :search OR olt.model ILIKE :search)',
+        { search: '%Toros%' },
+      );
+    });
+
+    it('filtra por connectionStatus', async () => {
+      const idQb = makeQueryBuilder([[{ id: 'olt-1' }], 1], []);
+      const detailQb = makeQueryBuilder([[], 0], [mockOlt]);
+      oltRepo.createQueryBuilder.mockReturnValueOnce(idQb).mockReturnValueOnce(detailQb);
+
+      await service.findAll({ connectionStatus: 'CONECTADO' } as any);
+
+      expect(idQb.andWhere).toHaveBeenCalledWith('olt.connectionStatus = :connectionStatus', { connectionStatus: 'CONECTADO' });
+    });
+
+    it('no ejecuta la segunda consulta (detalle) si no hay resultados en la página', async () => {
+      const idQb = makeQueryBuilder([[], 0], []);
+      oltRepo.createQueryBuilder.mockReturnValueOnce(idQb);
+
+      const result = await service.findAll({ page: 5, limit: 10 } as any);
+
+      expect(result.data).toEqual([]);
+      expect(result.total).toBe(0);
+      expect(oltRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    it('no multiplica OLTs por sus relaciones OneToMany (interfaces/rolePermissions) al paginar', async () => {
+      // La query de IDs nunca hace join con interfaces/rolePermissions -- por diseño,
+      // para que el LIMIT real pagine OLTs, no filas del producto cartesiano del join.
+      const idQb = makeQueryBuilder([[{ id: 'olt-1' }], 1], []);
+      const detailQb = makeQueryBuilder([[], 0], [mockOlt]);
+      oltRepo.createQueryBuilder.mockReturnValueOnce(idQb).mockReturnValueOnce(detailQb);
+
+      await service.findAll({ page: 1, limit: 1 } as any);
+
+      expect(idQb.leftJoinAndSelect).not.toHaveBeenCalled();
+      expect(detailQb.leftJoinAndSelect).toHaveBeenCalledWith('olt.rolePermissions', 'rolePermissions');
+      expect(detailQb.leftJoinAndSelect).toHaveBeenCalledWith('olt.interfaces', 'interfaces');
+    });
   });
 
   describe('testConnection', () => {

@@ -17,6 +17,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { OnuManagementService } from './services/onu-management.service';
 import { OltPermissionGuard, RequireOltAction, OltIdFrom } from './guards/olt-permission.guard';
+import { ListUnconfiguredOnusDto, ListOnusDto } from './dto/list-onus.dto';
 
 @Controller('olt/onus')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -30,8 +31,8 @@ export class OnuController {
   @Get('unconfigured')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
   @RequireOltAction('VIEW')
-  async findUnconfigured(@Query('oltId') oltId?: string) {
-    return this.onuService.findUnconfigured(oltId);
+  async findUnconfigured(@Query() dto: ListUnconfiguredOnusDto) {
+    return this.onuService.findUnconfigured(dto);
   }
 
   /**
@@ -40,12 +41,8 @@ export class OnuController {
   @Get()
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
   @RequireOltAction('VIEW')
-  async findAll(
-    @Query('oltId') oltId?: string,
-    @Query('status') status?: string,
-    @Query('search') search?: string,
-  ) {
-    return this.onuService.findAll({ oltId, status, search });
+  async findAll(@Query() dto: ListOnusDto) {
+    return this.onuService.findAll(dto);
   }
 
   /**

@@ -9,6 +9,7 @@ import { OnuTypeEntity } from '../entities/onu-type.entity';
 import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
+import { ListUnconfiguredOnusDto, ListOnusDto } from '../dto/list-onus.dto';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { NetworkAccessEntity } from '../../network/entities/network-access.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
@@ -89,22 +90,41 @@ export class OnuManagementService {
 
   /**
    * Consulta ONUs sin configurar descubiertas por OLT o por ACS (RF-OLT-014).
+   * `olt`/`ponInterface` son ManyToOne (un único row por ONU) -- skip/take
+   * directo sobre `find()` pagina ONUs reales, sin el riesgo de
+   * multiplicación por join que sí aplica a relaciones OneToMany (ver
+   * OltManagementService.findAll).
    */
-  async findUnconfigured(oltId?: string) {
-    const where: any = { status: 'UNCONFIGURED' };
-    if (oltId) where.oltId = oltId;
+  async findUnconfigured(dto?: ListUnconfiguredOnusDto) {
+    const page = dto?.page || 1;
+    const limit = dto?.limit || 20;
+    const skip = (page - 1) * limit;
 
-    return this.onuRepository.find({
+    const where: any = { status: 'UNCONFIGURED' };
+    if (dto?.oltId) where.oltId = dto.oltId;
+
+    const [data, total] = await this.onuRepository.findAndCount({
       where,
       relations: ['olt', 'ponInterface'],
       order: { detectedAt: 'DESC' },
+      skip,
+      take: limit,
     });
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   /**
-   * Listado general de ONUs con filtros opcionales.
+   * Listado general de ONUs con filtros opcionales. Todas las relaciones
+   * unidas (`olt`, `ponInterface`, `onuType`, `contract`, `contract.client`,
+   * `serviceConfig`) son ManyToOne/OneToOne -- sin riesgo de multiplicación
+   * por join al paginar con skip/take directo.
    */
-  async findAll(options?: { oltId?: string; status?: string; search?: string }) {
+  async findAll(dto?: ListOnusDto) {
+    const page = dto?.page || 1;
+    const limit = dto?.limit || 20;
+    const skip = (page - 1) * limit;
+
     const qb = this.onuRepository
       .createQueryBuilder('onu')
       .leftJoinAndSelect('onu.olt', 'olt')
@@ -113,16 +133,18 @@ export class OnuManagementService {
       .leftJoinAndSelect('onu.contract', 'contract')
       .leftJoinAndSelect('contract.client', 'client')
       .leftJoinAndSelect('onu.serviceConfig', 'serviceConfig')
-      .orderBy('onu.updatedAt', 'DESC');
+      .orderBy('onu.updatedAt', 'DESC')
+      .skip(skip)
+      .take(limit);
 
-    if (options?.oltId) {
-      qb.andWhere('onu.oltId = :oltId', { oltId: options.oltId });
+    if (dto?.oltId) {
+      qb.andWhere('onu.oltId = :oltId', { oltId: dto.oltId });
     }
-    if (options?.status) {
-      qb.andWhere('onu.status = :status', { status: options.status });
+    if (dto?.status) {
+      qb.andWhere('onu.status = :status', { status: dto.status });
     }
-    if (options?.search) {
-      const q = `%${options.search}%`;
+    if (dto?.search) {
+      const q = `%${dto.search}%`;
       qb.andWhere(
         '(onu.serialNumber ILIKE :q OR onu.mac ILIKE :q OR client.firstName ILIKE :q OR client.lastName ILIKE :q)',
         { q },
@@ -130,14 +152,18 @@ export class OnuManagementService {
     }
 
     // Entidad cruda (serialNumber/mac/onuIndex/ponInterface/onuType/rxPowerDbm/
-    // contract.client/...) -- NO mapear a una forma "limpia" aquí: la tabla
-    // "ONUs / Fibra" de /dashboard/red (fetchAllOnus en red/page.tsx) ya
-    // depende de estos nombres exactos desde antes de este método existir.
-    // El selector de ONU de ConfigureNetworkAccessModal (el otro consumidor
-    // de este mismo endpoint) lee estos mismos nombres crudos — no renombrar
-    // sin verificar AMBOS consumidores primero (ver git blame de este bloque:
-    // una mapeada "forma limpia" aquí rompió esa tabla en silencio).
-    return qb.getMany();
+    // contract.client/...) dentro de `data` -- NO mapear cada fila a una forma
+    // "limpia": la tabla "ONUs / Fibra" de /dashboard/red (fetchAllOnus en
+    // red/page.tsx) depende de estos nombres exactos desde antes de este
+    // método existir. El selector de ONU de ConfigureNetworkAccessModal (el
+    // otro consumidor de este mismo endpoint) lee estos mismos nombres crudos
+    // -- no renombrar los campos de cada fila sin verificar AMBOS consumidores
+    // primero (ver git blame de este bloque: una mapeada "forma limpia" aquí
+    // rompió esa tabla en silencio). El propio SOBRE {data,total,...} sí es
+    // nuevo (paginación) -- ambos consumidores ya fueron actualizados para
+    // leer `res.data.data` en vez de `res.data` directamente.
+    const [data, total] = await qb.getManyAndCount();
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async findById(id: string) {

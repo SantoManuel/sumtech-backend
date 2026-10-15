@@ -29,6 +29,7 @@ import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from './dto/speed-
 import { CreateTr069NetworkDto } from './dto/create-tr069-network.dto';
 import { UpdateTr069NetworkDto } from './dto/update-tr069-network.dto';
 import { ExportOltsDto } from './dto/export-olts.dto';
+import { ListOltsDto } from './dto/list-olts.dto';
 
 @Controller('olt')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -49,8 +50,8 @@ export class OltController {
   @Get('olts')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
   @RequireOltAction('VIEW')
-  async findAllOlts(@Query('activeOnly') activeOnly?: string) {
-    return this.oltService.findAll(activeOnly === 'true');
+  async findAllOlts(@Query() dto: ListOltsDto) {
+    return this.oltService.findAll(dto);
   }
 
   // Debe declararse antes de 'olts/:id' — mismo motivo que en ClientsController.
