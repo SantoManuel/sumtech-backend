@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, GatewayTimeoutException } from '@nestjs/common';
 import { PppManagementService } from './ppp-management.service';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkAccessEntity } from '../entities/network-access.entity';
@@ -333,6 +333,18 @@ describe('PppManagementService', () => {
 
       const defaultProfile = result.profiles.find((p) => p.name === 'default');
       expect(defaultProfile?.isProtected).toBe(true);
+    });
+
+    it('lanza GatewayTimeoutException si client.getProfiles falla por timeout', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      clientFactory.mockReturnValue({
+        getProfiles: jest.fn().mockRejectedValue(new Error('Tiempo de espera agotado contactando al nodo.')),
+        getPppSecrets: jest.fn().mockResolvedValue([]),
+        getActiveSessions: jest.fn().mockResolvedValue([]),
+        getIpPools: jest.fn().mockResolvedValue([]),
+      });
+
+      await expect(service.getNodeProfiles('node-1')).rejects.toThrow(GatewayTimeoutException);
     });
   });
 

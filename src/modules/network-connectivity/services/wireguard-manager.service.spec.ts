@@ -137,6 +137,41 @@ describe('WireguardManagerService', () => {
     expect(res.routerosScript).toContain('add dst-address="10.254.0.0/16" gateway="wg-sumtech"');
   });
 
+  it('configura Netwatch como watchdog para auto-recuperar el tunel si se pierde conectividad con el Hub', () => {
+    const res = service.generateRouterOsScript({
+      nodeName: 'Router-Azua-Centro',
+      nodeId: 'node-123',
+      tenantSlug: 'teleazua',
+      assignedClientIp: '10.254.1.2',
+      serverEndpoint: 'vpn.sumtech.com.do',
+      serverPublicKey: 'SERVER_PUB_KEY_123=',
+      clientPrivateKey: 'CLIENT_PRIV_KEY_789=',
+      clientPublicKey: 'CLIENT_PUB_KEY_456=',
+    });
+
+    expect(res.routerosScript).toContain('/tool netwatch');
+    expect(res.routerosScript).toContain('host="10.254.0.1"');
+    expect(res.routerosScript).toContain('disable wg-sumtech');
+    expect(res.routerosScript).toContain('enable wg-sumtech');
+  });
+
+  it('agrega regla en mangle output para hacer bypass del balanceo Multi-WAN (PCC) hacia el servidor central', () => {
+    const res = service.generateRouterOsScript({
+      nodeName: 'Router-Azua-Centro',
+      nodeId: 'node-123',
+      tenantSlug: 'teleazua',
+      assignedClientIp: '10.254.1.2',
+      serverEndpoint: '66.94.107.219:51820',
+      serverPublicKey: 'SERVER_PUB_KEY_123=',
+      clientPrivateKey: 'CLIENT_PRIV_KEY_789=',
+      clientPublicKey: 'CLIENT_PUB_KEY_456=',
+    });
+
+    expect(res.routerosScript).toContain('/ip firewall mangle');
+    expect(res.routerosScript).toContain('chain=output dst-address="66.94.107.219" action=accept');
+    expect(res.routerosScript).toContain('comment="Sumtech Hub Bypass Multi-WAN"');
+  });
+
   it('no incluye caracteres acentuados en el contenido del .rsc (riesgo de mojibake en terminales RouterOS)', () => {
     const res = service.generateRouterOsScript({
       nodeName: 'Router-Azua-Centro',

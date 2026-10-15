@@ -64,6 +64,8 @@ export class WireguardManagerService {
     const serviceName =
       transportType === 'SSH' ? 'ssh' : transportType === 'ROUTEROS_API' ? (useHttps ? 'api-ssl' : 'api') : useHttps ? 'www-ssl' : 'www';
     const hubPeerCommand = `wg set wg0 peer ${params.clientPublicKey} allowed-ips ${params.assignedClientIp}/32`;
+    const serverHost = (params.serverEndpoint || '').split(':')[0].trim();
+    const hubInternalIp = '10.254.0.1';
 
     const script = [
       `# ==============================================================================`,
@@ -160,6 +162,37 @@ export class WireguardManagerService {
       `        add chain=input in-interface="wg-sumtech" action=accept place-before=$placeBeforeId comment="Sumtech WG Tunnel - ${cleanNodeName}"`,
       `    } else={`,
       `        add chain=input in-interface="wg-sumtech" action=accept comment="Sumtech WG Tunnel - ${cleanNodeName}"`,
+      `    }`,
+      `}`,
+      ``,
+      `# 6. Auto-recuperacion del tunel (Netwatch)`,
+      `#    Monitorea la IP interna del Hub central (${hubInternalIp}). Si el tunel se congela`,
+      `#    o pierde conectividad tras un cambio de WAN o IP dinamica, reinicia la interfaz`,
+      `#    WireGuard para forzar una reconexion inmediata sin intervencion humana.`,
+      `/tool netwatch`,
+      `:if ([:len [find where host="${hubInternalIp}"]] = 0) do={`,
+      `    add host="${hubInternalIp}" interval=30s timeout=3s comment="Sumtech WG Watchdog" \\`,
+      `        down-script="/log warning \\"[Sumtech Watchdog] Tunel caido. Reiniciando wg-sumtech...\\"; /interface wireguard disable wg-sumtech; :delay 2s; /interface wireguard enable wg-sumtech" \\`,
+      `        up-script="/log info \\"[Sumtech Watchdog] Tunel restablecido con el Hub.\\""`,
+      `} else={`,
+      `    set [find where host="${hubInternalIp}"] interval=30s timeout=3s comment="Sumtech WG Watchdog" \\`,
+      `        down-script="/log warning \\"[Sumtech Watchdog] Tunel caido. Reiniciando wg-sumtech...\\"; /interface wireguard disable wg-sumtech; :delay 2s; /interface wireguard enable wg-sumtech" \\`,
+      `        up-script="/log info \\"[Sumtech Watchdog] Tunel restablecido con el Hub.\\""`,
+      `}`,
+      ``,
+      `# 7. Bypass de balanceo Multi-WAN (Mangle)`,
+      `#    Garantiza que el trafico hacia el Servidor Central (${serverHost}) NUNCA`,
+      `#    sea desviado por reglas de balanceo de carga (PCC) ni enlaces secundarios caidos.`,
+      `/ip firewall mangle`,
+      `:if ([:len [find where dst-address="${serverHost}" action=accept]] = 0) do={`,
+      `    :local firstMangleId ""`,
+      `    :foreach ruleId in=[find where chain="output"] do={`,
+      `        :if ($firstMangleId = "") do={ :set firstMangleId $ruleId }`,
+      `    }`,
+      `    :if ($firstMangleId != "") do={`,
+      `        add chain=output dst-address="${serverHost}" action=accept place-before=$firstMangleId comment="Sumtech Hub Bypass Multi-WAN"`,
+      `    } else={`,
+      `        add chain=output dst-address="${serverHost}" action=accept comment="Sumtech Hub Bypass Multi-WAN"`,
       `    }`,
       `}`,
       ``,

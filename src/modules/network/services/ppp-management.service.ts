@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, GatewayTimeoutException, Inject, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
@@ -136,8 +136,10 @@ export class PppManagementService {
         sessions,
       };
     } catch (err: any) {
-      this.logger.error(`Error listando sesiones activas en nodo "${node.name}": ${err.message}`);
-      throw err;
+      this.logger.warn(`Error listando sesiones activas en nodo "${node.name}": ${err.message}`);
+      throw new GatewayTimeoutException(
+        `El nodo "${node.name}" (${node.wireguardIp || node.managementIp || 'desconocido'}) no respondio a tiempo: ${err.message}`,
+      );
     }
   }
 
@@ -286,14 +288,36 @@ export class PppManagementService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const client = await this.resolveClient(node);
-    const [profiles, secrets, activeSessions, ipPools, plans] = await Promise.all([
-      client.getProfiles(),
-      client.getPppSecrets().catch((): RouterOsPppSecret[] => []),
-      client.getActiveSessions().catch((): RouterOsActivePppSession[] => []),
-      client.getIpPools().catch((): RouterOsIpPool[] => []),
-      this.planRepository.find({ where: { isActive: true } }),
-    ]);
+    let client: RouterOsClientLike;
+    try {
+      client = await this.resolveClient(node);
+    } catch (err: any) {
+      this.logger.warn(`No se pudo resolver cliente RouterOS para nodo "${node.name}": ${err.message}`);
+      throw new GatewayTimeoutException(
+        `No se pudo conectar con el nodo "${node.name}": ${err.message}`,
+      );
+    }
+
+    let profiles: any[] = [];
+    let secrets: RouterOsPppSecret[] = [];
+    let activeSessions: RouterOsActivePppSession[] = [];
+    let ipPools: RouterOsIpPool[] = [];
+    let plans: PlanEntity[] = [];
+
+    try {
+      [profiles, secrets, activeSessions, ipPools, plans] = await Promise.all([
+        client.getProfiles(),
+        client.getPppSecrets().catch((): RouterOsPppSecret[] => []),
+        client.getActiveSessions().catch((): RouterOsActivePppSession[] => []),
+        client.getIpPools().catch((): RouterOsIpPool[] => []),
+        this.planRepository.find({ where: { isActive: true } }),
+      ]);
+    } catch (err: any) {
+      this.logger.warn(`Error comunicando con el router del nodo "${node.name}": ${err.message}`);
+      throw new GatewayTimeoutException(
+        `El nodo "${node.name}" (${node.wireguardIp || node.managementIp || 'desconocido'}) no respondio a tiempo: ${err.message}`,
+      );
+    }
 
     const enrichedProfiles: EnrichedRouterOsProfile[] = profiles.map((p) => {
       const matchingSecrets = secrets.filter((s) => s.profile === p.name);
@@ -356,7 +380,14 @@ export class PppManagementService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
     const client = await this.resolveClient(node);
-    return client.getIpPools();
+    try {
+      return await client.getIpPools();
+    } catch (err: any) {
+      this.logger.warn(`Error obteniendo IP pools en nodo "${node.name}": ${err.message}`);
+      throw new GatewayTimeoutException(
+        `El nodo "${node.name}" (${node.wireguardIp || node.managementIp || 'desconocido'}) no respondio a tiempo: ${err.message}`,
+      );
+    }
   }
 
   /**
