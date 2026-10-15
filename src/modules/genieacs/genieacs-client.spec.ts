@@ -102,18 +102,35 @@ describe('GenieAcsClient', () => {
         expect(http.get).toHaveBeenCalledTimes(3);
 
         const thirdCallQuery = JSON.parse(http.get.mock.calls[2][1].params.query);
-        // Debe incluir el candidato real observado en producción (...12:05, +1) entre las variantes probadas.
-        expect(thirdCallQuery.$or).toEqual(
-          expect.arrayContaining([
-            { 'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress._value': { $regex: '^b4[:-]?54[:-]?59[:-]?6f[:-]?12[:-]?05$', $options: 'i' } },
-          ]),
+        // UNA sola cláusula por path (no una por combinación path×candidato): el
+        // prefijo de los primeros 5 octetos queda fijo y solo el último octeto
+        // se alterna dentro de un único regex -- así la query no vuelve a crecer
+        // en tamaño sin importar cuántos candidatos de tolerancia se tanteen
+        // (ver el 431 "Request Header Fields Too Large" real que motivó esto).
+        expect(thirdCallQuery.$or).toHaveLength(15);
+        const clause = thirdCallQuery.$or.find(
+          (c: any) => 'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress._value' in c,
         );
-        // El valor exacto (delta 0) no debe repetirse en el tercer intento -- ya se descartó en el segundo.
-        expect(thirdCallQuery.$or).not.toEqual(
-          expect.arrayContaining([
-            { 'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress._value': { $regex: '^b4[:-]?54[:-]?59[:-]?6f[:-]?12[:-]?04$', $options: 'i' } },
-          ]),
-        );
+        expect(clause['InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress._value']).toEqual({
+          $regex: '^b4[:-]?54[:-]?59[:-]?6f[:-]?12[:-]?(?:00|01|02|03|05|06|07|08)$',
+          $options: 'i',
+        });
+        // El valor exacto (delta 0, "04") no debe aparecer en la alternación del tercer intento -- ya se descartó en el segundo.
+        expect(clause['InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress._value'].$regex).not.toMatch(/\b04\b/);
+      });
+
+      it('la query del nivel de tolerancia se mantiene acotada en tamaño sin importar cuántos candidatos se tanteen (evita el 431 real de producción)', async () => {
+        http.get.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [] });
+
+        await client.findDeviceBySerial('b4:54:59:6f:12:04');
+
+        const thirdCallQueryString = http.get.mock.calls[2][1].params.query as string;
+        // Antes del fix, 15 paths × 8 candidatos completos de 12-hex-digitos
+        // generaba una query de ~17 000 caracteres sin codificar -- muy por
+        // encima de cualquier límite razonable de cabecera HTTP. La versión
+        // compacta (prefijo fijo + alternación de solo el último octeto) debe
+        // quedar muy por debajo de eso.
+        expect(thirdCallQueryString.length).toBeLessThan(4000);
       });
 
       it('loguea una advertencia cuando el match fue por aproximación de MAC (no exacto)', async () => {

@@ -144,8 +144,8 @@ export class GenieAcsClient {
       return byExactMac;
     }
 
-    const nearbyHexCandidates = buildNearbyMacHexCandidates(macOctets, GenieAcsClient.MAC_LAST_OCTET_TOLERANCE);
-    const byNearbyMac = await this.findDeviceByMacHexCandidates(nearbyHexCandidates);
+    const nearbyLastOctetHexValues = buildNearbyLastOctetHexValues(macOctets[5], GenieAcsClient.MAC_LAST_OCTET_TOLERANCE);
+    const byNearbyMac = await this.findDeviceByMacPrefixAndLastOctets(macOctets.slice(0, 5), nearbyLastOctetHexValues);
     if (byNearbyMac) {
       this.logger.warn(
         `CPE "${serialNumber}" no tiene match exacto de serial ni de MAC en GenieACS; se emparejó por aproximación ` +
@@ -172,6 +172,32 @@ export class GenieAcsClient {
         [`${path}._value`]: { $regex: macHexToPattern(hex), $options: 'i' },
       })),
     );
+    return this.queryFirstDeviceId({ $or: orClauses });
+  }
+
+  /**
+   * Variante del fallback por MAC para el nivel de tolerancia: en vez de
+   * repetir la MAC completa por cada candidato (como hacía la primera versión
+   * de este fix, que generaba `paths × candidatos` cláusulas y provocó un 431
+   * "Request Header Fields Too Large" real contra la NBI de producción —
+   * 15 paths × 8 candidatos = 120 cláusulas en una sola query GET), arma UNA
+   * sola cláusula por path cuyo regex fija el prefijo común (los primeros 5
+   * octetos, que no cambian) y alterna solo los 1-2 dígitos del último octeto.
+   * El tamaño de la query queda así en O(paths) en vez de O(paths × tolerancia).
+   */
+  private async findDeviceByMacPrefixAndLastOctets(
+    prefixOctets: string[],
+    lastOctetHexValues: string[],
+  ): Promise<string | null> {
+    if (lastOctetHexValues.length === 0) {
+      return null;
+    }
+    const prefixPattern = prefixOctets.join('[:-]?');
+    const lastOctetAlternation = lastOctetHexValues.join('|');
+    const pattern = `^${prefixPattern}[:-]?(?:${lastOctetAlternation})$`;
+    const orClauses = GenieAcsClient.MAC_ADDRESS_PATHS.map((path) => ({
+      [`${path}._value`]: { $regex: pattern, $options: 'i' },
+    }));
     return this.queryFirstDeviceId({ $or: orClauses });
   }
 
@@ -574,22 +600,21 @@ function parseMacOctets(value: string): string[] | null {
 }
 
 /**
- * Construye, a partir de los 6 octetos de una MAC, las variantes donde el
- * último octeto se desplaza en ±1..±tolerance (excluyendo el valor exacto,
- * que ya se intentó antes de llamar a esto). Cada candidato es un string de
- * 12 dígitos hex sin separadores, listo para `macHexToPattern`.
+ * A partir del último octeto real de una MAC, devuelve los valores hex (2
+ * dígitos cada uno) desplazados en ±1..±tolerance (excluyendo el valor
+ * exacto, que ya se intentó antes de llamar a esto) — para usar en una
+ * alternación regex compacta junto al prefijo fijo de los primeros 5 octetos.
  */
-function buildNearbyMacHexCandidates(octets: string[], tolerance: number): string[] {
-  const prefix = octets.slice(0, 5).join('');
-  const lastOctetValue = parseInt(octets[5], 16);
-  const candidates: string[] = [];
+function buildNearbyLastOctetHexValues(lastOctetHex: string, tolerance: number): string[] {
+  const lastOctetValue = parseInt(lastOctetHex, 16);
+  const values: string[] = [];
   for (let delta = -tolerance; delta <= tolerance; delta++) {
     if (delta === 0) continue;
     const candidateValue = lastOctetValue + delta;
     if (candidateValue < 0 || candidateValue > 255) continue;
-    candidates.push(prefix + candidateValue.toString(16).padStart(2, '0'));
+    values.push(candidateValue.toString(16).padStart(2, '0'));
   }
-  return candidates;
+  return values;
 }
 
 /**
