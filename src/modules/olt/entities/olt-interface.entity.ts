@@ -45,4 +45,7 @@ export class OltInterfaceEntity {
 
   @CreateDateColumn({ name: 'discovered_at', type: 'timestamp with time zone' })
   discoveredAt: Date;
+
+  /** Calculado en memoria a partir de net.onus (COUNT real) -- no es una columna persistida. */
+  registeredOnus?: number;
 }

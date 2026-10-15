@@ -6,6 +6,7 @@ import { OltManagementService } from './olt-management.service';
 import { OltEntity } from '../entities/olt.entity';
 import { OltRolePermissionEntity } from '../entities/olt-role-permission.entity';
 import { OltInterfaceEntity } from '../entities/olt-interface.entity';
+import { OnuEntity } from '../entities/onu.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
@@ -15,6 +16,7 @@ describe('OltManagementService', () => {
   let oltRepo: any;
   let permRepo: any;
   let ifaceRepo: any;
+  let onuRepo: any;
   let zteDriver: any;
   let driverRegistry: any;
   let connectionResolver: any;
@@ -73,6 +75,16 @@ describe('OltManagementService', () => {
       create: jest.fn((dto) => dto),
       save: jest.fn((dto) => Promise.resolve(dto)),
     };
+    onuRepo = {
+      createQueryBuilder: jest.fn().mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([]),
+      }),
+    };
     zteDriver = {
       testConnection: jest.fn().mockResolvedValue({ ok: true, latencyMs: 45 }),
       getSystemInfo: jest.fn().mockResolvedValue({ uptime: '15d 4h', firmwareVersion: 'V1.2.5P3' }),
@@ -113,6 +125,7 @@ describe('OltManagementService', () => {
         { provide: getRepositoryToken(OltEntity), useValue: oltRepo },
         { provide: getRepositoryToken(OltRolePermissionEntity), useValue: permRepo },
         { provide: getRepositoryToken(OltInterfaceEntity), useValue: ifaceRepo },
+        { provide: getRepositoryToken(OnuEntity), useValue: onuRepo },
         { provide: OltDriverRegistry, useValue: driverRegistry },
         { provide: OltConnectionResolverService, useValue: connectionResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
@@ -251,6 +264,46 @@ describe('OltManagementService', () => {
           status: 'SUCCESS',
         }),
       );
+    });
+  });
+
+  describe('registeredOnus (conteo real desde net.onus)', () => {
+    it('findById adjunta el conteo real de ONUs ACTIVE por interfaz, no el reportado por el driver', async () => {
+      const olt = {
+        ...mockOlt,
+        interfaces: [
+          { id: 'iface-epon-1-1' },
+          { id: 'iface-epon-1-2' },
+        ],
+      } as unknown as OltEntity;
+      oltRepo.findOne.mockResolvedValue(olt);
+      onuRepo.createQueryBuilder().getRawMany.mockResolvedValue([
+        { ponInterfaceId: 'iface-epon-1-1', count: '2' },
+      ]);
+
+      const result = await service.findById('olt-1');
+
+      expect((result.interfaces![0] as any).registeredOnus).toBe(2);
+      expect((result.interfaces![1] as any).registeredOnus).toBe(0);
+    });
+
+    it('filtra por status = ACTIVE y no cuenta ONUs UNCONFIGURED/OFFLINE', async () => {
+      const olt = { ...mockOlt, interfaces: [{ id: 'iface-1' }] } as unknown as OltEntity;
+      oltRepo.findOne.mockResolvedValue(olt);
+      const qb = onuRepo.createQueryBuilder();
+
+      await service.findById('olt-1');
+
+      expect(qb.andWhere).toHaveBeenCalledWith('onu.status = :status', { status: 'ACTIVE' });
+    });
+
+    it('no consulta net.onus si la OLT no tiene interfaces cargadas', async () => {
+      const olt = { ...mockOlt, interfaces: [] } as unknown as OltEntity;
+      oltRepo.findOne.mockResolvedValue(olt);
+
+      await service.findById('olt-1');
+
+      expect(onuRepo.createQueryBuilder).not.toHaveBeenCalled();
     });
   });
 

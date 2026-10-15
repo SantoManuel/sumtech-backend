@@ -5,6 +5,7 @@ import { OltEntity } from '../entities/olt.entity';
 import { ListOltsDto } from '../dto/list-olts.dto';
 import { OltRolePermissionEntity } from '../entities/olt-role-permission.entity';
 import { OltInterfaceEntity } from '../entities/olt-interface.entity';
+import { OnuEntity } from '../entities/onu.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
@@ -28,6 +29,8 @@ export class OltManagementService {
     private readonly permRepository: Repository<OltRolePermissionEntity>,
     @InjectRepository(OltInterfaceEntity)
     private readonly ifaceRepository: Repository<OltInterfaceEntity>,
+    @InjectRepository(OnuEntity)
+    private readonly onuRepository: Repository<OnuEntity>,
     private readonly driverRegistry: OltDriverRegistry,
     private readonly connectionResolver: OltConnectionResolverService,
     private readonly deviceOperationLogger: DeviceOperationLogger,
@@ -82,6 +85,8 @@ export class OltManagementService {
       .orderBy('olt.name', 'ASC')
       .getMany();
 
+    await this.attachRegisteredOnus(olts);
+
     return {
       data: olts.map((olt) => this.attachCapabilities(olt)),
       total,
@@ -99,7 +104,37 @@ export class OltManagementService {
     if (!olt) {
       throw new NotFoundException(`OLT no encontrada: ${id}`);
     }
+    await this.attachRegisteredOnus([olt]);
     return this.attachCapabilities(olt);
+  }
+
+  /**
+   * Cuenta ONUs activas por interfaz PON desde net.onus (fuente de verdad propia,
+   * independiente de lo que cada driver de fabricante reporte por CLI) y lo
+   * adjunta a cada OltInterfaceEntity en memoria como `registeredOnus`.
+   */
+  private async attachRegisteredOnus(olts: OltEntity[]): Promise<void> {
+    const ifaceIds = olts.flatMap((olt) => (olt.interfaces || []).map((iface) => iface.id));
+    if (ifaceIds.length === 0) {
+      return;
+    }
+
+    const counts = await this.onuRepository
+      .createQueryBuilder('onu')
+      .select('onu.ponInterfaceId', 'ponInterfaceId')
+      .addSelect('COUNT(*)', 'count')
+      .where('onu.ponInterfaceId IN (:...ifaceIds)', { ifaceIds })
+      .andWhere('onu.status = :status', { status: 'ACTIVE' })
+      .groupBy('onu.ponInterfaceId')
+      .getRawMany();
+
+    const countByIfaceId = new Map(counts.map((row) => [row.ponInterfaceId, parseInt(row.count, 10)]));
+
+    for (const olt of olts) {
+      for (const iface of olt.interfaces || []) {
+        iface.registeredOnus = countByIfaceId.get(iface.id) || 0;
+      }
+    }
   }
 
   /**
