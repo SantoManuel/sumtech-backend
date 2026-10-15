@@ -51,6 +51,44 @@ export class GenieAcsClient {
   private readonly logger = new Logger(GenieAcsClient.name);
 
   /**
+   * Paths TR-069 conocidos que exponen una MACAddress/BSSID real del CPE,
+   * cubriendo tanto TR-098 (InternetGatewayDevice) como TR-181 (Device) —
+   * verificado contra Huawei EG8141A5/HG8546M reales de este tenant, donde
+   * `_deviceId._SerialNumber` NO es la MAC (es un serial propio del
+   * fabricante tipo "HWTC..."), pero la MAC real del equipo SÍ aparece en
+   * estos parámetros de interfaz. Para ONUs EPON/HiOSO cuyo "serial" en
+   * Sumtech es en realidad la MAC capturada por la OLT, esto es lo único que
+   * permite encontrar el dispositivo real en GenieACS.
+   */
+  private static readonly MAC_ADDRESS_PATHS = [
+    'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress',
+    'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.2.MACAddress',
+    'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.3.MACAddress',
+    'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.4.MACAddress',
+    'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.MACAddress',
+    'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.BSSID',
+    'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.MACAddress',
+    'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.BSSID',
+    'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANEthernetInterfaceConfig.MACAddress',
+    'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.MACAddress',
+    'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.MACAddress',
+    'Device.Ethernet.Interface.1.MACAddress',
+    'Device.Ethernet.Interface.2.MACAddress',
+    'Device.WiFi.SSID.1.MACAddress',
+    'Device.WiFi.SSID.2.MACAddress',
+  ];
+
+  /**
+   * Las distintas interfaces (LAN/WAN/WiFi) de un mismo CPE suelen tener MACs
+   * secuenciales (MAC base + 1, +2, ...) asignadas de fábrica — verificado en
+   * vivo: la MAC que la OLT HiOSO reportó para un ONU EPON real difería en
+   * exactamente 1 del último octeto de la MAC que ese mismo equipo reporta
+   * por TR-069. Por eso, como ÚLTIMO recurso (nunca antes de agotar el match
+   * exacto), se tantea un corrimiento pequeño sobre el último octeto.
+   */
+  private static readonly MAC_LAST_OCTET_TOLERANCE = 4;
+
+  /**
    * Timeout para tareas con `connection_request=true` (reboot, factoryReset,
    * setParameterValues, refreshObject, setWifiCredentials): GenieACS espera
    * sincrónicamente la sesión CWMP completa contra el CPE real antes de
@@ -68,15 +106,81 @@ export class GenieAcsClient {
   /**
    * Busca el deviceId de GenieACS cuyo serial TR-069 coincida con el serial
    * físico del equipo (capturado por el técnico en inv.serial_numbers al
-   * instalar). Devuelve null si el CPE nunca hizo bootstrap contra este
-   * GenieACS todavía — no es un error, es un estado válido y esperable.
+   * instalar), con dos niveles de respaldo si ese match exacto falla:
+   *
+   * 1. `_deviceId._SerialNumber` exacto (comportamiento original — cubre
+   *    equipos cuyo "serial" en Sumtech ya es el identificador real que el
+   *    CPE reporta a GenieACS).
+   * 2. Si el valor tiene forma de dirección MAC: búsqueda exacta (tolerante a
+   *    mayúsculas y separador `:`/`-`/ninguno) contra los parámetros
+   *    MACAddress/BSSID reales del árbol TR-069 — necesario para ONUs
+   *    EPON/HiOSO cuyo "serial" en Sumtech en realidad es la MAC que reportó
+   *    la OLT, mientras que GenieACS identifica al equipo por un serial de
+   *    fábrica distinto (verificado contra Huawei EG8141A5/HG8546M reales).
+   * 3. Último recurso: la misma búsqueda de MAC, pero tolerando un corrimiento
+   *    de hasta `MAC_LAST_OCTET_TOLERANCE` en el último octeto — las
+   *    distintas interfaces de un mismo equipo suelen tener MACs secuenciales,
+   *    y la MAC que capturó la OLT puede no ser la misma interfaz que reporta
+   *    el propio CPE por TR-069. Un match aquí se loguea como aproximado: no
+   *    es tan confiable como los dos anteriores y conviene poder auditarlo.
+   *
+   * Devuelve null solo si NINGUNO de los tres niveles encuentra nada — en ese
+   * caso sí es correcto asumir que el CPE nunca hizo bootstrap contra este
+   * GenieACS. No es un error, es un estado válido y esperable.
    */
   async findDeviceBySerial(serialNumber: string): Promise<string | null> {
+    const bySerial = await this.queryFirstDeviceId({ '_deviceId._SerialNumber': serialNumber });
+    if (bySerial) {
+      return bySerial;
+    }
+
+    const macOctets = parseMacOctets(serialNumber);
+    if (!macOctets) {
+      return null;
+    }
+
+    const byExactMac = await this.findDeviceByMacHexCandidates([macOctets.join('')]);
+    if (byExactMac) {
+      return byExactMac;
+    }
+
+    const nearbyHexCandidates = buildNearbyMacHexCandidates(macOctets, GenieAcsClient.MAC_LAST_OCTET_TOLERANCE);
+    const byNearbyMac = await this.findDeviceByMacHexCandidates(nearbyHexCandidates);
+    if (byNearbyMac) {
+      this.logger.warn(
+        `CPE "${serialNumber}" no tiene match exacto de serial ni de MAC en GenieACS; se emparejó por aproximación ` +
+          `(±${GenieAcsClient.MAC_LAST_OCTET_TOLERANCE} en el último octeto de la MAC) contra el deviceId "${byNearbyMac}". ` +
+          `Confirmar manualmente que corresponde al mismo equipo físico.`,
+      );
+    }
+    return byNearbyMac;
+  }
+
+  /**
+   * Busca, entre `MAC_ADDRESS_PATHS`, el primer dispositivo cuyo valor de
+   * alguno de esos parámetros matchee (exacto, sin importar mayúsculas ni
+   * separador) cualquiera de los `hexCandidates` provistos (cada uno, 12
+   * dígitos hex sin separadores). `[]` o ningún match -> null, sin pegarle a
+   * la NBI innecesariamente.
+   */
+  private async findDeviceByMacHexCandidates(hexCandidates: string[]): Promise<string | null> {
+    if (hexCandidates.length === 0) {
+      return null;
+    }
+    const orClauses = GenieAcsClient.MAC_ADDRESS_PATHS.flatMap((path) =>
+      hexCandidates.map((hex) => ({
+        [`${path}._value`]: { $regex: macHexToPattern(hex), $options: 'i' },
+      })),
+    );
+    return this.queryFirstDeviceId({ $or: orClauses });
+  }
+
+  private async queryFirstDeviceId(query: Record<string, unknown>): Promise<string | null> {
     let response;
     try {
       response = await this.http.get(this.buildUrl('devices'), {
         ...this.buildRequestConfig(),
-        params: { query: JSON.stringify({ '_deviceId._SerialNumber': serialNumber }) },
+        params: { query: JSON.stringify(query) },
       });
     } catch (error) {
       throw new Error(this.describeError(error));
@@ -452,6 +556,51 @@ function getParamValue(doc: any, dotPath: string): string | undefined {
     node = node[segment];
   }
   return node && typeof node === 'object' ? node._value : undefined;
+}
+
+/**
+ * Si `value` tiene forma de dirección MAC (12 dígitos hex, con separador
+ * `:`/`-`/ninguno, sin importar mayúsculas), devuelve sus 6 octetos en
+ * minúscula (ej. ['b4','54','59','6f','12','04']). Si no, devuelve null —
+ * así el llamador sabe que no vale la pena intentar un match por MAC (ej. un
+ * serial de fábrica real tipo "HWTC..." nunca tiene esta forma).
+ */
+function parseMacOctets(value: string): string[] | null {
+  const hex = (value || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  if (hex.length !== 12) {
+    return null;
+  }
+  return hex.match(/.{2}/g) as string[];
+}
+
+/**
+ * Construye, a partir de los 6 octetos de una MAC, las variantes donde el
+ * último octeto se desplaza en ±1..±tolerance (excluyendo el valor exacto,
+ * que ya se intentó antes de llamar a esto). Cada candidato es un string de
+ * 12 dígitos hex sin separadores, listo para `macHexToPattern`.
+ */
+function buildNearbyMacHexCandidates(octets: string[], tolerance: number): string[] {
+  const prefix = octets.slice(0, 5).join('');
+  const lastOctetValue = parseInt(octets[5], 16);
+  const candidates: string[] = [];
+  for (let delta = -tolerance; delta <= tolerance; delta++) {
+    if (delta === 0) continue;
+    const candidateValue = lastOctetValue + delta;
+    if (candidateValue < 0 || candidateValue > 255) continue;
+    candidates.push(prefix + candidateValue.toString(16).padStart(2, '0'));
+  }
+  return candidates;
+}
+
+/**
+ * Convierte 12 dígitos hex de una MAC (sin separadores) a un patrón regex
+ * (string, para usar con `$regex` de Mongo) que matchea esa MAC sin importar
+ * si el CPE la reportó con `:`, `-` o sin separador entre octetos. El
+ * `$options: 'i'` en el llamador se encarga de la insensibilidad a mayúsculas.
+ */
+function macHexToPattern(hex: string): string {
+  const octets = hex.match(/.{2}/g) as string[];
+  return '^' + octets.join('[:-]?') + '$';
 }
 
 function parseOpticalRxPower(rawValue: string | undefined): number | undefined {

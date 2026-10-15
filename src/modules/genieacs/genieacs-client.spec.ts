@@ -43,6 +43,118 @@ describe('GenieAcsClient', () => {
 
       await expect(client.findDeviceBySerial('16')).rejects.toThrow(/401/);
     });
+
+    it('un valor que no tiene forma de MAC y no matchea por serial devuelve null SIN intentar fallback por MAC', async () => {
+      http.get.mockResolvedValue({ data: [] });
+
+      const deviceId = await client.findDeviceBySerial('485754435D448091');
+
+      expect(deviceId).toBeNull();
+      // Solo el intento por _deviceId._SerialNumber — "485754435D448091" no
+      // tiene 12 dígitos hex exactos tras limpiar separadores, así que no
+      // vale la pena tantear MACAddress/BSSID.
+      expect(http.get).toHaveBeenCalledTimes(1);
+    });
+
+    describe('fallback por MAC (ONUs EPON/HiOSO cuyo "serial" en Sumtech es en realidad una MAC)', () => {
+      it('si no hay match por serial pero el valor tiene forma de MAC, busca en los parámetros MACAddress/BSSID del árbol TR-069', async () => {
+        http.get
+          .mockResolvedValueOnce({ data: [] }) // 1) _deviceId._SerialNumber exacto -> nada
+          .mockResolvedValueOnce({ data: [{ _id: '00259E-HG8546M-48575443D309A69C' }] }); // 2) match exacto de MAC
+
+        const deviceId = await client.findDeviceBySerial('04:b0:e7:d3:09:a6');
+
+        expect(deviceId).toBe('00259E-HG8546M-48575443D309A69C');
+        expect(http.get).toHaveBeenCalledTimes(2);
+
+        const secondCallQuery = JSON.parse(http.get.mock.calls[1][1].params.query);
+        expect(secondCallQuery.$or).toEqual(
+          expect.arrayContaining([
+            { 'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress._value': { $regex: '^04[:-]?b0[:-]?e7[:-]?d3[:-]?09[:-]?a6$', $options: 'i' } },
+          ]),
+        );
+      });
+
+      it('el match por MAC es insensible a mayúsculas/minúsculas y a cómo el CPE separó los octetos (verificado contra GenieACS real)', async () => {
+        http.get.mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: [{ _id: 'dev-x' }] });
+
+        const deviceId = await client.findDeviceBySerial('B4-54-59-6F-12-04');
+
+        expect(deviceId).toBe('dev-x');
+        const secondCallQuery = JSON.parse(http.get.mock.calls[1][1].params.query);
+        expect(secondCallQuery.$or[0]).toEqual({
+          'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress._value': {
+            $regex: '^b4[:-]?54[:-]?59[:-]?6f[:-]?12[:-]?04$',
+            $options: 'i',
+          },
+        });
+      });
+
+      it('sin match exacto de serial ni de MAC, tantea un corrimiento de ±4 en el último octeto como último recurso', async () => {
+        http.get
+          .mockResolvedValueOnce({ data: [] }) // serial exacto
+          .mockResolvedValueOnce({ data: [] }) // MAC exacta
+          .mockResolvedValueOnce({ data: [{ _id: '00259E-EG8141A5-485754435D448091' }] }); // MAC cercana (último octeto distinto)
+
+        const deviceId = await client.findDeviceBySerial('b4:54:59:6f:12:04');
+
+        expect(deviceId).toBe('00259E-EG8141A5-485754435D448091');
+        expect(http.get).toHaveBeenCalledTimes(3);
+
+        const thirdCallQuery = JSON.parse(http.get.mock.calls[2][1].params.query);
+        // Debe incluir el candidato real observado en producción (...12:05, +1) entre las variantes probadas.
+        expect(thirdCallQuery.$or).toEqual(
+          expect.arrayContaining([
+            { 'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress._value': { $regex: '^b4[:-]?54[:-]?59[:-]?6f[:-]?12[:-]?05$', $options: 'i' } },
+          ]),
+        );
+        // El valor exacto (delta 0) no debe repetirse en el tercer intento -- ya se descartó en el segundo.
+        expect(thirdCallQuery.$or).not.toEqual(
+          expect.arrayContaining([
+            { 'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1.MACAddress._value': { $regex: '^b4[:-]?54[:-]?59[:-]?6f[:-]?12[:-]?04$', $options: 'i' } },
+          ]),
+        );
+      });
+
+      it('loguea una advertencia cuando el match fue por aproximación de MAC (no exacto)', async () => {
+        const warnSpy = jest.spyOn((client as any).logger, 'warn').mockImplementation(() => undefined);
+        http.get
+          .mockResolvedValueOnce({ data: [] })
+          .mockResolvedValueOnce({ data: [] })
+          .mockResolvedValueOnce({ data: [{ _id: 'dev-aproximado' }] });
+
+        await client.findDeviceBySerial('b4:54:59:6f:12:04');
+
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('dev-aproximado'));
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('aproximación'));
+      });
+
+      it('agota los 3 niveles (serial, MAC exacta, MAC cercana) y devuelve null si ninguno matchea', async () => {
+        http.get.mockResolvedValue({ data: [] });
+
+        const deviceId = await client.findDeviceBySerial('b4:54:59:6f:12:04');
+
+        expect(deviceId).toBeNull();
+        expect(http.get).toHaveBeenCalledTimes(3);
+      });
+
+      it('no intenta ningún fallback de MAC si el match por serial ya tuvo éxito', async () => {
+        http.get.mockResolvedValueOnce({ data: [{ _id: 'ya-encontrado' }] });
+
+        const deviceId = await client.findDeviceBySerial('b4:54:59:6f:12:04');
+
+        expect(deviceId).toBe('ya-encontrado');
+        expect(http.get).toHaveBeenCalledTimes(1);
+      });
+
+      it('propaga el error de la NBI si falla durante el intento de fallback por MAC', async () => {
+        http.get
+          .mockResolvedValueOnce({ data: [] })
+          .mockRejectedValueOnce({ response: { status: 500, data: { message: 'mongo down' } } });
+
+        await expect(client.findDeviceBySerial('b4:54:59:6f:12:04')).rejects.toThrow(/500/);
+      });
+    });
   });
 
   describe('getDeviceStatus', () => {
