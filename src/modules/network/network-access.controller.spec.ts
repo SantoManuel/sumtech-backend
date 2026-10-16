@@ -16,6 +16,7 @@ describe('NetworkAccessController', () => {
   beforeEach(async () => {
     service = {
       upsertConfiguration: jest.fn().mockResolvedValue({ id: 'access-1', connectionStatus: 'ACTIVE' }),
+      revealPppoePassword: jest.fn().mockResolvedValue({ hasPassword: true, password: 'ClaveReal123' }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -58,5 +59,16 @@ describe('NetworkAccessController', () => {
 
   it('exige rol ADMIN o GERENTE', () => {
     expect(reflector.get(ROLES_KEY, controller.upsert)).toEqual([Role.ADMIN, Role.GERENTE]);
+  });
+
+  it('revealPppoePassword delega en el servicio con clientId, contractId y el usuario actor', async () => {
+    const result = await controller.revealPppoePassword('client-1', 'contract-1', 'user-42');
+
+    expect(service.revealPppoePassword).toHaveBeenCalledWith('client-1', 'contract-1', 'user-42');
+    expect(result).toEqual({ hasPassword: true, password: 'ClaveReal123' });
+  });
+
+  it('revealPppoePassword exige rol ADMIN o GERENTE', () => {
+    expect(reflector.get(ROLES_KEY, controller.revealPppoePassword)).toEqual([Role.ADMIN, Role.GERENTE]);
   });
 });

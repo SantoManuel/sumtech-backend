@@ -1,12 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, ConflictException } from '@nestjs/common';
 import { NetworkProvisioningService } from './network-provisioning.service';
 import { NetworkAccessEntity } from './entities/network-access.entity';
 import { NetworkNodeEntity } from './entities/network-node.entity';
 import { ProvisioningAuditLogEntity } from './entities/provisioning-audit-log.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { NetworkProvisioningPortRegistry } from './network-provisioning-port.registry';
+import { encryptCredential } from '../network-connectivity/utils/crypto.util';
 
 describe('NetworkProvisioningService', () => {
   let service: NetworkProvisioningService;
@@ -36,6 +37,7 @@ describe('NetworkProvisioningService', () => {
     accessRepo = {
       findOneBy: jest.fn(),
       findOne: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
       create: jest.fn((dto: any) => dto),
       save: jest.fn((entity: any) => Promise.resolve({ id: entity.id || 'access-generated', ...entity })),
     };
@@ -145,6 +147,34 @@ describe('NetworkProvisioningService', () => {
       expect(auditRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'PROVISION', result: 'OK' }),
       );
+    });
+
+    it('rechaza con ConflictException si el username ya está en uso por otro contrato activo', async () => {
+      contractRepo.findOneBy.mockResolvedValue({ id: 'contract-1', clientId: 'client-1' });
+      nodeRepo.findOneBy.mockResolvedValue({ id: 'node-1', name: 'RB Las Yayas' });
+      accessRepo.findOneBy.mockResolvedValue(makeAccess({ connectionStatus: 'PENDING' }));
+      accessRepo.count.mockResolvedValue(1);
+
+      await expect(
+        service.upsertConfiguration('client-1', 'contract-1', { nodeId: 'node-1', username: 't1' }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(port.provision).not.toHaveBeenCalled();
+      expect(accessRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('no rechaza si el username conflictivo pertenece a un contrato CUT (reutilización legítima)', async () => {
+      contractRepo.findOneBy.mockResolvedValue({ id: 'contract-1', clientId: 'client-1' });
+      nodeRepo.findOneBy.mockResolvedValue({ id: 'node-1', name: 'RB Las Yayas' });
+      accessRepo.findOneBy.mockResolvedValue(makeAccess({ connectionStatus: 'PENDING' }));
+      accessRepo.findOne.mockResolvedValue(makeAccess({ connectionStatus: 'ACTIVE', nodeId: 'node-1', username: 't1' }));
+      // count() ya filtra connectionStatus != 'CUT' en el where real; en el
+      // mock simplemente confirmamos que con 0 conflictos activos, pasa.
+      accessRepo.count.mockResolvedValue(0);
+
+      await expect(
+        service.upsertConfiguration('client-1', 'contract-1', { nodeId: 'node-1', username: 't1' }),
+      ).resolves.toBeDefined();
     });
 
     it('no aprovisiona si solo se configura el nodo sin usuario (sigue PENDING)', async () => {
@@ -566,6 +596,47 @@ describe('NetworkProvisioningService', () => {
       expect(result.data[0].nodeId).toBeUndefined();
       expect(result.data[0].nodeName).toBeUndefined();
       expect(result.data[0].clientName).toBe('Ana');
+    });
+  });
+
+  describe('revealPppoePassword', () => {
+    it('descifra y devuelve la contraseña real, y audita el revelado con el actor que la pidió', async () => {
+      contractRepo.findOneBy.mockResolvedValue({ id: 'contract-1', clientId: 'client-1' });
+      const encrypted = encryptCredential('ClaveRealDelCliente123');
+      accessRepo.findOneBy.mockResolvedValue(
+        makeAccess({ id: 'access-9', username: 't1', pppoePasswordEnc: encrypted }),
+      );
+
+      const result = await service.revealPppoePassword('client-1', 'contract-1', 'user-42');
+
+      expect(result).toEqual({ hasPassword: true, password: 'ClaveRealDelCliente123' });
+      expect(auditRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accessId: 'access-9',
+          action: 'REVEAL_PASSWORD',
+          result: 'OK',
+          actor: 'USER:user-42',
+          actorUserId: 'user-42',
+        }),
+      );
+    });
+
+    it('devuelve hasPassword:false sin auditar cuando el acceso no tiene contraseña propia (usa el fallback genérico)', async () => {
+      contractRepo.findOneBy.mockResolvedValue({ id: 'contract-1', clientId: 'client-1' });
+      accessRepo.findOneBy.mockResolvedValue(makeAccess({ username: 't1', pppoePasswordEnc: undefined }));
+
+      const result = await service.revealPppoePassword('client-1', 'contract-1', 'user-42');
+
+      expect(result).toEqual({ hasPassword: false });
+      expect(auditRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('lanza NotFoundException si el contrato no pertenece al cliente', async () => {
+      contractRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(service.revealPppoePassword('client-1', 'contract-x', 'user-42')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

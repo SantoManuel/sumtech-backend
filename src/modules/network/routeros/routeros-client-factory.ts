@@ -18,6 +18,7 @@ export type RouterOsClientLike = Pick<
   | 'getProfiles'
   | 'deleteProfile'
   | 'getIpPools'
+  | 'getUsedPoolAddresses'
   | 'getPppSecrets'
   | 'findActiveSessionByName'
   | 'getActiveSessions'

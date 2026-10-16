@@ -1,4 +1,4 @@
-import { Controller, Patch, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Patch, Get, Body, Param, UseGuards } from '@nestjs/common';
 import { NetworkProvisioningService } from './network-provisioning.service';
 import { UpsertNetworkAccessDto } from './dto/upsert-network-access.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -39,5 +39,20 @@ export class NetworkAccessController {
     // el texto plano ni el propio blob cifrado.
     const { pppoePasswordEnc, ...rest } = access;
     return { ...rest, hasPppoePassword: Boolean(pppoePasswordEnc) };
+  }
+
+  /**
+   * Revela en texto plano la contraseña PPPoE guardada (RF — pedido explícito
+   * para no obligar a rotarla solo para poder consultarla). Mismos roles que
+   * la edición: quien puede cambiarla, puede verla. Auditado en el servicio.
+   */
+  @Get('pppoe-password')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async revealPppoePassword(
+    @Param('clientId') clientId: string,
+    @Param('contractId') contractId: string,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.provisioningService.revealPppoePassword(clientId, contractId, userId);
   }
 }

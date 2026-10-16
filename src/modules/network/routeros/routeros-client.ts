@@ -485,6 +485,30 @@ export class RouterOsClient {
     }));
   }
 
+  /**
+   * Direcciones de un pool que el router ya tiene entregadas en este momento
+   * (/ip/pool/used) — cubre tanto los secrets PPP con remote-address estático
+   * como cualquier lease dinámica activa tomada del pool. Sin esto, "IPs
+   * disponibles" solo contaría lo que SUMTECH sabe que asignó, no lo que el
+   * router realmente tiene ocupado (ej. un secret creado a mano fuera de la app).
+   */
+  async getUsedPoolAddresses(poolName: string): Promise<string[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/pool/used'), {
+        ...this.buildRequestConfig(),
+        params: { pool: poolName },
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results
+      .map((entry: any) => (typeof entry.address === 'string' ? entry.address.split('/')[0] : undefined))
+      .filter((ip: string | undefined): ip is string => Boolean(ip));
+  }
+
   /** Obtiene la lista completa de secretos PPP configurados en RouterOS (/ppp/secret). */
   async getPppSecrets(): Promise<RouterOsPppSecret[]> {
     let response;

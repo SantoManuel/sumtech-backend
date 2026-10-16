@@ -43,6 +43,49 @@ export interface PppSessionDetails {
   nodeName?: string;
 }
 
+/** "a.b.c.d" -> entero sin signo de 32 bits, o null si no es una IPv4 válida. */
+function ipToLong(ip: string): number | null {
+  const octets = ip.trim().split('.').map(Number);
+  if (octets.length !== 4 || octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) {
+    return null;
+  }
+  return ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
+}
+
+function longToIp(n: number): string {
+  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+}
+
+/**
+ * Expande el string `ranges` de un /ip/pool de RouterOS (ej.
+ * "192.168.60.10-192.168.60.250" o "192.168.60.5,192.168.60.10-192.168.60.20")
+ * a la lista completa de direcciones individuales que contiene. `maxAddresses`
+ * evita que un pool mal configurado (ej. un /8 por error de tipeo) cuelgue el
+ * endpoint o devuelva un payload gigante.
+ */
+export function expandIpPoolRanges(ranges: string, maxAddresses = 10000): string[] {
+  const addresses: string[] = [];
+  const parts = (ranges || '').split(',').map((p) => p.trim()).filter(Boolean);
+
+  for (const part of parts) {
+    if (addresses.length >= maxAddresses) break;
+    if (part.includes('-')) {
+      const [startStr, endStr] = part.split('-').map((p) => p.trim());
+      const start = ipToLong(startStr);
+      const end = ipToLong(endStr);
+      if (start === null || end === null || end < start) continue;
+      for (let n = start; n <= end && addresses.length < maxAddresses; n++) {
+        addresses.push(longToIp(n));
+      }
+    } else {
+      const n = ipToLong(part);
+      if (n !== null) addresses.push(part);
+    }
+  }
+
+  return addresses;
+}
+
 export function formatRateLimitWithBurst(
   baseRateLimit?: string,
   burstLimit?: string,
@@ -436,6 +479,88 @@ export class PppManagementService {
         `El nodo "${node.name}" (${node.wireguardIp || node.managementIp || 'desconocido'}) no respondio a tiempo: ${err.message}`,
       );
     }
+  }
+
+  /**
+   * Calcula las IPs libres del pool de un nodo cruzando el rango real
+   * configurado en RouterOS con lo que ya está ocupado: IPs estáticas
+   * guardadas en nuestra BD, secrets PPP con remote-address fijo, y leases
+   * (estáticas o dinámicas) que el router ya tiene entregadas ahora mismo
+   * (/ip/pool/used) — así "disponible" refleja la realidad del router, no
+   * solo lo que SUMTECH recuerda haber asignado.
+   */
+  async getAvailableIps(
+    nodeId: string,
+    options?: { poolName?: string; limit?: number },
+  ): Promise<{
+    nodeId: string;
+    nodeName: string;
+    poolName: string;
+    ranges: string;
+    totalInRange: number;
+    totalUsed: number;
+    totalAvailable: number;
+    available: string[];
+  }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    const poolName = options?.poolName?.trim() || node.defaultPppPool;
+    if (!poolName) {
+      throw new BadRequestException(
+        `El nodo "${node.name}" no tiene un pool de IP por defecto configurado (defaultPppPool). Configúralo en el nodo o indica un pool explícito.`,
+      );
+    }
+
+    const client = await this.resolveClient(node);
+
+    let pools: RouterOsIpPool[];
+    try {
+      pools = await client.getIpPools();
+    } catch (err: any) {
+      throw new GatewayTimeoutException(
+        `El nodo "${node.name}" (${node.wireguardIp || node.managementIp || 'desconocido'}) no respondio a tiempo: ${err.message}`,
+      );
+    }
+
+    const pool = pools.find((p) => p.name === poolName);
+    if (!pool) {
+      throw new NotFoundException(`No existe el pool "${poolName}" en el router del nodo "${node.name}".`);
+    }
+
+    const limit = options?.limit && options.limit > 0 ? Math.min(options.limit, 200) : 30;
+    const allAddresses = expandIpPoolRanges(pool.ranges);
+
+    const [dbUsedRows, secrets, dynamicUsed] = await Promise.all([
+      this.accessRepository
+        .createQueryBuilder('access')
+        .select('access.ipAddress', 'ipAddress')
+        .where('access.nodeId = :nodeId', { nodeId })
+        .andWhere('access.ipAddress IS NOT NULL')
+        .getRawMany<{ ipAddress: string }>(),
+      client.getPppSecrets().catch((): RouterOsPppSecret[] => []),
+      client.getUsedPoolAddresses(poolName).catch((): string[] => []),
+    ]);
+
+    const used = new Set<string>();
+    dbUsedRows.forEach((row) => row.ipAddress && used.add(row.ipAddress));
+    secrets.forEach((s) => s.remoteAddress && used.add(s.remoteAddress));
+    dynamicUsed.forEach((ip) => used.add(ip));
+
+    const available = allAddresses.filter((ip) => !used.has(ip));
+
+    return {
+      nodeId: node.id,
+      nodeName: node.name,
+      poolName,
+      ranges: pool.ranges,
+      totalInRange: allAddresses.length,
+      totalUsed: used.size,
+      totalAvailable: available.length,
+      available: available.slice(0, limit),
+    };
   }
 
   /**

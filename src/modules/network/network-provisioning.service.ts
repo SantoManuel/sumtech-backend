@@ -1,6 +1,6 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not } from 'typeorm';
 import { NetworkAccessEntity } from './entities/network-access.entity';
 import { NetworkNodeEntity } from './entities/network-node.entity';
 import { ProvisioningAuditLogEntity } from './entities/provisioning-audit-log.entity';
@@ -10,9 +10,9 @@ import { NetworkProvisioningPortRegistry } from './network-provisioning-port.reg
 import { UpsertNetworkAccessDto } from './dto/upsert-network-access.dto';
 import { FindAuditLogDto } from './dto/find-audit-log.dto';
 import { buildRouterProfileName } from './routeros/router-profile-name.util';
-import { encryptCredential } from '../network-connectivity/utils/crypto.util';
+import { encryptCredential, decryptCredential } from '../network-connectivity/utils/crypto.util';
 
-type AuditAction = 'CREATE' | 'PROVISION' | 'SUSPEND' | 'RESTORE' | 'DEPROVISION' | 'SYNC_PROFILE';
+type AuditAction = 'CREATE' | 'PROVISION' | 'SUSPEND' | 'RESTORE' | 'DEPROVISION' | 'SYNC_PROFILE' | 'REVEAL_PASSWORD';
 
 export interface AuditLogEntry {
   id: string;
@@ -144,6 +144,27 @@ export class NetworkProvisioningService {
 
     const access = (await this.accessRepository.findOneBy({ contractId })) ?? (await this.createAccessForContract(contractId));
 
+    // El secret de RouterOS se identifica por su "name" (el username): si dos
+    // accesos de red llegaran a compartir el mismo username, ensurePppSecret()
+    // los haría apuntar AL MISMO secret real, y el segundo guardado pisaría
+    // silenciosamente contraseña/IP/perfil del primero. Se excluyen los accesos
+    // CUT (contrato terminado) porque reusar el username de un cliente dado de
+    // baja es un caso legítimo.
+    if (dto.username && dto.username !== access.username) {
+      const conflictCount = await this.accessRepository.count({
+        where: {
+          username: dto.username,
+          contractId: Not(contractId),
+          connectionStatus: Not('CUT'),
+        },
+      });
+      if (conflictCount > 0) {
+        throw new ConflictException(
+          `El usuario PPPoE "${dto.username}" ya está en uso por otro contrato activo. Elige un usuario distinto.`,
+        );
+      }
+    }
+
     const wasPending = access.connectionStatus === 'PENDING';
 
     if (dto.nodeId !== undefined) access.nodeId = dto.nodeId;
@@ -184,6 +205,44 @@ export class NetworkProvisioningService {
     await this.syncProfileForContract(contractId);
 
     return (await this.findByContractId(contractId))!;
+  }
+
+  /**
+   * Revela en texto plano la contraseña PPPoE guardada para un contrato
+   * (ADMIN/GERENTE únicamente — ver guard en NetworkAccessController). Cada
+   * llamada queda auditada como REVEAL_PASSWORD con el usuario que la pidió,
+   * igual que cualquier otra acción sensible de este servicio. Si el acceso
+   * no tiene contraseña propia configurada, devuelve `hasPassword: false` sin
+   * inventar ni exponer el fallback genérico compartido
+   * ('SumtechPass2026!') — ese no es un secreto del cliente, es un hueco de
+   * seguridad que el admin debe cerrar configurando una contraseña real.
+   */
+  async revealPppoePassword(
+    clientId: string,
+    contractId: string,
+    actorUserId?: string,
+  ): Promise<{ hasPassword: boolean; password?: string }> {
+    await this.assertContractBelongsToClient(clientId, contractId);
+
+    const access = await this.accessRepository.findOneBy({ contractId });
+    if (!access) {
+      throw new NotFoundException(`No hay acceso de red configurado para el contrato ${contractId}`);
+    }
+
+    if (!access.pppoePasswordEnc) {
+      return { hasPassword: false };
+    }
+
+    await this.recordAudit(
+      access,
+      'REVEAL_PASSWORD',
+      { ok: true },
+      actorUserId ? `USER:${actorUserId}` : 'ADMIN',
+      undefined,
+      actorUserId,
+    );
+
+    return { hasPassword: true, password: decryptCredential(access.pppoePasswordEnc) };
   }
 
   /**

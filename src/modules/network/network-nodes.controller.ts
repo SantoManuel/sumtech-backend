@@ -267,6 +267,13 @@ export class NetworkNodesController {
     return this.pppManagementService.getNodeIpPools(id);
   }
 
+  /** IPs libres del pool de este nodo (RF: sugerencia automática al configurar un secret PPPoE/DHCP). */
+  @Get(':id/ppp/pools/available-ips')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getAvailableIps(@Param('id') id: string, @Query('pool') pool?: string) {
+    return this.pppManagementService.getAvailableIps(id, { poolName: pool });
+  }
+
   @Post(':id/ppp/profiles')
   @Roles(Role.ADMIN, Role.GERENTE)
   async createNodeProfile(

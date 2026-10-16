@@ -27,9 +27,9 @@ export class ProvisioningAuditLogEntity {
 
   @Column({
     type: 'enum',
-    enum: ['CREATE', 'PROVISION', 'SUSPEND', 'RESTORE', 'DEPROVISION', 'SHADOW_CHECK', 'SYNC_PROFILE'],
+    enum: ['CREATE', 'PROVISION', 'SUSPEND', 'RESTORE', 'DEPROVISION', 'SHADOW_CHECK', 'SYNC_PROFILE', 'REVEAL_PASSWORD'],
   })
-  action: 'CREATE' | 'PROVISION' | 'SUSPEND' | 'RESTORE' | 'DEPROVISION' | 'SHADOW_CHECK' | 'SYNC_PROFILE';
+  action: 'CREATE' | 'PROVISION' | 'SUSPEND' | 'RESTORE' | 'DEPROVISION' | 'SHADOW_CHECK' | 'SYNC_PROFILE' | 'REVEAL_PASSWORD';
 
   @Column({
     type: 'enum',

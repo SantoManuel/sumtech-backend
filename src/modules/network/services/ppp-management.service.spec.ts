@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException, GatewayTimeoutException } from '@nestjs/common';
-import { PppManagementService } from './ppp-management.service';
+import { NotFoundException, GatewayTimeoutException, BadRequestException } from '@nestjs/common';
+import { PppManagementService, expandIpPoolRanges } from './ppp-management.service';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkAccessEntity } from '../entities/network-access.entity';
 import { PlanEntity } from '../../plans/entities/plan.entity';
@@ -43,6 +43,7 @@ describe('PppManagementService', () => {
     accessRepo = {
       findOne: jest.fn(),
       update: jest.fn().mockResolvedValue(undefined),
+      createQueryBuilder: jest.fn(),
     };
     planRepo = {
       find: jest.fn(),
@@ -524,6 +525,106 @@ describe('PppManagementService', () => {
         '20M/20M 40M/40M 25M/25M 16/16 4',
         expect.anything(),
       );
+    });
+  });
+
+  describe('expandIpPoolRanges', () => {
+    it('expande un único rango a todas sus direcciones', () => {
+      expect(expandIpPoolRanges('192.168.60.1-192.168.60.3')).toEqual([
+        '192.168.60.1',
+        '192.168.60.2',
+        '192.168.60.3',
+      ]);
+    });
+
+    it('soporta múltiples rangos/IPs sueltas separadas por coma', () => {
+      expect(expandIpPoolRanges('10.0.0.5,10.0.0.10-10.0.0.11')).toEqual([
+        '10.0.0.5',
+        '10.0.0.10',
+        '10.0.0.11',
+      ]);
+    });
+
+    it('ignora un rango invertido o mal formado sin reventar', () => {
+      expect(expandIpPoolRanges('10.0.0.20-10.0.0.10')).toEqual([]);
+      expect(expandIpPoolRanges('no-es-una-ip')).toEqual([]);
+    });
+
+    it('respeta el límite máximo de direcciones a expandir', () => {
+      expect(expandIpPoolRanges('10.0.0.0-10.0.0.255', 10)).toHaveLength(10);
+    });
+  });
+
+  describe('getAvailableIps', () => {
+    const makeAccessQueryBuilder = (rows: Array<{ ipAddress: string }>) => ({
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue(rows),
+    });
+
+    it('calcula las IPs libres cruzando el rango del pool con la BD, los secrets y el pool/used del router', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      accessRepo.createQueryBuilder.mockReturnValue(
+        makeAccessQueryBuilder([{ ipAddress: '10.0.1.2' }]),
+      );
+      clientFactory.mockReturnValue({
+        getIpPools: jest.fn().mockResolvedValue([
+          { id: '*1', name: 'pool-clientes', ranges: '10.0.1.1-10.0.1.5' },
+        ]),
+        getPppSecrets: jest.fn().mockResolvedValue([
+          { id: '*s1', name: 'cliente_a', profile: 'default', remoteAddress: '10.0.1.3' },
+        ]),
+        getUsedPoolAddresses: jest.fn().mockResolvedValue(['10.0.1.4']),
+      });
+
+      const result = await service.getAvailableIps('node-1');
+
+      expect(result.poolName).toBe('pool-clientes');
+      expect(result.totalInRange).toBe(5);
+      expect(result.totalUsed).toBe(3); // .2 (BD) + .3 (secret) + .4 (pool/used)
+      expect(result.available).toEqual(['10.0.1.1', '10.0.1.5']);
+      expect(result.totalAvailable).toBe(2);
+    });
+
+    it('usa el pool explícito del query param en vez del defaultPppPool del nodo', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      accessRepo.createQueryBuilder.mockReturnValue(makeAccessQueryBuilder([]));
+      const getIpPools = jest.fn().mockResolvedValue([
+        { id: '*1', name: 'pool-clientes', ranges: '10.0.1.1-10.0.1.2' },
+        { id: '*2', name: 'pool-vip', ranges: '10.0.9.1-10.0.9.2' },
+      ]);
+      clientFactory.mockReturnValue({
+        getIpPools,
+        getPppSecrets: jest.fn().mockResolvedValue([]),
+        getUsedPoolAddresses: jest.fn().mockResolvedValue([]),
+      });
+
+      const result = await service.getAvailableIps('node-1', { poolName: 'pool-vip' });
+
+      expect(result.poolName).toBe('pool-vip');
+      expect(result.available).toEqual(['10.0.9.1', '10.0.9.2']);
+    });
+
+    it('lanza BadRequestException si el nodo no tiene pool por defecto ni se indica uno explícito', async () => {
+      nodeRepo.findOneBy.mockResolvedValue({ ...mockNode, defaultPppPool: undefined });
+
+      await expect(service.getAvailableIps('node-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza NotFoundException si el pool indicado no existe en el router', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      clientFactory.mockReturnValue({
+        getIpPools: jest.fn().mockResolvedValue([{ id: '*1', name: 'otro-pool', ranges: '10.0.1.1-10.0.1.2' }]),
+      });
+
+      await expect(service.getAvailableIps('node-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('lanza NotFoundException si el nodo no existe', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(service.getAvailableIps('invalid-id')).rejects.toThrow(NotFoundException);
     });
   });
 });
