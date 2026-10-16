@@ -43,6 +43,24 @@ export interface PppSessionDetails {
   nodeName?: string;
 }
 
+export function formatRateLimitWithBurst(
+  baseRateLimit?: string,
+  burstLimit?: string,
+  burstThreshold?: string,
+  burstTime?: string,
+  priority?: number,
+): string | undefined {
+  if (!baseRateLimit) return undefined;
+  if (!burstLimit && !burstThreshold && !burstTime && priority === undefined) {
+    return baseRateLimit;
+  }
+  const bLimit = burstLimit || '0/0';
+  const bThresh = burstThreshold || '0/0';
+  const bTime = burstTime || '0/0';
+  const prio = priority !== undefined ? String(priority) : '8';
+  return `${baseRateLimit} ${bLimit} ${bThresh} ${bTime} ${prio}`;
+}
+
 @Injectable()
 export class PppManagementService {
   private readonly logger = new Logger(PppManagementService.name);
@@ -141,6 +159,36 @@ export class PppManagementService {
         `El nodo "${node.name}" (${node.wireguardIp || node.managementIp || 'desconocido'}) no respondio a tiempo: ${err.message}`,
       );
     }
+  }
+
+  /**
+   * Expulsa y desconecta forzosamente en caliente la sesión activa de un usuario en un router MikroTik específico (RF-PPP-008).
+   */
+  async disconnectNodeActiveSession(nodeId: string, username: string, actorUserId?: string): Promise<{ success: boolean; message: string }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    const client = await this.resolveClient(node);
+    const killed = await client.killActiveSession(username);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: killed
+        ? `Sesión activa de "${username}" desconectada forzosamente en caliente.`
+        : `No había sesión activa para "${username}" en el nodo.`,
+      actorUserId,
+    });
+
+    return {
+      success: true,
+      message: killed
+        ? `Sesión de "${username}" desconectada exitosamente.`
+        : `El usuario "${username}" no estaba conectado.`,
+    };
   }
 
   /**
@@ -391,7 +439,86 @@ export class PppManagementService {
   }
 
   /**
-   * Crea un perfil nuevo en RouterOS.
+   * Crea un pool de IPs desacoplado en el router (/ip/pool).
+   */
+  async createNodeIpPool(
+    nodeId: string,
+    dto: { name: string; ranges: string },
+    actorUserId?: string,
+  ): Promise<RouterOsIpPool> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    const created = await client.createIpPool(dto.name, dto.ranges);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'PROVISION',
+      status: 'SUCCESS',
+      message: `Pool de IP "${dto.name}" (${dto.ranges}) creado en router "${node.name}".`,
+      actorUserId,
+    });
+
+    return created;
+  }
+
+  /**
+   * Actualiza los rangos de un pool de IPs (/ip/pool).
+   */
+  async updateNodeIpPool(
+    nodeId: string,
+    poolId: string,
+    dto: { ranges: string },
+    actorUserId?: string,
+  ): Promise<RouterOsIpPool> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    const updated = await client.updateIpPool(poolId, dto.ranges);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'PROVISION',
+      status: 'SUCCESS',
+      message: `Pool de IP "${poolId}" actualizado en router "${node.name}" (${dto.ranges}).`,
+      actorUserId,
+    });
+
+    return updated;
+  }
+
+  /**
+   * Elimina un pool de IPs (/ip/pool).
+   */
+  async deleteNodeIpPool(
+    nodeId: string,
+    poolId: string,
+    actorUserId?: string,
+  ): Promise<{ ok: boolean }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    await client.deleteIpPool(poolId);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Pool de IP "${poolId}" eliminado en router "${node.name}".`,
+      actorUserId,
+    });
+
+    return { ok: true };
+  }
+
+  /**
+   * Crea un perfil nuevo en RouterOS con soporte opcional de QoS/Burst.
    */
   async createNodeProfile(
     nodeId: string,
@@ -409,7 +536,15 @@ export class PppManagementService {
       throw new BadRequestException(`Ya existe un perfil con el nombre "${dto.name}" en este router.`);
     }
 
-    const created = await client.createProfile(dto.name, dto.rateLimit, {
+    const formattedRateLimit = formatRateLimitWithBurst(
+      dto.rateLimit,
+      dto.burstLimit,
+      dto.burstThreshold,
+      dto.burstTime,
+      dto.priority,
+    ) || dto.rateLimit;
+
+    const created = await client.createProfile(dto.name, formattedRateLimit, {
       parentQueue: dto.parentQueue || undefined,
       localAddress: dto.localAddress || undefined,
       remoteAddress: dto.remoteAddress || undefined,
@@ -421,7 +556,7 @@ export class PppManagementService {
       nodeId: node.id,
       eventType: 'PROVISION',
       status: 'SUCCESS',
-      message: `Perfil PPP "${dto.name}" creado en router "${node.name}" (${dto.rateLimit}).`,
+      message: `Perfil PPP "${dto.name}" creado en router "${node.name}" (${formattedRateLimit}).`,
       actorUserId,
     });
 
@@ -442,8 +577,16 @@ export class PppManagementService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
+    const formattedRateLimit = formatRateLimitWithBurst(
+      dto.rateLimit,
+      dto.burstLimit,
+      dto.burstThreshold,
+      dto.burstTime,
+      dto.priority,
+    );
+
     const client = await this.resolveClient(node);
-    await client.updateProfile(profileId, dto.rateLimit, {
+    await client.updateProfile(profileId, formattedRateLimit, {
       parentQueue: dto.parentQueue,
       localAddress: dto.localAddress,
       remoteAddress: dto.remoteAddress,

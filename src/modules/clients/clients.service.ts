@@ -102,7 +102,7 @@ export class ClientsService {
 
     if (search) {
       query.where(
-        'client.name ILIKE :search OR client.docNumber ILIKE :search OR client.email ILIKE :search OR client.phone ILIKE :search',
+        'client.name ILIKE :search OR client.docNumber ILIKE :search OR client.email ILIKE :search OR client.phone ILIKE :search OR contracts.contractNumber ILIKE :search OR networkAccess.username ILIKE :search',
         { search: `%${search}%` },
       );
     }

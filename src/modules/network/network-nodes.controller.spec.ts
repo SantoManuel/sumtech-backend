@@ -36,7 +36,11 @@ describe('NetworkNodesController', () => {
 
     const pppManagementService = {
       getNodeActiveSessions: jest.fn().mockResolvedValue([{ name: 'user1', callerId: 'AA:BB:CC:DD:EE:FF', uptime: '1h' }]),
+      disconnectNodeActiveSession: jest.fn().mockResolvedValue({ success: true, message: 'Sesión desconectada' }),
       syncCatalogProfilesToNode: jest.fn().mockResolvedValue({ nodeId: 'node-1', syncedProfiles: [] }),
+      createNodeIpPool: jest.fn().mockResolvedValue({ id: '*P1', name: 'pool-test', ranges: '10.50.0.10-10.50.0.100' }),
+      updateNodeIpPool: jest.fn().mockResolvedValue({ id: '*P1', ranges: '10.50.0.10-10.50.0.200' }),
+      deleteNodeIpPool: jest.fn().mockResolvedValue({ ok: true }),
     };
 
     const suspensionPortalService = {
@@ -53,6 +57,28 @@ describe('NetworkNodesController', () => {
       ensureFirewallBaseline: jest.fn().mockResolvedValue({ id: 'node-1' }),
       ensureDhcpServerForVlan: jest.fn().mockResolvedValue({ id: 'nv-1' }),
       getReconciliationStatus: jest.fn().mockResolvedValue({ vlans: [], nat: true, firewall: true }),
+      generateAndDownloadBackup: jest.fn().mockResolvedValue({
+        buffer: Buffer.from('backup-data'),
+        filename: 'backup_node1.rsc',
+        contentType: 'text/plain; charset=utf-8',
+      }),
+      getRouterOsUpdates: jest.fn().mockResolvedValue({
+        channel: 'stable',
+        installedVersion: '7.12.1',
+        latestVersion: '7.15.3',
+        status: 'New version is available',
+        updateAvailable: true,
+      }),
+      getInterfaces: jest.fn().mockResolvedValue([{ id: '*1', name: 'ether1', running: true, disabled: false }]),
+      setInterfaceDisabled: jest.fn().mockResolvedValue({ ok: true }),
+      getDhcpLeases: jest.fn().mockResolvedValue([{ id: '*L1', address: '10.20.0.50', dynamic: true }]),
+      makeDhcpLeaseStatic: jest.fn().mockResolvedValue({ ok: true }),
+      deleteDhcpLease: jest.fn().mockResolvedValue({ ok: true }),
+      getSimpleQueues: jest.fn().mockResolvedValue([{ id: '*Q1', name: 'q1', target: '10.20.0.50/32' }]),
+      applySecurityLockdown: jest.fn().mockResolvedValue({ ok: true }),
+      removeSecurityLockdown: jest.fn().mockResolvedValue({ ok: true }),
+      applyAntiAbuseTemplate: jest.fn().mockResolvedValue({ ok: true }),
+      getRouterOsLogs: jest.fn().mockResolvedValue([{ id: '*1', message: 'test log' }]),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -193,6 +219,104 @@ describe('NetworkNodesController', () => {
     });
   });
 
+  describe('Fase 2: Respaldos y Actualizaciones RouterOS', () => {
+    it('downloadBackup delega en infrastructureService y envía el buffer al navegador', async () => {
+      const res: any = { set: jest.fn(), end: jest.fn() };
+      await controller.downloadBackup('node-1', { type: 'RSC' }, res, 'admin-user');
+
+      expect(infrastructureService.generateAndDownloadBackup).toHaveBeenCalledWith(
+        'node-1',
+        { type: 'RSC' },
+        'admin-user',
+      );
+      expect(res.set).toHaveBeenCalledWith(expect.objectContaining({
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="backup_node1.rsc"',
+      }));
+      expect(res.end).toHaveBeenCalledWith(Buffer.from('backup-data'));
+    });
+
+    it('getRouterOsUpdates delega en infrastructureService.getRouterOsUpdates', async () => {
+      const result = await controller.getRouterOsUpdates('node-1');
+      expect(infrastructureService.getRouterOsUpdates).toHaveBeenCalledWith('node-1');
+      expect(result.updateAvailable).toBe(true);
+    });
+  });
+
+  describe('Fase 3: Interfaces Físicas, Pools y Leases DHCP', () => {
+    it('getNodeInterfaces delega en infrastructureService.getInterfaces', async () => {
+      const result = await controller.getNodeInterfaces('node-1');
+      expect(infrastructureService.getInterfaces).toHaveBeenCalledWith('node-1');
+      expect(result).toHaveLength(1);
+    });
+
+    it('setNodeInterfaceDisabled delega en infrastructureService.setInterfaceDisabled', async () => {
+      const result = await controller.setNodeInterfaceDisabled('node-1', 'ether2', { disabled: true }, 'admin');
+      expect(infrastructureService.setInterfaceDisabled).toHaveBeenCalledWith('node-1', 'ether2', true, 'admin');
+      expect(result.ok).toBe(true);
+    });
+
+    it('createNodeIpPool delega en pppManagementService.createNodeIpPool', async () => {
+      const result = await controller.createNodeIpPool('node-1', { name: 'pool-test', ranges: '10.50.0.10-10.50.0.100' }, 'admin');
+      expect(result.id).toBe('*P1');
+    });
+
+    it('updateNodeIpPool delega en pppManagementService.updateNodeIpPool', async () => {
+      const result = await controller.updateNodeIpPool('node-1', '*P1', { ranges: '10.50.0.10-10.50.0.200' }, 'admin');
+      expect(result.ranges).toBe('10.50.0.10-10.50.0.200');
+    });
+
+    it('deleteNodeIpPool delega en pppManagementService.deleteNodeIpPool', async () => {
+      const result = await controller.deleteNodeIpPool('node-1', '*P1', 'admin');
+      expect(result.ok).toBe(true);
+    });
+
+    it('getNodeDhcpLeases delega en infrastructureService.getDhcpLeases', async () => {
+      const result = await controller.getNodeDhcpLeases('node-1');
+      expect(result).toHaveLength(1);
+    });
+
+    it('makeNodeDhcpLeaseStatic delega en infrastructureService.makeDhcpLeaseStatic', async () => {
+      const result = await controller.makeNodeDhcpLeaseStatic('node-1', '*L1', { comment: 'Static' }, 'admin');
+      expect(result.ok).toBe(true);
+    });
+
+    it('deleteNodeDhcpLease delega en infrastructureService.deleteDhcpLease', async () => {
+      const result = await controller.deleteNodeDhcpLease('node-1', '*L1', 'admin');
+      expect(result.ok).toBe(true);
+    });
+  });
+
+  describe('Fase 4: Simple Queues', () => {
+    it('getNodeSimpleQueues delega en infrastructureService.getSimpleQueues', async () => {
+      const result = await controller.getNodeSimpleQueues('node-1');
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('Fase 5: Seguridad y Logs', () => {
+    it('applySecurityLockdown delega en infrastructureService.applySecurityLockdown', async () => {
+      const result = await controller.applySecurityLockdown('node-1', { allowedIps: ['1.2.3.4'] }, 'admin');
+      expect(result.ok).toBe(true);
+    });
+
+    it('removeSecurityLockdown delega en infrastructureService.removeSecurityLockdown', async () => {
+      const result = await controller.removeSecurityLockdown('node-1', 'admin');
+      expect(result.ok).toBe(true);
+    });
+
+    it('applyAntiAbuseTemplate delega en infrastructureService.applyAntiAbuseTemplate', async () => {
+      const result = await controller.applyAntiAbuseTemplate('node-1', { template: 'BLOCK_SMTP_PORT25', enabled: true }, 'admin');
+      expect(result.ok).toBe(true);
+    });
+
+    it('getNodeRouterOsLogs delega en infrastructureService.getRouterOsLogs', async () => {
+      const result = await controller.getNodeRouterOsLogs('node-1', 'system,info');
+      expect(infrastructureService.getRouterOsLogs).toHaveBeenCalledWith('node-1', 'system,info');
+      expect(result).toHaveLength(1);
+    });
+  });
+
   describe('metadatos de guards (roles)', () => {
     it('todos los endpoints exigen rol ADMIN o GERENTE', () => {
       expect(reflector.get(ROLES_KEY, controller.findAll)).toEqual([Role.ADMIN, Role.GERENTE]);
@@ -202,6 +326,16 @@ describe('NetworkNodesController', () => {
       expect(reflector.get(ROLES_KEY, controller.deactivate)).toEqual([Role.ADMIN, Role.GERENTE]);
       expect(reflector.get(ROLES_KEY, controller.reactivate)).toEqual([Role.ADMIN, Role.GERENTE]);
       expect(reflector.get(ROLES_KEY, controller.exportNodes)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.disconnectNodeActiveSession)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.downloadBackup)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.getRouterOsUpdates)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.getNodeInterfaces)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.setNodeInterfaceDisabled)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.createNodeIpPool)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.getNodeDhcpLeases)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.getNodeSimpleQueues)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.applySecurityLockdown)).toEqual([Role.ADMIN, Role.GERENTE]);
+      expect(reflector.get(ROLES_KEY, controller.getNodeRouterOsLogs)).toEqual([Role.ADMIN, Role.GERENTE]);
     });
 
     it('ningún endpoint es público: este catálogo es interno, no de cara al cliente', () => {

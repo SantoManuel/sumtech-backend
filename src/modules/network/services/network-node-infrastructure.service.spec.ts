@@ -558,5 +558,178 @@ describe('NetworkNodeInfrastructureService', () => {
     expect(nodeVlanRepo.create).not.toHaveBeenCalled();
     expect(nodeVlanRepo.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'nv-existing', uplinkInterface: 'ether5' }));
   });
+
+  describe('Fase 2: Respaldos y Actualizaciones RouterOS', () => {
+    it('generateAndDownloadBackup genera respaldo RSC, lee chunks y borra archivo temporal del router', async () => {
+      const exportConfig = jest.fn().mockResolvedValue('sumtech_test.rsc');
+      const readFileChunks = jest.fn().mockResolvedValue(Buffer.from('export-content'));
+      const deleteFile = jest.fn().mockResolvedValue(undefined);
+
+      clientFactory.mockReturnValue({
+        exportConfig,
+        readFileChunks,
+        deleteFile,
+      });
+
+      const result = await service.generateAndDownloadBackup('node-1', { type: 'RSC' }, 'actor-1');
+
+      expect(exportConfig).toHaveBeenCalledWith(expect.stringContaining('sumtech_'), true);
+      expect(readFileChunks).toHaveBeenCalledWith('sumtech_test.rsc');
+      expect(deleteFile).toHaveBeenCalledWith('sumtech_test.rsc');
+      expect(result.buffer.toString()).toBe('export-content');
+      expect(result.contentType).toBe('text/plain; charset=utf-8');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'COMMAND', actorUserId: 'actor-1' }),
+      );
+    });
+
+    it('getRouterOsUpdates consulta al cliente RouterOS y retorna estado', async () => {
+      clientFactory.mockReturnValue({
+        checkPackageUpdates: jest.fn().mockResolvedValue({
+          channel: 'stable',
+          installedVersion: '7.12.1',
+          latestVersion: '7.15.3',
+          status: 'New version available',
+          updateAvailable: true,
+        }),
+      });
+
+      const res = await service.getRouterOsUpdates('node-1');
+
+      expect(res.updateAvailable).toBe(true);
+      expect(res.latestVersion).toBe('7.15.3');
+    });
+  });
+
+  describe('Fase 3: Interfaces Físicas y Leases DHCP', () => {
+    it('getInterfaces retorna interfaces mapeadas', async () => {
+      clientFactory.mockReturnValue({
+        getInterfaces: jest.fn().mockResolvedValue([{ id: '*1', name: 'ether1', running: true, disabled: false }]),
+      });
+
+      const res = await service.getInterfaces('node-1');
+
+      expect(res).toHaveLength(1);
+      expect(res[0].name).toBe('ether1');
+    });
+
+    it('setInterfaceDisabled rechaza deshabilitar la interfaz WAN activa', async () => {
+      nodeRepo.findOneBy.mockResolvedValue({ ...node, wanInterfaceName: 'ether1' });
+
+      await expect(service.setInterfaceDisabled('node-1', 'ether1', true)).rejects.toThrow(
+        /No se puede deshabilitar la interfaz WAN activa/,
+      );
+    });
+
+    it('setInterfaceDisabled deshabilita interfaz no-WAN con éxito', async () => {
+      nodeRepo.findOneBy.mockResolvedValue({ ...node, wanInterfaceName: 'ether1' });
+      const setInterfaceDisabled = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({ setInterfaceDisabled });
+
+      const res = await service.setInterfaceDisabled('node-1', 'ether2', true, 'actor-1');
+
+      expect(res.ok).toBe(true);
+      expect(setInterfaceDisabled).toHaveBeenCalledWith('ether2', true);
+    });
+
+    it('makeDhcpLeaseStatic invoca al cliente RouterOS', async () => {
+      const makeDhcpLeaseStatic = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({ makeDhcpLeaseStatic });
+
+      const res = await service.makeDhcpLeaseStatic('node-1', '*L1', 'VIP', 'actor-1');
+
+      expect(res.ok).toBe(true);
+      expect(makeDhcpLeaseStatic).toHaveBeenCalledWith('*L1', 'VIP');
+    });
+
+    it('deleteDhcpLease invoca al cliente RouterOS', async () => {
+      const deleteDhcpLease = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({ deleteDhcpLease });
+
+      const res = await service.deleteDhcpLease('node-1', '*L1', 'actor-1');
+
+      expect(res.ok).toBe(true);
+      expect(deleteDhcpLease).toHaveBeenCalledWith('*L1');
+    });
+  });
+
+  describe('Fase 4: Simple Queues', () => {
+    it('getSimpleQueues consulta las colas del router', async () => {
+      clientFactory.mockReturnValue({
+        getSimpleQueues: jest.fn().mockResolvedValue([{ id: '*Q1', name: 'queue-test', target: '10.20.0.50/32' }]),
+      });
+
+      const res = await service.getSimpleQueues('node-1');
+
+      expect(res).toHaveLength(1);
+      expect(res[0].name).toBe('queue-test');
+    });
+  });
+
+  describe('Fase 5: Seguridad y Logs', () => {
+    it('applySecurityLockdown agrega reglas de protección y address-list', async () => {
+      const ensureAddressListEntry = jest.fn().mockResolvedValue(undefined);
+      const findFilterRuleByComment = jest.fn().mockResolvedValue(null);
+      const addFirewallFilterRule = jest.fn().mockResolvedValue(undefined);
+
+      clientFactory.mockReturnValue({
+        ensureAddressListEntry,
+        findFilterRuleByComment,
+        addFirewallFilterRule,
+      });
+
+      const res = await service.applySecurityLockdown('node-1', ['190.10.0.5'], 'actor-1');
+
+      expect(res.ok).toBe(true);
+      expect(ensureAddressListEntry).toHaveBeenCalledWith('sumtech-management-ips', '10.254.1.0/24', expect.anything());
+      expect(addFirewallFilterRule).toHaveBeenCalledWith(expect.objectContaining({
+        comment: 'sumtech-lockdown-management',
+        action: 'drop',
+      }));
+    });
+
+    it('removeSecurityLockdown elimina reglas y lista de protección', async () => {
+      const removeFilterRulesByComment = jest.fn().mockResolvedValue(undefined);
+      const removeAddressListEntriesByComment = jest.fn().mockResolvedValue(undefined);
+
+      clientFactory.mockReturnValue({
+        removeFilterRulesByComment,
+        removeAddressListEntriesByComment,
+      });
+
+      const res = await service.removeSecurityLockdown('node-1', 'actor-1');
+
+      expect(res.ok).toBe(true);
+      expect(removeFilterRulesByComment).toHaveBeenCalledWith('sumtech-lockdown-management');
+    });
+
+    it('applyAntiAbuseTemplate activa plantilla de bloqueo SMTP puerto 25', async () => {
+      const findFilterRuleByComment = jest.fn().mockResolvedValue(null);
+      const addFirewallFilterRule = jest.fn().mockResolvedValue(undefined);
+
+      clientFactory.mockReturnValue({
+        findFilterRuleByComment,
+        addFirewallFilterRule,
+      });
+
+      const res = await service.applyAntiAbuseTemplate('node-1', 'BLOCK_SMTP_PORT25', true, 'actor-1');
+
+      expect(res.ok).toBe(true);
+      expect(addFirewallFilterRule).toHaveBeenCalledWith(expect.objectContaining({
+        comment: 'sumtech-block-smtp-port25',
+        'dst-port': '25',
+      }));
+    });
+
+    it('getRouterOsLogs consulta buffer de logs', async () => {
+      clientFactory.mockReturnValue({
+        getRouterLogs: jest.fn().mockResolvedValue([{ id: '*1', message: 'test' }]),
+      });
+
+      const res = await service.getRouterOsLogs('node-1', 'firewall');
+
+      expect(res).toHaveLength(1);
+    });
+  });
 });
 

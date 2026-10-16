@@ -174,6 +174,29 @@ describe('PppManagementService', () => {
     });
   });
 
+  describe('disconnectNodeActiveSession', () => {
+    it('desconecta en caliente la sesión activa de un usuario por routerId y username', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      const killActiveSession = jest.fn().mockResolvedValue(true);
+      clientFactory.mockReturnValue({
+        killActiveSession,
+      });
+
+      const result = await service.disconnectNodeActiveSession('node-1', 'usuario_pppoe', 'admin-user-id');
+
+      expect(result.success).toBe(true);
+      expect(killActiveSession).toHaveBeenCalledWith('usuario_pppoe');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodeId: 'node-1',
+          eventType: 'COMMAND',
+          status: 'SUCCESS',
+          actorUserId: 'admin-user-id',
+        }),
+      );
+    });
+  });
+
   describe('syncCatalogProfilesToNode', () => {
     it('sincroniza perfil de corte y perfiles comerciales con colas y pools', async () => {
       nodeRepo.findOneBy.mockResolvedValue(mockNode);
@@ -440,6 +463,66 @@ describe('PppManagementService', () => {
       expect(deleteProfile).toHaveBeenCalledWith('*2');
       expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
         expect.objectContaining({ eventType: 'COMMAND', actorUserId: 'admin-id' }),
+      );
+    });
+  });
+
+  describe('IP Pools CRUD y Burst Rate-Limit', () => {
+    it('createNodeIpPool crea el pool y registra la operación', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      const createIpPool = jest.fn().mockResolvedValue({ id: '*P1', name: 'pool-nuevo', ranges: '10.80.0.10-10.80.0.250' });
+      clientFactory.mockReturnValue({ createIpPool });
+
+      const res = await service.createNodeIpPool('node-1', { name: 'pool-nuevo', ranges: '10.80.0.10-10.80.0.250' }, 'admin-1');
+
+      expect(res.name).toBe('pool-nuevo');
+      expect(createIpPool).toHaveBeenCalledWith('pool-nuevo', '10.80.0.10-10.80.0.250');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'PROVISION' }));
+    });
+
+    it('updateNodeIpPool actualiza rangos de un pool existente', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      const updateIpPool = jest.fn().mockResolvedValue({ id: '*P1', name: 'pool-nuevo', ranges: '10.80.0.50-10.80.0.250' });
+      clientFactory.mockReturnValue({ updateIpPool });
+
+      const res = await service.updateNodeIpPool('node-1', '*P1', { ranges: '10.80.0.50-10.80.0.250' }, 'admin-1');
+
+      expect(updateIpPool).toHaveBeenCalledWith('*P1', '10.80.0.50-10.80.0.250');
+      expect(res.ranges).toBe('10.80.0.50-10.80.0.250');
+    });
+
+    it('deleteNodeIpPool elimina el pool por ID', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      const deleteIpPool = jest.fn().mockResolvedValue(undefined);
+      clientFactory.mockReturnValue({ deleteIpPool });
+
+      const res = await service.deleteNodeIpPool('node-1', '*P1', 'admin-1');
+
+      expect(deleteIpPool).toHaveBeenCalledWith('*P1');
+      expect(res.ok).toBe(true);
+    });
+
+    it('createNodeProfile formatea parámetros de QoS/burst si se proveen', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      const createProfile = jest.fn().mockResolvedValue({ id: '*P99', name: 'plan-burst' });
+      clientFactory.mockReturnValue({
+        findProfileByName: jest.fn().mockResolvedValue(null),
+        createProfile,
+      });
+
+      await service.createNodeProfile('node-1', {
+        name: 'plan-burst',
+        rateLimit: '20M/20M',
+        burstLimit: '40M/40M',
+        burstThreshold: '25M/25M',
+        burstTime: '16/16',
+        priority: 4,
+      });
+
+      expect(createProfile).toHaveBeenCalledWith(
+        'plan-burst',
+        '20M/20M 40M/40M 25M/25M 16/16 4',
+        expect.anything(),
       );
     });
   });

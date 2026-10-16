@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional, IsBoolean } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsBoolean, IsNumber } from 'class-validator';
 
 export class CreateRouterOsProfileDto {
   @IsString()
@@ -32,6 +32,26 @@ export class CreateRouterOsProfileDto {
   @IsString()
   @IsOptional()
   dnsServer?: string;
+
+  /** Límite de ráfaga (Burst limit), ej. '40M/40M' */
+  @IsString()
+  @IsOptional()
+  burstLimit?: string;
+
+  /** Umbral de ráfaga (Burst threshold), ej. '25M/25M' */
+  @IsString()
+  @IsOptional()
+  burstThreshold?: string;
+
+  /** Tiempo de ráfaga en segundos (Burst time), ej. '16/16' */
+  @IsString()
+  @IsOptional()
+  burstTime?: string;
+
+  /** Prioridad de cola (1 a 8, donde 1 es máxima y 8 es estándar) */
+  @IsNumber()
+  @IsOptional()
+  priority?: number;
 }
 
 export class UpdateRouterOsProfileDto {
@@ -58,4 +78,21 @@ export class UpdateRouterOsProfileDto {
   @IsString()
   @IsOptional()
   dnsServer?: string;
+
+  @IsString()
+  @IsOptional()
+  burstLimit?: string;
+
+  @IsString()
+  @IsOptional()
+  burstThreshold?: string;
+
+  @IsString()
+  @IsOptional()
+  burstTime?: string;
+
+  @IsNumber()
+  @IsOptional()
+  priority?: number;
 }
+

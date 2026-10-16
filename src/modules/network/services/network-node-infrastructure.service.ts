@@ -5,6 +5,13 @@ import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkNodeVlanEntity } from '../entities/network-node-vlan.entity';
 import { VlanEntity } from '../../olt/entities/vlan.entity';
 import { ROUTEROS_CLIENT_FACTORY, RouterOsClientFactory, RouterOsClientLike } from '../routeros/routeros-client-factory';
+import {
+  RouterOsUpdateInfo,
+  RouterOsInterfaceItem,
+  RouterOsDhcpLease,
+  RouterOsSimpleQueue,
+  RouterOsLogEntry,
+} from '../routeros/routeros-client';
 import { resolveRouterOsCredentials } from '../routeros/routeros-credentials';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
@@ -614,6 +621,320 @@ export class NetworkNodeInfrastructureService {
 
       throw err;
     }
+  }
+
+  // --- FASE 2: RESPALDOS Y ACTUALIZACIONES ROUTEROS ---
+
+  async generateAndDownloadBackup(
+    nodeId: string,
+    options: { type: 'BINARY' | 'RSC'; password?: string },
+    actorUserId?: string,
+  ): Promise<{ buffer: Buffer; filename: string; contentType: string }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    const client = await this.resolveClient(node);
+    const safeNodeName = (node.name || 'node').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const baseName = `sumtech_${safeNodeName}_${timestamp}`;
+
+    let targetFileName = '';
+    let contentType = 'application/octet-stream';
+
+    if (options.type === 'BINARY') {
+      targetFileName = await client.createBackup(baseName, options.password);
+      contentType = 'application/octet-stream';
+    } else {
+      targetFileName = await client.exportConfig(baseName, true);
+      contentType = 'text/plain; charset=utf-8';
+    }
+
+    try {
+      const buffer = await client.readFileChunks(targetFileName);
+
+      // Limpieza inmediata en el router para evitar llenar la flash
+      await client.deleteFile(targetFileName).catch(() => {});
+
+      await this.deviceOperationLogger.logEvent({
+        nodeId: node.id,
+        eventType: 'COMMAND',
+        status: 'SUCCESS',
+        message: `Respaldo ${options.type} (${targetFileName}) generado y descargado para "${node.name}".`,
+        actorUserId,
+        rawDetails: { operation: 'generateAndDownloadBackup', type: options.type, filename: targetFileName },
+      });
+
+      return {
+        buffer,
+        filename: targetFileName,
+        contentType,
+      };
+    } catch (error: any) {
+      await client.deleteFile(targetFileName).catch(() => {});
+      throw error;
+    }
+  }
+
+  async getRouterOsUpdates(nodeId: string): Promise<RouterOsUpdateInfo> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    return client.checkPackageUpdates();
+  }
+
+  // --- FASE 3: INTERFACES FÍSICAS Y LEASES DHCP ---
+
+  async getInterfaces(nodeId: string): Promise<RouterOsInterfaceItem[]> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    return client.getInterfaces();
+  }
+
+  async setInterfaceDisabled(
+    nodeId: string,
+    name: string,
+    disabled: boolean,
+    actorUserId?: string,
+  ): Promise<{ ok: boolean }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    // Guard de seguridad: no permitir deshabilitar la interfaz WAN configurada
+    if (disabled && node.wanInterfaceName && name.toLowerCase() === node.wanInterfaceName.toLowerCase()) {
+      throw new BadRequestException(`No se puede deshabilitar la interfaz WAN activa ("${name}").`);
+    }
+
+    const client = await this.resolveClient(node);
+    await client.setInterfaceDisabled(name, disabled);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Interfaz "${name}" ${disabled ? 'deshabilitada' : 'habilitada'} en "${node.name}".`,
+      actorUserId,
+      rawDetails: { operation: 'setInterfaceDisabled', interface: name, disabled },
+    });
+
+    return { ok: true };
+  }
+
+  async getDhcpLeases(nodeId: string): Promise<RouterOsDhcpLease[]> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    return client.getDhcpLeases();
+  }
+
+  async makeDhcpLeaseStatic(
+    nodeId: string,
+    leaseId: string,
+    comment?: string,
+    actorUserId?: string,
+  ): Promise<{ ok: boolean }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    await client.makeDhcpLeaseStatic(leaseId, comment);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'PROVISION',
+      status: 'SUCCESS',
+      message: `Concesión DHCP "${leaseId}" convertida a estática en "${node.name}".`,
+      actorUserId,
+      rawDetails: { operation: 'makeDhcpLeaseStatic', leaseId, comment },
+    });
+
+    return { ok: true };
+  }
+
+  async deleteDhcpLease(
+    nodeId: string,
+    leaseId: string,
+    actorUserId?: string,
+  ): Promise<{ ok: boolean }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    await client.deleteDhcpLease(leaseId);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Concesión DHCP "${leaseId}" eliminada de "${node.name}".`,
+      actorUserId,
+      rawDetails: { operation: 'deleteDhcpLease', leaseId },
+    });
+
+    return { ok: true };
+  }
+
+  // --- FASE 4: ANCHO DE BANDA AVANZADO (SIMPLE QUEUES) ---
+
+  async getSimpleQueues(nodeId: string): Promise<RouterOsSimpleQueue[]> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    return client.getSimpleQueues();
+  }
+
+  // --- FASE 5: SEGURIDAD, PLANTILLAS FIREWALL Y LOGS EN VIVO ---
+
+  async applySecurityLockdown(
+    nodeId: string,
+    allowedIps: string[] = [],
+    actorUserId?: string,
+  ): Promise<{ ok: boolean }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    const client = await this.resolveClient(node);
+
+    // Lista blanca segura: incluye Wireguard (10.254.1.0/24), la IP de gestión del nodo y las solicitadas
+    const safeIps = new Set<string>(['10.254.1.0/24']);
+    if (node.managementIp) {
+      safeIps.add(`${node.managementIp}/32`);
+    }
+    for (const ip of allowedIps) {
+      if (ip && ip.trim()) safeIps.add(ip.trim());
+    }
+
+    for (const ip of safeIps) {
+      await client.ensureAddressListEntry('sumtech-management-ips', ip, 'Sumtech Management Protected');
+    }
+
+    // Regla drop para puertos de gestión si la fuente NO está en sumtech-management-ips
+    const existingRule = await client.findFilterRuleByComment('sumtech-lockdown-management');
+    if (!existingRule) {
+      await client.addFirewallFilterRule({
+        chain: 'input',
+        protocol: 'tcp',
+        'dst-port': '22,80,443,8728,8729,8291',
+        'src-address-list': '!sumtech-management-ips',
+        action: 'drop',
+        comment: 'sumtech-lockdown-management',
+      });
+    }
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Bloqueo de seguridad de puertos de administración aplicado en "${node.name}".`,
+      actorUserId,
+      rawDetails: { operation: 'applySecurityLockdown', allowedIps: Array.from(safeIps) },
+    });
+
+    return { ok: true };
+  }
+
+  async removeSecurityLockdown(nodeId: string, actorUserId?: string): Promise<{ ok: boolean }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    await client.removeFilterRulesByComment('sumtech-lockdown-management');
+    await client.removeAddressListEntriesByComment('Sumtech Management Protected');
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Bloqueo de puertos de administración removido de "${node.name}".`,
+      actorUserId,
+      rawDetails: { operation: 'removeSecurityLockdown' },
+    });
+
+    return { ok: true };
+  }
+
+  async applyAntiAbuseTemplate(
+    nodeId: string,
+    template: 'BLOCK_SMTP_PORT25' | 'CLIENT_ISOLATION',
+    enabled: boolean,
+    actorUserId?: string,
+  ): Promise<{ ok: boolean }> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+
+    if (template === 'BLOCK_SMTP_PORT25') {
+      const comment = 'sumtech-block-smtp-port25';
+      if (enabled) {
+        const existing = await client.findFilterRuleByComment(comment);
+        if (!existing) {
+          await client.addFirewallFilterRule({
+            chain: 'forward',
+            protocol: 'tcp',
+            'dst-port': '25',
+            action: 'drop',
+            comment,
+          });
+        }
+      } else {
+        await client.removeFilterRulesByComment(comment);
+      }
+    } else if (template === 'CLIENT_ISOLATION') {
+      const comment = 'sumtech-client-isolation';
+      if (enabled) {
+        const existing = await client.findFilterRuleByComment(comment);
+        if (!existing) {
+          await client.addFirewallFilterRule({
+            chain: 'forward',
+            'in-interface-list': 'LAN',
+            'out-interface-list': 'LAN',
+            action: 'drop',
+            comment,
+          });
+        }
+      } else {
+        await client.removeFilterRulesByComment(comment);
+      }
+    }
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Plantilla "${template}" ${enabled ? 'activada' : 'desactivada'} en "${node.name}".`,
+      actorUserId,
+      rawDetails: { operation: 'applyAntiAbuseTemplate', template, enabled },
+    });
+
+    return { ok: true };
+  }
+
+  async getRouterOsLogs(nodeId: string, topics?: string): Promise<RouterOsLogEntry[]> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    return client.getRouterLogs(topics);
   }
 
   /** Mismo patrón de resolución de cliente RouterOS ya usado en PppManagementService/RouterOsProvisioningAdapter. */

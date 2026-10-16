@@ -1,11 +1,11 @@
 import { RouterOsClient, encodeAcsUrlDhcpOption43 } from './routeros-client';
 
 describe('RouterOsClient', () => {
-  let http: { get: jest.Mock; put: jest.Mock; patch: jest.Mock; delete: jest.Mock };
+  let http: { get: jest.Mock; post: jest.Mock; put: jest.Mock; patch: jest.Mock; delete: jest.Mock };
   let client: RouterOsClient;
 
   beforeEach(() => {
-    http = { get: jest.fn(), put: jest.fn(), patch: jest.fn(), delete: jest.fn() };
+    http = { get: jest.fn(), post: jest.fn(), put: jest.fn(), patch: jest.fn(), delete: jest.fn() };
     client = new RouterOsClient(
       { managementIp: '10.10.0.1', apiPort: 8729, username: 'api-readonly', password: 'secret' },
       http,
@@ -948,6 +948,225 @@ describe('RouterOsClient', () => {
         },
         expect.anything(),
       );
+    });
+  });
+
+  describe('Fase 2: Respaldos y Actualizaciones', () => {
+    it('createBackup ejecuta POST a system/backup/save y devuelve el nombre con extensión .backup', async () => {
+      http.post.mockResolvedValue({ data: {} });
+
+      const filename = await client.createBackup('respaldo_test', 'clave123');
+
+      expect(filename).toBe('respaldo_test.backup');
+      expect(http.post).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/system/backup/save',
+        { name: 'respaldo_test', password: 'clave123' },
+        expect.anything(),
+      );
+    });
+
+    it('exportConfig ejecuta POST a export y devuelve el nombre con extensión .rsc', async () => {
+      http.post.mockResolvedValue({ data: {} });
+
+      const filename = await client.exportConfig('export_test', true);
+
+      expect(filename).toBe('export_test.rsc');
+      expect(http.post).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/export',
+        { file: 'export_test', 'show-sensitive': '' },
+        expect.anything(),
+      );
+    });
+
+    it('readFileChunks lee chunks y los concatena en un Buffer binario', async () => {
+      http.post
+        .mockResolvedValueOnce({ data: [{ data: 'PRIMER_BLOQUE' }] })
+        .mockResolvedValueOnce({ data: [{ data: '' }] });
+
+      const buffer = await client.readFileChunks('archivo.rsc');
+
+      expect(buffer.toString('binary')).toBe('PRIMER_BLOQUE');
+      expect(http.post).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/file/read',
+        expect.objectContaining({ file: 'archivo.rsc', offset: '0' }),
+        expect.anything(),
+      );
+    });
+
+    it('deleteFile busca el archivo por nombre y lo elimina por su .id', async () => {
+      http.get.mockResolvedValue({ data: [{ '.id': '*F1', name: 'archivo_temp.rsc' }] });
+      http.delete.mockResolvedValue({ data: {} });
+
+      await client.deleteFile('archivo_temp.rsc');
+
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/file/*F1',
+        expect.anything(),
+      );
+    });
+
+    it('checkPackageUpdates llama a check-for-updates y extrae versiones', async () => {
+      http.post.mockResolvedValue({
+        data: [{
+          channel: 'stable',
+          'installed-version': '7.12.1',
+          'latest-version': '7.15.3',
+          status: 'New version is available',
+        }],
+      });
+
+      const info = await client.checkPackageUpdates();
+
+      expect(info.channel).toBe('stable');
+      expect(info.installedVersion).toBe('7.12.1');
+      expect(info.latestVersion).toBe('7.15.3');
+      expect(info.updateAvailable).toBe(true);
+    });
+  });
+
+  describe('Fase 3: Interfaces Físicas, Pools y Leases DHCP', () => {
+    it('getInterfaces mapea interfaces de RouterOS con estado running y disabled', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*1', name: 'ether1', type: 'ether', running: 'true', disabled: 'false', 'mac-address': '00:11:22:33:44:55' },
+          { '.id': '*2', name: 'sfp-sfpplus1', type: 'sfp', running: 'false', disabled: 'true' },
+        ],
+      });
+
+      const interfaces = await client.getInterfaces();
+
+      expect(interfaces).toHaveLength(2);
+      expect(interfaces[0].name).toBe('ether1');
+      expect(interfaces[0].running).toBe(true);
+      expect(interfaces[0].disabled).toBe(false);
+      expect(interfaces[1].type).toBe('sfp');
+      expect(interfaces[1].disabled).toBe(true);
+    });
+
+    it('setInterfaceDisabled deshabilita o habilita una interfaz', async () => {
+      http.patch.mockResolvedValue({ data: {} });
+
+      await client.setInterfaceDisabled('*1', true);
+
+      expect(http.patch).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/*1',
+        { disabled: 'true' },
+        expect.anything(),
+      );
+    });
+
+    it('createIpPool crea un pool con rangos', async () => {
+      http.put.mockResolvedValue({ data: { '.id': '*P1', name: 'pool-test', ranges: '10.50.0.10-10.50.0.100' } });
+
+      const pool = await client.createIpPool('pool-test', '10.50.0.10-10.50.0.100');
+
+      expect(pool.id).toBe('*P1');
+      expect(pool.name).toBe('pool-test');
+      expect(pool.ranges).toBe('10.50.0.10-10.50.0.100');
+    });
+
+    it('getDhcpLeases mapea leases dinámicas y estáticas', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*L1', address: '10.20.0.50', 'mac-address': 'AA:BB:CC:DD:EE:FF', server: 'dhcp-vlan200', dynamic: 'true', status: 'bound' },
+        ],
+      });
+
+      const leases = await client.getDhcpLeases();
+
+      expect(leases).toHaveLength(1);
+      expect(leases[0].address).toBe('10.20.0.50');
+      expect(leases[0].dynamic).toBe(true);
+    });
+
+    it('makeDhcpLeaseStatic invoca make-static en RouterOS', async () => {
+      http.post.mockResolvedValue({ data: {} });
+
+      await client.makeDhcpLeaseStatic('*L1', 'Reserva cliente VIP');
+
+      expect(http.post).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/lease/make-static',
+        { numbers: '*L1' },
+        expect.anything(),
+      );
+    });
+
+    it('deleteDhcpLease elimina la concesión por id', async () => {
+      http.delete.mockResolvedValue({ data: {} });
+
+      await client.deleteDhcpLease('*L1');
+
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/dhcp-server/lease/*L1',
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('Fase 4: Simple Queues', () => {
+    it('getSimpleQueues lista colas de abonados', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*Q1', name: 'queue-cli1', target: '10.20.0.50/32', 'max-limit': '50M/50M', disabled: 'false' },
+        ],
+      });
+
+      const queues = await client.getSimpleQueues();
+
+      expect(queues).toHaveLength(1);
+      expect(queues[0].name).toBe('queue-cli1');
+      expect(queues[0].target).toBe('10.20.0.50/32');
+      expect(queues[0].maxLimit).toBe('50M/50M');
+    });
+  });
+
+  describe('Fase 5: Seguridad y Logs', () => {
+    it('ensureAddressListEntry agrega IP si no existe previamente', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      http.put.mockResolvedValue({ data: {} });
+
+      await client.ensureAddressListEntry('sumtech-management-ips', '10.254.1.0/24', 'Wireguard subnet');
+
+      expect(http.put).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/firewall/address-list',
+        { list: 'sumtech-management-ips', address: '10.254.1.0/24', comment: 'Wireguard subnet' },
+        expect.anything(),
+      );
+    });
+
+    it('removeAddressListEntriesByComment elimina todas las entradas que coinciden con el comentario', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*A1', comment: 'sumtech-lockdown-test' },
+          { '.id': '*A2', comment: 'otro-comentario' },
+        ],
+      });
+      http.delete.mockResolvedValue({ data: {} });
+
+      await client.removeAddressListEntriesByComment('sumtech-lockdown-test');
+
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/firewall/address-list/*A1',
+        expect.anything(),
+      );
+      expect(http.delete).not.toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/firewall/address-list/*A2',
+        expect.anything(),
+      );
+    });
+
+    it('getRouterLogs obtiene buffer de logs ordenado de más reciente a más antiguo', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*1', time: '10:00:00', topics: 'system,info', message: 'login failure' },
+          { '.id': '*2', time: '10:01:00', topics: 'pppoe,info', message: 'user connected' },
+        ],
+      });
+
+      const logs = await client.getRouterLogs();
+
+      expect(logs).toHaveLength(2);
+      expect(logs[0].message).toBe('user connected'); // Más reciente primero
     });
   });
 });

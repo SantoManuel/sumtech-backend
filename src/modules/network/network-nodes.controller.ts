@@ -142,6 +142,16 @@ export class NetworkNodesController {
     return this.pppManagementService.getNodeActiveSessions(id);
   }
 
+  @Delete(':id/ppp/active/:username')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async disconnectNodeActiveSession(
+    @Param('id') id: string,
+    @Param('username') username: string,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.pppManagementService.disconnectNodeActiveSession(id, username, userId);
+  }
+
   @Post(':id/ppp/sync-profiles')
   @Roles(Role.ADMIN, Role.GERENTE)
   async syncCatalogProfiles(
@@ -298,6 +308,160 @@ export class NetworkNodesController {
   @Roles(Role.ADMIN, Role.GERENTE)
   async getPortalStatus(@Param('id') id: string) {
     return this.portalManagerService.getPortalStatus(id);
+  }
+
+  // --- FASE 2: RESPALDOS Y ACTUALIZACIONES ROUTEROS ---
+
+  @Post(':id/backups/download')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async downloadBackup(
+    @Param('id') id: string,
+    @Body() options: { type: 'BINARY' | 'RSC'; password?: string },
+    @Res() res: Response,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    const result = await this.infrastructureService.generateAndDownloadBackup(
+      id,
+      options || { type: 'RSC' },
+      userId,
+    );
+    res.set({
+      'Content-Type': result.contentType,
+      'Content-Disposition': `attachment; filename="${result.filename}"`,
+      'Content-Length': result.buffer.length,
+    });
+    res.end(result.buffer);
+  }
+
+  @Get(':id/routeros-updates')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getRouterOsUpdates(@Param('id') id: string) {
+    return this.infrastructureService.getRouterOsUpdates(id);
+  }
+
+  // --- FASE 3: INTERFACES FÍSICAS, POOLS Y LEASES DHCP ---
+
+  @Get(':id/interfaces')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeInterfaces(@Param('id') id: string) {
+    return this.infrastructureService.getInterfaces(id);
+  }
+
+  @Patch(':id/interfaces/:name')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async setNodeInterfaceDisabled(
+    @Param('id') id: string,
+    @Param('name') name: string,
+    @Body() body: { disabled: boolean },
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.infrastructureService.setInterfaceDisabled(id, name, body.disabled, userId);
+  }
+
+  @Post(':id/ppp/pools')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async createNodeIpPool(
+    @Param('id') id: string,
+    @Body() body: { name: string; ranges: string },
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.pppManagementService.createNodeIpPool(id, body, userId);
+  }
+
+  @Patch(':id/ppp/pools/:poolId')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async updateNodeIpPool(
+    @Param('id') id: string,
+    @Param('poolId') poolId: string,
+    @Body() body: { ranges: string },
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.pppManagementService.updateNodeIpPool(id, poolId, body, userId);
+  }
+
+  @Delete(':id/ppp/pools/:poolId')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async deleteNodeIpPool(
+    @Param('id') id: string,
+    @Param('poolId') poolId: string,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.pppManagementService.deleteNodeIpPool(id, poolId, userId);
+  }
+
+  @Get(':id/dhcp/leases')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeDhcpLeases(@Param('id') id: string) {
+    return this.infrastructureService.getDhcpLeases(id);
+  }
+
+  @Post(':id/dhcp/leases/:leaseId/make-static')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async makeNodeDhcpLeaseStatic(
+    @Param('id') id: string,
+    @Param('leaseId') leaseId: string,
+    @Body() body?: { comment?: string },
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.infrastructureService.makeDhcpLeaseStatic(id, leaseId, body?.comment, userId);
+  }
+
+  @Delete(':id/dhcp/leases/:leaseId')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async deleteNodeDhcpLease(
+    @Param('id') id: string,
+    @Param('leaseId') leaseId: string,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.infrastructureService.deleteDhcpLease(id, leaseId, userId);
+  }
+
+  // --- FASE 4: ANCHO DE BANDA AVANZADO (SIMPLE QUEUES) ---
+
+  @Get(':id/queues')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeSimpleQueues(@Param('id') id: string) {
+    return this.infrastructureService.getSimpleQueues(id);
+  }
+
+  // --- FASE 5: SEGURIDAD, PLANTILLAS FIREWALL Y LOGS EN VIVO ---
+
+  @Post(':id/security/lockdown')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async applySecurityLockdown(
+    @Param('id') id: string,
+    @Body() body?: { allowedIps?: string[] },
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.infrastructureService.applySecurityLockdown(id, body?.allowedIps || [], userId);
+  }
+
+  @Delete(':id/security/lockdown')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async removeSecurityLockdown(
+    @Param('id') id: string,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.infrastructureService.removeSecurityLockdown(id, userId);
+  }
+
+  @Post(':id/security/anti-abuse')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async applyAntiAbuseTemplate(
+    @Param('id') id: string,
+    @Body() body: { template: 'BLOCK_SMTP_PORT25' | 'CLIENT_ISOLATION'; enabled: boolean },
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.infrastructureService.applyAntiAbuseTemplate(id, body.template, body.enabled, userId);
+  }
+
+  @Get(':id/routeros-logs')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeRouterOsLogs(
+    @Param('id') id: string,
+    @Query('topics') topics?: string,
+  ) {
+    return this.infrastructureService.getRouterOsLogs(id, topics);
   }
 
   @Patch(':id/deactivate')

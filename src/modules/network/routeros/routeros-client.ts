@@ -154,8 +154,12 @@ export interface RouterOsDhcpLease {
   address: string;
   macAddress: string;
   server: string;
+  hostName?: string;
+  status?: string;
+  dynamic?: boolean;
   disabled: boolean;
   comment?: string;
+  lastSeen?: string;
 }
 
 export interface RouterOsSimpleQueue {
@@ -163,7 +167,37 @@ export interface RouterOsSimpleQueue {
   name: string;
   target: string;
   maxLimit: string;
+  rate?: string;
+  bytes?: string;
+  packets?: string;
   disabled: boolean;
+  comment?: string;
+}
+
+export interface RouterOsUpdateInfo {
+  channel: string;
+  installedVersion: string;
+  latestVersion: string;
+  status: string;
+  updateAvailable: boolean;
+}
+
+export interface RouterOsInterfaceItem {
+  id: string;
+  name: string;
+  type: string;
+  running: boolean;
+  disabled: boolean;
+  macAddress?: string;
+  mtu?: number;
+  comment?: string;
+}
+
+export interface RouterOsLogEntry {
+  id: string;
+  time: string;
+  topics: string;
+  message: string;
 }
 
 export interface RouterOsDhcpOption {
@@ -221,7 +255,7 @@ export class RouterOsClient {
 
   constructor(
     private readonly config: RouterOsClientConfig,
-    private readonly http: Pick<AxiosInstance, 'get' | 'put' | 'patch' | 'delete'> = axios,
+    private readonly http: Pick<AxiosInstance, 'get' | 'post' | 'put' | 'patch' | 'delete'> = axios,
   ) {}
 
   async testConnection(): Promise<RouterOsConnectionResult> {
@@ -1639,6 +1673,423 @@ export class RouterOsClient {
     } catch (error) {
       throw new Error(this.describeError(error));
     }
+  }
+
+  // --- FASE 2: RESPALDOS Y ACTUALIZACIONES ROUTEROS ---
+
+  /**
+   * Genera un respaldo binario completo (.backup) en RouterOS.
+   */
+  async createBackup(name: string, password?: string): Promise<string> {
+    const payload: Record<string, string> = { name };
+    if (password) {
+      payload.password = password;
+    }
+    try {
+      await this.http.post(this.buildUrl('system/backup/save'), payload, this.buildRequestConfig());
+      return name.endsWith('.backup') ? name : `${name}.backup`;
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Genera una exportación de configuración en texto plano (.rsc).
+   */
+  async exportConfig(file: string, showSensitive = false): Promise<string> {
+    const payload: Record<string, string> = { file };
+    if (showSensitive) {
+      payload['show-sensitive'] = '';
+    }
+    try {
+      await this.http.post(this.buildUrl('export'), payload, this.buildRequestConfig());
+      return file.endsWith('.rsc') ? file : `${file}.rsc`;
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Lee un archivo generado en RouterOS en bloques (chunks) de 32KB usando /rest/file/read.
+   */
+  async readFileChunks(filename: string): Promise<Buffer> {
+    const chunkSize = 32768;
+    let offset = 0;
+    const chunks: Buffer[] = [];
+
+    while (true) {
+      try {
+        const response = await this.http.post(
+          this.buildUrl('file/read'),
+          {
+            file: filename,
+            'chunk-size': String(chunkSize),
+            offset: String(offset),
+          },
+          this.buildRequestConfig(),
+        );
+
+        let data = '';
+        if (Array.isArray(response.data) && response.data.length > 0) {
+          data = response.data[0]?.data ?? '';
+        } else if (response.data && typeof response.data.data === 'string') {
+          data = response.data.data;
+        }
+
+        if (!data || data.length === 0) {
+          break;
+        }
+
+        const bufferChunk = Buffer.from(data, 'binary');
+        chunks.push(bufferChunk);
+        offset += bufferChunk.length;
+
+        if (bufferChunk.length < chunkSize) {
+          break;
+        }
+      } catch (error) {
+        if (chunks.length > 0) {
+          break;
+        }
+        throw new Error(this.describeError(error));
+      }
+    }
+
+    if (chunks.length === 0) {
+      throw new Error(`El archivo "${filename}" en RouterOS está vacío o no pudo ser leído.`);
+    }
+
+    return Buffer.concat(chunks);
+  }
+
+  /**
+   * Elimina un archivo temporal de RouterOS para no saturar el almacenamiento flash.
+   */
+  async deleteFile(filename: string): Promise<void> {
+    try {
+      const response = await this.http.get(this.buildUrl('file'), {
+        ...this.buildRequestConfig(),
+        params: { name: filename },
+      });
+      const files = Array.isArray(response.data) ? response.data : [];
+      const match = files.find((f: any) => f?.name === filename || f?.name?.endsWith(filename));
+      const targetId = match?.['.id'] || filename;
+
+      await this.http.delete(this.buildUrl(`file/${encodeURIComponent(targetId)}`), this.buildRequestConfig());
+    } catch {
+      // Si falla el borrado del archivo temporal no bloqueamos el flujo principal
+    }
+  }
+
+  /**
+   * Comprueba si hay actualizaciones disponibles de RouterOS (/system/package/update).
+   */
+  async checkPackageUpdates(): Promise<RouterOsUpdateInfo> {
+    try {
+      let checkResponse: any;
+      try {
+        checkResponse = await this.http.post(
+          this.buildUrl('system/package/update/check-for-updates'),
+          {},
+          this.buildRequestConfig(),
+        );
+      } catch {
+        checkResponse = await this.http.get(this.buildUrl('system/package/update'), this.buildRequestConfig());
+      }
+
+      const raw = Array.isArray(checkResponse?.data) ? checkResponse.data[0] : checkResponse?.data || {};
+      const installed = raw?.['installed-version'] || raw?.installedVersion || '';
+      const latest = raw?.['latest-version'] || raw?.latestVersion || installed;
+      const channel = raw?.channel || 'stable';
+      const status = raw?.status || 'Sin novedades';
+      const updateAvailable = Boolean(latest && installed && latest !== installed);
+
+      return {
+        channel,
+        installedVersion: installed,
+        latestVersion: latest,
+        status,
+        updateAvailable,
+      };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  // --- FASE 3: INTERFACES FÍSICAS, POOLS Y LEASES DHCP ---
+
+  /**
+   * Obtiene la lista de interfaces físicas y lógicas (/interface).
+   */
+  async getInterfaces(): Promise<RouterOsInterfaceItem[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('interface'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'] || '',
+      name: entry.name || '',
+      type: entry.type || 'ether',
+      running: entry.running === true || entry.running === 'true',
+      disabled: entry.disabled === true || entry.disabled === 'true',
+      macAddress: entry['mac-address'],
+      mtu: entry.mtu ? parseInt(entry.mtu, 10) : undefined,
+      comment: entry.comment,
+    }));
+  }
+
+  /**
+   * Habilita o deshabilita una interfaz en RouterOS.
+   */
+  async setInterfaceDisabled(nameOrId: string, disabled: boolean): Promise<void> {
+    try {
+      let targetId = nameOrId;
+      if (!nameOrId.startsWith('*')) {
+        const response = await this.http.get(this.buildUrl('interface'), {
+          ...this.buildRequestConfig(),
+          params: { name: nameOrId },
+        });
+        const results = Array.isArray(response.data) ? response.data : [];
+        const match = results.find((i: any) => i?.name === nameOrId);
+        if (match?.['.id']) {
+          targetId = match['.id'];
+        }
+      }
+
+      await this.http.patch(
+        this.buildUrl(`interface/${encodeURIComponent(targetId)}`),
+        { disabled: disabled ? 'true' : 'false' },
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Crea un pool de IPs desacoplado (/ip/pool).
+   */
+  async createIpPool(name: string, ranges: string): Promise<RouterOsIpPool> {
+    try {
+      const response = await this.http.put(this.buildUrl('ip/pool'), { name, ranges }, this.buildRequestConfig());
+      const data = response.data;
+      return { id: data?.['.id'] || '', name: data?.name || name, ranges: data?.ranges || ranges };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Actualiza los rangos de un pool de IPs (/ip/pool).
+   */
+  async updateIpPool(id: string, ranges: string): Promise<RouterOsIpPool> {
+    try {
+      await this.http.patch(
+        this.buildUrl(`ip/pool/${encodeURIComponent(id)}`),
+        { ranges },
+        this.buildRequestConfig(),
+      );
+      return { id, name: '', ranges };
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Elimina un pool de IPs (/ip/pool).
+   */
+  async deleteIpPool(id: string): Promise<void> {
+    try {
+      await this.http.delete(this.buildUrl(`ip/pool/${encodeURIComponent(id)}`), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Obtiene la lista de concesiones DHCP activas y estáticas (/ip/dhcp-server/lease).
+   */
+  async getDhcpLeases(): Promise<RouterOsDhcpLease[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/dhcp-server/lease'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'] || '',
+      address: entry.address || '',
+      macAddress: entry['mac-address'] || '',
+      server: entry.server || '',
+      hostName: entry['host-name'],
+      status: entry.status || (entry.dynamic === true || entry.dynamic === 'true' ? 'bound' : 'static'),
+      dynamic: entry.dynamic === true || entry.dynamic === 'true',
+      disabled: entry.disabled === true || entry.disabled === 'true',
+      comment: entry.comment,
+      lastSeen: entry['last-seen'],
+    }));
+  }
+
+  /**
+   * Convierte una concesión dinámica en estática en RouterOS.
+   */
+  async makeDhcpLeaseStatic(leaseId: string, comment?: string): Promise<void> {
+    try {
+      try {
+        await this.http.post(
+          this.buildUrl('ip/dhcp-server/lease/make-static'),
+          { numbers: leaseId },
+          this.buildRequestConfig(),
+        );
+      } catch {
+        await this.http.patch(
+          this.buildUrl(`ip/dhcp-server/lease/${encodeURIComponent(leaseId)}`),
+          { ...(comment ? { comment } : {}) },
+          this.buildRequestConfig(),
+        );
+      }
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Elimina una concesión DHCP (/ip/dhcp-server/lease).
+   */
+  async deleteDhcpLease(leaseId: string): Promise<void> {
+    try {
+      await this.http.delete(
+        this.buildUrl(`ip/dhcp-server/lease/${encodeURIComponent(leaseId)}`),
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  // --- FASE 4: ANCHO DE BANDA AVANZADO Y SIMPLE QUEUES ---
+
+  /**
+   * Consulta las colas simples activas en el router (/queue/simple).
+   */
+  async getSimpleQueues(): Promise<RouterOsSimpleQueue[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('queue/simple'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'] || '',
+      name: entry.name || '',
+      target: entry.target || '',
+      maxLimit: entry['max-limit'] || '',
+      rate: entry.rate,
+      bytes: entry.bytes,
+      packets: entry.packets,
+      disabled: entry.disabled === true || entry.disabled === 'true',
+      comment: entry.comment,
+    }));
+  }
+
+  // --- FASE 5: SEGURIDAD, PLANTILLAS FIREWALL Y LOGS EN VIVO ---
+
+  /**
+   * Asegura una entrada en /ip/firewall/address-list (idempotente).
+   */
+  async ensureAddressListEntry(list: string, address: string, comment?: string): Promise<void> {
+    try {
+      const response = await this.http.get(this.buildUrl('ip/firewall/address-list'), {
+        ...this.buildRequestConfig(),
+        params: { list, address },
+      });
+      const results = Array.isArray(response.data) ? response.data : [];
+      const match = results.find((e: any) => e?.list === list && e?.address === address);
+      if (match) {
+        return;
+      }
+      await this.http.put(
+        this.buildUrl('ip/firewall/address-list'),
+        { list, address, ...(comment ? { comment } : {}) },
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Remueve entradas de una address-list por su comentario.
+   */
+  async removeAddressListEntriesByComment(comment: string): Promise<void> {
+    try {
+      const response = await this.http.get(this.buildUrl('ip/firewall/address-list'), this.buildRequestConfig());
+      const results = Array.isArray(response.data) ? response.data : [];
+      const matches = results.filter((e: any) => e?.comment === comment);
+      for (const match of matches) {
+        if (match['.id']) {
+          await this.http.delete(
+            this.buildUrl(`ip/firewall/address-list/${encodeURIComponent(match['.id'])}`),
+            this.buildRequestConfig(),
+          );
+        }
+      }
+    } catch {
+      // Ignorar si no existe
+    }
+  }
+
+  /**
+   * Remueve reglas del firewall filter por su comentario.
+   */
+  async removeFilterRulesByComment(comment: string): Promise<void> {
+    try {
+      const response = await this.http.get(this.buildUrl('ip/firewall/filter'), this.buildRequestConfig());
+      const results = Array.isArray(response.data) ? response.data : [];
+      const matches = results.filter((r: any) => r?.comment === comment);
+      for (const match of matches) {
+        if (match['.id']) {
+          await this.http.delete(
+            this.buildUrl(`ip/firewall/filter/${encodeURIComponent(match['.id'])}`),
+            this.buildRequestConfig(),
+          );
+        }
+      }
+    } catch {
+      // Ignorar si no existe
+    }
+  }
+
+  /**
+   * Consulta el buffer de logs en vivo de RouterOS (/log).
+   */
+  async getRouterLogs(topics?: string): Promise<RouterOsLogEntry[]> {
+    let response;
+    try {
+      const params: Record<string, string> = {};
+      if (topics) {
+        params.topics = topics;
+      }
+      response = await this.http.get(this.buildUrl('log'), {
+        ...this.buildRequestConfig(),
+        params,
+      });
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    const mapped = results.map((entry: any) => ({
+      id: entry['.id'] || '',
+      time: entry.time || '',
+      topics: entry.topics || '',
+      message: entry.message || '',
+    }));
+    return mapped.slice(-150).reverse();
   }
 
   private buildUrl(resourcePath: string): string {
