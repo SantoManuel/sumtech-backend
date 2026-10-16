@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Cron } from '@nestjs/schedule';
 import { Repository, LessThan, MoreThanOrEqual } from 'typeorm';
 import axios from 'axios';
 import { OltEntity } from '../entities/olt.entity';
@@ -9,6 +10,7 @@ import { CompanyProfileEntity } from '../../company/entities/company-profile.ent
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
+import { TenantIteratorService } from '../../../common/tenancy/tenant-iterator.service';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import {
   IOltDriver,
@@ -33,6 +35,7 @@ export class OltMonitoringService {
     private readonly nodeRepository: Repository<NetworkNodeEntity>,
     private readonly reachabilityResolver: ReachabilityResolver,
     private readonly driverRegistry: OltDriverRegistry,
+    private readonly tenantIterator: TenantIteratorService,
   ) {}
 
   /**
@@ -183,14 +186,50 @@ export class OltMonitoringService {
       );
     }
 
-    // Limpieza de métricas con más de 30 días de antigüedad
+    return saved;
+  }
+
+  /**
+   * Borra métricas con más de 30 días de antigüedad. Antes se ejecutaba
+   * dentro de `collectAndRecordMetrics()` -- un DELETE global (no filtrado
+   * por OLT) en CADA muestra individual, redundante cuando hay varias OLTs o
+   * llamadas seguidas. Ahora se ejecuta una sola vez por ciclo del cron de
+   * sondeo periódico (ver `handleScheduledMetricsPolling`).
+   */
+  private async cleanupOldMetrics(): Promise<void> {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     await this.metricRepository.delete({
       createdAt: LessThan(thirtyDaysAgo),
     });
+  }
 
-    return saved;
+  /**
+   * Sondeo periódico de telemetría OLT cada 15 minutos. Antes de esto, una
+   * fila de `net.olt_metrics` SOLO se creaba cuando un humano abría el modal
+   * de monitoreo (primera carga) o apretaba "Refrescar" -- la pestaña
+   * "Histórico (7 días)" nunca tenía una serie de tiempo real, solo los
+   * puntos dispersos que alguien hubiera generado manualmente. Mismo patrón
+   * que DeviceHealthService.handleScheduledHealthChecks(): una OLT caída o
+   * inalcanzable no debe abortar el sondeo del resto.
+   */
+  @Cron('0 */15 * * * *')
+  async handleScheduledMetricsPolling(): Promise<void> {
+    await this.tenantIterator.runForEachActiveTenant('olt-metrics-poll', async () => {
+      const olts = await this.oltRepository.find({ where: { isActive: true } });
+      if (olts.length === 0) return;
+
+      this.logger.log(`Sondeo periódico de telemetría OLT para ${olts.length} OLT(s)...`);
+      for (const olt of olts) {
+        try {
+          await this.collectAndRecordMetrics(olt.id);
+        } catch (err: any) {
+          this.logger.warn(`Sondeo periódico falló para OLT "${olt.name}": ${err.message}`);
+        }
+      }
+
+      await this.cleanupOldMetrics();
+    });
   }
 
   /**

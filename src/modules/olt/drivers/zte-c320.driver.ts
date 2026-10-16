@@ -605,6 +605,10 @@ export class ZteC320Driver implements IOltDriver {
       alarms: false,
     };
   }
+
+  getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>> {
+    return {};
+  }
 }
 
 /**

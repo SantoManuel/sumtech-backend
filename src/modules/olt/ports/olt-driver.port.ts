@@ -231,5 +231,13 @@ export interface IOltDriver {
   getAlarms(params: OltConnectionParams): Promise<OltAlarm[]>;
   generateAuthorizationScript(config: AuthorizeOnuParams): string[];
   getCapabilities(): OltDriverCapabilities;
+  /**
+   * Motivo específico por el que una capability está en `false`, cuando se
+   * conoce (ej. "este modelo no tiene chasis modular"). Una capability sin
+   * entrada aquí simplemente no tiene evidencia real todavía (el caso común:
+   * "no implementado", no "no aplica") -- el llamador debe caer al mensaje
+   * genérico en ese caso. Nunca se usa para capabilities en `true`.
+   */
+  getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>>;
 }
 

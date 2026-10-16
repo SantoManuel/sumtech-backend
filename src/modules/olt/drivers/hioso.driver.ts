@@ -729,6 +729,12 @@ export class HiosoDriver implements IOltDriver {
       alarms: true,
     };
   }
+
+  getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>> {
+    return {
+      chassisCards: 'Este equipo (HAT7304VXD-ADC) es una unidad EPON compacta de 4 puertos, sin chasis modular ni tarjetas intercambiables -- esta sección no aplica a este modelo.',
+    };
+  }
 }
 
 /**

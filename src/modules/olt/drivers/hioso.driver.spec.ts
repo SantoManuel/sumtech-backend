@@ -37,6 +37,12 @@ describe('HiosoDriver', () => {
     });
   });
 
+  it('getCapabilityNotes() explica chassisCards como "no aplica" (hardware sin chasis modular), no como "falta implementar"', () => {
+    const notes = driver.getCapabilityNotes();
+    expect(notes.chassisCards).toMatch(/sin chasis modular/i);
+    expect(Object.keys(notes)).toEqual(['chassisCards']);
+  });
+
   it('devuelve ok:false con mensaje legible si el host OLT no es alcanzable', async () => {
     const result = await driver.testConnection({
       host: '192.0.2.1',

@@ -92,6 +92,10 @@ export class HsgqDriver implements IOltDriver {
     throw new DriverNotImplementedError(VENDOR, 'getAlarms');
   }
 
+  getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>> {
+    return {};
+  }
+
   generateAuthorizationScript(config: AuthorizeOnuParams): string[] {
     throw new DriverNotImplementedError(VENDOR, 'generateAuthorizationScript');
   }

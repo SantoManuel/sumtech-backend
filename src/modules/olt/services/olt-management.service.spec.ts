@@ -102,6 +102,7 @@ describe('OltManagementService', () => {
         onuAdminState: true,
         onuDelete: true,
       }),
+      getCapabilityNotes: jest.fn().mockReturnValue({}),
       constructor: { name: 'ZteC320Driver' },
     };
     driverRegistry = {
@@ -315,6 +316,24 @@ describe('OltManagementService', () => {
       expect((olt as any).capabilities).toEqual(
         expect.objectContaining({ testConnection: true, onuAuthorize: true }),
       );
+    });
+
+    it('findById adjunta capabilityNotes del driver (motivo real de un "false", ej. sin chasis modular)', async () => {
+      zteDriver.getCapabilityNotes.mockReturnValue({ chassisCards: 'Sin chasis modular en este hardware.' });
+
+      const olt = await service.findById('olt-1');
+
+      expect((olt as any).capabilityNotes).toEqual({ chassisCards: 'Sin chasis modular en este hardware.' });
+    });
+
+    it('capabilityNotes queda vacío si el vendor no es reconocido (mismo fallback que capabilities)', async () => {
+      driverRegistry.resolve.mockImplementation(() => {
+        throw new UnknownOltVendorError('MARCA-DESCONOCIDA');
+      });
+
+      const olt = await service.findById('olt-1');
+
+      expect((olt as any).capabilityNotes).toEqual({});
     });
 
     it('nunca ejecuta testConnection del driver si el vendor no es reconocido', async () => {

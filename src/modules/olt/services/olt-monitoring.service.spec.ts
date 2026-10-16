@@ -7,6 +7,7 @@ import { OnuEntity } from '../entities/onu.entity';
 import { CompanyProfileEntity } from '../../company/entities/company-profile.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { TenantIteratorService } from '../../../common/tenancy/tenant-iterator.service';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { NO_DRIVER_CAPABILITIES } from '../ports/olt-driver.port';
@@ -16,6 +17,7 @@ describe('OltMonitoringService', () => {
 
   const mockOltRepo = {
     findOne: jest.fn(),
+    find: jest.fn(),
   };
 
   const mockMetricRepo = {
@@ -45,6 +47,10 @@ describe('OltMonitoringService', () => {
     resolve: jest.fn(),
   };
 
+  const mockTenantIterator = {
+    runForEachActiveTenant: jest.fn().mockImplementation((_label: string, fn: () => Promise<void>) => fn()),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -58,6 +64,7 @@ describe('OltMonitoringService', () => {
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: mockNodeRepo },
         { provide: ReachabilityResolver, useValue: mockReachability },
         { provide: OltDriverRegistry, useValue: mockDriverRegistry },
+        { provide: TenantIteratorService, useValue: mockTenantIterator },
       ],
     }).compile();
 
@@ -102,7 +109,10 @@ describe('OltMonitoringService', () => {
     expect(metric.alarmsInfo).toEqual([]);
     expect(metric.rawTelemetry.ponInterfacesCount).toBe(4);
     expect(mockMetricRepo.save).toHaveBeenCalled();
-    expect(mockMetricRepo.delete).toHaveBeenCalled();
+    // La limpieza de métricas viejas ya NO corre por cada muestra individual
+    // -- se movió a `cleanupOldMetrics()`, ejecutada una sola vez por ciclo
+    // del cron de sondeo periódico (ver describe "handleScheduledMetricsPolling").
+    expect(mockMetricRepo.delete).not.toHaveBeenCalled();
   });
 
   it('usa los valores reales devueltos por el driver cuando systemHealth/chassisCards sí están implementados', async () => {
@@ -249,5 +259,60 @@ describe('OltMonitoringService', () => {
     const history = await service.getMetricsHistory('olt-1', 24);
     expect(history).toHaveLength(2);
     expect(mockMetricRepo.find).toHaveBeenCalled();
+  });
+
+  describe('handleScheduledMetricsPolling (sondeo periódico)', () => {
+    it('recorre tenants activos y sondea cada OLT activa, una limpieza al final del ciclo', async () => {
+      mockOltRepo.find.mockResolvedValue([
+        { ...baseOlt, id: 'olt-1', name: 'OLT 1' },
+        { ...baseOlt, id: 'olt-2', name: 'OLT 2' },
+      ]);
+      mockOltRepo.findOne.mockResolvedValue({ ...baseOlt });
+      mockOnuRepo.count.mockResolvedValue(0);
+      mockCompanyRepo.findOne.mockResolvedValue({ telegramAlertsEnabled: false });
+      mockDriverRegistry.resolve.mockReturnValue({
+        getCapabilities: () => ({ ...NO_DRIVER_CAPABILITIES }),
+        getSystemHealth: jest.fn(),
+        getCards: jest.fn(),
+      });
+
+      await service.handleScheduledMetricsPolling();
+
+      expect(mockTenantIterator.runForEachActiveTenant).toHaveBeenCalledWith('olt-metrics-poll', expect.any(Function));
+      expect(mockOltRepo.find).toHaveBeenCalledWith({ where: { isActive: true } });
+      expect(mockMetricRepo.save).toHaveBeenCalledTimes(2);
+      expect(mockMetricRepo.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it('una OLT que falla no aborta el sondeo del resto', async () => {
+      mockOltRepo.find.mockResolvedValue([
+        { ...baseOlt, id: 'olt-bad', name: 'OLT Caída' },
+        { ...baseOlt, id: 'olt-ok', name: 'OLT OK' },
+      ]);
+      mockOltRepo.findOne
+        .mockRejectedValueOnce(new Error('Timeout Telnet'))
+        .mockResolvedValueOnce({ ...baseOlt });
+      mockOnuRepo.count.mockResolvedValue(0);
+      mockCompanyRepo.findOne.mockResolvedValue({ telegramAlertsEnabled: false });
+      mockDriverRegistry.resolve.mockReturnValue({
+        getCapabilities: () => ({ ...NO_DRIVER_CAPABILITIES }),
+        getSystemHealth: jest.fn(),
+        getCards: jest.fn(),
+      });
+
+      await expect(service.handleScheduledMetricsPolling()).resolves.not.toThrow();
+
+      expect(mockMetricRepo.save).toHaveBeenCalledTimes(1);
+      expect(mockMetricRepo.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it('no hace nada si no hay OLTs activas en el tenant (y no ejecuta limpieza)', async () => {
+      mockOltRepo.find.mockResolvedValue([]);
+
+      await service.handleScheduledMetricsPolling();
+
+      expect(mockMetricRepo.save).not.toHaveBeenCalled();
+      expect(mockMetricRepo.delete).not.toHaveBeenCalled();
+    });
   });
 });

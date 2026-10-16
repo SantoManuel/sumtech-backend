@@ -164,14 +164,20 @@ export class OltManagementService {
     }
   }
 
-  private attachCapabilities<T extends OltEntity>(olt: T): T & { capabilities: OltDriverCapabilities } {
+  private attachCapabilities<T extends OltEntity>(
+    olt: T,
+  ): T & { capabilities: OltDriverCapabilities; capabilityNotes: Partial<Record<keyof OltDriverCapabilities, string>> } {
     let capabilities: OltDriverCapabilities;
+    let capabilityNotes: Partial<Record<keyof OltDriverCapabilities, string>>;
     try {
-      capabilities = this.driverRegistry.resolve(olt.vendor).getCapabilities();
+      const driver = this.driverRegistry.resolve(olt.vendor);
+      capabilities = driver.getCapabilities();
+      capabilityNotes = driver.getCapabilityNotes();
     } catch {
       capabilities = { ...NO_DRIVER_CAPABILITIES };
+      capabilityNotes = {};
     }
-    return Object.assign(olt, { capabilities });
+    return Object.assign(olt, { capabilities, capabilityNotes });
   }
 
   async create(dto: any, actorUserId?: string) {
