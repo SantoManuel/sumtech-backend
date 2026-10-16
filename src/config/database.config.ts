@@ -86,6 +86,9 @@ import { OnuServiceConfigEntity } from '../modules/olt/entities/onu-service-conf
 import { Tr069NetworkEntity } from '../modules/olt/entities/tr069-network.entity';
 import { VlanEntity } from '../modules/olt/entities/vlan.entity';
 import { OltMetricEntity } from '../modules/olt/entities/olt-metric.entity';
+import { OnuOpticalHistoryEntity } from '../modules/olt/entities/onu-optical-history.entity';
+import { NapBoxEntity } from '../modules/network/entities/nap-box.entity';
+import { NapPortEntity } from '../modules/network/entities/nap-port.entity';
 
 export const entities = [
   // geo
@@ -179,6 +182,10 @@ export const entities = [
   Tr069NetworkEntity,
   VlanEntity,
   OltMetricEntity,
+  OnuOpticalHistoryEntity,
+  // ODN (planta externa)
+  NapBoxEntity,
+  NapPortEntity,
 ];
 
 export const databaseConfig = registerAs(
