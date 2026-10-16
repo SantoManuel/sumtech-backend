@@ -18,6 +18,7 @@ import { Role } from '../../common/enums/role.enum';
 import { OnuManagementService } from './services/onu-management.service';
 import { OltPermissionGuard, RequireOltAction, OltIdFrom } from './guards/olt-permission.guard';
 import { ListUnconfiguredOnusDto, ListOnusDto } from './dto/list-onus.dto';
+import { MigrateOnuDto } from './dto/migrate-onu.dto';
 
 @Controller('olt/onus')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -75,6 +76,21 @@ export class OnuController {
   @OltIdFrom('ONU_ID_PARAM')
   async getOpticalTelemetry(@Param('id') id: string) {
     return this.onuService.getOpticalTelemetry(id);
+  }
+
+  /**
+   * Serie temporal histórica de potencia óptica (SmartOLT benchmark Sección 5.3).
+   */
+  @Get(':id/optical-history')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
+  @RequireOltAction('VIEW')
+  @OltIdFrom('ONU_ID_PARAM')
+  async getOpticalHistory(
+    @Param('id') id: string,
+    @Query('days') days?: string,
+  ) {
+    const numDays = days ? parseInt(days, 10) : 30;
+    return this.onuService.getOpticalHistory(id, isNaN(numDays) ? 30 : numDays);
   }
 
   /**
@@ -137,5 +153,21 @@ export class OnuController {
   @OltIdFrom('ONU_ID_PARAM')
   async deleteOnu(@Param('id') id: string, @Req() req: any) {
     return this.onuService.deleteOnu(id, req.user?.id);
+  }
+
+  /**
+   * Migración y reemplazo de hardware de ONU (Benchmark SmartOLT Sección 2).
+   * Reemplaza el equipo manteniendo la asignación de servicio y el contrato.
+   */
+  @Post(':id/migrate')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async migrateOnu(
+    @Param('id') id: string,
+    @Body() dto: MigrateOnuDto,
+    @Req() req: any,
+  ) {
+    return this.onuService.migrateOnu(id, dto, req.user?.id);
   }
 }

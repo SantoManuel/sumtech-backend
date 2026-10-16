@@ -32,7 +32,7 @@ describe('GenieAcsMonitoringService', () => {
     auditRepo = { create: jest.fn((dto: any) => dto), save: jest.fn((entity: any) => Promise.resolve(entity)) };
     contractRepo = { findOneBy: jest.fn().mockResolvedValue({ id: 'contract-1' }) };
     resolver = { resolveForContract: jest.fn() };
-    client = { getDeviceStatus: jest.fn(), rebootDevice: jest.fn() };
+    client = { getDeviceStatus: jest.fn(), rebootDevice: jest.fn(), factoryReset: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -186,6 +186,36 @@ describe('GenieAcsMonitoringService', () => {
 
       expect(auditRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'REBOOT', result: 'ERROR', errorMessage: 'GenieACS respondió con error 500' }),
+      );
+    });
+  });
+
+  describe('factoryResetDevice', () => {
+    it('restablece valores de fábrica, limpia error y audita FACTORY_RESET con éxito', async () => {
+      resolver.resolveForContract.mockResolvedValue(makeDevice());
+      client.factoryReset.mockResolvedValue(undefined);
+
+      await service.factoryResetDevice('contract-1', 'admin-1');
+
+      expect(client.factoryReset).toHaveBeenCalledWith('00259E-ONT-16');
+      expect(deviceRepo.save).toHaveBeenCalledWith(expect.objectContaining({ lastSyncError: null }));
+      expect(auditRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'FACTORY_RESET', actor: 'admin-1', result: 'OK' }),
+      );
+    });
+
+    it('si la restauración falla, audita ERROR y lanza BadGatewayException', async () => {
+      resolver.resolveForContract.mockResolvedValue(makeDevice());
+      client.factoryReset.mockRejectedValue(new Error('CWMP session timeout'));
+
+      await expect(service.factoryResetDevice('contract-1', 'admin-1')).rejects.toThrow(BadGatewayException);
+
+      expect(auditRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'FACTORY_RESET',
+          result: 'ERROR',
+          errorMessage: 'CWMP session timeout',
+        }),
       );
     });
   });

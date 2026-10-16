@@ -110,13 +110,39 @@ export class GenieAcsMonitoringService {
       device.lastRebootAt = new Date();
       device.lastSyncError = null;
       await this.deviceRepository.save(device);
-      await this.recordAudit(contractId, device.genieacsDeviceId, actor, 'OK');
+      await this.recordAudit(contractId, device.genieacsDeviceId, actor, 'OK', undefined, 'REBOOT');
     } catch (error) {
       const message = (error as Error).message;
       device.lastSyncError = message;
       await this.deviceRepository.save(device);
-      await this.recordAudit(contractId, device.genieacsDeviceId, actor, 'ERROR', message);
+      await this.recordAudit(contractId, device.genieacsDeviceId, actor, 'ERROR', message, 'REBOOT');
       throw new BadGatewayException(`No se pudo reiniciar el equipo: ${message}`);
+    }
+  }
+
+  /** Restauración de valores de fábrica remota TR-069 (SmartOLT benchmark Sección 6.3). */
+  async factoryResetDevice(contractId: string, actor: string): Promise<void> {
+    await this.assertContractExists(contractId);
+
+    const device = await this.resolver.resolveForContract(contractId);
+    if (!device || !device.genieacsDeviceId) {
+      throw new NotFoundException('Este contrato todavía no tiene un equipo vinculado a la red.');
+    }
+    if (!this.client) {
+      throw new ServiceUnavailableException('El servicio de gestión de red no está disponible en este momento.');
+    }
+
+    try {
+      await this.client.factoryReset(device.genieacsDeviceId);
+      device.lastSyncError = null;
+      await this.deviceRepository.save(device);
+      await this.recordAudit(contractId, device.genieacsDeviceId, actor, 'OK', undefined, 'FACTORY_RESET');
+    } catch (error) {
+      const message = (error as Error).message;
+      device.lastSyncError = message;
+      await this.deviceRepository.save(device);
+      await this.recordAudit(contractId, device.genieacsDeviceId, actor, 'ERROR', message, 'FACTORY_RESET');
+      throw new BadGatewayException(`No se pudo restaurar de fábrica el equipo: ${message}`);
     }
   }
 
@@ -133,12 +159,13 @@ export class GenieAcsMonitoringService {
     actor: string,
     result: 'OK' | 'ERROR',
     errorMessage?: string,
+    action: 'REBOOT' | 'FACTORY_RESET' = 'REBOOT',
   ): Promise<void> {
     await this.auditRepository.save(
       this.auditRepository.create({
         contractId,
         genieacsDeviceId,
-        action: 'REBOOT',
+        action,
         actor,
         result,
         errorMessage,

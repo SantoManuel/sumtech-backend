@@ -230,6 +230,8 @@ export interface IOltDriver {
   /** Alarmas/eventos reales del equipo (ver `alarms` en OltDriverCapabilities). */
   getAlarms(params: OltConnectionParams): Promise<OltAlarm[]>;
   generateAuthorizationScript(config: AuthorizeOnuParams): string[];
+  getRunningConfig?(params: OltConnectionParams): Promise<string>;
+  getInterfaceTraffic?(params: OltConnectionParams, interfaceName: string): Promise<{ rxKbps: number; txKbps: number; rawBps?: { inputBps: number; outputBps: number } }>;
   getCapabilities(): OltDriverCapabilities;
   /**
    * Motivo específico por el que una capability está en `false`, cuando se

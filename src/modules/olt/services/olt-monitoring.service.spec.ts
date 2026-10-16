@@ -315,4 +315,39 @@ describe('OltMonitoringService', () => {
       expect(mockMetricRepo.delete).not.toHaveBeenCalled();
     });
   });
+
+  describe('sendTestTelegramAlert', () => {
+    it('lanza BadRequestException si las alertas de Telegram no están habilitadas en la empresa', async () => {
+      mockCompanyRepo.findOne.mockResolvedValue({
+        telegramAlertsEnabled: false,
+      });
+
+      await expect(service.sendTestTelegramAlert()).rejects.toThrow();
+    });
+
+    it('lanza BadRequestException si falta configurar bot token o chat ID', async () => {
+      mockCompanyRepo.findOne.mockResolvedValue({
+        telegramAlertsEnabled: true,
+        telegramBotToken: '',
+        telegramChatId: '',
+      });
+
+      await expect(service.sendTestTelegramAlert()).rejects.toThrow();
+    });
+
+    it('envía alerta de prueba y retorna éxito cuando las credenciales están configuradas', async () => {
+      mockCompanyRepo.findOne.mockResolvedValue({
+        telegramAlertsEnabled: true,
+        telegramBotToken: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11',
+        telegramChatId: '-1001234567890',
+      });
+
+      jest.spyOn(service, 'sendTelegramAlert').mockResolvedValue(true);
+
+      const result = await service.sendTestTelegramAlert();
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('exitosa');
+    });
+  });
 });

@@ -712,6 +712,38 @@ export class HiosoDriver implements IOltDriver {
     return `onu ${onuId} bandwidth ${up} ${up} ${upPir} ${DEFAULT_WEIGHT} ${DEFAULT_WEIGHT} ${down} ${down}`;
   }
 
+  async getRunningConfig(params: OltConnectionParams): Promise<string> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return await session.executeCommand('show running-config', 20000);
+    } finally {
+      session.close();
+    }
+  }
+
+  async getInterfaceTraffic(
+    params: OltConnectionParams,
+    interfaceName: string,
+  ): Promise<{ rxKbps: number; txKbps: number; rawBps?: { inputBps: number; outputBps: number } }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const ifaceOutput = await session.executeCommand('show interfaces status');
+      // Buscar la interfaz en el status
+      const rxMatch = ifaceOutput.match(/rx\s*[:=]\s*(\d+)/i);
+      const txMatch = ifaceOutput.match(/tx\s*[:=]\s*(\d+)/i);
+      const rx = rxMatch ? parseInt(rxMatch[1], 10) : 0;
+      const tx = txMatch ? parseInt(txMatch[1], 10) : 0;
+      return {
+        rxKbps: rx,
+        txKbps: tx,
+      };
+    } finally {
+      session.close();
+    }
+  }
+
   getCapabilities(): OltDriverCapabilities {
     return {
       ...NO_DRIVER_CAPABILITIES,

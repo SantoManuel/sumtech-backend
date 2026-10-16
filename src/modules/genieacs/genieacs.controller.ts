@@ -44,6 +44,16 @@ export class GenieAcsController {
     };
   }
 
+  @Post(':contractId/factory-reset')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async factoryReset(@Param('contractId', new ParseUUIDPipe()) contractId: string, @CurrentUser('sub') userId: string) {
+    await this.monitoringService.factoryResetDevice(contractId, userId);
+    return {
+      success: true,
+      message: 'Se envió la orden de restauración de fábrica al equipo. Se restablecerán los parámetros predeterminados.',
+    };
+  }
+
   @Get(':contractId/wifi')
   @Roles(Role.ADMIN, Role.GERENTE)
   async getWifi(@Param('contractId', new ParseUUIDPipe()) contractId: string) {

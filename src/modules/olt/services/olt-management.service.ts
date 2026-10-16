@@ -377,4 +377,89 @@ export class OltManagementService {
 
     return this.ifaceRepository.find({ where: { oltId: olt.id }, order: { name: 'ASC' } });
   }
+
+  async generateBackup(
+    id: string,
+    actorUserId?: string,
+  ): Promise<{ buffer: Buffer; filename: string; contentType: string }> {
+    const olt = await this.findById(id);
+    const interfaces = await this.ifaceRepository.find({ where: { oltId: id }, order: { name: 'ASC' } });
+    const onus = await this.onuRepository.find({ where: { oltId: id }, order: { ponInterface: 'ASC', onuIndex: 'ASC' } });
+
+    let runningConfig = '';
+    try {
+      const driver = this.resolveDriver(olt);
+      if (typeof driver.getRunningConfig === 'function') {
+        const connParams = await this.connectionResolver.resolve(olt);
+        runningConfig = await driver.getRunningConfig(connParams);
+      }
+    } catch (err: any) {
+      this.logger.warn(`No se pudo obtener running-config CLI de la OLT ${olt.name}: ${err?.message}`);
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeOltName = (olt.name || 'olt').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `sumtech_olt_${safeOltName}_${timestamp}.txt`;
+
+    const sections: string[] = [];
+    sections.push('================================================================================');
+    sections.push(` SUMTECH OLT CONFIGURATION BACKUP`);
+    sections.push(` OLT: ${olt.name} (${olt.vendor} ${olt.model || ''})`);
+    sections.push(` IP/Host: ${olt.host}:${olt.port} (Protocolo: ${olt.apiProtocol})`);
+    sections.push(` Firmware Version: ${olt.firmwareVersion || 'N/A'}`);
+    sections.push(` Timestamp: ${new Date().toISOString()}`);
+    sections.push('================================================================================\n');
+
+    sections.push('--- INTERFACES FÍSICAS & PUERTOS PON ---');
+    if (interfaces.length === 0) {
+      sections.push('Ninguna interfaz descubierta.');
+    } else {
+      for (const iface of interfaces) {
+        sections.push(`- ${iface.name} [Tipo: ${iface.type}, Slot: ${iface.slot}, Port: ${iface.port}, Admin: ${iface.adminState}, Oper: ${iface.operState}]`);
+      }
+    }
+    sections.push('');
+
+    sections.push('--- ONUs / ONTs REGISTRADAS ---');
+    if (onus.length === 0) {
+      sections.push('Ninguna ONU registrada en esta OLT.');
+    } else {
+      for (const onu of onus) {
+        sections.push(
+          `- SN: ${onu.serialNumber} | Índice: ${onu.onuIndex || 'N/A'} | Modelo: ${onu.model || 'N/A'} | Estado: ${onu.status}`,
+        );
+      }
+    }
+    sections.push('');
+
+    if (runningConfig.trim().length > 0) {
+      sections.push('--- CLI RUNNING CONFIGURATION DUMP ---');
+      sections.push(runningConfig);
+      sections.push('');
+    }
+
+    const content = sections.join('\n');
+    const buffer = Buffer.from(content, 'utf-8');
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Respaldo de configuración generado y descargado para OLT "${olt.name}".`,
+      actorUserId,
+      rawDetails: {
+        oltId: olt.id,
+        filename,
+        hasRunningConfig: runningConfig.trim().length > 0,
+        interfacesCount: interfaces.length,
+        onusCount: onus.length,
+      },
+    });
+
+    return {
+      buffer,
+      filename,
+      contentType: 'text/plain; charset=utf-8',
+    };
+  }
 }

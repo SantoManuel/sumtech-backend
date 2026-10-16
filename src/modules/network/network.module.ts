@@ -39,6 +39,11 @@ import { OltModule } from '../olt/olt.module';
 import { OltNativeProvisioningAdapter } from './olt-native-provisioning.adapter';
 import { DhcpProvisioningAdapter } from './dhcp-provisioning.adapter';
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
+import { NapBoxEntity } from './entities/nap-box.entity';
+import { NapPortEntity } from './entities/nap-port.entity';
+import { OnuEntity } from '../olt/entities/onu.entity';
+import { NapManagementService } from './services/nap-management.service';
+import { NapController } from './nap.controller';
 
 import { BullModule } from '@nestjs/bullmq';
 import { NETWORK_OPS_QUEUE } from './network-ops.constants';
@@ -59,6 +64,9 @@ import { PendingOperationsController } from './pending-operations.controller';
       ContractEntity,
       PlanEntity,
       VlanEntity,
+      NapBoxEntity,
+      NapPortEntity,
+      OnuEntity,
     ]),
     TypeOrmModule.forFeature([NodePortalRegistryEntity], 'platform'),
     BullModule.registerQueue({ name: NETWORK_OPS_QUEUE }),
@@ -74,6 +82,7 @@ import { PendingOperationsController } from './pending-operations.controller';
     NetworkAccessManagementController,
     NetworkAuditLogController,
     PendingOperationsController,
+    NapController,
   ],
   providers: [
     ZonesService,
@@ -96,6 +105,7 @@ import { PendingOperationsController } from './pending-operations.controller';
     PppManagementService,
     NetworkNodeInfrastructureService,
     SuspensionPortalManagerService,
+    NapManagementService,
   ],
   exports: [
     ZonesService,
@@ -107,6 +117,7 @@ import { PendingOperationsController } from './pending-operations.controller';
     PppManagementService,
     NetworkNodeInfrastructureService,
     SuspensionPortalManagerService,
+    NapManagementService,
   ],
 })
 export class NetworkModule {}

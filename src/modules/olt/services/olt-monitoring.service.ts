@@ -275,6 +275,37 @@ export class OltMonitoringService {
   }
 
   /**
+   * Consulta el tráfico en tiempo real (Rx/Tx) de una interfaz o puerto PON en la OLT.
+   */
+  async getInterfaceRealtimeTraffic(oltId: string, interfaceName: string) {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException(`OLT no encontrada: ${oltId}`);
+
+    try {
+      const driver = this.resolveDriver(olt);
+      if (typeof driver.getInterfaceTraffic === 'function') {
+        const connParams = await this.resolveOltConnectionParams(olt);
+        const traffic = await driver.getInterfaceTraffic(connParams, interfaceName);
+        return {
+          interfaceName,
+          rxKbps: traffic.rxKbps,
+          txKbps: traffic.txKbps,
+          timestamp: new Date().toISOString(),
+        };
+      }
+    } catch (err: any) {
+      this.logger.warn(`Error obteniendo tráfico de interfaz ${interfaceName} en OLT ${olt.name}: ${err.message}`);
+    }
+
+    return {
+      interfaceName,
+      rxKbps: 0,
+      txKbps: 0,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
    * Envía una notificación a Telegram si el tenant tiene configurado el bot y chat.
    */
   async sendTelegramAlert(message: string): Promise<boolean> {
@@ -300,5 +331,39 @@ export class OltMonitoringService {
       this.logger.warn(`[TELEGRAM-ALERT] Error enviando alerta: ${err.message}`);
       return false;
     }
+  }
+
+  /**
+   * Envía una notificación de prueba para validar el bot y chat ID configurados.
+   */
+  async sendTestTelegramAlert(): Promise<{ success: boolean; message: string }> {
+    const company = await this.companyProfileRepository.findOne({ where: {} });
+    if (
+      !company ||
+      !company.telegramAlertsEnabled ||
+      !company.telegramBotToken ||
+      !company.telegramChatId
+    ) {
+      throw new BadRequestException(
+        'Las alertas de Telegram no están habilitadas o falta configurar el token del bot y el chat ID en el perfil de la empresa.',
+      );
+    }
+
+    const testMessage =
+      `🧪 *Notificación de Prueba - NOC Sumtech*\n\n` +
+      `• *Servicio:* Monitoreo y Telemetría de Red\n` +
+      `• *Estado:* Canal de alertas por Telegram verificado con éxito\n` +
+      `• *Fecha y hora:* ${new Date().toLocaleString()}\n\n` +
+      `_Este canal recibirá alertas automáticas ante fallas de OLTs, caídas masivas de ONUs o umbrales críticos._`;
+
+    const sent = await this.sendTelegramAlert(testMessage);
+    if (!sent) {
+      throw new BadRequestException('No se pudo enviar la alerta de prueba a Telegram. Verifique la validez del token y el chat ID.');
+    }
+
+    return {
+      success: true,
+      message: 'Alerta de prueba enviada exitosamente a Telegram.',
+    };
   }
 }

@@ -87,6 +87,23 @@ export class OltController {
     return this.oltService.findById(id);
   }
 
+  @Get('olts/:id/backup/download')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  @RequireOltAction('VIEW')
+  async downloadOltBackup(
+    @Param('id') id: string,
+    @Res() res: Response,
+    @Req() req: any,
+  ) {
+    const result = await this.oltService.generateBackup(id, req.user?.id);
+    res.set({
+      'Content-Type': result.contentType,
+      'Content-Disposition': `attachment; filename="${result.filename}"`,
+      'Content-Length': result.buffer.length,
+    });
+    res.end(result.buffer);
+  }
+
   @Post('olts')
   @Roles(Role.ADMIN, Role.GERENTE)
   @RequireOltAction('CONFIGURE')
@@ -146,6 +163,22 @@ export class OltController {
   ) {
     const totalHours = days ? Number(days) * 24 : hours ? Number(hours) : 24;
     return this.monitoringService.getMetricsHistory(id, totalHours);
+  }
+
+  @Get('olts/:id/interfaces/:name/traffic')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('VIEW')
+  async getInterfaceTraffic(
+    @Param('id') id: string,
+    @Param('name') name: string,
+  ) {
+    return this.monitoringService.getInterfaceRealtimeTraffic(id, name);
+  }
+
+  @Post('telegram/test-alert')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async sendTestTelegramAlert() {
+    return this.monitoringService.sendTestTelegramAlert();
   }
 
   // ══════════════════════════════════════════════════

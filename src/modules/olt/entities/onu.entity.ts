@@ -13,6 +13,7 @@ import { OltInterfaceEntity } from './olt-interface.entity';
 import { OnuTypeEntity } from './onu-type.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { OnuServiceConfigEntity } from './onu-service-config.entity';
+import { NapPortEntity } from '../../network/entities/nap-port.entity';
 import { numericTransformer } from '../../../common/utils/numeric.transformer';
 
 export type OnuStatus =
@@ -105,6 +106,13 @@ export class OnuEntity {
   @ManyToOne(() => ContractEntity, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'contract_id' })
   contract?: ContractEntity;
+
+  @Column({ name: 'nap_port_id', type: 'uuid', nullable: true })
+  napPortId?: string | null;
+
+  @ManyToOne(() => NapPortEntity, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'nap_port_id' })
+  napPort?: NapPortEntity | null;
 
   // Sin cascade: OnuManagementService.authorizeOnu() ya gestiona
   // explícitamente el insert/update de onu_service_config vía su propio

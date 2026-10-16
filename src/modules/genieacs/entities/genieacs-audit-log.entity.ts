@@ -20,8 +20,8 @@ export class GenieAcsAuditLogEntity {
   @Column({ name: 'genieacs_device_id', type: 'varchar', length: 255, nullable: true })
   genieacsDeviceId?: string | null;
 
-  @Column({ type: 'enum', enum: ['WIFI_CHANGE', 'REBOOT'] })
-  action: 'WIFI_CHANGE' | 'REBOOT';
+  @Column({ type: 'enum', enum: ['WIFI_CHANGE', 'REBOOT', 'FACTORY_RESET'] })
+  action: 'WIFI_CHANGE' | 'REBOOT' | 'FACTORY_RESET';
 
   @Column({ type: 'varchar', length: 100, default: 'CLIENTE' })
   actor: string;

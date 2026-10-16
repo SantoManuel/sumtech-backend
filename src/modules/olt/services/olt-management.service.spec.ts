@@ -76,6 +76,7 @@ describe('OltManagementService', () => {
       save: jest.fn((dto) => Promise.resolve(dto)),
     };
     onuRepo = {
+      find: jest.fn().mockResolvedValue([]),
       createQueryBuilder: jest.fn().mockReturnValue({
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
@@ -343,6 +344,53 @@ describe('OltManagementService', () => {
 
       await expect(service.testConnection('olt-1')).rejects.toThrow(BadRequestException);
       expect(zteDriver.testConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('generateBackup', () => {
+    it('genera un archivo de respaldo con interfaces, ONUs y running-config del driver si está disponible', async () => {
+      oltRepo.findOne.mockResolvedValue({
+        ...mockOlt,
+        name: 'OLT Los Toros',
+        firmwareVersion: 'V1.2.5P3',
+      });
+      ifaceRepo.find.mockResolvedValue([
+        { name: 'gpon-olt_1/1/1', type: 'PON', slot: '1/1', port: 1, adminState: 'UP', operState: 'UP' },
+      ]);
+      onuRepo.find.mockResolvedValue([
+        { serialNumber: 'ZTEGC1234567', onuIndex: '1/1/1:1', model: 'F660', status: 'ACTIVE' },
+      ]);
+      zteDriver.getRunningConfig = jest.fn().mockResolvedValue('interface gpon-olt_1/1/1\n switchport mode trunk\n');
+
+      const result = await service.generateBackup('olt-1', 'user-123');
+
+      expect(result.contentType).toBe('text/plain; charset=utf-8');
+      expect(result.filename).toMatch(/^sumtech_olt_OLT_Los_Toros_.*\.txt$/);
+      const text = result.buffer.toString('utf-8');
+      expect(text).toContain('SUMTECH OLT CONFIGURATION BACKUP');
+      expect(text).toContain('gpon-olt_1/1/1');
+      expect(text).toContain('ZTEGC1234567');
+      expect(text).toContain('switchport mode trunk');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'SUCCESS',
+          actorUserId: 'user-123',
+        }),
+      );
+    });
+
+    it('continúa y genera el respaldo aunque el driver no soporte getRunningConfig o falle la conexión CLI', async () => {
+      oltRepo.findOne.mockResolvedValue(mockOlt);
+      ifaceRepo.find.mockResolvedValue([]);
+      onuRepo.find.mockResolvedValue([]);
+      zteDriver.getRunningConfig = jest.fn().mockRejectedValue(new Error('Telnet timeout'));
+
+      const result = await service.generateBackup('olt-1');
+
+      expect(result.contentType).toBe('text/plain; charset=utf-8');
+      const text = result.buffer.toString('utf-8');
+      expect(text).toContain('Ninguna interfaz descubierta');
+      expect(text).toContain('Ninguna ONU registrada');
     });
   });
 });

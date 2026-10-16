@@ -3,19 +3,26 @@ import { NetworkContractPlanChangedListener } from './contract-plan-changed.list
 import { NetworkProvisioningService } from '../network-provisioning.service';
 import { ContractPlanChangedEvent } from '../../billing/events/contract-plan-changed.event';
 
+import { PppManagementService } from '../services/ppp-management.service';
+
 describe('NetworkContractPlanChangedListener', () => {
   let listener: NetworkContractPlanChangedListener;
   let provisioningService: any;
+  let pppManagementService: any;
 
   beforeEach(async () => {
     provisioningService = {
-      syncProfileForContract: jest.fn().mockResolvedValue({ id: 'access-1' }),
+      syncProfileForContract: jest.fn().mockResolvedValue({ id: 'access-1', nodeId: 'node-1', username: 'user1' }),
+    };
+    pppManagementService = {
+      disconnectAccessSession: jest.fn().mockResolvedValue({ message: 'ok' }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         NetworkContractPlanChangedListener,
         { provide: NetworkProvisioningService, useValue: provisioningService },
+        { provide: PppManagementService, useValue: pppManagementService },
       ],
     }).compile();
 

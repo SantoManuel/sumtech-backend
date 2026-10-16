@@ -17,8 +17,10 @@ import { Tr069NetworkEntity } from './entities/tr069-network.entity';
 import { OnuEntity } from './entities/onu.entity';
 import { OnuServiceConfigEntity } from './entities/onu-service-config.entity';
 import { OltMetricEntity } from './entities/olt-metric.entity';
+import { OnuOpticalHistoryEntity } from './entities/onu-optical-history.entity';
 import { NetworkNodeEntity } from '../network/entities/network-node.entity';
 import { NetworkAccessEntity } from '../network/entities/network-access.entity';
+import { NapPortEntity } from '../network/entities/nap-port.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { CompanyProfileEntity } from '../company/entities/company-profile.entity';
 import { PlanEntity } from '../plans/entities/plan.entity';
@@ -53,9 +55,11 @@ import { OnuController } from './onu.controller';
       Tr069NetworkEntity,
       OnuEntity,
       OnuServiceConfigEntity,
+      OnuOpticalHistoryEntity,
       OltMetricEntity,
       NetworkNodeEntity,
       NetworkAccessEntity,
+      NapPortEntity,
       ContractEntity,
       CompanyProfileEntity,
       PlanEntity,

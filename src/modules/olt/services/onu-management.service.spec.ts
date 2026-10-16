@@ -11,6 +11,7 @@ import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { NetworkAccessEntity } from '../../network/entities/network-access.entity';
+import { NapPortEntity } from '../../network/entities/nap-port.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { OltConnectionResolverService } from './olt-connection-resolver.service';
@@ -19,11 +20,13 @@ import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { UnknownOltVendorError, DriverNotImplementedError } from '../ports/olt-driver.port';
 import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
+import { OnuOpticalHistoryEntity } from '../entities/onu-optical-history.entity';
 
 describe('OnuManagementService', () => {
   let service: OnuManagementService;
   let onuRepo: any;
   let configRepo: any;
+  let opticalHistoryRepo: any;
   let oltRepo: any;
   let ifaceRepo: any;
   let onuTypeRepo: any;
@@ -32,6 +35,7 @@ describe('OnuManagementService', () => {
   let tr069Repo: any;
   let contractRepo: any;
   let networkAccessRepo: any;
+  let napPortRepo: any;
   let zteDriver: any;
   let driverRegistry: any;
   let connectionResolver: any;
@@ -143,6 +147,18 @@ describe('OnuManagementService', () => {
       findOneBy: jest.fn().mockResolvedValue(null),
     };
 
+    napPortRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 'nap-port-1', portNumber: 1, status: 'DISPONIBLE', onuId: null }),
+      save: jest.fn().mockImplementation((e) => Promise.resolve(e)),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+
+    opticalHistoryRepo = {
+      create: jest.fn((dto) => dto),
+      save: jest.fn().mockResolvedValue({}),
+      find: jest.fn().mockResolvedValue([]),
+    };
+
     zteDriver = {
       getUnconfiguredOnus: jest.fn(),
       getOnuOpticalPower: jest.fn(),
@@ -184,6 +200,7 @@ describe('OnuManagementService', () => {
         OnuManagementService,
         { provide: getRepositoryToken(OnuEntity), useValue: onuRepo },
         { provide: getRepositoryToken(OnuServiceConfigEntity), useValue: configRepo },
+        { provide: getRepositoryToken(OnuOpticalHistoryEntity), useValue: opticalHistoryRepo },
         { provide: getRepositoryToken(OltEntity), useValue: oltRepo },
         { provide: getRepositoryToken(OltInterfaceEntity), useValue: ifaceRepo },
         { provide: getRepositoryToken(OnuTypeEntity), useValue: onuTypeRepo },
@@ -192,6 +209,7 @@ describe('OnuManagementService', () => {
         { provide: getRepositoryToken(Tr069NetworkEntity), useValue: tr069Repo },
         { provide: getRepositoryToken(ContractEntity), useValue: contractRepo },
         { provide: getRepositoryToken(NetworkAccessEntity), useValue: networkAccessRepo },
+        { provide: getRepositoryToken(NapPortEntity), useValue: napPortRepo },
         { provide: OltDriverRegistry, useValue: driverRegistry },
         { provide: OltConnectionResolverService, useValue: connectionResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
@@ -692,6 +710,120 @@ describe('OnuManagementService', () => {
       }
       expect(caught).toBeInstanceOf(HttpException);
       expect(caught.getStatus()).toBe(501);
+    });
+  });
+
+  describe('getOpticalHistory', () => {
+    it('devuelve puntos históricos registrados cuando existen en la base de datos', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      opticalHistoryRepo.find.mockResolvedValue([
+        {
+          recordedAt: new Date('2026-10-10T12:00:00Z'),
+          rxPowerDbm: -19.5,
+          txPowerDbm: 2.3,
+          attenuationDb: 17.2,
+        },
+        {
+          recordedAt: new Date('2026-10-11T12:00:00Z'),
+          rxPowerDbm: -19.8,
+          txPowerDbm: 2.4,
+          attenuationDb: 17.5,
+        },
+      ]);
+
+      const history = await service.getOpticalHistory('onu-uuid-1', 30);
+
+      expect(history).toHaveLength(2);
+      expect(history[0].rxPowerDbm).toBe(-19.5);
+      expect(history[1].attenuationDb).toBe(17.5);
+    });
+
+    it('devuelve puntos sintetizados si no hay histórico pero la ONU tiene potencia actual', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, rxPowerDbm: -20.1, txPowerDbm: 2.1 });
+      opticalHistoryRepo.find.mockResolvedValue([]);
+
+      const history = await service.getOpticalHistory('onu-uuid-1', 7);
+
+      expect(history.length).toBeGreaterThanOrEqual(1);
+      expect(history[0].rxPowerDbm).toBe(-20.1);
+    });
+  });
+
+  describe('migrateOnu', () => {
+    const activeOnu: Partial<OnuEntity> = {
+      id: 'onu-uuid-1',
+      oltId: 'olt-uuid-1',
+      onuIndex: 'gpon-onu_1/1/1:2',
+      serialNumber: 'ZTEGC0123456',
+      vendor: 'ZTE',
+      status: 'ACTIVE',
+      olt: mockOlt as OltEntity,
+      ponInterface: { id: 'iface-1', name: 'gpon-olt_1/1/1' } as any,
+      napPortId: 'nap-port-old',
+    };
+
+    it('rechaza la migración si la ONU está en estado UNCONFIGURED', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+
+      await expect(
+        service.migrateOnu('onu-uuid-1', { newSerialNumber: 'ZTEGC9999999' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rechaza la migración si el nuevo serial es idéntico al actual', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...activeOnu });
+
+      await expect(
+        service.migrateOnu('onu-uuid-1', { newSerialNumber: 'ZTEGC0123456' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rechaza la migración si el nuevo serial ya está registrado en otra ONU', async () => {
+      onuRepo.findOne
+        .mockResolvedValueOnce({ ...activeOnu }) // findById
+        .mockResolvedValueOnce({ id: 'another-onu-id', serialNumber: 'ZTEGC8888888' }); // duplicate check
+
+      await expect(
+        service.migrateOnu('onu-uuid-1', { newSerialNumber: 'ZTEGC8888888' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('migra exitosamente la ONU, libera puerto NAP anterior, reautoriza y configura GenieACS', async () => {
+      onuRepo.findOne
+        .mockResolvedValueOnce({ ...activeOnu, napPortId: 'nap-port-old' }) // findById inicial
+        .mockResolvedValueOnce(null) // duplicate check -> no duplicado
+        .mockResolvedValueOnce({ ...activeOnu, serialNumber: 'ZTEGC9999999', napPortId: 'nap-port-new' }); // findById final
+
+      zteDriver.deleteOnu.mockResolvedValue({ ok: true });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      napPortRepo.findOne.mockResolvedValue({
+        id: 'nap-port-new',
+        portNumber: 2,
+        status: 'DISPONIBLE',
+        onuId: null,
+      });
+
+      const result = await service.migrateOnu('onu-uuid-1', {
+        newSerialNumber: 'ZTEGC9999999',
+        newNapPortId: 'nap-port-new',
+        notes: 'Sustitución por daño eléctrico',
+      });
+
+      expect(result.success).toBe(true);
+      expect(napPortRepo.update).toHaveBeenCalledWith('nap-port-old', {
+        status: 'DISPONIBLE',
+        onuId: null,
+      });
+      expect(napPortRepo.save).toHaveBeenCalled();
+      expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', expect.objectContaining({
+        serialNumber: 'ZTEGC9999999',
+        napPortId: 'nap-port-new',
+      }));
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(expect.objectContaining({
+        eventType: 'PROVISION',
+        status: 'SUCCESS',
+      }));
     });
   });
 });

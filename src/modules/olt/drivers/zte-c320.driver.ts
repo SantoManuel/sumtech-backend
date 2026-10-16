@@ -582,6 +582,38 @@ export class ZteC320Driver implements IOltDriver {
     }
   }
 
+  async getRunningConfig(params: OltConnectionParams): Promise<string> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return await session.executeCommand('show running-config', 20000);
+    } finally {
+      session.close();
+    }
+  }
+
+  async getInterfaceTraffic(
+    params: OltConnectionParams,
+    interfaceName: string,
+  ): Promise<{ rxKbps: number; txKbps: number; rawBps?: { inputBps: number; outputBps: number } }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const ifaceOut = await session.executeCommand(`show interface ${interfaceName}`, 15000);
+      const inMatch = ifaceOut.match(/Input rate\s*:\s*(\d+)\s*Bps/i);
+      const outMatch = ifaceOut.match(/Output rate\s*:\s*(\d+)\s*Bps/i);
+      const inBps = inMatch ? parseInt(inMatch[1], 10) : 0;
+      const outBps = outMatch ? parseInt(outMatch[1], 10) : 0;
+      return {
+        rxKbps: Math.round((inBps * 8) / 1000),
+        txKbps: Math.round((outBps * 8) / 1000),
+        rawBps: { inputBps: inBps, outputBps: outBps },
+      };
+    } finally {
+      session.close();
+    }
+  }
+
   getCapabilities(): OltDriverCapabilities {
     return {
       testConnection: true,
