@@ -9,7 +9,7 @@ import { ProductEntity } from '../entities/product.entity';
 import { WarehouseEntity } from '../entities/warehouse.entity';
 import { EquipmentLocationType } from '../enums/equipment.enums';
 import { DispatchStatus, DispatchLineType } from '../enums/dispatch.enums';
-import { CreateDispatchDto, AddDispatchLineDto, RespondDispatchDto, FilterDispatchDto } from '../dto/dispatch.dto';
+import { CreateDispatchDto, UpdateDispatchDto, AddDispatchLineDto, RespondDispatchDto, FilterDispatchDto } from '../dto/dispatch.dto';
 import { EquipmentMovementService } from './equipment-movement.service';
 import { ConsumableStockService } from './consumable-stock.service';
 
@@ -59,6 +59,60 @@ export class DispatchService {
       status: DispatchStatus.DRAFT,
     });
     return this.dispatchRepository.save(dispatch);
+  }
+
+  async updateDraft(id: string, dto: UpdateDispatchDto): Promise<DispatchEntity> {
+    const dispatch = await this.dispatchRepository.findOne({ where: { id }, relations: ['lines'] });
+    if (!dispatch) {
+      throw new NotFoundException(`Despacho ${id} no encontrado`);
+    }
+    if (dispatch.status !== DispatchStatus.DRAFT) {
+      throw new BadRequestException('Solo se pueden modificar despachos en estado borrador');
+    }
+
+    if (dto.warehouseId && dto.warehouseId !== dispatch.warehouseId) {
+      const warehouse = await this.warehouseRepository.findOneBy({ id: dto.warehouseId });
+      if (!warehouse) {
+        throw new NotFoundException(`Almacén ${dto.warehouseId} no encontrado`);
+      }
+      if (dispatch.lines && dispatch.lines.length > 0) {
+        if (dto.clearLines) {
+          await this.lineRepository.delete({ dispatchId: id });
+        } else {
+          throw new BadRequestException(
+            'El despacho tiene líneas asociadas al almacén anterior. Debe quitarlas o confirmar el vaciado de líneas para cambiar de almacén',
+          );
+        }
+      }
+      dispatch.warehouseId = dto.warehouseId;
+    }
+
+    if (dto.technicianId && dto.technicianId !== dispatch.technicianId) {
+      await this.equipmentMovementService.validateTechnician(this.dispatchRepository.manager, dto.technicianId);
+      dispatch.technicianId = dto.technicianId;
+    }
+
+    if (dto.notes !== undefined) {
+      dispatch.notes = dto.notes;
+    }
+
+    await this.dispatchRepository.save(dispatch);
+    return this.findById(id);
+  }
+
+  async deleteDraft(id: string): Promise<void> {
+    const dispatch = await this.dispatchRepository.findOne({ where: { id }, relations: ['lines'] });
+    if (!dispatch) {
+      throw new NotFoundException(`Despacho ${id} no encontrado`);
+    }
+    if (dispatch.status !== DispatchStatus.DRAFT) {
+      throw new BadRequestException('Solo se pueden eliminar despachos en estado borrador');
+    }
+
+    if (dispatch.lines && dispatch.lines.length > 0) {
+      await this.lineRepository.delete({ dispatchId: id });
+    }
+    await this.dispatchRepository.delete({ id });
   }
 
   async addLine(dispatchId: string, dto: AddDispatchLineDto): Promise<DispatchLineEntity> {

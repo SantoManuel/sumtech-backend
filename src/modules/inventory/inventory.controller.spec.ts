@@ -21,7 +21,11 @@ describe('InventoryController — control de acceso por propiedad', () => {
       findEquipment: jest.fn().mockResolvedValue(['todo']),
     };
     consumableStockService = { getTechnicianStock: jest.fn().mockResolvedValue(['stock']) };
-    dispatchService = { findAll: jest.fn().mockResolvedValue(['despacho']) };
+    dispatchService = {
+      findAll: jest.fn().mockResolvedValue(['despacho']),
+      updateDraft: jest.fn().mockResolvedValue({ id: 'disp-1' }),
+      deleteDraft: jest.fn().mockResolvedValue(undefined),
+    };
     const inventoryExportService = { export: jest.fn() };
     controller = new InventoryController(
       {} as any,
@@ -98,6 +102,21 @@ describe('InventoryController — control de acceso por propiedad', () => {
       const filterDto: any = { technicianId: 'tech-B' };
       await controller.findAllDispatches(filterDto, 'admin-1', [Role.GERENTE]);
       expect(filterDto.technicianId).toBe('tech-B');
+    });
+  });
+
+  describe('updateDispatch & deleteDispatch', () => {
+    it('llama a updateDraft en dispatchService', async () => {
+      const dto = { warehouseId: 'wh-2', clearLines: true };
+      const res = await controller.updateDispatch('disp-1', dto as any);
+      expect(dispatchService.updateDraft).toHaveBeenCalledWith('disp-1', dto);
+      expect(res).toEqual({ id: 'disp-1' });
+    });
+
+    it('llama a deleteDraft en dispatchService y devuelve success', async () => {
+      const res = await controller.deleteDispatch('disp-1');
+      expect(dispatchService.deleteDraft).toHaveBeenCalledWith('disp-1');
+      expect(res).toEqual({ success: true });
     });
   });
 });

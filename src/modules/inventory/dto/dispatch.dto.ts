@@ -16,6 +16,24 @@ export class CreateDispatchDto {
   notes?: string;
 }
 
+export class UpdateDispatchDto {
+  @IsOptional()
+  @IsUUID('4')
+  warehouseId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  technicianId?: string;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  clearLines?: boolean;
+}
+
 export class AddDispatchLineDto {
   @IsNotEmpty()
   @IsEnum(DispatchLineType)

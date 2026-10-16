@@ -10,7 +10,7 @@ import { CreateWarehouseDto, UpdateWarehouseDto } from './dto/create-warehouse.d
 import { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
 import { RecordMovementDto } from './dto/record-movement.dto';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
-import { CreateDispatchDto, AddDispatchLineDto, RespondDispatchDto, FilterDispatchDto } from './dto/dispatch.dto';
+import { CreateDispatchDto, UpdateDispatchDto, AddDispatchLineDto, RespondDispatchDto, FilterDispatchDto } from './dto/dispatch.dto';
 import { FilterProductDto, FilterSerialDto } from './dto/filter-inventory.dto';
 import { ExportEquipmentDto } from './dto/export-equipment.dto';
 import { InventoryExportService } from './services/inventory-export.service';
@@ -444,6 +444,19 @@ export class InventoryController {
   @Roles(...ADMIN_ROLES)
   async createDispatch(@CurrentUser('sub') userId: string, @Body() dto: CreateDispatchDto) {
     return this.dispatchService.createDraft(dto, userId);
+  }
+
+  @Patch('dispatches/:id')
+  @Roles(...ADMIN_ROLES)
+  async updateDispatch(@Param('id') id: string, @Body() dto: UpdateDispatchDto) {
+    return this.dispatchService.updateDraft(id, dto);
+  }
+
+  @Delete('dispatches/:id')
+  @Roles(...ADMIN_ROLES)
+  async deleteDispatch(@Param('id') id: string) {
+    await this.dispatchService.deleteDraft(id);
+    return { success: true };
   }
 
   @Post('dispatches/:id/lines')
