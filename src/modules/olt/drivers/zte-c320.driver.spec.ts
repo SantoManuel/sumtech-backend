@@ -318,4 +318,11 @@ describe('ZteC320Driver', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain('no está implementada');
   });
+
+  it('getAlarms() sigue señalando DRIVER_NOT_IMPLEMENTED: sin reconocimiento real de un comando de log para C320 todavía', async () => {
+    await expect(
+      driver.getAlarms({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' }),
+    ).rejects.toThrow('no está implementada');
+    expect(driver.getCapabilities().alarms).toBe(false);
+  });
 });

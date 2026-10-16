@@ -58,6 +58,15 @@ export interface OltSystemHealth {
   raw?: string;
 }
 
+/** Mismo shape que `OltMetricEntity.alarmsInfo` -- se persiste tal cual. */
+export interface OltAlarm {
+  level: string;
+  code: string;
+  description: string;
+  timestamp?: string;
+  target?: string;
+}
+
 export interface OnuOpticalPower {
   rxDbm?: number;
   txDbm?: number;
@@ -136,6 +145,13 @@ export interface OltDriverCapabilities {
    * ejemplo documentado íntegro).
    */
   vlanTranslation: boolean;
+  /**
+   * Consultar el log de eventos/errores real del equipo y exponerlo como
+   * alarmas (`OltMetricEntity.alarmsInfo`). `false` significa que no hay
+   * evidencia real todavía de un comando que devuelva esto -- nunca se debe
+   * fabricar una alarma a partir de otro dato (ver olt-monitoring.service.ts).
+   */
+  alarms: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -153,6 +169,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   interfaceAdminState: false,
   dbaProfile: false,
   vlanTranslation: false,
+  alarms: false,
 };
 
 /**
@@ -210,6 +227,8 @@ export interface IOltDriver {
   ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }>;
   /** Traducción de VLAN cliente↔red en una interfaz (VLAN translation/QinQ) — ver `vlanTranslation` en OltDriverCapabilities sobre por qué sigue sin evidencia suficiente para implementarse. */
   configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }>;
+  /** Alarmas/eventos reales del equipo (ver `alarms` en OltDriverCapabilities). */
+  getAlarms(params: OltConnectionParams): Promise<OltAlarm[]>;
   generateAuthorizationScript(config: AuthorizeOnuParams): string[];
   getCapabilities(): OltDriverCapabilities;
 }

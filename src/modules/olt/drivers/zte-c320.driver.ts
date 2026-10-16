@@ -12,6 +12,7 @@ import {
   VlanTranslationParams,
   OltDriverCapabilities,
   DriverNotImplementedError,
+  OltAlarm,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
@@ -489,6 +490,11 @@ export class ZteC320Driver implements IOltDriver {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'configureVlanTranslation').message };
   }
 
+  /** Sin reconocimiento real todavía de un comando de log/alarmas para C320 -- ver `alarms` en OltDriverCapabilities. */
+  async getAlarms(params: OltConnectionParams): Promise<OltAlarm[]> {
+    throw new DriverNotImplementedError(VENDOR, 'getAlarms');
+  }
+
   /**
    * Bloquea o reactiva una ONU en la OLT mediante shutdown / no shutdown (RF-OLT-017).
    */
@@ -596,6 +602,7 @@ export class ZteC320Driver implements IOltDriver {
       // y configureVlanTranslation).
       dbaProfile: false,
       vlanTranslation: false,
+      alarms: false,
     };
   }
 }

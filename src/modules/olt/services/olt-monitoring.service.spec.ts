@@ -135,6 +135,67 @@ describe('OltMonitoringService', () => {
     expect(metric.activeOnusCount).toBe(45);
   });
 
+  it('usa las alarmas reales del driver cuando la capability es real (HiOSO)', async () => {
+    mockOltRepo.findOne.mockResolvedValue({ ...baseOlt });
+    mockOnuRepo.count.mockResolvedValueOnce(2).mockResolvedValueOnce(0);
+    mockCompanyRepo.findOne.mockResolvedValue({ telegramAlertsEnabled: false });
+
+    const realAlarms = [
+      { level: 'ERROR', code: 'SYSLOG-3', description: 'conf_file There is no such command.', timestamp: '2024-01-11 00:33:24' },
+    ];
+    const fakeDriver = {
+      getCapabilities: () => ({ ...NO_DRIVER_CAPABILITIES, alarms: true }),
+      getSystemHealth: jest.fn(),
+      getCards: jest.fn(),
+      getAlarms: jest.fn().mockResolvedValue(realAlarms),
+    };
+    mockDriverRegistry.resolve.mockReturnValue(fakeDriver);
+
+    const metric = await service.collectAndRecordMetrics('olt-1');
+
+    expect(fakeDriver.getAlarms).toHaveBeenCalled();
+    expect(metric.alarmsInfo).toEqual(realAlarms);
+    expect(metric.alarmsCount).toBe(1);
+  });
+
+  it('no consulta alarmas si la capability es false (nunca fabrica una a partir de otro dato)', async () => {
+    mockOltRepo.findOne.mockResolvedValue({ ...baseOlt, vendor: 'ZTE' });
+    mockOnuRepo.count.mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+    mockCompanyRepo.findOne.mockResolvedValue({ telegramAlertsEnabled: false });
+
+    const fakeDriver = {
+      getCapabilities: () => ({ ...NO_DRIVER_CAPABILITIES }),
+      getSystemHealth: jest.fn(),
+      getCards: jest.fn(),
+      getAlarms: jest.fn(),
+    };
+    mockDriverRegistry.resolve.mockReturnValue(fakeDriver);
+
+    const metric = await service.collectAndRecordMetrics('olt-1');
+
+    expect(fakeDriver.getAlarms).not.toHaveBeenCalled();
+    expect(metric.alarmsInfo).toEqual([]);
+  });
+
+  it('si el driver lanza al consultar alarmas, guarda el snapshot igual con alarmsInfo vacío (nunca rompe el resto de la telemetría)', async () => {
+    mockOltRepo.findOne.mockResolvedValue({ ...baseOlt });
+    mockOnuRepo.count.mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+    mockCompanyRepo.findOne.mockResolvedValue({ telegramAlertsEnabled: false });
+
+    const fakeDriver = {
+      getCapabilities: () => ({ ...NO_DRIVER_CAPABILITIES, alarms: true }),
+      getSystemHealth: jest.fn(),
+      getCards: jest.fn(),
+      getAlarms: jest.fn().mockRejectedValue(new Error('Timeout Telnet')),
+    };
+    mockDriverRegistry.resolve.mockReturnValue(fakeDriver);
+
+    const metric = await service.collectAndRecordMetrics('olt-1');
+
+    expect(metric.alarmsInfo).toEqual([]);
+    expect(mockMetricRepo.save).toHaveBeenCalled();
+  });
+
   it('si el driver lanza al consultar salud, guarda el snapshot igual con los campos en undefined (nunca inventa)', async () => {
     mockOltRepo.findOne.mockResolvedValue({ ...baseOlt });
     mockOnuRepo.count.mockResolvedValueOnce(0).mockResolvedValueOnce(0);

@@ -15,6 +15,7 @@ import {
   OltDriverCapabilities,
   NO_DRIVER_CAPABILITIES,
   DriverNotImplementedError,
+  OltAlarm,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'HUAWEI';
@@ -86,6 +87,10 @@ export class HuaweiMa5800Driver implements IOltDriver {
 
   async configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'configureVlanTranslation').message };
+  }
+
+  async getAlarms(params: OltConnectionParams): Promise<OltAlarm[]> {
+    throw new DriverNotImplementedError(VENDOR, 'getAlarms');
   }
 
   generateAuthorizationScript(config: AuthorizeOnuParams): string[] {

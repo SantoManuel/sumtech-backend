@@ -33,6 +33,7 @@ describe('HiosoDriver', () => {
       interfaceAdminState: true,
       dbaProfile: false,
       vlanTranslation: false,
+      alarms: true,
     });
   });
 
@@ -534,5 +535,62 @@ describe('HiosoDriver', () => {
       networkVlanId: 400,
     });
     expect(vlanTranslationResult.ok).toBe(false);
+  });
+
+  it('getAlarms() usa "show log flash" (ya pre-filtrado a errores por el equipo) y parsea severidad/fecha/hora/mensaje reales', async () => {
+    const flashOut = fixture('show_log_flash.txt');
+    const executeCommand = jest.fn().mockResolvedValue(flashOut);
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const alarms = await driver.getAlarms({ host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' });
+
+    expect(executeCommand).toHaveBeenCalledWith('show log flash');
+    expect(executeCommand).not.toHaveBeenCalledWith('show log ram');
+    expect(alarms.length).toBeGreaterThan(0);
+    expect(alarms.every((a) => a.level === 'ERROR')).toBe(true);
+    expect(alarms[0]).toEqual({
+      level: 'ERROR',
+      code: 'SYSLOG-3',
+      description: 'conf_file There is no such command.',
+      timestamp: '2024-01-11 00:33:24',
+    });
+  });
+
+  it('getAlarms() ignora líneas que no calzan con el formato `<N> HH:MM:SS YYYY-MM-DD OLT: msg` (eco del comando, prompt, líneas truncadas)', async () => {
+    const ramOut = fixture('show_log_ram.txt');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(ramOut),
+      close: jest.fn(),
+    });
+
+    const alarms = await driver.getAlarms({ host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' });
+
+    // No debe reventar con las líneas malformadas del log ram (sin timestamp:
+    // "<5>random: ..." y "<6>echo (404): ..."); el resto sí debe parsear.
+    expect(alarms.length).toBeGreaterThan(0);
+    expect(alarms.some((a) => a.description.includes('random:'))).toBe(false);
+    expect(alarms.some((a) => a.description.includes('echo ('))).toBe(false);
+  });
+
+  it('getAlarms() extrae el ONU o la interfaz mencionada en el mensaje como "target" cuando aplica', async () => {
+    const ramOut = fixture('show_log_ram.txt');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(ramOut),
+      close: jest.fn(),
+    });
+
+    const alarms = await driver.getAlarms({ host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' });
+
+    const linkChange = alarms.find((a) => a.description.includes('link change'));
+    expect(linkChange?.target).toBe('ten-gigabitethernet-1/1');
+
+    const onuLinkup = alarms.find((a) => a.description.includes('linkup') && a.description.includes('04:B0:E7:D3:09:A6'));
+    expect(onuLinkup?.target).toBe('ONU 1/1:1');
   });
 });

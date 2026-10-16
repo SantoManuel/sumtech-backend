@@ -137,11 +137,18 @@ export class OltMonitoringService {
       }
     }
 
-    // Alarmas reales: sin fuente implementada todavía para ningún fabricante
-    // (HiOSO tiene `show log (flash|ram) (critical|...)` como pista real sin
-    // reconocimiento aún; ZTE sin investigar) — nunca fabricar una a partir
-    // de otro dato simulado.
-    const alarmsInfo: OltMetricEntity['alarmsInfo'] = [];
+    // Alarmas reales: solo HiOSO tiene fuente real implementada (`show log
+    // flash`, confirmado contra hardware real) -- ZTE/Huawei/HSGQ siguen sin
+    // evidencia y quedan en `capabilities.alarms === false`. Nunca fabricar
+    // una alarma a partir de otro dato simulado.
+    let alarmsInfo: OltMetricEntity['alarmsInfo'] = [];
+    if (capabilities.alarms) {
+      try {
+        alarmsInfo = await driver.getAlarms(connParams);
+      } catch (err: any) {
+        this.logger.warn(`[${olt.vendor}] Error consultando alarmas de OLT "${olt.name}": ${err.message}`);
+      }
+    }
 
     const ponInterfacesCount = olt.interfaces?.filter((i) => i.type === 'PON').length;
 

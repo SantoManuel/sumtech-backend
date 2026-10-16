@@ -16,6 +16,7 @@ import {
   DriverNotImplementedError,
   TcontProfile,
   VlanTranslationParams,
+  OltAlarm,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'HIOSO';
@@ -169,6 +170,78 @@ export class HiosoDriver implements IOltDriver {
    */
   async getCards(params: OltConnectionParams): Promise<DiscoveredCard[]> {
     throw new DriverNotImplementedError(VENDOR, 'getCards');
+  }
+
+  private static readonly SYSLOG_LEVELS: Record<string, string> = {
+    '0': 'EMERGENCY',
+    '1': 'ALERT',
+    '2': 'CRITICAL',
+    '3': 'ERROR',
+    '4': 'WARNING',
+    '5': 'NOTICE',
+    '6': 'INFO',
+    '7': 'DEBUG',
+  };
+
+  /**
+   * `show log flash` -- confirmado contra hardware real (reconocimiento en
+   * vivo 2026-10-15): el equipo ya pre-filtra este buffer a severidad
+   * "errors" y peor por su propia configuración (`show logging` reporta
+   * "History logging in FLASH: errors"), así que es la fuente correcta para
+   * "alarmas" sin tener que replicar ese filtrado nosotros. `show log ram`
+   * trae TODO hasta nivel debug (incluye eventos rutinarios de link up/down
+   * de cada ONU) y saturaría la notificación de Telegram si se usara aquí --
+   * se deja sin usar a propósito, ver test/fixtures/hioso/show_log_ram.txt.
+   *
+   * Formato real de cada línea: `<N> HH:MM:SS YYYY-MM-DD OLT[ ]?: mensaje`,
+   * donde N es severidad estilo syslog estándar (0=emergency .. 7=debug). El
+   * reloj interno del equipo puede no estar sincronizado (se observaron
+   * fechas de 2024 en un equipo operando en 2026) -- el timestamp se expone
+   * tal cual lo reporta el hardware, sin corregirlo.
+   */
+  async getAlarms(params: OltConnectionParams): Promise<OltAlarm[]> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const raw = await session.executeCommand('show log flash');
+      return this.parseLogLines(raw);
+    } finally {
+      session.close();
+    }
+  }
+
+  private parseLogLines(raw: string): OltAlarm[] {
+    const lineRegex = /^<(\d)>\s*(\d{2}:\d{2}:\d{2})\s+(\d{4}-\d{2}-\d{2})\s+OLT\s*:?\s*(.*)$/;
+    const alarms: OltAlarm[] = [];
+
+    for (const line of raw.split('\n')) {
+      const match = line.trim().match(lineRegex);
+      if (!match) continue;
+
+      const [, severity, time, date, message] = match;
+      const target = this.extractLogTarget(message);
+
+      alarms.push({
+        level: HiosoDriver.SYSLOG_LEVELS[severity] || `LEVEL_${severity}`,
+        code: `SYSLOG-${severity}`,
+        description: message.trim(),
+        timestamp: `${date} ${time}`,
+        ...(target ? { target } : {}),
+      });
+    }
+
+    return alarms;
+  }
+
+  /** Extracción best-effort de a qué interfaz/ONU se refiere el mensaje -- no todas las líneas lo mencionan explícitamente. */
+  private extractLogTarget(message: string): string | undefined {
+    const onuMatch = message.match(/ONU\s+(\S+)/i);
+    if (onuMatch) return `ONU ${onuMatch[1]}`;
+
+    const ifaceMatch = message.match(/Interface\s+(\S+)/i);
+    if (ifaceMatch) return ifaceMatch[1];
+
+    return undefined;
   }
 
   /**
@@ -653,6 +726,7 @@ export class HiosoDriver implements IOltDriver {
       onuAdminState: true,
       onuDelete: true,
       interfaceAdminState: true,
+      alarms: true,
     };
   }
 }

@@ -1,0 +1,9 @@
+Epon#show logging
+ Syslog logging           :  Enabled
+ History logging in FLASH :  errors
+ History logging in ram   :  debugging
+ Remote logging Status    :  Disabled
+ Remote Facility Type     :  Local use 7
+ Remote logging Level     :  critical
+
+Epon#

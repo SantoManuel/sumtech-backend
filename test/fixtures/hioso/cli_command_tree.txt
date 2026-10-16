@@ -497,3 +497,30 @@ CONFIRMED real syntax in actual use on this unit (captured verbatim from
    complete, valid command when driving this CLI programmatically. Values
    below 7 full arguments ("... bandwidth 100000 ?", "... 100000 100000 ?",
    etc.) were all genuinely incomplete and safe to probe with "?".
+
+15. LOG/ALARM COMMANDS (confirmed live 2026-10-15, from the VPS via the
+   MikroTik/WireGuard path, read-only `show` commands only -- no "?" used,
+   see notes 11/14 on why that matters, though it would be harmless here
+   regardless since every command below only displays data):
+     show log            -- "% Incomplete command." (needs an argument)
+     show log flash       -- works standalone, see show_log_flash.txt
+     show log ram          -- works standalone, see show_log_ram.txt
+     show logging           -- works standalone, see show_logging.txt
+   `show logging` reveals WHY flash and ram differ so much in volume: this
+   unit's config has "History logging in FLASH: errors" (severity <= 3,
+   syslog numbering) and "History logging in ram: debugging" (severity <=
+   7, everything). Flash is therefore already pre-filtered by the device
+   itself to error-and-worse -- the correct source for "alarms" in
+   OltMonitoringService, no extra severity filtering needed on our side.
+   Line format (both flash and ram): `<N> HH:MM:SS YYYY-MM-DD OLT[ ]?: msg`
+   where N is standard syslog severity (0=emergency .. 7=debug). A few ram
+   lines are malformed/truncated (`<5>random: ...`, `<6>echo (404): ...` --
+   no timestamp at all) and must be tolerated (skipped), not crashed on.
+   The device's own clock is unsynced (log entries dated 2024-01-11/28 on
+   a unit queried in 2026) -- HiosoDriver.getAlarms() exposes the
+   timestamp exactly as reported, it does not attempt to correct it.
+   Useful signal found in ram (NOT used for alarms, too noisy/info-level):
+   real per-ONU linkup/linkdown events (`ONU 1/1:1 [MAC] [Na] linkup`) and
+   uplink flaps (`Interface ten-gigabitethernet-1/1 link change: up`,
+   severity 4/warning). Implemented in HiosoDriver.getAlarms() using only
+   `show log flash`; capability now true.
