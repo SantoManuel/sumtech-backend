@@ -962,8 +962,7 @@ export class PdfGeneratorService {
     doc.font('Helvetica').fontSize(7.5).fillColor('#000000');
 
     data.rows.forEach((row) => {
-      const nombreHeight = doc.heightOfString(row.nombre || '', { width: columns[0].width - 8 });
-      const rowHeight = Math.max(14, nombreHeight + 6);
+      const rowHeight = this.computeMultiColumnRowHeight(doc, row, columns);
 
       if (rowY + rowHeight > bottomLimit) {
         doc.addPage();
@@ -973,7 +972,7 @@ export class PdfGeneratorService {
 
       let colX = marginX;
       columns.forEach((col) => {
-        doc.text(String(row[col.key] ?? ''), colX + 4, rowY + 4, { width: col.width - 8 });
+        doc.text(String(row[col.key] ?? ''), colX + 4, rowY + 4, { width: col.width - 8, height: rowHeight - 6, ellipsis: true });
         colX += col.width;
       });
       doc
@@ -988,6 +987,13 @@ export class PdfGeneratorService {
       doc.font('Helvetica-Oblique').fontSize(9).text('No se encontraron clientes con los filtros aplicados.', marginX, rowY + 10);
     }
 
+    // Escribir exactamente en el margen inferior de la página (`page.height - 30`,
+    // igual al margen del documento) deja cero margen de tolerancia: PDFKit
+    // detecta que la propia altura de ese texto desborda el área imprimible y
+    // agrega SU PROPIA página en blanco por cada página existente (bug
+    // reproducido: duplicaba la cantidad total de páginas, una en blanco por
+    // cada una real). Se sube el texto y se le da un `height` explícito para
+    // que nunca pueda disparar una paginación automática.
     const pageRange = doc.bufferedPageRange();
     for (let i = pageRange.start; i < pageRange.start + pageRange.count; i++) {
       doc.switchToPage(i);
@@ -995,9 +1001,10 @@ export class PdfGeneratorService {
         .font('Helvetica')
         .fontSize(7.5)
         .fillColor('#64748b')
-        .text(`Página ${i + 1} de ${pageRange.count}`, marginX, doc.page.height - 30, {
+        .text(`Página ${i + 1} de ${pageRange.count}`, marginX, doc.page.height - 42, {
           width: contentWidth,
           align: 'center',
+          height: 12,
         });
     }
 
@@ -1017,14 +1024,16 @@ export class PdfGeneratorService {
     const contentWidth = doc.page.width - marginX * 2;
     const bottomLimit = doc.page.height - 45;
 
+    // Los anchos deben sumar <= contentWidth (781.89pt en A4 horizontal con margen 30) --
+    // una suma mayor empuja la última columna fuera del margen derecho en cada página.
     const columns: Array<{ key: keyof EquipmentListPdfData['rows'][number]; label: string; width: number }> = [
       { key: 'serial', label: 'Serial', width: 100 },
       { key: 'mac', label: 'MAC', width: 92 },
-      { key: 'producto', label: 'Producto', width: 150 },
+      { key: 'producto', label: 'Producto', width: 130 },
       { key: 'sku', label: 'SKU', width: 70 },
       { key: 'categoria', label: 'Categoría', width: 90 },
-      { key: 'proveedor', label: 'Proveedor', width: 110 },
-      { key: 'ubicacion', label: 'Ubicación / Custodia', width: 120 },
+      { key: 'proveedor', label: 'Proveedor', width: 95 },
+      { key: 'ubicacion', label: 'Ubicación / Custodia', width: 105 },
       { key: 'condicion', label: 'Condición', width: 86 },
     ];
 
@@ -1053,8 +1062,7 @@ export class PdfGeneratorService {
     doc.font('Helvetica').fontSize(7.5).fillColor('#000000');
 
     data.rows.forEach((row) => {
-      const productoHeight = doc.heightOfString(row.producto || '', { width: columns[2].width - 8 });
-      const rowHeight = Math.max(14, productoHeight + 6);
+      const rowHeight = this.computeMultiColumnRowHeight(doc, row, columns);
 
       if (rowY + rowHeight > bottomLimit) {
         doc.addPage();
@@ -1064,7 +1072,7 @@ export class PdfGeneratorService {
 
       let colX = marginX;
       columns.forEach((col) => {
-        doc.text(String(row[col.key] ?? ''), colX + 4, rowY + 4, { width: col.width - 8 });
+        doc.text(String(row[col.key] ?? ''), colX + 4, rowY + 4, { width: col.width - 8, height: rowHeight - 6, ellipsis: true });
         colX += col.width;
       });
       doc
@@ -1079,6 +1087,13 @@ export class PdfGeneratorService {
       doc.font('Helvetica-Oblique').fontSize(9).text('No se encontraron equipos con los filtros aplicados.', marginX, rowY + 10);
     }
 
+    // Escribir exactamente en el margen inferior de la página (`page.height - 30`,
+    // igual al margen del documento) deja cero margen de tolerancia: PDFKit
+    // detecta que la propia altura de ese texto desborda el área imprimible y
+    // agrega SU PROPIA página en blanco por cada página existente (bug
+    // reproducido: duplicaba la cantidad total de páginas, una en blanco por
+    // cada una real). Se sube el texto y se le da un `height` explícito para
+    // que nunca pueda disparar una paginación automática.
     const pageRange = doc.bufferedPageRange();
     for (let i = pageRange.start; i < pageRange.start + pageRange.count; i++) {
       doc.switchToPage(i);
@@ -1086,9 +1101,10 @@ export class PdfGeneratorService {
         .font('Helvetica')
         .fontSize(7.5)
         .fillColor('#64748b')
-        .text(`Página ${i + 1} de ${pageRange.count}`, marginX, doc.page.height - 30, {
+        .text(`Página ${i + 1} de ${pageRange.count}`, marginX, doc.page.height - 42, {
           width: contentWidth,
           align: 'center',
+          height: 12,
         });
     }
 
@@ -1111,5 +1127,37 @@ export class PdfGeneratorService {
     });
     doc.fillColor('#000000');
     return y + 18;
+  }
+
+  /**
+   * Tope duro de altura de fila (~4 líneas a 7.5pt) para listados tabulares.
+   * Sin este tope, una celda con texto inusualmente largo (ej. una razón social
+   * larga) puede producir una fila más alta que el espacio útil de una página
+   * completa -- y como ninguna página nueva alcanzaría a contenerla tampoco,
+   * PDFKit termina paginando por su cuenta A MITAD de esa celda (página sin
+   * encabezado). Con el tope, el contenido que exceda se corta con "…" en vez
+   * de inflar la fila indefinidamente -- además reduce la cantidad de páginas
+   * (y por tanto el papel) que consume un listado con valores largos.
+   */
+  private static readonly MAX_LIST_ROW_HEIGHT = 42;
+
+  /**
+   * Altura real de una fila de tabla considerando TODAS sus columnas, no solo una.
+   * Usar la altura de una sola columna (bug encontrado en producción: generaba
+   * superposición de texto entre filas y, en casos extremos, páginas en blanco
+   * porque PDFKit inserta su propia página automática cuando una celda sin
+   * `height` definido se desborda cerca del margen inferior) rompe cualquier
+   * listado donde la columna más angosta no sea la que tiene el texto más largo.
+   */
+  private computeMultiColumnRowHeight<T>(
+    doc: PDFKit.PDFDocument,
+    row: T,
+    columns: Array<{ key: keyof T; width: number }>,
+  ): number {
+    const maxTextHeight = columns.reduce((max, col) => {
+      const height = doc.heightOfString(String(row[col.key] ?? ''), { width: col.width - 8 });
+      return Math.max(max, height);
+    }, 0);
+    return Math.min(Math.max(14, maxTextHeight + 6), PdfGeneratorService.MAX_LIST_ROW_HEIGHT);
   }
 }

@@ -745,6 +745,36 @@ describe('PdfGeneratorService', () => {
       const text = extractPdfText(buffer).replace(/\s+/g, ' ');
       expect(text).toContain('Página 1 de');
       expect(text).toContain('Cliente 80');
+      // Bug real: el pie "Página X de Y" se dibujaba pegado al margen inferior
+      // sin `height`, y PDFKit agregaba una página en blanco extra por cada
+      // página real (duplicaba el total). Cada página real debe traer su propio
+      // título -- si el conteo de páginas dobla al de encabezados, volvió el bug.
+      const pageCount = countPdfPages(buffer);
+      const headerOccurrences = (extractPdfText(buffer).match(/LISTADO DE CLIENTES/g) || []).length;
+      expect(headerOccurrences).toBe(pageCount);
+    });
+
+    it('nunca genera una página sin encabezado cuando una columna angosta (no "nombre") tiene texto largo cerca del límite de página', async () => {
+      const longUbicacion = 'Sector Los Guandules, Autopista Duarte Km 15, Santo Domingo Oeste, Provincia Santo Domingo, República Dominicana';
+      const manyRows = Array.from({ length: 60 }, (_, i) =>
+        makeRow({ nombre: `Cliente ${i + 1}`, ubicacion: longUbicacion }),
+      );
+
+      const buffer = await service.generateClientsListPdf({
+        company,
+        rows: manyRows,
+        totalExportado: manyRows.length,
+        generatedByUsername: 'admin1',
+        generatedAt: new Date('2026-03-01T10:00:00Z'),
+        filtersSummary: 'Ninguno',
+      });
+
+      const pageCount = countPdfPages(buffer);
+      const text = extractPdfText(buffer);
+      const headerOccurrences = (text.match(/LISTADO DE CLIENTES/g) || []).length;
+
+      expect(pageCount).toBeGreaterThan(1);
+      expect(headerOccurrences).toBe(pageCount);
     });
   });
 
@@ -848,6 +878,44 @@ describe('PdfGeneratorService', () => {
       const text = extractPdfText(buffer).replace(/\s+/g, ' ');
       expect(text).toContain('Página 1 de');
       expect(text).toContain('SN-80');
+      // Bug real: el pie "Página X de Y" se dibujaba pegado al margen inferior
+      // sin `height`, y PDFKit agregaba una página en blanco extra por cada
+      // página real (duplicaba el total). Cada página real debe traer su propio
+      // título -- si el conteo de páginas dobla al de encabezados, volvió el bug.
+      const pageCount = countPdfPages(buffer);
+      const headerOccurrences = (extractPdfText(buffer).match(/TRAZABILIDAD DE EQUIPOS/g) || []).length;
+      expect(headerOccurrences).toBe(pageCount);
+    });
+
+    it('nunca genera una página sin encabezado cuando una columna angosta (no "producto") tiene texto largo cerca del límite de página', async () => {
+      // Bug real reproducido: la altura de fila se calculaba solo con `producto`,
+      // así que un `proveedor`/`ubicacion` largo en una columna más angosta se
+      // desbordaba sin que el código se enterara, y PDFKit insertaba su propia
+      // página (sin encabezado) a mitad de la celda.
+      const longProveedor = 'Distribuidora Internacional de Equipos de Telecomunicaciones y Redes S.A. de C.V.';
+      const longUbicacion = 'Instalado en cliente — Juan Alberto De Los Santos Peña Hernández Martínez';
+      const manyRows = Array.from({ length: 60 }, (_, i) =>
+        makeRow({ serial: `SN-${i + 1}`, proveedor: longProveedor, ubicacion: longUbicacion }),
+      );
+
+      const buffer = await service.generateEquipmentListPdf({
+        company,
+        rows: manyRows,
+        totalExportado: manyRows.length,
+        generatedByUsername: 'admin1',
+        generatedAt: new Date('2026-03-01T10:00:00Z'),
+        filtersSummary: 'Ninguno',
+      });
+
+      const pageCount = countPdfPages(buffer);
+      const text = extractPdfText(buffer);
+      const headerOccurrences = (text.match(/TRAZABILIDAD DE EQUIPOS/g) || []).length;
+
+      expect(pageCount).toBeGreaterThan(1);
+      // Una ocurrencia del título por página -- si apareciera menos, significa que
+      // se coló una página "fantasma" sin encabezado (el síntoma original: hojas
+      // en blanco que PDFKit insertaba por su cuenta).
+      expect(headerOccurrences).toBe(pageCount);
     });
   });
 });
