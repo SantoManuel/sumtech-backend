@@ -171,4 +171,19 @@ export class UpdateNetworkNodeDto {
   @IsOptional()
   @IsString()
   wanPppoePassword?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100, { message: 'El pool de IP por defecto no puede superar 100 caracteres' })
+  defaultPppPool?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100, { message: 'La cola padre por defecto no puede superar 100 caracteres' })
+  defaultParentQueue?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255, { message: 'Los servidores DNS no pueden superar 255 caracteres' })
+  defaultDnsServers?: string;
 }

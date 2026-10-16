@@ -275,6 +275,20 @@ describe('NetworkNodesService', () => {
 
       expect(result.provisioningMode).toBe('ROUTEROS');
     });
+
+    it('persiste defaultPppPool/defaultParentQueue/defaultDnsServers (antes huérfanos, sin DTO que los escribiera)', async () => {
+      nodeRepo.findOne.mockResolvedValue(makeNode());
+
+      const result = await service.update('node-1', {
+        defaultPppPool: 'pool-clientes',
+        defaultParentQueue: 'Total-Bandwidth',
+        defaultDnsServers: '8.8.8.8,1.1.1.1',
+      });
+
+      expect(result.defaultPppPool).toBe('pool-clientes');
+      expect(result.defaultParentQueue).toBe('Total-Bandwidth');
+      expect(result.defaultDnsServers).toBe('8.8.8.8,1.1.1.1');
+    });
   });
 
   describe('deactivate', () => {
