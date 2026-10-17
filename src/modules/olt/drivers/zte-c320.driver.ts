@@ -436,13 +436,16 @@ export class ZteC320Driver implements IOltDriver {
     try {
       await session.connectAndLogin();
 
-      // Timeout generoso (RF: bug real confirmado en producción, 2026-10-17,
-      // OLT_Tabara_Abajo puerto gpon-olt_1/2/4 con 52 ONUs registradas):
-      // un puerto con muchas ONUs pagina varias veces por "--More--", y 30s
-      // no alcanzaba -- esta es una acción deliberada del operador (importar
-      // un puerto), no un sondeo frecuente, así que tolerar más latencia es
-      // preferible a fallar en los puertos más cargados.
-      const baseInfoOutput = await session.executeCommand(`show gpon onu baseinfo ${ponInterface}`, 120000);
+      // Timeout muy generoso (bug real confirmado en producción, 2026-10-17,
+      // OLT_Tabara_Abajo): en una conexión aislada este comando tarda 1-2s
+      // incluso con varias páginas "--More--" (confirmado contra puertos con
+      // 50+ ONUs). Los timeouts reales en producción coincidieron con las
+      // ventanas de los cron de monitoreo (cada 5 min, sondean la misma OLT)
+      // -- probable contención del event loop de Node, no lentitud real del
+      // equipo ni de la paginación. Es una acción deliberada del operador
+      // (importar un puerto puntual), no un sondeo frecuente, así que se
+      // tolera bastante margen en vez de intentar resolver la contención aquí.
+      const baseInfoOutput = await session.executeCommand(`show gpon onu baseinfo ${ponInterface}`, 180000);
       if (/%Error\s+\d+:/i.test(baseInfoOutput)) {
         throw new Error(`La OLT no reconoce el puerto PON "${ponInterface}".`);
       }
@@ -455,7 +458,7 @@ export class ZteC320Driver implements IOltDriver {
 
       const stateRows = new Map<string, { adminState: 'ENABLE' | 'DISABLE'; phaseState: string }>();
       try {
-        const stateOutput = await session.executeCommand(`show gpon onu state ${ponInterface}`, 120000);
+        const stateOutput = await session.executeCommand(`show gpon onu state ${ponInterface}`, 180000);
         const stateMatches = stateOutput.matchAll(/^(\d+\/\d+\/\d+:\d+)\s+(enable|disable)\s+\S+\s+(\S+)/gim);
         for (const m of stateMatches) {
           stateRows.set(`gpon-onu_${m[1]}`, {
