@@ -168,6 +168,57 @@ describe('ZteC320Driver', () => {
     expect(uplinks.some((u) => u.slot === 3)).toBe(false);
   });
 
+  it('getAuthorizedOnus() importa ONUs ya autorizadas con serial real desde "show gpon onu baseinfo" + estado desde "show gpon onu state" (RF: brownfield)', async () => {
+    const fixturesDir = path.join(__dirname, '../../../../test/fixtures/zte-c320');
+    const baseInfo = fs.readFileSync(path.join(fixturesDir, 'show_gpon_onu_baseinfo.txt'), 'utf8');
+    const stateInfo = fs.readFileSync(path.join(fixturesDir, 'show_gpon_onu_state.txt'), 'utf8');
+
+    const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+      if (cmd === 'show gpon onu baseinfo gpon-olt_1/2/1') return Promise.resolve(baseInfo);
+      if (cmd === 'show gpon onu state gpon-olt_1/2/1') return Promise.resolve(stateInfo);
+      throw new Error(`comando inesperado: ${cmd}`);
+    });
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.getAuthorizedOnus(
+      { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+      'gpon-olt_1/2/1',
+    );
+
+    expect(result).toHaveLength(4);
+
+    const onu1 = result.find((r) => r.onuIndex === 'gpon-onu_1/2/1:1')!;
+    expect(onu1.serialNumber).toBe('HWTC5F4A209A');
+    expect(onu1.vendor).toBe('Huawei');
+    expect(onu1.adminState).toBe('ENABLE');
+    expect(onu1.phaseState).toBe('OffLine');
+
+    const onu3 = result.find((r) => r.onuIndex === 'gpon-onu_1/2/1:3')!;
+    expect(onu3.serialNumber).toBe('RMTGCB52DE3A');
+    expect(onu3.vendor).toBe('Desconocido'); // prefijo no reconocido -- no se inventa un fabricante
+    expect(onu3.adminState).toBe('DISABLE'); // deshabilitada por el otro sistema
+
+    const onu2 = result.find((r) => r.onuIndex === 'gpon-onu_1/2/1:2')!;
+    expect(onu2.phaseState).toBe('working');
+  });
+
+  it('getAuthorizedOnus() lanza error si la OLT no reconoce el puerto PON', async () => {
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue('\n   ^\n%Error 20202: Invalid input detected at \'^\' marker.Invalid parameter\n'),
+      close: jest.fn(),
+    });
+
+    await expect(
+      driver.getAuthorizedOnus({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' }, 'gpon-olt_1/9/9'),
+    ).rejects.toThrow('no reconoce el puerto PON');
+  });
+
   it('parsea correctamente el inventario de tarjetas del chasis (show card)', async () => {
     const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_card.txt');
     const fixtureContent = fs.readFileSync(fixturePath, 'utf8');

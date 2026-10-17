@@ -57,6 +57,32 @@ export class OnuController {
   }
 
   /**
+   * Importación pasiva de ONUs ya autorizadas por la propia OLT (brownfield,
+   * ej. otro sistema de gestión) en un puerto PON puntual. Permiso OPERATE
+   * (no CONFIGURE): nunca escribe nada en el equipo, solo lee y refleja en BD.
+   */
+  @Post('scan-authorized')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('OPERATE')
+  async scanAuthorized(@Body() body: { oltId: string; ponInterface: string }, @Req() req: any) {
+    return this.onuService.scanAuthorizedOnus(body.oltId, body.ponInterface, req.user?.id);
+  }
+
+  /**
+   * Vincula una ONU ya ACTIVE (típicamente importada sin contrato) a un
+   * contrato real. Mismo nivel de permiso que authorize (CONFIGURE): es una
+   * decisión de negocio (a qué cliente pertenece este equipo), aunque no
+   * toque la OLT físicamente.
+   */
+  @Post(':id/link-contract')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async linkContract(@Param('id') id: string, @Body() body: { contractId: string }, @Req() req: any) {
+    return this.onuService.linkOnuToContract(id, body.contractId, req.user?.id);
+  }
+
+  /**
    * Ficha 360 de la ONU con inventario, contrato, VLANs y estado.
    */
   @Get(':id')

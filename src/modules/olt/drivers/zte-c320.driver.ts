@@ -13,6 +13,7 @@ import {
   OltDriverCapabilities,
   DriverNotImplementedError,
   OltAlarm,
+  DiscoveredAuthorizedOnu,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
@@ -384,24 +385,97 @@ export class ZteC320Driver implements IOltDriver {
           const ponIface = `gpon-olt_${match[2]}`;
           const serialNumber = match[4];
 
-          let vendor = 'Desconocido';
-          const upperSn = serialNumber.toUpperCase();
-          if (upperSn.startsWith('ZTEG')) vendor = 'ZTE';
-          else if (upperSn.startsWith('HWTC')) vendor = 'Huawei';
-          else if (upperSn.startsWith('VSOL')) vendor = 'VSOL';
-          else if (upperSn.startsWith('ALCL')) vendor = 'Nokia/Alcatel';
-          else if (upperSn.startsWith('FHTT')) vendor = 'Fiberhome';
-
           results.push({
             ponInterface: ponIface,
             onuIndex,
             serialNumber,
-            vendor,
+            vendor: this.inferVendorFromSerial(serialNumber),
           });
         }
       }
 
       return results;
+    } finally {
+      session.close();
+    }
+  }
+
+  private inferVendorFromSerial(serialNumber: string): string {
+    const upperSn = serialNumber.toUpperCase();
+    if (upperSn.startsWith('ZTEG')) return 'ZTE';
+    if (upperSn.startsWith('HWTC')) return 'Huawei';
+    if (upperSn.startsWith('VSOL')) return 'VSOL';
+    if (upperSn.startsWith('ALCL')) return 'Nokia/Alcatel';
+    if (upperSn.startsWith('FHTT')) return 'Fiberhome';
+    return 'Desconocido';
+  }
+
+  /**
+   * Importación pasiva de ONUs ya autorizadas/aprovisionadas en un puerto PON
+   * (RF: incorporar un sitio con clientes en producción de otro sistema sin
+   * re-emitir el CLI de autorización). Comandos confirmados en vivo contra
+   * OLT_Tabara_Abajo (2026-10-17):
+   * - "show gpon onu baseinfo <puerto>" -- UNA sola consulta por puerto,
+   *   trae el serial real de TODAS las ONUs del puerto ("AuthInfo: SN:...").
+   *   El tipo/modelo puede partirse en una segunda línea si el nombre es
+   *   largo (ej. "HUAWEY-BT54\n  6XG") -- no afecta el parseo porque cada
+   *   fila real empieza con el índice completo "gpon-onu_...".
+   * - "show gpon onu state <puerto>" -- estado admin/fase real por ONU
+   *   (columna 1 sin el prefijo "gpon-onu_", ej. "1/2/1:1").
+   * Deliberadamente NO se usa "show onu running config" aquí: en este equipo
+   * real esas ONUs están gestionadas por OMCI puro (bloque "pon-onu-mng"),
+   * que no incluye serial ni VLAN de servicio en un formato parseable sin
+   * inventar -- el serial ya viene de "baseinfo", y VLAN/perfil quedan para
+   * que el operador los configure al vincular la ONU a un contrato.
+   */
+  async getAuthorizedOnus(
+    params: OltConnectionParams,
+    ponInterface: string,
+  ): Promise<DiscoveredAuthorizedOnu[]> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+
+      const baseInfoOutput = await session.executeCommand(`show gpon onu baseinfo ${ponInterface}`, 30000);
+      if (/%Error\s+\d+:/i.test(baseInfoOutput)) {
+        throw new Error(`La OLT no reconoce el puerto PON "${ponInterface}".`);
+      }
+
+      const baseRows = new Map<string, { onuType: string; serialNumber: string }>();
+      const baseMatches = baseInfoOutput.matchAll(/^(gpon-onu_\d+\/\d+\/\d+:\d+)\s+(\S+)\s+sn\s+SN:(\S+)/gim);
+      for (const m of baseMatches) {
+        baseRows.set(m[1], { onuType: m[2], serialNumber: m[3] });
+      }
+
+      const stateRows = new Map<string, { adminState: 'ENABLE' | 'DISABLE'; phaseState: string }>();
+      try {
+        const stateOutput = await session.executeCommand(`show gpon onu state ${ponInterface}`, 30000);
+        const stateMatches = stateOutput.matchAll(/^(\d+\/\d+\/\d+:\d+)\s+(enable|disable)\s+\S+\s+(\S+)/gim);
+        for (const m of stateMatches) {
+          stateRows.set(`gpon-onu_${m[1]}`, {
+            adminState: m[2].toUpperCase() as 'ENABLE' | 'DISABLE',
+            phaseState: m[3],
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(`No se pudo leer "show gpon onu state ${ponInterface}": ${err.message}`);
+      }
+
+      const discovered: DiscoveredAuthorizedOnu[] = [];
+      for (const [onuIndex, base] of baseRows) {
+        const state = stateRows.get(onuIndex);
+        discovered.push({
+          ponInterface,
+          onuIndex,
+          serialNumber: base.serialNumber,
+          vendor: this.inferVendorFromSerial(base.serialNumber),
+          onuType: base.onuType,
+          adminState: state?.adminState || 'ENABLE',
+          phaseState: state?.phaseState,
+        });
+      }
+
+      return discovered;
     } finally {
       session.close();
     }
@@ -745,6 +819,7 @@ export class ZteC320Driver implements IOltDriver {
       vlanTranslation: false,
       alarms: false,
       tr069AutoProvisioning: false,
+      onuPassiveImport: true,
     };
   }
 

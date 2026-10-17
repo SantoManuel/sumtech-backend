@@ -77,7 +77,7 @@ export class OnuEntity {
   detectedAt: Date;
 
   @Column({ name: 'detected_by', type: 'varchar', length: 30, default: 'OLT_POLL' })
-  detectedBy: 'OLT_POLL' | 'ACS_INFORM';
+  detectedBy: 'OLT_POLL' | 'ACS_INFORM' | 'OLT_IMPORT';
 
   @Column({ name: 'authorized_at', type: 'timestamp with time zone', nullable: true })
   authorizedAt?: Date;

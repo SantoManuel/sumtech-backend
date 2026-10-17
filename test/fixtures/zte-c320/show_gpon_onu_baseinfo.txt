@@ -1,0 +1,8 @@
+OnuIndex            Type        Mode    AuthInfo                State
+-------------------------------------------------------------------------------
+gpon-onu_1/2/1:1    HUAWEY-HG81 sn      SN:HWTC5F4A209A         ready
+                    45V5
+gpon-onu_1/2/1:2    EG8141A5    sn      SN:HWTC9A427958         ready
+gpon-onu_1/2/1:3    ZTE-F660    sn      SN:RMTGCB52DE3A         ready
+gpon-onu_1/2/1:4    HUAWEY-BT54 sn      SN:HWTC88B5D585         ready
+                    6XG

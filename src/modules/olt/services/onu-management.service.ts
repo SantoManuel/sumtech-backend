@@ -281,6 +281,109 @@ export class OnuManagementService {
   }
 
   /**
+   * Importación pasiva de ONUs ya autorizadas en un puerto PON (brownfield:
+   * sitio con clientes ya provistos por otro sistema antes de migrar a
+   * Sumtech). A diferencia de scanUnconfiguredOnus(), NUNCA llama a
+   * authorizeOnu() ni emite ningún comando de escritura en la OLT -- solo
+   * lee lo que el equipo ya reporta como autorizado y lo refleja en net.onus
+   * como ACTIVE (o BLOCKED si la OLT lo reporta deshabilitado), sin
+   * contractId ni authorizedAt: vincular la ONU a un cliente real queda como
+   * paso manual del operador, porque no hay forma confiable de inferirlo
+   * desde la OLT. Las ONUs que ya existen en nuestra base (por serial) se
+   * omiten por completo -- esto nunca debe tocar un registro existente.
+   */
+  async scanAuthorizedOnus(oltId: string, ponInterface: string, actorUserId?: string) {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException(`OLT no encontrada: ${oltId}`);
+
+    const driver = this.resolveDriver(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
+
+    const discovered = await this.callDriver(() => {
+      if (!driver.getAuthorizedOnus) {
+        throw new DriverNotImplementedError(olt.vendor, 'getAuthorizedOnus');
+      }
+      return driver.getAuthorizedOnus(connParams, ponInterface);
+    });
+
+    const ponIface = await this.ifaceRepository.findOneBy({ oltId: olt.id, name: ponInterface });
+
+    const imported: OnuEntity[] = [];
+    for (const item of discovered) {
+      const existing = await this.onuRepository.findOneBy({ oltId: olt.id, serialNumber: item.serialNumber });
+      if (existing) continue;
+
+      const created = this.onuRepository.create({
+        oltId: olt.id,
+        ponInterfaceId: ponIface?.id,
+        onuIndex: item.onuIndex,
+        serialNumber: item.serialNumber,
+        vendor: item.vendor,
+        status: item.adminState === 'DISABLE' ? 'BLOCKED' : 'ACTIVE',
+        detectedBy: 'OLT_IMPORT',
+        detectedAt: new Date(),
+        lastSeenAt: new Date(),
+      });
+      imported.push(await this.onuRepository.save(created));
+    }
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `[${olt.vendor}] Importación pasiva de ONUs ya autorizadas en ${ponInterface}: ${imported.length} nueva(s) de ${discovered.length} detectada(s) en la OLT.`,
+      actorUserId,
+      rawDetails: {
+        oltId: olt.id,
+        vendor: olt.vendor,
+        ponInterface,
+        discoveredCount: discovered.length,
+        importedCount: imported.length,
+        operation: 'scanAuthorizedOnus',
+      },
+    });
+
+    return imported;
+  }
+
+  /**
+   * Vincula una ONU ya ACTIVE (típicamente importada vía scanAuthorizedOnus,
+   * sin contrato) a un contrato real -- paso manual porque no hay forma
+   * confiable de inferir el cliente desde lo que reporta la OLT. Deliberadamente
+   * NO reusa reprovisionOnu(): esa operación exige que ya exista una fila en
+   * onu_service_config (VLAN/perfil de servicio), que una ONU importada
+   * nunca tiene -- esto es más simple a propósito: solo toca contractId, sin
+   * tocar la OLT ni crear config de servicio.
+   */
+  async linkOnuToContract(id: string, contractId: string, actorUserId?: string) {
+    const onu = await this.findById(id);
+    if (onu.status !== 'ACTIVE') {
+      throw new BadRequestException('Solo se puede vincular a un contrato una ONU que ya esté autorizada (ACTIVE).');
+    }
+    if (onu.contractId) {
+      throw new BadRequestException('Esta ONU ya está vinculada a un contrato.');
+    }
+
+    const contract = await this.contractRepository.findOneBy({ id: contractId });
+    if (!contract) {
+      throw new NotFoundException(`Contrato no encontrado: ${contractId}`);
+    }
+
+    await this.onuRepository.update(onu.id, { contractId });
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: onu.olt.viaNodeId || onu.olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `ONU ${onu.serialNumber} vinculada manualmente al contrato ${contract.contractNumber}.`,
+      actorUserId,
+      rawDetails: { onuId: onu.id, contractId, operation: 'linkOnuToContract' },
+    });
+
+    return this.findById(onu.id);
+  }
+
+  /**
    * Obtiene la telemetría de potencia óptica en vivo (RF-OLT-015).
    */
   async getOpticalTelemetry(id: string) {

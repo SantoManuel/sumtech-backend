@@ -50,6 +50,23 @@ export interface DiscoveredUncfgOnu {
   vendor?: string;
 }
 
+/**
+ * ONU ya autorizada/aprovisionada EN LA OLT (por Sumtech o por otro sistema
+ * de gestión) -- distinto de DiscoveredUncfgOnu (ONUs sin vincular). Pensado
+ * para importar de forma pasiva el inventario de un sitio que ya tenía
+ * clientes en producción antes de migrar a Sumtech, sin re-emitir el CLI de
+ * autorización (ver getAuthorizedOnus en OltDriverCapabilities).
+ */
+export interface DiscoveredAuthorizedOnu {
+  ponInterface: string; // ej. 'gpon-olt_1/2/1'
+  onuIndex: string; // ej. 'gpon-onu_1/2/1:2'
+  serialNumber: string;
+  vendor?: string;
+  onuType?: string; // modelo/tipo real reportado por la OLT, ej. 'EG8141A5'
+  adminState: 'ENABLE' | 'DISABLE';
+  phaseState?: string; // ej. 'working' | 'ready' | 'OffLine' | 'LOS' | 'DyingGasp'
+}
+
 export interface OltSystemHealth {
   cpuUsagePercent?: number;
   memoryUsagePercent?: number;
@@ -164,6 +181,16 @@ export interface OltDriverCapabilities {
    * absoluto" (EPON — ver HiosoDriver).
    */
   tr069AutoProvisioning: boolean;
+  /**
+   * Descubrir e importar ONUs YA autorizadas/aprovisionadas en la OLT (por
+   * Sumtech o por otro sistema) como registros ACTIVE en net.onus, sin
+   * re-emitir el comando de autorización. Pensado para incorporar un sitio
+   * que ya tenía clientes en producción antes de migrar a Sumtech. `false`
+   * significa que no hay evidencia real todavía de los comandos necesarios
+   * para este fabricante (ver getAuthorizedOnus, método opcional de
+   * IOltDriver -- no todos los drivers lo implementan).
+   */
+  onuPassiveImport: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -183,6 +210,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   vlanTranslation: false,
   alarms: false,
   tr069AutoProvisioning: false,
+  onuPassiveImport: false,
 };
 
 /**
@@ -222,6 +250,12 @@ export interface IOltDriver {
   discoverInterfaces(params: OltConnectionParams): Promise<DiscoveredInterface[]>;
   configureVlanOnInterface(params: OltConnectionParams, config: ConfigureVlanParams): Promise<{ ok: boolean; error?: string }>;
   getUnconfiguredOnus(params: OltConnectionParams, ponInterface?: string): Promise<DiscoveredUncfgOnu[]>;
+  /**
+   * Lista ONUs ya autorizadas/aprovisionadas en un puerto PON (ver
+   * `onuPassiveImport` en OltDriverCapabilities) -- opcional porque no todos
+   * los fabricantes tienen comandos de solo lectura equivalentes todavía.
+   */
+  getAuthorizedOnus?(params: OltConnectionParams, ponInterface: string): Promise<DiscoveredAuthorizedOnu[]>;
   getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower>;
   authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }>;
   setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }>;

@@ -141,6 +141,11 @@ describe('OnuManagementService', () => {
         contractNumber: 'CLI-00123',
         client: { firstName: 'Maria', lastName: 'Perez' },
       }),
+      findOneBy: jest.fn().mockResolvedValue({
+        id: 'contract-1',
+        contractNumber: 'CLI-00123',
+        client: { firstName: 'Maria', lastName: 'Perez' },
+      }),
     };
 
     networkAccessRepo = {
@@ -161,6 +166,7 @@ describe('OnuManagementService', () => {
 
     zteDriver = {
       getUnconfiguredOnus: jest.fn(),
+      getAuthorizedOnus: jest.fn(),
       getOnuOpticalPower: jest.fn(),
       generateAuthorizationScript: jest.fn(),
       authorizeOnu: jest.fn(),
@@ -355,6 +361,127 @@ describe('OnuManagementService', () => {
       expect(updatePayload).not.toHaveProperty('status');
       expect(onuRepo.save).not.toHaveBeenCalled();
       expect(result[0].status).toBe('ACTIVE');
+    });
+  });
+
+  describe('scanAuthorizedOnus', () => {
+    it('importa como ACTIVE una ONU ya autorizada por otro sistema, sin llamar a authorizeOnu()', async () => {
+      zteDriver.getAuthorizedOnus.mockResolvedValue([
+        {
+          ponInterface: 'gpon-olt_1/2/1',
+          onuIndex: 'gpon-onu_1/2/1:2',
+          serialNumber: 'HWTC9A427958',
+          vendor: 'Huawei',
+          onuType: 'EG8141A5',
+          adminState: 'ENABLE',
+          phaseState: 'working',
+        },
+      ]);
+      onuRepo.findOneBy.mockResolvedValue(null); // no existía en nuestra base
+
+      const result = await service.scanAuthorizedOnus('olt-uuid-1', 'gpon-olt_1/2/1', 'admin-id');
+
+      expect(result).toHaveLength(1);
+      expect(zteDriver.getAuthorizedOnus).toHaveBeenCalledWith(expect.anything(), 'gpon-olt_1/2/1');
+      expect(zteDriver.authorizeOnu).not.toHaveBeenCalled();
+      expect(onuRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serialNumber: 'HWTC9A427958',
+          status: 'ACTIVE',
+          detectedBy: 'OLT_IMPORT',
+        }),
+      );
+      // Importada sin contrato -- vincular al cliente real es un paso manual
+      expect(onuRepo.create).toHaveBeenCalledWith(expect.not.objectContaining({ contractId: expect.anything() }));
+    });
+
+    it('importa como BLOCKED una ONU que la OLT reporta deshabilitada', async () => {
+      zteDriver.getAuthorizedOnus.mockResolvedValue([
+        {
+          ponInterface: 'gpon-olt_1/2/1',
+          onuIndex: 'gpon-onu_1/2/1:3',
+          serialNumber: 'RMTGCB52DE3A',
+          vendor: 'Desconocido',
+          adminState: 'DISABLE',
+          phaseState: 'OffLine',
+        },
+      ]);
+      onuRepo.findOneBy.mockResolvedValue(null);
+
+      await service.scanAuthorizedOnus('olt-uuid-1', 'gpon-olt_1/2/1', 'admin-id');
+
+      expect(onuRepo.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'BLOCKED' }));
+    });
+
+    it('nunca toca una ONU que ya existe en nuestra base (por serial)', async () => {
+      zteDriver.getAuthorizedOnus.mockResolvedValue([
+        {
+          ponInterface: 'gpon-olt_1/2/1',
+          onuIndex: 'gpon-onu_1/2/1:1',
+          serialNumber: 'ZTEGC0123456',
+          vendor: 'ZTE',
+          adminState: 'ENABLE',
+          phaseState: 'working',
+        },
+      ]);
+      onuRepo.findOneBy.mockResolvedValue(mockOnu); // ya existe
+
+      const result = await service.scanAuthorizedOnus('olt-uuid-1', 'gpon-olt_1/2/1', 'admin-id');
+
+      expect(result).toHaveLength(0);
+      expect(onuRepo.create).not.toHaveBeenCalled();
+      expect(onuRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('lanza 501 DRIVER_NOT_IMPLEMENTED si el fabricante no tiene getAuthorizedOnus (ej. HiOSO)', async () => {
+      const driverSinSoporte: any = { constructor: { name: 'HiosoDriver' } }; // sin getAuthorizedOnus
+      driverRegistry.resolve.mockReturnValue(driverSinSoporte);
+
+      await expect(
+        service.scanAuthorizedOnus('olt-uuid-1', 'gpon-olt_1/2/1', 'admin-id'),
+      ).rejects.toThrow(HttpException);
+    });
+
+    it('lanza NotFoundException si la OLT no existe', async () => {
+      oltRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(service.scanAuthorizedOnus('inexistente', 'gpon-olt_1/2/1')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('linkOnuToContract', () => {
+    it('vincula una ONU ACTIVE sin contrato, sin tocar la OLT', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: null, olt: mockOlt });
+
+      const result = await service.linkOnuToContract('onu-uuid-1', 'contract-1', 'admin-id');
+
+      expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', { contractId: 'contract-1' });
+      expect(zteDriver.authorizeOnu).not.toHaveBeenCalled();
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ rawDetails: expect.objectContaining({ operation: 'linkOnuToContract' }) }),
+      );
+      expect(result).toBeDefined();
+    });
+
+    it('rechaza vincular una ONU que no esté ACTIVE', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED', contractId: null, olt: mockOlt });
+
+      await expect(service.linkOnuToContract('onu-uuid-1', 'contract-1')).rejects.toThrow(BadRequestException);
+      expect(onuRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('rechaza vincular una ONU que ya tiene contrato (evita pisar un vínculo existente)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: 'contract-ya-vinculado', olt: mockOlt });
+
+      await expect(service.linkOnuToContract('onu-uuid-1', 'contract-1')).rejects.toThrow(BadRequestException);
+      expect(onuRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('lanza NotFoundException si el contrato no existe', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: null, olt: mockOlt });
+      contractRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(service.linkOnuToContract('onu-uuid-1', 'contrato-inexistente')).rejects.toThrow(NotFoundException);
     });
   });
 
