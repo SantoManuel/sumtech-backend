@@ -848,11 +848,21 @@ class ZteTelnetSession {
   private socket: net.Socket | null = null;
   private prompt = 'ZXAN#';
   private buffer = '';
+  // Instrumentación temporal (RF: bug real en producción, 2026-10-17 --
+  // "show gpon onu baseinfo" se cuelga completo en algunos puertos incluso
+  // ya serializado por OLT -- ver withOltTelnetLock -- y confirmado que la
+  // OLT responde normal en 1-2s cuando se prueba aislado inmediatamente
+  // después de la falla real. Sin visibilidad de HASTA DÓNDE llega la
+  // sesión real que se cuelga, no se puede diferenciar "nunca conectó" de
+  // "conectó pero dejó de recibir datos a mitad de una página". Se deja
+  // este logger hasta diagnosticar la próxima ocurrencia real.)
+  private readonly logger = new Logger(ZteTelnetSession.name);
 
   constructor(private readonly params: OltConnectionParams) {}
 
   async connectAndLogin(): Promise<void> {
     const timeoutMs = this.params.timeoutMs || 15000;
+    const t0 = Date.now();
 
     await new Promise<void>((resolve, reject) => {
       const socket = new net.Socket();
@@ -862,13 +872,14 @@ class ZteTelnetSession {
       const timer = setTimeout(() => {
         if (!resolved) {
           resolved = true;
+          this.logger.warn(`[diag] connectAndLogin TIMEOUT a los ${Date.now() - t0}ms en etapa ${loginStep} contra ${this.params.host}:${this.params.port}`);
           socket.destroy();
           reject(new Error(`Timeout de conexión Telnet (${timeoutMs}ms) contra ${this.params.host}:${this.params.port}`));
         }
       }, timeoutMs);
 
       socket.connect(this.params.port, this.params.host, () => {
-        // Conexión TCP establecida
+        this.logger.log(`[diag] TCP conectado a los ${Date.now() - t0}ms (${this.params.host}:${this.params.port})`);
       });
 
       let loginStep: 'WAIT_USER' | 'WAIT_PASS' | 'WAIT_PROMPT' = 'WAIT_USER';
@@ -906,6 +917,7 @@ class ZteTelnetSession {
               this.prompt = stripped;
               if (!resolved) {
                 resolved = true;
+                this.logger.log(`[diag] connectAndLogin OK a los ${Date.now() - t0}ms, prompt="${this.prompt}"`);
                 clearTimeout(timer);
                 resolve();
               }
@@ -939,8 +951,13 @@ class ZteTelnetSession {
       throw new Error('Socket Telnet no inicializado.');
     }
 
+    const t0 = Date.now();
+    this.logger.log(`[diag] executeCommand INICIO: "${command}" (timeout ${timeoutMs}ms)`);
+
     return new Promise<string>((resolve, reject) => {
       let output = '';
+      let chunkCount = 0;
+      let moreCount = 0;
       this.buffer = '';
 
       let finished = false;
@@ -948,16 +965,24 @@ class ZteTelnetSession {
         if (!finished) {
           finished = true;
           socket.removeListener('data', onData);
+          this.logger.warn(
+            `[diag] executeCommand TIMEOUT a los ${Date.now() - t0}ms: "${command}" -- ` +
+              `${chunkCount} chunk(s) recibido(s), ${output.length} chars acumulados, ${moreCount} "--More--" visto(s). ` +
+              `Últimos 300 chars: ${JSON.stringify(output.slice(-300))}`,
+          );
           reject(new Error(`Timeout ejecutando comando OLT: "${command}"`));
         }
       }, timeoutMs);
 
       const onData = (raw: Buffer) => {
+        chunkCount += 1;
         const cleaned = this.handleIac(raw);
         const chunk = cleaned.toString('ascii');
         output += chunk;
 
         if (output.includes('--More--') || output.toLowerCase().includes('-- more --')) {
+          moreCount += 1;
+          this.logger.log(`[diag] "--More--" #${moreCount} a los ${Date.now() - t0}ms (chunk #${chunkCount}, ${output.length} chars acumulados)`);
           output = output.replace(/--More--/gi, '');
           socket.write(' ');
           return;
@@ -970,6 +995,7 @@ class ZteTelnetSession {
           finished = true;
           clearTimeout(timer);
           socket.removeListener('data', onData);
+          this.logger.log(`[diag] executeCommand OK a los ${Date.now() - t0}ms: "${command}" -- ${chunkCount} chunk(s), ${output.length} chars, ${moreCount} "--More--"`);
 
           // Limpiar eco del comando y prompts
           const cleanLines = lines
