@@ -27,6 +27,7 @@ import {
   DriverNotImplementedError,
   UnknownOltVendorError,
 } from '../ports/olt-driver.port';
+import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
 
 @Injectable()
 export class OnuManagementService {
@@ -216,7 +217,9 @@ export class OnuManagementService {
 
     const driver = this.resolveDriver(olt);
     const connParams = await this.connectionResolver.resolve(olt);
-    const discovered = await this.callDriver(() => driver.getUnconfiguredOnus(connParams));
+    const discovered = await withOltTelnetLock(olt.id, () =>
+      this.callDriver(() => driver.getUnconfiguredOnus(connParams)),
+    );
 
     const savedOnus: OnuEntity[] = [];
 
@@ -299,12 +302,14 @@ export class OnuManagementService {
     const driver = this.resolveDriver(olt);
     const connParams = await this.connectionResolver.resolve(olt);
 
-    const discovered = await this.callDriver(() => {
-      if (!driver.getAuthorizedOnus) {
-        throw new DriverNotImplementedError(olt.vendor, 'getAuthorizedOnus');
-      }
-      return driver.getAuthorizedOnus(connParams, ponInterface);
-    });
+    const discovered = await withOltTelnetLock(olt.id, () =>
+      this.callDriver(() => {
+        if (!driver.getAuthorizedOnus) {
+          throw new DriverNotImplementedError(olt.vendor, 'getAuthorizedOnus');
+        }
+        return driver.getAuthorizedOnus(connParams, ponInterface);
+      }),
+    );
 
     const ponIface = await this.ifaceRepository.findOneBy({ oltId: olt.id, name: ponInterface });
 

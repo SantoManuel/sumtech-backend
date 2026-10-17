@@ -18,6 +18,7 @@ import {
   OltConnectionParams,
   UnknownOltVendorError,
 } from '../ports/olt-driver.port';
+import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
 
 @Injectable()
 export class OltMonitoringService {
@@ -113,47 +114,56 @@ export class OltMonitoringService {
     let memoryUsagePercent: number | undefined;
     let temperatureCelsius: number | undefined;
     let uptimeSeconds: number | undefined;
-
-    if (capabilities.systemHealth) {
-      try {
-        const health = await driver.getSystemHealth(connParams);
-        cpuUsagePercent = health.cpuUsagePercent;
-        memoryUsagePercent = health.memoryUsagePercent;
-        temperatureCelsius = health.temperatureCelsius;
-        uptimeSeconds = health.uptimeSeconds;
-      } catch (err: any) {
-        this.logger.warn(`[${olt.vendor}] Error consultando salud de OLT "${olt.name}": ${err.message}`);
-      }
-    }
-
     let cardsInfo: OltMetricEntity['cardsInfo'] = [];
-    if (capabilities.chassisCards) {
-      try {
-        const cards = await driver.getCards(connParams);
-        cardsInfo = cards.map((c) => ({
-          slot: String(c.slot),
-          cardType: c.cardType,
-          status: c.status,
-          ports: c.portCount,
-          softwareVersion: c.softVer,
-        }));
-      } catch (err: any) {
-        this.logger.warn(`[${olt.vendor}] Error consultando tarjetas de OLT "${olt.name}": ${err.message}`);
-      }
-    }
-
     // Alarmas reales: solo HiOSO tiene fuente real implementada (`show log
     // flash`, confirmado contra hardware real) -- ZTE/Huawei/HSGQ siguen sin
     // evidencia y quedan en `capabilities.alarms === false`. Nunca fabricar
     // una alarma a partir de otro dato simulado.
     let alarmsInfo: OltMetricEntity['alarmsInfo'] = [];
-    if (capabilities.alarms) {
-      try {
-        alarmsInfo = await driver.getAlarms(connParams);
-      } catch (err: any) {
-        this.logger.warn(`[${olt.vendor}] Error consultando alarmas de OLT "${olt.name}": ${err.message}`);
+
+    // Las 3 consultas Telnet de esta OLT se serializan entre sí Y contra
+    // cualquier otra operación Telnet sobre la misma OLT (ver
+    // withOltTelnetLock) -- bug real confirmado en producción: este cron y
+    // handleScheduledOnuDiscovery() comparten exactamente el mismo horario
+    // ('0 */15 * * * *'), y sin este lock ambos abren sesiones Telnet
+    // concurrentes contra el mismo equipo, que solo tolera una a la vez
+    // (se observó un cuelgue total, no solo lentitud, incluso con 180s de margen).
+    await withOltTelnetLock(olt.id, async () => {
+      if (capabilities.systemHealth) {
+        try {
+          const health = await driver.getSystemHealth(connParams);
+          cpuUsagePercent = health.cpuUsagePercent;
+          memoryUsagePercent = health.memoryUsagePercent;
+          temperatureCelsius = health.temperatureCelsius;
+          uptimeSeconds = health.uptimeSeconds;
+        } catch (err: any) {
+          this.logger.warn(`[${olt.vendor}] Error consultando salud de OLT "${olt.name}": ${err.message}`);
+        }
       }
-    }
+
+      if (capabilities.chassisCards) {
+        try {
+          const cards = await driver.getCards(connParams);
+          cardsInfo = cards.map((c) => ({
+            slot: String(c.slot),
+            cardType: c.cardType,
+            status: c.status,
+            ports: c.portCount,
+            softwareVersion: c.softVer,
+          }));
+        } catch (err: any) {
+          this.logger.warn(`[${olt.vendor}] Error consultando tarjetas de OLT "${olt.name}": ${err.message}`);
+        }
+      }
+
+      if (capabilities.alarms) {
+        try {
+          alarmsInfo = await driver.getAlarms(connParams);
+        } catch (err: any) {
+          this.logger.warn(`[${olt.vendor}] Error consultando alarmas de OLT "${olt.name}": ${err.message}`);
+        }
+      }
+    });
 
     const ponInterfacesCount = olt.interfaces?.filter((i) => i.type === 'PON').length;
 
