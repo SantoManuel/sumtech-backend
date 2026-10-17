@@ -268,16 +268,50 @@ export class ZteC320Driver implements IOltDriver {
         }
       }
 
-      // Agregar puertos Uplink GEI estándar de ZTE C320 (Slot 3 o 4: gei_1/3/1 a gei_1/3/4)
-      for (let p = 1; p <= 4; p++) {
-        interfaces.push({
-          name: `gei_1/3/${p}`,
-          type: 'UPLINK',
-          slot: 3,
-          port: p,
-          adminState: 'UP',
-          operState: 'UP',
-        });
+      // Descubrir uplinks GEI reales -- antes era hardcodeado (slot 3 fijo,
+      // 4 puertos fijos, estado "UP" inventado sin consultar nada). Bug real
+      // confirmado en vivo contra OLT_Tabara_Abajo: "show interface ?" en ese
+      // equipo nunca lista "gei_1/3" (la tarjeta PRAM de ese slot no expone
+      // interfaces GEI) -- el uplink real es "gei_1/4/1" (tarjeta SMXA, con
+      // tráfico real) y el rango de puertos es el portCount real de esa
+      // tarjeta en "show card" (3 en este equipo), no un 4 fijo. Se recorren
+      // las tarjetas EN SERVICIO que no sean GPON/EPON (esas ya se cubrieron
+      // arriba) y se consulta cada puerto real; si el comando devuelve un
+      // error del equipo ("%Error <código>: ..."), ese puerto no existe y se
+      // omite sin inventar nada.
+      for (const card of cards) {
+        if (card.status.toUpperCase() !== 'INSERVICE') continue;
+        const cardType = card.cardType.toUpperCase();
+        if (cardType.startsWith('GTG') || cardType.startsWith('GFG')) continue;
+
+        for (let port = 1; port <= card.portCount; port++) {
+          const ifaceName = `gei_1/${card.slot}/${port}`;
+          try {
+            const ifaceOut = await session.executeCommand(`show interface ${ifaceName}`, 15000);
+            if (/%Error\s+\d+:/i.test(ifaceOut) || !ifaceOut.includes(ifaceName)) {
+              continue;
+            }
+
+            const adminState = new RegExp(`${ifaceName}\\s+is\\s+up`, 'i').test(ifaceOut) ? 'UP' : 'DOWN';
+            const operState = /line protocol is\s+up/i.test(ifaceOut) ? 'UP' : 'DOWN';
+
+            const inMatch = ifaceOut.match(/input rate\s*:\s*(\d+)\s*Bps/i);
+            const outMatch = ifaceOut.match(/output rate\s*:\s*(\d+)\s*Bps/i);
+
+            interfaces.push({
+              name: ifaceName,
+              type: 'UPLINK',
+              slot: card.slot,
+              port,
+              adminState,
+              operState,
+              inputBps: inMatch ? parseInt(inMatch[1], 10) : undefined,
+              outputBps: outMatch ? parseInt(outMatch[1], 10) : undefined,
+            });
+          } catch (err: any) {
+            this.logger.warn(`Error inspeccionando uplink ${ifaceName}: ${err.message}`);
+          }
+        }
       }
 
       return interfaces;

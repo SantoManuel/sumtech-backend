@@ -1,0 +1,8 @@
+gei_1/4/3 is down,  line protocol is down,  detect status is OK
+  Description is none
+  The port negotiation is enable
+  The port is electric
+  Duplex auto
+  Last clearing of "show interface" counters never
+   20 seconds input rate :                  0 Bps,                0 pps
+   20 seconds output rate:                  0 Bps,                0 pps

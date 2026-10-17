@@ -123,6 +123,51 @@ describe('ZteC320Driver', () => {
     expect(executeCommand).not.toHaveBeenCalledWith('show interface gpon-olt_1/1/1', expect.anything());
   });
 
+  it('discoverInterfaces() descubre uplinks GEI reales en vez del bloque hardcodeado (bug real: gei_1/3 fijo no existe en este chasis)', async () => {
+    const fixturesDir = path.join(__dirname, '../../../../test/fixtures/zte-c320');
+    const cardList = fs.readFileSync(path.join(fixturesDir, 'show_card_tabara_abajo.txt'), 'utf8');
+    const geiUp = fs.readFileSync(path.join(fixturesDir, 'show_interface_gei_1_4_1_up.txt'), 'utf8');
+    const geiDown = fs.readFileSync(path.join(fixturesDir, 'show_interface_gei_1_4_3_down.txt'), 'utf8');
+    const geiInvalid = '\n                                       ^\n%Error 20202: Invalid input detected at \'^\' marker.Invalid parameter\n';
+
+    const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+      if (cmd === 'show card') return Promise.resolve(cardList);
+      if (cmd === 'show interface gei_1/4/1') return Promise.resolve(geiUp);
+      if (cmd === 'show interface gei_1/4/3') return Promise.resolve(geiDown);
+      // slot 3 (PRAM) y el resto de puertos de slot 4 no existen en este chasis real
+      return Promise.resolve(geiInvalid);
+    });
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.discoverInterfaces({
+      host: '10.0.0.10',
+      port: 23,
+      username: 'admin',
+      password: 'password',
+    });
+
+    const uplinks = result.filter((i) => i.type === 'UPLINK');
+    expect(uplinks).toHaveLength(2); // solo los puertos 1 y 3 existen de verdad -- el 2 no
+    expect(uplinks.map((u) => u.name).sort()).toEqual(['gei_1/4/1', 'gei_1/4/3']);
+
+    const portUp = uplinks.find((u) => u.name === 'gei_1/4/1')!;
+    expect(portUp.slot).toBe(4);
+    expect(portUp.adminState).toBe('UP');
+    expect(portUp.operState).toBe('UP');
+
+    const portDown = uplinks.find((u) => u.name === 'gei_1/4/3')!;
+    expect(portDown.adminState).toBe('DOWN');
+    expect(portDown.operState).toBe('DOWN');
+
+    // Nunca debió reportar el bloque hardcodeado del slot 3 (PRAM no tiene interfaces GEI reales)
+    expect(uplinks.some((u) => u.slot === 3)).toBe(false);
+  });
+
   it('parsea correctamente el inventario de tarjetas del chasis (show card)', async () => {
     const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_card.txt');
     const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
