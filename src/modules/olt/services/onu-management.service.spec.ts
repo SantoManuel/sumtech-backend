@@ -646,6 +646,104 @@ describe('OnuManagementService', () => {
     });
   });
 
+  describe('reprovisionOnu', () => {
+    const mockConfig = {
+      onuId: 'onu-uuid-1',
+      serviceVlanId: 'vlan-1',
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+      wanMode: 'PPPOE',
+      appliedVersion: 1,
+      desiredVersion: 1,
+    };
+
+    it('rechaza reconfigurar una ONU que no esté ACTIVE', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+
+      await expect(service.reprovisionOnu('onu-uuid-1', {}, 'admin-id')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(configRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rechaza reconfigurar una ONU ACTIVE que nunca tuvo onu_service_config', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE' });
+      configRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(service.reprovisionOnu('onu-uuid-1', {}, 'admin-id')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('actualiza onu_service_config SIN llamar al driver.authorizeOnu (no re-dispara el CLI de la OLT)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: 'contract-1', onuTypeId: 'type-1' });
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+
+      await service.reprovisionOnu('onu-uuid-1', {
+        managementMethod: 'TR069',
+        tr069NetworkId: 'tr069-1',
+        operationMode: 'BRIDGE',
+      }, 'admin-id');
+
+      expect(zteDriver.authorizeOnu).not.toHaveBeenCalled();
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          managementMethod: 'TR069',
+          tr069NetworkId: 'tr069-1',
+          operationMode: 'BRIDGE',
+          appliedVersion: 2,
+          desiredVersion: 2,
+        }),
+      );
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'PROVISION', status: 'SUCCESS', rawDetails: expect.objectContaining({ operation: 'reprovisionOnu' }) }),
+      );
+    });
+
+    it('con managementMethod TR069, reintenta el push a GenieACS y marca cpeConfigured:true', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: 'contract-1', onuTypeId: 'type-1' });
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+
+      const result = await service.reprovisionOnu('onu-uuid-1', {
+        managementMethod: 'TR069',
+        tr069NetworkId: 'tr069-1',
+      }, 'admin-id');
+
+      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serialNumber: mockOnu.serialNumber,
+          managementServer: expect.objectContaining({ acsUrl: 'http://10.46.0.1:7547/' }),
+        }),
+      );
+      expect((result as any).cpeConfigured).toBe(true);
+    });
+
+    it('si el push a GenieACS falla, no revierte la configuración guardada y marca cpeConfigured:false con advertencia', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: 'contract-1', onuTypeId: 'type-1' });
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      cpeConfiguratorService.configureCpe.mockRejectedValue(new Error('CPE no respondió al primer Inform'));
+
+      const result = await service.reprovisionOnu('onu-uuid-1', {
+        managementMethod: 'TR069',
+        tr069NetworkId: 'tr069-1',
+      }, 'admin-id');
+
+      expect(configRepo.save).toHaveBeenCalled();
+      expect((result as any).cpeConfigured).toBe(false);
+      expect((result as any).cpeConfigWarning).toContain('GenieACS');
+    });
+
+    it('con managementMethod OMCI, no llama a GenieACS', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE' });
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+
+      const result = await service.reprovisionOnu('onu-uuid-1', { managementMethod: 'OMCI' }, 'admin-id');
+
+      expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
+      expect((result as any).cpeConfigured).toBeUndefined();
+    });
+  });
+
   describe('blockOnu & unblockOnu', () => {
     it('bloquea la ONU en la OLT y cambia su estado a BLOCKED', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE' });

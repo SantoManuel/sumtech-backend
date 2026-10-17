@@ -120,6 +120,23 @@ export class OnuController {
   }
 
   /**
+   * Reconfigura método de gestión / VLANs de gestión / modo de operación de
+   * una ONU ya autorizada y reintenta el push a GenieACS, sin volver a
+   * disparar el CLI de autorización en la OLT.
+   */
+  @Post(':id/reprovision')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async reprovisionOnu(
+    @Param('id') id: string,
+    @Body() dto: any,
+    @Req() req: any,
+  ) {
+    return this.onuService.reprovisionOnu(id, dto, req.user?.id);
+  }
+
+  /**
    * Bloqueo administrativo de tráfico óptico en la OLT (RF-OLT-017).
    */
   @Post(':id/block')

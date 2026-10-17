@@ -578,6 +578,127 @@ export class OnuManagementService {
   }
 
   /**
+   * Reconfigura el método de gestión / modo de operación / VLANs de gestión
+   * de una ONU YA autorizada, y reintenta el push a GenieACS -- SIN volver a
+   * disparar el comando CLI de autorización en la OLT. VLAN de servicio y
+   * perfil de velocidad son parámetros que sí viven en la OLT física: no se
+   * tocan aquí, cambiarlos requiere re-autorizar (authorizeOnu). Pensado
+   * para el caso "quiero cambiar de TR-069 a OMCI" o "reintentar el push a
+   * GenieACS" sin repetir toda la operación de autorización.
+   */
+  async reprovisionOnu(id: string, dto: any, actorUserId?: string) {
+    const onu = await this.findById(id);
+    if (onu.status !== 'ACTIVE') {
+      throw new BadRequestException(
+        'Solo se puede reconfigurar el aprovisionamiento de una ONU que ya esté autorizada (ACTIVE). Usa "Autorizar y Aprovisionar" primero.',
+      );
+    }
+    const olt = onu.olt;
+
+    let config = await this.configRepository.findOneBy({ onuId: onu.id });
+    if (!config) {
+      throw new BadRequestException(
+        'Esta ONU no tiene configuración de servicio previa -- usa "Autorizar y Aprovisionar" primero.',
+      );
+    }
+
+    config.mgmtVlanId = dto.mgmtVlanId || undefined;
+    config.tr069VlanId = dto.tr069VlanId || undefined;
+    config.tr069NetworkId = dto.tr069NetworkId || undefined;
+    config.managementMethod = dto.managementMethod || config.managementMethod;
+    config.operationMode = dto.operationMode || config.operationMode;
+    config.wanMode = dto.wanMode || config.wanMode;
+    config.appliedVersion += 1;
+    config.desiredVersion = config.appliedVersion;
+    config.applyStatus = 'APPLIED';
+    await this.configRepository.save(config);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'PROVISION',
+      status: 'SUCCESS',
+      message: `[${olt.vendor}] Reconfiguración de aprovisionamiento aplicada para ONU ${onu.serialNumber} (sin re-autorizar en la OLT).`,
+      actorUserId,
+      rawDetails: { onuId: onu.id, oltId: olt.id, vendor: olt.vendor, operation: 'reprovisionOnu' },
+    });
+
+    // Reintentar push a GenieACS con los parámetros (posiblemente nuevos) de
+    // gestión. Mismo manejo best-effort que en authorizeOnu paso 4: nunca
+    // debe hacer fallar la reconfiguración ya guardada en BD.
+    let cpeConfigured: boolean | undefined;
+    let cpeConfigWarning: string | undefined;
+
+    let serviceVlan = 100;
+    if (config.serviceVlanId) {
+      const v = await this.vlanRepository.findOneBy({ id: config.serviceVlanId });
+      if (v) serviceVlan = v.vlanId;
+    }
+
+    if (config.managementMethod === 'TR069' && config.tr069NetworkId) {
+      try {
+        const tr069Network = await this.tr069Repository.findOneBy({ id: config.tr069NetworkId });
+        if (!tr069Network) {
+          throw new Error(`Red TR-069 "${config.tr069NetworkId}" no encontrada.`);
+        }
+        const onuType = onu.onuTypeId ? await this.onuTypeRepository.findOneBy({ id: onu.onuTypeId }) : null;
+        const wanMode = config.wanMode || 'PPPOE';
+
+        let pppoeUsername: string | undefined;
+        let pppoePassword: string | undefined;
+        if (wanMode === 'PPPOE' && onu.contractId) {
+          const networkAccess = await this.networkAccessRepository.findOneBy({ contractId: onu.contractId });
+          if (networkAccess) {
+            pppoeUsername = networkAccess.username || undefined;
+            pppoePassword = networkAccess.pppoePasswordEnc
+              ? decryptCredential(networkAccess.pppoePasswordEnc)
+              : undefined;
+          }
+        }
+
+        await this.cpeConfiguratorService.configureCpe({
+          serialNumber: onu.serialNumber,
+          vendor: onuType?.vendor,
+          model: onuType?.model,
+          tenantSlug: this.tenantContext.getSlug(),
+          operationMode: config.operationMode || 'ROUTER',
+          wanMode,
+          pppoeUsername,
+          pppoePassword,
+          wanStaticIp: wanMode === 'STATIC' ? dto.wanStaticIp : undefined,
+          wanStaticMask: wanMode === 'STATIC' ? dto.wanStaticMask : undefined,
+          wanStaticGw: wanMode === 'STATIC' ? dto.wanStaticGw : undefined,
+          serviceVlan,
+          managementServer: {
+            acsUrl: tr069Network.acsUrl,
+            acsUsername: tr069Network.acsUsername || undefined,
+            acsPassword: tr069Network.acsPasswordEnc ? decryptCredential(tr069Network.acsPasswordEnc) : undefined,
+            connReqUsername: tr069Network.connReqUsername || undefined,
+            connReqPassword: tr069Network.connReqPasswordEnc
+              ? decryptCredential(tr069Network.connReqPasswordEnc)
+              : undefined,
+            informIntervalSec: tr069Network.informIntervalSec,
+          },
+        });
+        cpeConfigured = true;
+      } catch (err: any) {
+        cpeConfigured = false;
+        cpeConfigWarning = `Configuración guardada, pero no se pudo aplicar vía GenieACS: ${err.message}`;
+        await this.deviceOperationLogger.logEvent({
+          nodeId: olt.viaNodeId || olt.id,
+          eventType: 'PROVISION',
+          status: 'FAILURE',
+          message: `[${olt.vendor}] Reconfiguración de ONU ${onu.serialNumber} guardada pero no se pudo aplicar vía GenieACS: ${err.message}`,
+          actorUserId,
+          rawDetails: { onuId: onu.id, oltId: olt.id, operation: 'reprovisionOnu.configureCpe' },
+        });
+      }
+    }
+
+    const saved = await this.findById(onu.id);
+    return { ...saved, cpeConfigured, cpeConfigWarning };
+  }
+
+  /**
    * Bloquea el tráfico óptico de la ONU (RF-OLT-017).
    */
   async blockOnu(id: string, actorUserId?: string) {
