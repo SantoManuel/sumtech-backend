@@ -1,0 +1,24 @@
+Shelf                        : 1
+epm                          :
+FanControlType               : temperature-control
+TemperatureThreshold         : 20  36  44  51 (deg c)
+FanSpeedLevelPercent         : 20%  35%  50%  75%
+CriticalTemperatureThreshold : 160(deg c)
+HighTemperatureThreshold     : 65(deg c)
+LowTemperatureThreshold      : -20(deg c)
+Environment Temperature      : 36(deg c)
+EnvTemperatureProtect        : disable
+EnvPowerMode                 : Mains Supply
+CardCritialTempProtection    : disable
+OpticalCriticalTempProtection: enable
+EnvPowerOffProtect           : disable
+Upper Fanboard Status        : online
+FAN FW Version               :
+Fan Temperature              : N/A.(deg c)
+All fan units actual status:
+----------------------------------------------
+FanUnitId     SpeedLevel     ActualSpeed(RPM)
+----------------------------------------------
+1             3              3402
+2             3              3336
+----------------------------------------------

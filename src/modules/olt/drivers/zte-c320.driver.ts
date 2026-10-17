@@ -80,13 +80,81 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
-   * CPU/memoria/temperatura del chasis: sin evidencia real capturada todavía
-   * (los fixtures existentes solo cubren show system-group, show card, ONUs
-   * y potencia óptica). No inventar el comando — requiere una fase de
-   * reconocimiento read-only aparte contra la OLT de producción real.
+   * CPU/memoria/temperatura del chasis (RF-OLT-005). Comandos confirmados
+   * contra una OLT C320 real en producción (OLT_Tabara_Abajo, 2026-10-17) y
+   * respaldados por el manual oficial "ZXA10 C300 Configuration Manual (CLI)"
+   * §1.3.5 "Showing Cards" (`show card slotno <N>` expone Cpu-Usage/Mem-Usage/
+   * Uptime por tarjeta) y §1.3.9 "Configuring Fans" (`show fan` expone
+   * "Environment Temperature"). No existe un único slot "de control" fijo por
+   * nombre de tipo -- varía por chasis (SCXN en el manual, SMXA en este
+   * equipo real) -- así que se recorren las tarjetas EN SERVICIO devueltas
+   * por `show card` y se usa la primera cuyo detalle traiga Cpu-Usage real
+   * (las tarjetas sin CPU propio, ej. PRAM, devuelven esos campos vacíos).
    */
   async getSystemHealth(params: OltConnectionParams): Promise<OltSystemHealth> {
-    throw new DriverNotImplementedError(VENDOR, 'getSystemHealth');
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const cardListOutput = await session.executeCommand('show card');
+      const cards = this.parseCards(cardListOutput);
+
+      let cpuUsagePercent: number | undefined;
+      let memoryUsagePercent: number | undefined;
+      let uptimeSeconds: number | undefined;
+      let rawDetail = '';
+
+      for (const card of cards) {
+        if (card.status !== 'INSERVICE') continue;
+        const detail = await session.executeCommand(`show card slotno ${card.slot}`);
+        const cpuMatch = detail.match(/Cpu-Usage\s*:\s*(\d+)%/i);
+        const memMatch = detail.match(/Mem-Usage\s*:\s*(\d+)%/i);
+        if (!cpuMatch || !memMatch) continue;
+
+        cpuUsagePercent = parseInt(cpuMatch[1], 10);
+        memoryUsagePercent = parseInt(memMatch[1], 10);
+        const uptimeMatch = detail.match(/Uptime\s*:\s*([^\r\n]+)/i);
+        uptimeSeconds = uptimeMatch ? this.parseZteUptimeToSeconds(uptimeMatch[1].trim()) : undefined;
+        rawDetail = detail.slice(0, 500);
+        break;
+      }
+
+      const fanOutput = await session.executeCommand('show fan');
+      const tempMatch = fanOutput.match(/Environment Temperature\s*:?\s*(-?\d+)/i);
+      const temperatureCelsius = tempMatch ? parseInt(tempMatch[1], 10) : undefined;
+
+      return {
+        cpuUsagePercent,
+        memoryUsagePercent,
+        temperatureCelsius,
+        uptimeSeconds,
+        raw: rawDetail || fanOutput.slice(0, 500),
+      };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * Parsea el formato de uptime real de "show card slotno <N>" en este
+   * equipo: "122 Days, 3 Hours, 37 Minutes, 13 Seconds" (coincide con el
+   * mismo uptime reportado por "show system-group" -- confirmado en vivo).
+   */
+  private parseZteUptimeToSeconds(raw: string): number | undefined {
+    const dayMatch = raw.match(/(\d+)\s*Days?/i);
+    const hourMatch = raw.match(/(\d+)\s*Hours?/i);
+    const minuteMatch = raw.match(/(\d+)\s*Minutes?/i);
+    const secondMatch = raw.match(/(\d+)\s*Seconds?/i);
+
+    if (!dayMatch && !hourMatch && !minuteMatch && !secondMatch) {
+      return undefined;
+    }
+
+    const days = dayMatch ? parseInt(dayMatch[1], 10) : 0;
+    const hours = hourMatch ? parseInt(hourMatch[1], 10) : 0;
+    const minutes = minuteMatch ? parseInt(minuteMatch[1], 10) : 0;
+    const seconds = secondMatch ? parseInt(secondMatch[1], 10) : 0;
+
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds;
   }
 
   /**
@@ -618,7 +686,7 @@ export class ZteC320Driver implements IOltDriver {
     return {
       testConnection: true,
       systemInfo: true,
-      systemHealth: false,
+      systemHealth: true,
       chassisCards: true,
       discoverInterfaces: true,
       configureVlan: true,

@@ -1,0 +1,18 @@
+Config-Type   : PRAM      Status        : INSERVICE
+Port-Number   : 3
+Cpu-Alarm-Threshold : 100%
+Mem-Alarm-Threshold : 100%
+
+Real-Type     : PRAM      Serial-Number : 737411500129
+Phy-Mem-Size  :           Main-CPU      :
+M-CODE        :           Hardware-VER  : V1.0.0
+Cpld-VER      :           Fpga-VER      :
+OtherfirmwareVER:
+
+BootROM-VER   :
+Software-VER  :
+Cpu-Usage     :
+Mem-Usage     :
+C-Code        : 00000000000000000000000000000000000000
+Uptime        :
+Last restart reason : Power-off

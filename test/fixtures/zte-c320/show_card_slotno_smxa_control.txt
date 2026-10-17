@@ -1,0 +1,18 @@
+Config-Type   : SMXA      Status        : INSERVICE
+Port-Number   : 3
+Cpu-Alarm-Threshold : 100%
+Mem-Alarm-Threshold : 100%
+
+Real-Type     : SMXA      Serial-Number : 724809300268
+Phy-Mem-Size  : 2048MB    Main-CPU      : PowerPC Processor
+M-CODE        : 131201    Hardware-VER  : V1.0.0
+Cpld-VER      : V2.3      Fpga-VER      : V2.1.0
+OtherfirmwareVER:9522(R2.3.2)
+
+BootROM-VER   : V4.0.13    2017-04-26  9:53:13
+Software-VER  : V2.1.0    2017-01-17 01:04:45
+Cpu-Usage     : 9%
+Mem-Usage     : 26%
+C-Code        : 00000000000000000000000000000000000000
+Uptime        : 122 Days, 3 Hours, 37 Minutes, 13 Seconds
+Last restart reason : Power-off

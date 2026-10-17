@@ -114,10 +114,74 @@ describe('ZteC320Driver', () => {
     expect(result[4].portCount).toBe(1);
   });
 
-  it('getSystemHealth() sigue señalando DRIVER_NOT_IMPLEMENTED: sin evidencia real de CPU/memoria/temperatura', async () => {
-    await expect(
-      driver.getSystemHealth({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' }),
-    ).rejects.toThrow('no está implementada');
+  it('lee CPU/memoria/uptime/temperatura reales -- recorre tarjetas EN SERVICIO hasta encontrar la que trae CPU (RF-OLT-005)', async () => {
+    const fixturesDir = path.join(__dirname, '../../../../test/fixtures/zte-c320');
+    const cardList = fs.readFileSync(path.join(fixturesDir, 'show_card_tabara_abajo.txt'), 'utf8');
+    const pramDetail = fs.readFileSync(path.join(fixturesDir, 'show_card_slotno_pram_no_cpu.txt'), 'utf8');
+    const smxaDetail = fs.readFileSync(path.join(fixturesDir, 'show_card_slotno_smxa_control.txt'), 'utf8');
+    const fanOutput = fs.readFileSync(path.join(fixturesDir, 'show_fan.txt'), 'utf8');
+
+    const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+      if (cmd === 'show card') return Promise.resolve(cardList);
+      if (cmd === 'show card slotno 2') return Promise.resolve(pramDetail); // GTGH: sin Cpu-Usage tampoco, misma forma vacia
+      if (cmd === 'show card slotno 3') return Promise.resolve(pramDetail);
+      if (cmd === 'show card slotno 4') return Promise.resolve(smxaDetail);
+      if (cmd === 'show fan') return Promise.resolve(fanOutput);
+      throw new Error(`comando inesperado en el test: ${cmd}`);
+    });
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.getSystemHealth({
+      host: '10.0.0.10',
+      port: 23,
+      username: 'admin',
+      password: 'password',
+    });
+
+    expect(result.cpuUsagePercent).toBe(9);
+    expect(result.memoryUsagePercent).toBe(26);
+    expect(result.temperatureCelsius).toBe(36);
+    // 122 dias, 3 horas, 37 minutos, 13 segundos
+    expect(result.uptimeSeconds).toBe(122 * 86400 + 3 * 3600 + 37 * 60 + 13);
+
+    // Se detuvo en el primer slot con CPU real (4): no debió consultar mas alla
+    expect(executeCommand).toHaveBeenCalledWith('show card slotno 4');
+    expect(executeCommand).not.toHaveBeenCalledWith('show card slotno 5');
+  });
+
+  it('reporta campos undefined (no inventa datos) si ninguna tarjeta trae Cpu-Usage real', async () => {
+    const fixturesDir = path.join(__dirname, '../../../../test/fixtures/zte-c320');
+    const cardList = fs.readFileSync(path.join(fixturesDir, 'show_card_tabara_abajo.txt'), 'utf8');
+    const pramDetail = fs.readFileSync(path.join(fixturesDir, 'show_card_slotno_pram_no_cpu.txt'), 'utf8');
+    const fanOutput = fs.readFileSync(path.join(fixturesDir, 'show_fan.txt'), 'utf8');
+
+    // Todas las tarjetas devuelven el mismo detalle sin CPU -- simula un
+    // chasis donde ninguna tarjeta reporta Cpu-Usage (nunca inventar un valor).
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockImplementation((cmd: string) =>
+        cmd === 'show card' ? Promise.resolve(cardList) : cmd === 'show fan' ? Promise.resolve(fanOutput) : Promise.resolve(pramDetail),
+      ),
+      close: jest.fn(),
+    });
+
+    const result = await driver.getSystemHealth({
+      host: '10.0.0.10',
+      port: 23,
+      username: 'admin',
+      password: 'password',
+    });
+
+    expect(result.cpuUsagePercent).toBeUndefined();
+    expect(result.memoryUsagePercent).toBeUndefined();
+    expect(result.uptimeSeconds).toBeUndefined();
+    // La temperatura es independiente de las tarjetas -- sigue viniendo de "show fan"
+    expect(result.temperatureCelsius).toBe(36);
   });
 
   it('parsea correctamente la telemetría de potencia óptica en dBm (RF-OLT-015)', async () => {
