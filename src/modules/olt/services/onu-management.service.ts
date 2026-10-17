@@ -210,7 +210,7 @@ export class OnuManagementService {
     const savedOnus: OnuEntity[] = [];
 
     for (const item of discovered) {
-      let existing = await this.onuRepository.findOneBy({
+      const existing = await this.onuRepository.findOneBy({
         oltId: olt.id,
         serialNumber: item.serialNumber,
       });
@@ -222,7 +222,7 @@ export class OnuManagementService {
       });
 
       if (!existing) {
-        existing = this.onuRepository.create({
+        const created = this.onuRepository.create({
           oltId: olt.id,
           ponInterfaceId: ponIface?.id,
           onuIndex: item.onuIndex,
@@ -232,13 +232,29 @@ export class OnuManagementService {
           detectedBy: 'OLT_POLL',
           detectedAt: new Date(),
         });
-      } else {
-        existing.onuIndex = item.onuIndex;
-        if (ponIface) existing.ponInterfaceId = ponIface.id;
-        existing.lastSeenAt = new Date();
+        savedOnus.push(await this.onuRepository.save(created));
+        continue;
       }
 
-      savedOnus.push(await this.onuRepository.save(existing));
+      // UPDATE dirigido solo a estos 3 campos -- NUNCA un save(existing)
+      // completo. `existing` se leyó al INICIO de este loop, y el escaneo de
+      // una OLT con varios puertos PON implica varias sesiones Telnet reales
+      // que pueden tardar segundos. Si en esa ventana alguien autoriza esta
+      // misma ONU (status pasa a ACTIVE en la BD real), un save() de la
+      // entidad completa reescribe TODAS sus columnas con el snapshot viejo
+      // en memoria -- revirtiendo la autorización a UNCONFIGURED en
+      // silencio, sin error visible (bug real confirmado en producción,
+      // 2026-10-17). Mismo criterio ya usado en getOpticalTelemetry().
+      const lastSeenAt = new Date();
+      await this.onuRepository.update(existing.id, {
+        onuIndex: item.onuIndex,
+        ...(ponIface ? { ponInterfaceId: ponIface.id } : {}),
+        lastSeenAt,
+      });
+      existing.onuIndex = item.onuIndex;
+      if (ponIface) existing.ponInterfaceId = ponIface.id;
+      existing.lastSeenAt = lastSeenAt;
+      savedOnus.push(existing);
     }
 
     await this.deviceOperationLogger.logEvent({

@@ -312,6 +312,36 @@ describe('OnuManagementService', () => {
 
       await expect(service.scanUnconfiguredOnus('inexistente')).rejects.toThrow(NotFoundException);
     });
+
+    it('para una ONU ya existente, usa update() dirigido en vez de save() completo -- nunca debe reescribir status (bug real 2026-10-17: un save() completo pisaba en silencio una autorización concurrente)', async () => {
+      zteDriver.getUnconfiguredOnus.mockResolvedValue([
+        {
+          onuIndex: 'gpon-onu_1/1/1:1',
+          serialNumber: 'ZTEGC0123456',
+          vendor: 'ZTE',
+          ponInterface: 'gpon-olt_1/1/1',
+        },
+      ]);
+      // Esta ONU ya existe y ya fue autorizada (status ACTIVE) -- el escaneo
+      // solo debe actualizar onuIndex/ponInterfaceId/lastSeenAt, nunca tocar status.
+      const existingActiveOnu = { ...mockOnu, id: 'onu-uuid-1', status: 'ACTIVE', contractId: 'contract-1' };
+      onuRepo.findOneBy.mockResolvedValue(existingActiveOnu);
+
+      const result = await service.scanUnconfiguredOnus('olt-uuid-1', 'admin-id');
+
+      expect(onuRepo.update).toHaveBeenCalledWith(
+        'onu-uuid-1',
+        expect.objectContaining({ onuIndex: 'gpon-onu_1/1/1:1', ponInterfaceId: 'iface-1' }),
+      );
+      // El objeto pasado a update() nunca debe incluir 'status' -- si algún
+      // día alguien vuelve a meter un save(entidadCompleta), este assert no
+      // lo detectaría, pero si se agrega 'status' al payload de update() a
+      // propósito, debe hacerse explícito y revisado, no colado sin querer.
+      const updatePayload = onuRepo.update.mock.calls[0][1];
+      expect(updatePayload).not.toHaveProperty('status');
+      expect(onuRepo.save).not.toHaveBeenCalled();
+      expect(result[0].status).toBe('ACTIVE');
+    });
   });
 
   describe('getOpticalTelemetry', () => {

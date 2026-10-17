@@ -9,6 +9,7 @@ import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
 import { TenantIteratorService } from '../../../common/tenancy/tenant-iterator.service';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
+import { OnuManagementService } from './onu-management.service';
 import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { NO_DRIVER_CAPABILITIES } from '../ports/olt-driver.port';
 
@@ -51,6 +52,10 @@ describe('OltMonitoringService', () => {
     runForEachActiveTenant: jest.fn().mockImplementation((_label: string, fn: () => Promise<void>) => fn()),
   };
 
+  const mockOnuManagementService = {
+    scanUnconfiguredOnus: jest.fn().mockResolvedValue([]),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -65,6 +70,7 @@ describe('OltMonitoringService', () => {
         { provide: ReachabilityResolver, useValue: mockReachability },
         { provide: OltDriverRegistry, useValue: mockDriverRegistry },
         { provide: TenantIteratorService, useValue: mockTenantIterator },
+        { provide: OnuManagementService, useValue: mockOnuManagementService },
       ],
     }).compile();
 
@@ -313,6 +319,46 @@ describe('OltMonitoringService', () => {
 
       expect(mockMetricRepo.save).not.toHaveBeenCalled();
       expect(mockMetricRepo.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleScheduledOnuDiscovery (escaneo periódico de ONUs sin configurar)', () => {
+    it('recorre tenants activos y escanea cada OLT activa reutilizando scanUnconfiguredOnus', async () => {
+      mockOltRepo.find.mockResolvedValue([
+        { ...baseOlt, id: 'olt-1', name: 'OLT 1' },
+        { ...baseOlt, id: 'olt-2', name: 'OLT 2' },
+      ]);
+      mockOnuManagementService.scanUnconfiguredOnus.mockResolvedValue([{ id: 'onu-nueva' }]);
+
+      await service.handleScheduledOnuDiscovery();
+
+      expect(mockTenantIterator.runForEachActiveTenant).toHaveBeenCalledWith('onu-unconfigured-scan', expect.any(Function));
+      expect(mockOltRepo.find).toHaveBeenCalledWith({ where: { isActive: true } });
+      expect(mockOnuManagementService.scanUnconfiguredOnus).toHaveBeenCalledTimes(2);
+      expect(mockOnuManagementService.scanUnconfiguredOnus).toHaveBeenCalledWith('olt-1');
+      expect(mockOnuManagementService.scanUnconfiguredOnus).toHaveBeenCalledWith('olt-2');
+    });
+
+    it('una OLT que falla (ej. fabricante sin getUnconfiguredOnus implementado) no aborta el escaneo del resto', async () => {
+      mockOltRepo.find.mockResolvedValue([
+        { ...baseOlt, id: 'olt-bad', name: 'OLT Caída' },
+        { ...baseOlt, id: 'olt-ok', name: 'OLT OK' },
+      ]);
+      mockOnuManagementService.scanUnconfiguredOnus
+        .mockRejectedValueOnce(new Error('[HUAWEI] la operación "getUnconfiguredOnus" todavía no está implementada'))
+        .mockResolvedValueOnce([]);
+
+      await expect(service.handleScheduledOnuDiscovery()).resolves.not.toThrow();
+
+      expect(mockOnuManagementService.scanUnconfiguredOnus).toHaveBeenCalledTimes(2);
+    });
+
+    it('no hace nada si no hay OLTs activas en el tenant', async () => {
+      mockOltRepo.find.mockResolvedValue([]);
+
+      await service.handleScheduledOnuDiscovery();
+
+      expect(mockOnuManagementService.scanUnconfiguredOnus).not.toHaveBeenCalled();
     });
   });
 

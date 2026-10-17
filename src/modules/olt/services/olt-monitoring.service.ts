@@ -12,6 +12,7 @@ import { ReachabilityResolver } from '../../network-connectivity/services/reacha
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { TenantIteratorService } from '../../../common/tenancy/tenant-iterator.service';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
+import { OnuManagementService } from './onu-management.service';
 import {
   IOltDriver,
   OltConnectionParams,
@@ -36,6 +37,7 @@ export class OltMonitoringService {
     private readonly reachabilityResolver: ReachabilityResolver,
     private readonly driverRegistry: OltDriverRegistry,
     private readonly tenantIterator: TenantIteratorService,
+    private readonly onuManagementService: OnuManagementService,
   ) {}
 
   /**
@@ -229,6 +231,36 @@ export class OltMonitoringService {
       }
 
       await this.cleanupOldMetrics();
+    });
+  }
+
+  /**
+   * Escaneo periódico de ONUs sin configurar (RF-OLT-014) cada 15 minutos.
+   * Antes de esto, `scanUnconfiguredOnus()` solo se disparaba cuando un
+   * admin hacía clic en "Escanear" a mano -- una ONU recién conectada en
+   * campo podía quedar invisible en el panel hasta que alguien recordara
+   * entrar y escanear esa OLT. Reutiliza el mismo método que el botón manual
+   * (ya corregido para no pisar con un save() completo el status de una ONU
+   * que se autorizó justo durante el escaneo, ver scanUnconfiguredOnus()) --
+   * mismo patrón que handleScheduledMetricsPolling(): una OLT caída o un
+   * fabricante sin `getUnconfiguredOnus()` implementado no debe abortar el
+   * escaneo del resto.
+   */
+  @Cron('0 */15 * * * *')
+  async handleScheduledOnuDiscovery(): Promise<void> {
+    await this.tenantIterator.runForEachActiveTenant('onu-unconfigured-scan', async () => {
+      const olts = await this.oltRepository.find({ where: { isActive: true } });
+      if (olts.length === 0) return;
+
+      this.logger.log(`Escaneo periódico de ONUs sin configurar para ${olts.length} OLT(s)...`);
+      for (const olt of olts) {
+        try {
+          const discovered = await this.onuManagementService.scanUnconfiguredOnus(olt.id);
+          this.logger.log(`[${olt.vendor}] OLT "${olt.name}": ${discovered.length} ONU(s) detectada(s) en el escaneo periódico.`);
+        } catch (err: any) {
+          this.logger.warn(`Escaneo periódico de ONUs falló para OLT "${olt.name}": ${err.message}`);
+        }
+      }
     });
   }
 
