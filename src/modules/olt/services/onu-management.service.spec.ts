@@ -248,6 +248,20 @@ describe('OnuManagementService', () => {
       expect(onuQueryBuilder.skip).toHaveBeenCalledWith(20);
       expect(onuQueryBuilder.take).toHaveBeenCalledWith(10);
     });
+
+    it('con un único status, filtra con igualdad', async () => {
+      await service.findAll({ status: 'ACTIVE' } as any);
+
+      expect(onuQueryBuilder.andWhere).toHaveBeenCalledWith('onu.status = :status', { status: 'ACTIVE' });
+    });
+
+    it('con status separado por comas, filtra con IN (usado por "ONUs Aprovisionadas" para excluir UNCONFIGURED)', async () => {
+      await service.findAll({ status: 'AUTHORIZING,ACTIVE,BLOCKED,OFFLINE,LOS,ERROR' } as any);
+
+      expect(onuQueryBuilder.andWhere).toHaveBeenCalledWith('onu.status IN (:...statuses)', {
+        statuses: ['AUTHORIZING', 'ACTIVE', 'BLOCKED', 'OFFLINE', 'LOS', 'ERROR'],
+      });
+    });
   });
 
   describe('findUnconfigured', () => {

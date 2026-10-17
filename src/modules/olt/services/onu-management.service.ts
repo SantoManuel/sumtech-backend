@@ -144,7 +144,18 @@ export class OnuManagementService {
       qb.andWhere('onu.oltId = :oltId', { oltId: dto.oltId });
     }
     if (dto?.status) {
-      qb.andWhere('onu.status = :status', { status: dto.status });
+      // Acepta un único status ("ACTIVE") o una lista separada por comas
+      // ("ACTIVE,BLOCKED,OFFLINE") -- usado por la pestaña "ONUs
+      // Aprovisionadas" de /dashboard/red para pedir explícitamente "todo
+      // menos UNCONFIGURED" sin reinterpretar "sin filtro" como "todos los
+      // estados" (antes incluía UNCONFIGURED en una vista que por nombre no
+      // debería mostrarlas -- ver bug reportado 2026-10-17).
+      const statuses = dto.status.split(',').map((s) => s.trim()).filter(Boolean);
+      if (statuses.length > 1) {
+        qb.andWhere('onu.status IN (:...statuses)', { statuses });
+      } else {
+        qb.andWhere('onu.status = :status', { status: statuses[0] });
+      }
     }
     if (dto?.search) {
       const q = `%${dto.search}%`;
