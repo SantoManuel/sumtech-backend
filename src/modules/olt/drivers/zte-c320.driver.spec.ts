@@ -1,6 +1,7 @@
-import { ZteC320Driver } from './zte-c320.driver';
+import { ZteC320Driver, ZteTelnetSession } from './zte-c320.driver';
 import * as fs from 'fs';
 import * as path from 'path';
+import { EventEmitter } from 'events';
 
 describe('ZteC320Driver', () => {
   let driver: ZteC320Driver;
@@ -529,5 +530,57 @@ describe('ZteC320Driver', () => {
   it('tr069AutoProvisioning se mantiene en false pese a tener código real (mismo criterio que dbaProfile), con nota que lo distingue de "no implementado"', () => {
     expect(driver.getCapabilities().tr069AutoProvisioning).toBe(false);
     expect(driver.getCapabilityNotes().tr069AutoProvisioning).toMatch(/tr069-mgmt/i);
+  });
+});
+
+describe('ZteTelnetSession.executeCommand() -- bug real de producción (2026-10-17)', () => {
+  // Fake socket mínimo: EventEmitter + write(), igual a la interfaz que
+  // net.Socket expone y que executeCommand() consume.
+  function createFakeSocket() {
+    const emitter = new EventEmitter() as EventEmitter & { write: jest.Mock; removeListener: any };
+    emitter.write = jest.fn();
+    return emitter;
+  }
+
+  it('resuelve aunque el "--More--" final y el prompt de retorno lleguen en el MISMO chunk (la OLT no siempre espera la tecla de avance)', async () => {
+    const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+    const fakeSocket = createFakeSocket();
+    (session as any).socket = fakeSocket;
+
+    // Reproduce exactamente el log real: 3 páginas "--More--" seguidas del
+    // contenido final + el prompt, todo en una sola emisión de 'data' (tal
+    // como ocurrió contra OLT_Tabara_Abajo, puerto 1/2/5).
+    const finalChunk =
+      'gpon-onu_1/2/5:40   HUAWEY-BT54 sn      SN:HWTC469FB39E         ready\r\n' +
+      '                    6XG                                         \r\n' +
+      '--More--' +
+      ' \b \b\b \b\b \b\b \b\b \b\b \b\b \b\b \b\b \bOLT-TABARA-ABAJO#';
+
+    const promise = session.executeCommand('show gpon onu baseinfo gpon-olt_1/2/5', 5000);
+
+    fakeSocket.emit('data', Buffer.from('gpon-onu_1/2/5:1 ... ready\r\n--More--'));
+    fakeSocket.emit('data', Buffer.from(finalChunk));
+
+    const result = await promise;
+
+    expect(result).toContain('HWTC469FB39E');
+    // La corrección clave: NO debe quedar colgado esperando un chunk que
+    // nunca llega porque la OLT ya mandó todo (incluido el prompt).
+  });
+
+  it('sigue funcionando en el caso normal: "--More--" en un chunk, contenido+prompt en el siguiente', async () => {
+    const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+    const fakeSocket = createFakeSocket();
+    (session as any).socket = fakeSocket;
+
+    const promise = session.executeCommand('show card', 5000);
+
+    fakeSocket.emit('data', Buffer.from('Rack Shelf Slot ...\r\n--More--'));
+    fakeSocket.emit('data', Buffer.from('Rack Shelf Slot resto...\r\nOLT-TABARA-ABAJO#'));
+
+    const result = await promise;
+
+    expect(result).toContain('resto');
+    expect(fakeSocket.write).toHaveBeenCalledWith(' ');
   });
 });

@@ -844,7 +844,7 @@ export class ZteC320Driver implements IOltDriver {
  * Sesión Telnet de bajo nivel para ZTE C320 con protocolo IAC (RFC 854),
  * bypass de paginación (--More--), saneamiento ANSI y detección de prompts.
  */
-class ZteTelnetSession {
+export class ZteTelnetSession {
   private socket: net.Socket | null = null;
   private prompt = 'ZXAN#';
   private buffer = '';
@@ -888,11 +888,12 @@ class ZteTelnetSession {
         const cleaned = this.handleIac(raw);
         this.buffer += cleaned.toString('ascii');
 
-        // Paginación Telnet ZTE: si aparece --More--, enviar barra espaciadora
+        // Paginación Telnet ZTE: si aparece --More--, enviar barra espaciadora.
+        // No retornar: esta OLT a veces envía el resto (incl. el prompt) en el
+        // mismo chunk que el "--More--", así que hay que seguir evaluando.
         if (this.buffer.includes('--More--') || this.buffer.toLowerCase().includes('-- more --')) {
           this.buffer = this.buffer.replace(/--More--/gi, '');
           socket.write(' ');
-          return;
         }
 
         if (loginStep === 'WAIT_USER' && /username:\s*$/i.test(this.buffer.trim())) {
@@ -985,7 +986,12 @@ class ZteTelnetSession {
           this.logger.log(`[diag] "--More--" #${moreCount} a los ${Date.now() - t0}ms (chunk #${chunkCount}, ${output.length} chars acumulados)`);
           output = output.replace(/--More--/gi, '');
           socket.write(' ');
-          return;
+          // No retornar aquí: esta OLT a veces envía la página final y el
+          // prompt de vuelta en el MISMO chunk que el último "--More--" (no
+          // espera a que el cliente confirme antes de seguir transmitiendo).
+          // Si se retorna sin revisar el prompt, la sesión se queda esperando
+          // un chunk que nunca llega -- esto causaba el cuelgue hasta el
+          // timeout de 180s en puertos con muchas ONUs/páginas.
         }
 
         const lines = output.split('\n');
