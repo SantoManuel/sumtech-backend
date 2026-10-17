@@ -203,25 +203,32 @@ export class ZteC320Driver implements IOltDriver {
       const cardOutput = await session.executeCommand('show card');
       const interfaces: DiscoveredInterface[] = [];
 
-      // Detectar slots GPON desde `show card` (ej. GTGO = 8 puertos, GTGH = 16 puertos)
-      const slotMatches = cardOutput.matchAll(/^\s*1\s+(\d+)\s+(\w+)\s+(REAL_\w+|\w+)?\s+(\w+)/gim);
+      // Detectar slots GPON/EPON reusando el MISMO parser ya verificado que
+      // usa getCards()/getSystemHealth() (parseCards()). Este método tenía su
+      // propia regex ad-hoc que desalineaba las 3 columnas numéricas
+      // iniciales de "show card" (Rack/Shelf/Slot) -- confundía Shelf con
+      // Slot y RealType con Status, así que NUNCA reconocía una tarjeta real
+      // como "INSERVICE" y siempre caía al fallback hardcodeado (slot 1,
+      // GTGO, 8 puertos) -- bug real confirmado en vivo contra OLT_Tabara_Abajo
+      // (tarjeta GPON real: slot 2, tipo GTGH, 16 puertos; "0 puertos
+      // detectados" en el escaneo). El número de puertos tampoco se adivina
+      // más: se usa `portCount` real de la tabla, no una tabla fija GTGO=8/resto=16.
+      const cards = this.parseCards(cardOutput);
       const gponSlots: Array<{ slot: number; cardType: string; ports: number }> = [];
 
-      for (const m of slotMatches) {
-        const slot = parseInt(m[1], 10);
-        const cardType = m[2].toUpperCase();
-        const status = (m[4] || '').toUpperCase();
-
-        if (status.includes('INSERVICE') || status.includes('OK') || status.includes('ONLINE')) {
-          if (cardType.startsWith('GTG') || cardType.startsWith('GFG')) {
-            const ports = cardType === 'GTGO' ? 8 : 16;
-            gponSlots.push({ slot, cardType, ports });
-          }
+      for (const card of cards) {
+        if (card.status.toUpperCase() !== 'INSERVICE') continue;
+        const cardType = card.cardType.toUpperCase();
+        if (cardType.startsWith('GTG') || cardType.startsWith('GFG')) {
+          gponSlots.push({ slot: card.slot, cardType, ports: card.portCount });
         }
       }
 
-      // Si no se detectaron tarjetas explícitas (ej. simulador o OLT compacta), escanear slot 1 y 2
+      // Último recurso real (equipo simulado/sin tarjetas detectables) -- no
+      // debería dispararse nunca contra un chasis real con parseCards() ya
+      // funcionando correctamente.
       if (gponSlots.length === 0) {
+        this.logger.warn('No se detectó ninguna tarjeta GPON/EPON "INSERVICE" en "show card" -- usando slot 1/GTGO/8 puertos como último recurso.');
         gponSlots.push({ slot: 1, cardType: 'GTGO', ports: 8 });
       }
 

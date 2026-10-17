@@ -83,6 +83,46 @@ describe('ZteC320Driver', () => {
     expect(result[1].vendor).toBe('Huawei');
   });
 
+  it('discoverInterfaces() detecta el slot/puertos GPON reales -- no cae al fallback hardcodeado (bug real: Tarjetas Rack/Shelf/Slot desalineadas)', async () => {
+    const fixturesDir = path.join(__dirname, '../../../../test/fixtures/zte-c320');
+    const cardList = fs.readFileSync(path.join(fixturesDir, 'show_card_tabara_abajo.txt'), 'utf8');
+
+    // La tarjeta GPON real de este chasis es slot 2 (GTGH, 16 puertos) -- NO
+    // el slot 1/GTGO/8-puertos del fallback. Devolvemos un "show interface"
+    // sintético solo para satisfacer el parseo posterior (adminState/operState),
+    // no es una captura real -- lo que se está probando es que el método
+    // consulta el slot/puerto correcto, no el formato exacto de esa salida.
+    const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+      if (cmd === 'show card') return Promise.resolve(cardList);
+      if (cmd.startsWith('show interface gpon-olt_1/2/')) {
+        return Promise.resolve('gpon-olt_1/2/1 is up, line protocol is up\nNumber of registered onus is 3\nInput rate: 1000 Bps\nOutput rate: 2000 Bps');
+      }
+      return Promise.resolve('Invalid input');
+    });
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.discoverInterfaces({
+      host: '10.0.0.10',
+      port: 23,
+      username: 'admin',
+      password: 'password',
+    });
+
+    const ponInterfaces = result.filter((i) => i.type === 'PON');
+    expect(ponInterfaces).toHaveLength(16); // portCount real de la tarjeta GTGH, no el fallback de 8
+    expect(ponInterfaces[0].name).toBe('gpon-olt_1/2/1');
+    expect(ponInterfaces[0].slot).toBe(2);
+    expect(ponInterfaces[0].registeredOnus).toBe(3);
+
+    // Nunca debió consultar el slot 1 (fallback) -- la tarjeta GPON real está en el slot 2
+    expect(executeCommand).not.toHaveBeenCalledWith('show interface gpon-olt_1/1/1', expect.anything());
+  });
+
   it('parsea correctamente el inventario de tarjetas del chasis (show card)', async () => {
     const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_card.txt');
     const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
