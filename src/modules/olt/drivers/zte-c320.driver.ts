@@ -635,11 +635,15 @@ export class ZteC320Driver implements IOltDriver {
       dbaProfile: false,
       vlanTranslation: false,
       alarms: false,
+      tr069AutoProvisioning: false,
     };
   }
 
   getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>> {
-    return {};
+    return {
+      tr069AutoProvisioning:
+        'El driver ya envía "tr069-mgmt" al autorizar (sintaxis de documentación pública del C320), pero no se ha confirmado contra un equipo real -- mismo criterio ya aplicado a dbaProfile en este driver.',
+    };
   }
 }
 

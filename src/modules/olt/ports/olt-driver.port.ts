@@ -152,6 +152,18 @@ export interface OltDriverCapabilities {
    * fabricar una alarma a partir de otro dato (ver olt-monitoring.service.ts).
    */
   alarms: boolean;
+  /**
+   * El driver manda un comando real (OMCI/CLI) que apunta la ONU al ACS
+   * (GenieACS) desde la propia OLT al autorizarla, para que el equipo pueda
+   * hacer su primer Inform sin configuración manual. Distinto de todas las
+   * capacidades de arriba: estas son operaciones de OLT/VLAN/ancho de banda,
+   * esta es específicamente sobre TR-069/WAN. `false` puede significar dos
+   * cosas muy distintas según el driver (ver su `getCapabilityNotes()`):
+   * "sin evidencia todavía" (ej. ZTE, que ya tiene código real sin confirmar
+   * contra hardware) o "esta familia de hardware no tiene este mecanismo en
+   * absoluto" (EPON — ver HiosoDriver).
+   */
+  tr069AutoProvisioning: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -170,6 +182,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   dbaProfile: false,
   vlanTranslation: false,
   alarms: false,
+  tr069AutoProvisioning: false,
 };
 
 /**

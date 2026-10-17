@@ -325,4 +325,9 @@ describe('ZteC320Driver', () => {
     ).rejects.toThrow('no está implementada');
     expect(driver.getCapabilities().alarms).toBe(false);
   });
+
+  it('tr069AutoProvisioning se mantiene en false pese a tener código real (mismo criterio que dbaProfile), con nota que lo distingue de "no implementado"', () => {
+    expect(driver.getCapabilities().tr069AutoProvisioning).toBe(false);
+    expect(driver.getCapabilityNotes().tr069AutoProvisioning).toMatch(/tr069-mgmt/i);
+  });
 });

@@ -17,7 +17,7 @@ describe('HiosoDriver', () => {
     expect(driver).toBeDefined();
   });
 
-  it('solo declara capacidades reales: todo menos chassisCards (sin chasis modular en este hardware)', () => {
+  it('solo declara capacidades reales: todo menos chassisCards (sin chasis modular) y tr069AutoProvisioning (EPON sin mecanismo para esto)', () => {
     expect(driver.getCapabilities()).toEqual({
       testConnection: true,
       systemInfo: true,
@@ -34,13 +34,19 @@ describe('HiosoDriver', () => {
       dbaProfile: false,
       vlanTranslation: false,
       alarms: true,
+      tr069AutoProvisioning: false,
     });
   });
 
   it('getCapabilityNotes() explica chassisCards como "no aplica" (hardware sin chasis modular), no como "falta implementar"', () => {
     const notes = driver.getCapabilityNotes();
     expect(notes.chassisCards).toMatch(/sin chasis modular/i);
-    expect(Object.keys(notes)).toEqual(['chassisCards']);
+    expect(Object.keys(notes).sort()).toEqual(['chassisCards', 'tr069AutoProvisioning']);
+  });
+
+  it('getCapabilityNotes() explica tr069AutoProvisioning como ausencia arquitectónica EPON, no como "falta implementar"', () => {
+    const notes = driver.getCapabilityNotes();
+    expect(notes.tr069AutoProvisioning).toMatch(/EPON/i);
   });
 
   it('devuelve ok:false con mensaje legible si el host OLT no es alcanzable', async () => {

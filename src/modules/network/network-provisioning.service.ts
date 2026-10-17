@@ -221,7 +221,7 @@ export class NetworkProvisioningService {
     clientId: string,
     contractId: string,
     actorUserId?: string,
-  ): Promise<{ hasPassword: boolean; password?: string }> {
+  ): Promise<{ hasPassword: boolean; password?: string; username?: string }> {
     await this.assertContractBelongsToClient(clientId, contractId);
 
     const access = await this.accessRepository.findOneBy({ contractId });
@@ -229,8 +229,12 @@ export class NetworkProvisioningService {
       throw new NotFoundException(`No hay acceso de red configurado para el contrato ${contractId}`);
     }
 
+    // El username se devuelve siempre (no es secreto, ya es visible en
+    // "Editar Secret PPPoE") -- útil para paneles que necesitan mostrar
+    // "usuario + contraseña" juntos (ej. datos de aprovisionamiento manual
+    // de una ONU) sin una segunda llamada.
     if (!access.pppoePasswordEnc) {
-      return { hasPassword: false };
+      return { hasPassword: false, username: access.username || undefined };
     }
 
     await this.recordAudit(
@@ -242,7 +246,11 @@ export class NetworkProvisioningService {
       actorUserId,
     );
 
-    return { hasPassword: true, password: decryptCredential(access.pppoePasswordEnc) };
+    return {
+      hasPassword: true,
+      password: decryptCredential(access.pppoePasswordEnc),
+      username: access.username || undefined,
+    };
   }
 
   /**

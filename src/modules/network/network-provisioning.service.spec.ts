@@ -609,7 +609,7 @@ describe('NetworkProvisioningService', () => {
 
       const result = await service.revealPppoePassword('client-1', 'contract-1', 'user-42');
 
-      expect(result).toEqual({ hasPassword: true, password: 'ClaveRealDelCliente123' });
+      expect(result).toEqual({ hasPassword: true, password: 'ClaveRealDelCliente123', username: 't1' });
       expect(auditRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           accessId: 'access-9',
@@ -627,7 +627,7 @@ describe('NetworkProvisioningService', () => {
 
       const result = await service.revealPppoePassword('client-1', 'contract-1', 'user-42');
 
-      expect(result).toEqual({ hasPassword: false });
+      expect(result).toEqual({ hasPassword: false, username: 't1' });
       expect(auditRepo.save).not.toHaveBeenCalled();
     });
 

@@ -765,6 +765,7 @@ export class HiosoDriver implements IOltDriver {
   getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>> {
     return {
       chassisCards: 'Este equipo (HAT7304VXD-ADC) es una unidad EPON compacta de 4 puertos, sin chasis modular ni tarjetas intercambiables -- esta sección no aplica a este modelo.',
+      tr069AutoProvisioning: 'Este hardware EPON no tiene ningún comando para apuntar la ONU al ACS desde la OLT -- generateAuthorizationScript() solo registra la ONU, aplica ancho de banda y etiqueta VLAN, nunca toca WAN/TR-069. El WAN debe configurarse manualmente en la propia ONU.',
     };
   }
 }
