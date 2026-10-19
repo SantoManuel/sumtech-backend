@@ -34,6 +34,7 @@ import { EnsurePppoeServerDto } from './dto/ensure-pppoe-server.dto';
 import { EnsureAcsAutoProvisioningDto } from './dto/ensure-acs-auto-provisioning.dto';
 import { CreateRouterOsProfileDto, UpdateRouterOsProfileDto } from './dto/routeros-profile.dto';
 import { SyncCatalogProfilesDto } from './dto/sync-catalog-profiles.dto';
+import { SetNodeVlanPppPoolDto } from './dto/set-node-vlan-ppp-pool.dto';
 
 /** Protegido por SaasFeatureGuard: el tenant debe tener contratado el módulo MIKROTIK. */
 @Controller('network/nodes')
@@ -310,8 +311,19 @@ export class NetworkNodesController {
   /** IPs libres del pool de este nodo (RF: sugerencia automática al configurar un secret PPPoE/DHCP). */
   @Get(':id/ppp/pools/available-ips')
   @Roles(Role.ADMIN, Role.GERENTE)
-  async getAvailableIps(@Param('id') id: string, @Query('pool') pool?: string) {
-    return this.pppManagementService.getAvailableIps(id, { poolName: pool });
+  async getAvailableIps(@Param('id') id: string, @Query('pool') pool?: string, @Query('vlanId') vlanId?: string) {
+    return this.pppManagementService.getAvailableIps(id, { poolName: pool, vlanId });
+  }
+
+  /** Asigna (o quita, con string vacío) el pool de IP a sugerir para Secrets PPPoE de esta VLAN en este nodo -- no toca RouterOS, el pool ya debe existir ahí. */
+  @Patch(':id/vlans/:vlanId/ppp-pool')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async setNodeVlanPppPool(
+    @Param('id') id: string,
+    @Param('vlanId') vlanId: string,
+    @Body() dto: SetNodeVlanPppPoolDto,
+  ) {
+    return this.infrastructureService.setVlanPppPool(id, vlanId, dto.pppPool);
   }
 
   @Post(':id/ppp/profiles')

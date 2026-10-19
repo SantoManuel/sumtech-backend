@@ -169,6 +169,29 @@ export class NetworkNodeInfrastructureService {
   }
 
   /**
+   * Asigna (o quita, con string vacío) qué pool de IP (/ip/pool) debe
+   * sugerirse para Secrets PPPoE de clientes en esta VLAN de este nodo --
+   * solo escribe en la base de datos de Sumtech, no toca RouterOS (el pool
+   * ya debe existir ahí, administrado desde la pestaña "Pools de
+   * Direcciones IP"). Ver migración 091 y `PppManagementService.getAvailableIps`.
+   */
+  async setVlanPppPool(nodeId: string, vlanId: string, pppPool: string): Promise<NetworkNodeVlanEntity> {
+    const nodeVlan = await this.nodeVlanRepository.findOne({ where: { nodeId, vlanId }, relations: ['vlan'] });
+    if (!nodeVlan) {
+      throw new NotFoundException(
+        `No hay una VLAN sincronizada para este nodo todavía — sincroniza primero la VLAN (Fase A).`,
+      );
+    }
+    // .update() en vez de mutar + save(): TypeORM ignora propiedades
+    // `undefined` al guardar una entidad completa (no limpia la columna),
+    // así que para poder "quitar" la asignación (string vacío -> NULL) hace
+    // falta pasar `null` explícito por esta vía.
+    await this.nodeVlanRepository.update({ id: nodeVlan.id }, { pppPool: pppPool.trim() || null } as any);
+    nodeVlan.pppPool = pppPool.trim() || undefined;
+    return nodeVlan;
+  }
+
+  /**
    * Descubre las sub-interfaces VLAN que REALMENTE existen en el router,
    * comparadas contra lo que Sumtech ya tiene registrado en
    * `net.network_node_vlans`. Solo lectura -- no crea nada todavía (ver

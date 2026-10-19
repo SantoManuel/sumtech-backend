@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkAccessEntity } from '../entities/network-access.entity';
+import { NetworkNodeVlanEntity } from '../entities/network-node-vlan.entity';
 import { ROUTEROS_CLIENT_FACTORY, RouterOsClientFactory, RouterOsClientLike } from '../routeros/routeros-client-factory';
 import { RouterOsPppSecret, RouterOsActivePppSession, RouterOsIpPool } from '../routeros/routeros-client';
 import { resolveRouterOsCredentials } from '../routeros/routeros-credentials';
@@ -113,6 +114,8 @@ export class PppManagementService {
     private readonly nodeRepository: Repository<NetworkNodeEntity>,
     @InjectRepository(NetworkAccessEntity)
     private readonly accessRepository: Repository<NetworkAccessEntity>,
+    @InjectRepository(NetworkNodeVlanEntity)
+    private readonly nodeVlanRepository: Repository<NetworkNodeVlanEntity>,
     @InjectRepository(PlanEntity)
     private readonly planRepository: Repository<PlanEntity>,
     @Inject(ROUTEROS_CLIENT_FACTORY)
@@ -491,7 +494,7 @@ export class PppManagementService {
    */
   async getAvailableIps(
     nodeId: string,
-    options?: { poolName?: string; limit?: number },
+    options?: { poolName?: string; vlanId?: string; limit?: number },
   ): Promise<{
     nodeId: string;
     nodeName: string;
@@ -507,10 +510,23 @@ export class PppManagementService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const poolName = options?.poolName?.trim() || node.defaultPppPool;
+    // Prioridad: pool explícito (query param) > pool propio de la VLAN
+    // elegida (net.network_node_vlans.ppp_pool, ver migración 091) > pool
+    // default del nodo completo -- un nodo con una sola VLAN de servicio
+    // sigue funcionando solo con el default; uno con varias VLANs necesita
+    // el pool por VLAN para no sugerir IPs de la subred equivocada.
+    let vlanPool: string | undefined;
+    if (!options?.poolName?.trim() && options?.vlanId) {
+      const nodeVlan = await this.nodeVlanRepository.findOne({ where: { nodeId, vlanId: options.vlanId } });
+      vlanPool = nodeVlan?.pppPool || undefined;
+    }
+
+    const poolName = options?.poolName?.trim() || vlanPool || node.defaultPppPool;
     if (!poolName) {
       throw new BadRequestException(
-        `El nodo "${node.name}" no tiene un pool de IP por defecto configurado (defaultPppPool). Configúralo en el nodo o indica un pool explícito.`,
+        options?.vlanId
+          ? `Ni la VLAN elegida ni el nodo "${node.name}" tienen un pool de IP configurado. Asígnalo en la pestaña "Pools de Direcciones IP".`
+          : `El nodo "${node.name}" no tiene un pool de IP por defecto configurado (defaultPppPool). Configúralo en el nodo o indica un pool explícito.`,
       );
     }
 

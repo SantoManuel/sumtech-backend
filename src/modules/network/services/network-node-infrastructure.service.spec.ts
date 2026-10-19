@@ -32,6 +32,7 @@ describe('NetworkNodeInfrastructureService', () => {
       findOne: jest.fn(),
       create: jest.fn((dto) => ({ ...dto })),
       save: jest.fn((entity) => Promise.resolve({ ...entity, id: entity.id || 'nv-1' })),
+      update: jest.fn().mockResolvedValue(undefined),
       find: jest.fn(),
       delete: jest.fn().mockResolvedValue(undefined),
     };
@@ -185,6 +186,31 @@ describe('NetworkNodeInfrastructureService', () => {
       expect(ensurePppoeClient).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'sumtech-wan-pppoe', parentInterface: 'ether1', user: 'isp-user', password: 'isp-pass' }),
       );
+    });
+  });
+
+  describe('setVlanPppPool', () => {
+    it('lanza NotFoundException si no hay una VLAN sincronizada para ese nodo', async () => {
+      nodeVlanRepo.findOne = jest.fn().mockResolvedValue(null);
+      await expect(service.setVlanPppPool('node-1', 'vlan-1', 'pool-vlan400')).rejects.toThrow(NotFoundException);
+    });
+
+    it('asigna el pool con update() y lo refleja en la entidad devuelta', async () => {
+      nodeVlanRepo.findOne = jest.fn().mockResolvedValue({ id: 'nv-1', nodeId: 'node-1', vlanId: 'vlan-1', vlan });
+
+      const result = await service.setVlanPppPool('node-1', 'vlan-1', 'pool-vlan400');
+
+      expect(nodeVlanRepo.update).toHaveBeenCalledWith({ id: 'nv-1' }, { pppPool: 'pool-vlan400' });
+      expect(result.pppPool).toBe('pool-vlan400');
+    });
+
+    it('string vacío limpia la asignación (NULL explícito, no undefined)', async () => {
+      nodeVlanRepo.findOne = jest.fn().mockResolvedValue({ id: 'nv-1', nodeId: 'node-1', vlanId: 'vlan-1', vlan, pppPool: 'pool-vlan400' });
+
+      const result = await service.setVlanPppPool('node-1', 'vlan-1', '');
+
+      expect(nodeVlanRepo.update).toHaveBeenCalledWith({ id: 'nv-1' }, { pppPool: null });
+      expect(result.pppPool).toBeUndefined();
     });
   });
 

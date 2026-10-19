@@ -4,6 +4,7 @@ import { NotFoundException, GatewayTimeoutException, BadRequestException } from 
 import { PppManagementService, expandIpPoolRanges } from './ppp-management.service';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkAccessEntity } from '../entities/network-access.entity';
+import { NetworkNodeVlanEntity } from '../entities/network-node-vlan.entity';
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { ROUTEROS_CLIENT_FACTORY } from '../routeros/routeros-client-factory';
 import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
@@ -13,6 +14,7 @@ describe('PppManagementService', () => {
   let service: PppManagementService;
   let nodeRepo: any;
   let accessRepo: any;
+  let nodeVlanRepo: any;
   let planRepo: any;
   let clientFactory: jest.Mock;
   let reachabilityResolver: any;
@@ -45,6 +47,9 @@ describe('PppManagementService', () => {
       update: jest.fn().mockResolvedValue(undefined),
       createQueryBuilder: jest.fn(),
     };
+    nodeVlanRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+    };
     planRepo = {
       find: jest.fn(),
     };
@@ -66,6 +71,7 @@ describe('PppManagementService', () => {
         PppManagementService,
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
         { provide: getRepositoryToken(NetworkAccessEntity), useValue: accessRepo },
+        { provide: getRepositoryToken(NetworkNodeVlanEntity), useValue: nodeVlanRepo },
         { provide: getRepositoryToken(PlanEntity), useValue: planRepo },
         { provide: ROUTEROS_CLIENT_FACTORY, useValue: clientFactory },
         { provide: ReachabilityResolver, useValue: reachabilityResolver },
@@ -625,6 +631,65 @@ describe('PppManagementService', () => {
       nodeRepo.findOneBy.mockResolvedValue(null);
 
       await expect(service.getAvailableIps('invalid-id')).rejects.toThrow(NotFoundException);
+    });
+
+    it('con vlanId, usa el pool propio de esa VLAN en vez del defaultPppPool del nodo (multi-VLAN)', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      nodeVlanRepo.findOne.mockResolvedValue({ nodeId: 'node-1', vlanId: 'vlan-200', pppPool: 'pool-vlan200' });
+      accessRepo.createQueryBuilder.mockReturnValue(makeAccessQueryBuilder([]));
+      clientFactory.mockReturnValue({
+        getIpPools: jest.fn().mockResolvedValue([
+          { id: '*1', name: 'pool-clientes', ranges: '10.0.1.1-10.0.1.2' },
+          { id: '*2', name: 'pool-vlan200', ranges: '10.0.200.1-10.0.200.2' },
+        ]),
+        getPppSecrets: jest.fn().mockResolvedValue([]),
+        getUsedPoolAddresses: jest.fn().mockResolvedValue([]),
+      });
+
+      const result = await service.getAvailableIps('node-1', { vlanId: 'vlan-200' });
+
+      expect(nodeVlanRepo.findOne).toHaveBeenCalledWith({ where: { nodeId: 'node-1', vlanId: 'vlan-200' } });
+      expect(result.poolName).toBe('pool-vlan200');
+      expect(result.available).toEqual(['10.0.200.1', '10.0.200.2']);
+    });
+
+    it('con vlanId pero sin pool propio para esa VLAN, cae al defaultPppPool del nodo', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      nodeVlanRepo.findOne.mockResolvedValue({ nodeId: 'node-1', vlanId: 'vlan-200', pppPool: undefined });
+      accessRepo.createQueryBuilder.mockReturnValue(makeAccessQueryBuilder([]));
+      clientFactory.mockReturnValue({
+        getIpPools: jest.fn().mockResolvedValue([{ id: '*1', name: 'pool-clientes', ranges: '10.0.1.1-10.0.1.2' }]),
+        getPppSecrets: jest.fn().mockResolvedValue([]),
+        getUsedPoolAddresses: jest.fn().mockResolvedValue([]),
+      });
+
+      const result = await service.getAvailableIps('node-1', { vlanId: 'vlan-200' });
+
+      expect(result.poolName).toBe('pool-clientes');
+    });
+
+    it('un poolName explícito gana sobre el pool propio de la VLAN', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(mockNode);
+      accessRepo.createQueryBuilder.mockReturnValue(makeAccessQueryBuilder([]));
+      clientFactory.mockReturnValue({
+        getIpPools: jest.fn().mockResolvedValue([{ id: '*1', name: 'pool-manual', ranges: '10.0.9.1-10.0.9.2' }]),
+        getPppSecrets: jest.fn().mockResolvedValue([]),
+        getUsedPoolAddresses: jest.fn().mockResolvedValue([]),
+      });
+
+      const result = await service.getAvailableIps('node-1', { poolName: 'pool-manual', vlanId: 'vlan-200' });
+
+      expect(nodeVlanRepo.findOne).not.toHaveBeenCalled();
+      expect(result.poolName).toBe('pool-manual');
+    });
+
+    it('lanza BadRequestException con mensaje mencionando la VLAN si ni la VLAN ni el nodo tienen pool', async () => {
+      nodeRepo.findOneBy.mockResolvedValue({ ...mockNode, defaultPppPool: undefined });
+      nodeVlanRepo.findOne.mockResolvedValue({ nodeId: 'node-1', vlanId: 'vlan-200', pppPool: undefined });
+
+      await expect(service.getAvailableIps('node-1', { vlanId: 'vlan-200' })).rejects.toThrow(
+        /Ni la VLAN elegida ni el nodo/,
+      );
     });
   });
 });

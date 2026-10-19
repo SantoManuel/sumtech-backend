@@ -45,6 +45,10 @@ export class NetworkNodeVlanEntity {
   @Column({ name: 'gateway_cidr', type: 'varchar', length: 45, nullable: true })
   gatewayCidr?: string;
 
+  /** Pool de IP (/ip/pool) a sugerir para Secrets PPPoE de clientes en esta VLAN -- tiene prioridad sobre NetworkNodeEntity.defaultPppPool. Ver migración 091. */
+  @Column({ name: 'ppp_pool', type: 'varchar', length: 100, nullable: true })
+  pppPool?: string;
+
   @Column({ name: 'apply_status', type: 'varchar', length: 30, default: 'PENDING' })
   applyStatus: NetworkNodeVlanApplyStatus;
 
