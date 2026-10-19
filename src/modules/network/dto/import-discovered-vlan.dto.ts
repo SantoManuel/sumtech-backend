@@ -12,6 +12,11 @@ export class ImportDiscoveredVlanDto {
   @IsNotEmpty()
   interfaceName: string;
 
+  /** Nombre REAL de la propia sub-interfaz VLAN en RouterOS (ver scanRealVlans) -- distinto de interfaceName (el puerto físico padre). Necesario para poder buscar servidores PPPoE/DHCP sobre ella más adelante. */
+  @IsString()
+  @IsOptional()
+  vlanInterfaceName?: string;
+
   /** IP de gateway real detectada en esa sub-interfaz, si la tenía (formato RouterOS, ej. "10.20.0.1/24"). */
   @IsString()
   @IsOptional()

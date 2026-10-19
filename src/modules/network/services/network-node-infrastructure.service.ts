@@ -77,6 +77,20 @@ export class NetworkNodeInfrastructureService {
   ) {}
 
   /**
+   * Nombre REAL de la sub-interfaz VLAN a usar contra RouterOS -- preferir
+   * siempre `interfaceName` (capturado en syncVlan/importDiscoveredVlan,
+   * ver migración 092) sobre reconstruir "vlan<N>" a ciegas. El fallback
+   * solo cubre filas viejas sin backfill todavía; para VLANs importadas
+   * por descubrimiento brownfield con un nombre real distinto, usar el
+   * fallback sería simplemente incorrecto (confirmado en producción contra
+   * Nodo_Tabara_Abajo: sus VLANs reales se llaman "VLAN-400-PPOE",
+   * "VLAN805 IPTV TORO", etc., nunca "vlan400").
+   */
+  private resolveVlanInterfaceName(nodeVlan: NetworkNodeVlanEntity): string {
+    return nodeVlan.interfaceName || `vlan${nodeVlan.vlan.vlanId}`;
+  }
+
+  /**
    * Asegura que la VLAN exista como sub-interfaz real en el router, con su
    * IP de gateway si se especifica. Idempotente: puede llamarse varias veces
    * sin duplicar nada (ver RouterOsClient.ensureVlanInterface/ensureIpAddress).
@@ -101,20 +115,22 @@ export class NetworkNodeInfrastructureService {
     // otro gateway -- a diferencia de una colisión accidental, aquí se
     // permite reemplazar la IP en el router (ver ensureIpAddress allowReplace).
     const isGatewayChange = Boolean(record && options.gatewayCidr && record.gatewayCidr !== options.gatewayCidr);
+    const interfaceName = `vlan${vlan.vlanId}`;
+
     if (!record) {
       record = this.nodeVlanRepository.create({
         nodeId,
         vlanId,
         uplinkInterface: options.uplinkInterface,
+        interfaceName,
         gatewayCidr: options.gatewayCidr,
         applyStatus: 'PENDING',
       });
     } else {
       record.uplinkInterface = options.uplinkInterface;
+      record.interfaceName = interfaceName;
       record.gatewayCidr = options.gatewayCidr;
     }
-
-    const interfaceName = `vlan${vlan.vlanId}`;
 
     try {
       const client = await this.resolveClient(node);
@@ -202,7 +218,15 @@ export class NetworkNodeInfrastructureService {
    * (ver Plan_Implementacion_Descubrimiento_RouterOS_Brownfield.md Fase 1).
    */
   async scanRealVlans(nodeId: string): Promise<
-    Array<{ vlanId: number; interfaceName: string; gatewayCidr: string | null; alreadyTracked: boolean }>
+    Array<{
+      vlanId: number;
+      /** Puerto físico padre sobre el que corre la VLAN (ej. "sfp1") -- NO el nombre de la propia sub-interfaz VLAN. */
+      interfaceName: string;
+      /** Nombre REAL de la sub-interfaz VLAN en RouterOS (/interface/vlan) -- el que hay que usar para buscar servidores PPPoE/DHCP sobre ella. Puede ser cualquier texto, no sigue ninguna convención. */
+      vlanInterfaceName: string;
+      gatewayCidr: string | null;
+      alreadyTracked: boolean;
+    }>
   > {
     const node = await this.nodeRepository.findOneBy({ id: nodeId });
     if (!node) {
@@ -227,6 +251,7 @@ export class NetworkNodeInfrastructureService {
         return {
           vlanId: iface.vlanId,
           interfaceName: iface.interface,
+          vlanInterfaceName: iface.name,
           gatewayCidr,
           alreadyTracked,
         };
@@ -244,7 +269,7 @@ export class NetworkNodeInfrastructureService {
    */
   async importDiscoveredVlan(
     nodeId: string,
-    discovered: { vlanId: number; interfaceName: string; gatewayCidr?: string | null },
+    discovered: { vlanId: number; interfaceName: string; vlanInterfaceName?: string; gatewayCidr?: string | null },
     actorUserId?: string,
   ): Promise<NetworkNodeVlanEntity> {
     const node = await this.nodeRepository.findOneBy({ id: nodeId });
@@ -272,6 +297,7 @@ export class NetworkNodeInfrastructureService {
       nodeId,
       vlanId: vlan.id,
       uplinkInterface: discovered.interfaceName,
+      interfaceName: discovered.vlanInterfaceName,
       gatewayCidr: discovered.gatewayCidr || undefined,
       applyStatus: 'APPLIED',
       lastSyncAt: new Date(),
@@ -303,7 +329,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     const node = nodeVlan.node || (await this.nodeRepository.findOneBy({ id: nodeId }))!;
-    const interfaceName = `vlan${nodeVlan.vlan.vlanId}`;
+    const interfaceName = this.resolveVlanInterfaceName(nodeVlan);
     const client = await this.resolveClient(node);
 
     const [pppoeServer, dhcpServer] = await Promise.all([
@@ -378,7 +404,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     const node = nodeVlan.node || (await this.nodeRepository.findOneBy({ id: nodeId }))!;
-    const interfaceName = `vlan${nodeVlan.vlan.vlanId}`;
+    const interfaceName = this.resolveVlanInterfaceName(nodeVlan);
     const poolName = `pool-vlan${nodeVlan.vlan.vlanId}`;
     const serverName = `dhcp-vlan${nodeVlan.vlan.vlanId}`;
     const [gatewayIp] = nodeVlan.gatewayCidr.split('/');
@@ -433,7 +459,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     const node = nodeVlan.node || (await this.nodeRepository.findOneBy({ id: nodeId }))!;
-    const interfaceName = `vlan${nodeVlan.vlan.vlanId}`;
+    const interfaceName = this.resolveVlanInterfaceName(nodeVlan);
     const serviceName = options?.serviceName || `pppoe-vlan${nodeVlan.vlan.vlanId}`;
     const defaultProfile = options?.defaultProfile || 'default';
 
@@ -494,7 +520,7 @@ export class NetworkNodeInfrastructureService {
 
     return Promise.all(
       nodeVlans.map(async (nv) => {
-        const interfaceName = `vlan${nv.vlan.vlanId}`;
+        const interfaceName = this.resolveVlanInterfaceName(nv);
         const [pppoe, dhcp] = await Promise.all([
           client.findPppoeServerByInterface(interfaceName),
           client.findDhcpServerByInterface(interfaceName),
@@ -550,7 +576,7 @@ export class NetworkNodeInfrastructureService {
 
     return Promise.all(
       nodeVlans.map(async (nv) => {
-        const interfaceName = `vlan${nv.vlan.vlanId}`;
+        const interfaceName = this.resolveVlanInterfaceName(nv);
         let discoveredPool: string | null = null;
         let discoverySource: 'DHCP' | 'PPPOE' | null = null;
 

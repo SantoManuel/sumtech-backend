@@ -42,6 +42,10 @@ export class NetworkNodeVlanEntity {
   @Column({ name: 'uplink_interface', type: 'varchar', length: 50 })
   uplinkInterface: string;
 
+  /** Nombre REAL de la sub-interfaz VLAN (/interface/vlan) en RouterOS -- distinto de uplinkInterface (el puerto físico padre). Para VLANs creadas por Sumtech sigue "vlan<N>"; para VLANs importadas es el nombre que ya tenía en el router. Ver migración 092. */
+  @Column({ name: 'interface_name', type: 'varchar', length: 100, nullable: true })
+  interfaceName?: string;
+
   @Column({ name: 'gateway_cidr', type: 'varchar', length: 45, nullable: true })
   gatewayCidr?: string;
 

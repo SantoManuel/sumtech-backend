@@ -96,6 +96,8 @@ describe('NetworkNodeInfrastructureService', () => {
     });
     expect(ensureIpAddress).toHaveBeenCalledWith('vlan400', '10.20.0.1/24', 'Sumtech - Gateway Clientes Internet', false);
     expect(result.applyStatus).toBe('APPLIED');
+    // Captura el nombre real de la sub-interfaz que acaba de crear (ver migración 092) -- no queda para reconstruir después.
+    expect(result.interfaceName).toBe('vlan400');
     expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'SUCCESS', nodeId: 'node-1' }),
     );
@@ -775,8 +777,8 @@ describe('NetworkNodeInfrastructureService', () => {
       const result = await service.scanRealVlans('node-1');
 
       expect(result).toEqual([
-        { vlanId: 400, interfaceName: 'ether5', gatewayCidr: null, alreadyTracked: true },
-        { vlanId: 777, interfaceName: 'ether5', gatewayCidr: '10.77.0.1/24', alreadyTracked: false },
+        { vlanId: 400, interfaceName: 'ether5', vlanInterfaceName: 'vlan400', gatewayCidr: null, alreadyTracked: true },
+        { vlanId: 777, interfaceName: 'ether5', vlanInterfaceName: 'vlan777', gatewayCidr: '10.77.0.1/24', alreadyTracked: false },
       ]);
       // No se consulta el gateway de una VLAN que ya se conoce -- innecesario.
       expect(findIpAddressByInterface).toHaveBeenCalledTimes(1);
@@ -796,7 +798,7 @@ describe('NetworkNodeInfrastructureService', () => {
 
       const result = await service.importDiscoveredVlan(
         'node-1',
-        { vlanId: 777, interfaceName: 'ether5', gatewayCidr: '10.77.0.1/24' },
+        { vlanId: 777, interfaceName: 'ether5', vlanInterfaceName: 'VLAN-777-CUSTOM', gatewayCidr: '10.77.0.1/24' },
         'admin-1',
       );
 
@@ -805,6 +807,8 @@ describe('NetworkNodeInfrastructureService', () => {
       );
       expect(result.applyStatus).toBe('APPLIED');
       expect(result.uplinkInterface).toBe('ether5');
+      // El nombre REAL de la sub-interfaz (distinto del puerto físico padre) se guarda tal cual, sin reconstruirlo.
+      expect(result.interfaceName).toBe('VLAN-777-CUSTOM');
       expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'SUCCESS', rawDetails: expect.objectContaining({ operation: 'importDiscoveredVlan' }) }),
       );
@@ -888,6 +892,20 @@ describe('NetworkNodeInfrastructureService', () => {
       ]);
       // DHCP resuelve el pool directo -- no hace falta ni debe consultar PPPoE.
       expect(findPppoeServerByInterface).not.toHaveBeenCalled();
+    });
+
+    it('usa el interfaceName REAL de la VLAN (no "vlan<N>") cuando fue importada por descubrimiento brownfield con otro nombre -- bug real: Nodo_Tabara_Abajo usa nombres como "VLAN-400-PPOE"', async () => {
+      nodeVlanRepo.find.mockResolvedValue([
+        { id: 'nv-1', vlanId: 'vlan-1', pppPool: undefined, interfaceName: 'VLAN-400-PPOE', vlan: { vlanId: 400, name: 'VLAN 400 (importada)' } },
+      ]);
+      const findDhcpServerByInterface = jest.fn().mockResolvedValue({ id: '*1', name: 'dhcp-400', addressPool: 'pool-vlan400' });
+      const findPppoeServerByInterface = jest.fn();
+      clientFactory.mockReturnValue({ findDhcpServerByInterface, findPppoeServerByInterface });
+
+      const result = await service.scanRealVlanPools('node-1');
+
+      expect(findDhcpServerByInterface).toHaveBeenCalledWith('VLAN-400-PPOE');
+      expect(result[0].discoveredPool).toBe('pool-vlan400');
     });
 
     it('PPPoE: sin servidor DHCP, resuelve vía default-profile del servidor PPPoE -> remote-address del perfil', async () => {
