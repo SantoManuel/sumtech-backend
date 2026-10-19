@@ -679,44 +679,65 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
-   * Busca un perfil TCONT por nombre vía `show gpon profile tcont` (comando
-   * confirmado en documentación pública oficial de configuración GPON del
-   * ZTE C320 — NO verificado contra un equipo real propio, por eso
-   * `OltDriverCapabilities.dbaProfile` se mantiene en `false`). El formato
-   * exacto de columnas de esa salida no está confirmado, así que el parseo
-   * es deliberadamente conservador: busca el nombre como palabra completa y,
-   * si logra encontrar un valor "fixed <kbps>" cerca, lo extrae; si no,
-   * reporta el perfil como existente con `fixedKbps` indefinido en vez de
-   * inventar un número.
+   * Busca un perfil TCONT por nombre vía `show gpon profile tcont`.
+   * Reutiliza el mismo parser que `getTcontProfiles()` (confirmado en vivo
+   * contra OLT_Tabara_Abajo, 2026-10-19) en vez del viejo heurístico
+   * "busca la palabra 'fixed' cerca del nombre", que nunca coincidía con el
+   * formato real (columnas Type/FBW/ABW/MBW, sin la palabra "fixed" en
+   * ningún lado de la salida de `show`).
    */
   async findTcontProfileByName(params: OltConnectionParams, name: string): Promise<TcontProfile | null> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
       const output = await session.executeCommand('show gpon profile tcont');
-      return this.parseTcontProfileFromOutput(output, name);
+      const found = this.parseTcontProfilesFromOutput(output).find((p) => p.name === name);
+      return found ? { name: found.name, fixedKbps: found.speedKbps } : null;
     } finally {
       session.close();
     }
   }
 
-  private parseTcontProfileFromOutput(output: string, name: string): TcontProfile | null {
-    const nameRegex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-    if (!nameRegex.test(output)) {
-      return null;
+  private parseTcontProfilesFromOutput(output: string): DiscoveredTcontProfile[] {
+    // "Profile name :<nombre>" seguido (con ruido de paginación/backspace
+    // posible en medio) de la fila de datos "Type FBW ABW MBW PRIORITY
+    // WEIGHT" -- se salta de forma perezosa hasta la primera fila que calce
+    // el patrón numérico real, sin depender del texto exacto de la cabecera
+    // (que puede variar o llegar fragmentado por "--More--").
+    const profileRegex = /Profile name\s*:\s*(\S+)[\s\S]*?\r?\n\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)/g;
+    const results: DiscoveredTcontProfile[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = profileRegex.exec(output)) !== null) {
+      const [, name, type, fbw, abw, mbw] = match;
+      const fbwKbps = parseInt(fbw, 10);
+      const abwKbps = parseInt(abw, 10);
+      const mbwKbps = parseInt(mbw, 10);
+      results.push({
+        name,
+        type: parseInt(type, 10),
+        fbwKbps,
+        abwKbps,
+        mbwKbps,
+        speedKbps: Math.max(fbwKbps, abwKbps, mbwKbps),
+      });
     }
-    const nearbyFixed = new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]{0,80}?fixed\\s+(\\d+)`, 'i');
-    const match = output.match(nearbyFixed);
-    return { name, fixedKbps: match ? parseInt(match[1], 10) : (undefined as unknown as number) };
+    return results;
   }
 
   /**
-   * Crea el perfil TCONT tipo 1 (fixed) si no existe — sintaxis confirmada
-   * en documentación pública oficial de ZTE C320:
-   * `profile tcont <nombre> type 1 fixed <kbps>`. Idempotente: si
-   * `findTcontProfileByName` ya lo encuentra, no reintenta crearlo (no se
-   * confirmó qué hace el equipo si se manda el comando de creación dos
-   * veces con el mismo nombre, así que no se arriesga).
+   * Crea el perfil TCONT tipo 5 (Fixed + Assured + Maximum) si no existe --
+   * CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-19) con un perfil de
+   * prueba ("SUMTECH-TEST-DELETE-ME"), creado y eliminado limpiamente:
+   *   configure terminal / gpon / profile tcont <nombre> type 5 fixed 64
+   *   assured 64 maximum <kbps> / exit / exit / write
+   * FBW=64 y ABW=64 replican exactamente la convención real que usan los
+   * ~40 perfiles "SMARTOLT-*-UP" ya configurados en esta OLT (ver
+   * `getTcontProfiles`) -- no son valores inventados.
+   *
+   * Reemplaza la versión anterior ("type 1 fixed <kbps>", sin entrar antes
+   * a "configure terminal"+"gpon"): esa sintaxis era incompatible con el
+   * "type 5" real y, además, nunca entraba al submodo de configuración
+   * correcto -- nunca se había probado en vivo hasta ahora.
    *
    * IMPORTANTE — alcance: TCONT en GPON gobierna el ancho de banda de
    * SUBIDA del ONU únicamente (ITU-T G.984). El ancho de banda de BAJADA
@@ -745,11 +766,16 @@ export class ZteC320Driver implements IOltDriver {
     profile: TcontProfile,
   ): Promise<void> {
     const output = await session.executeCommand('show gpon profile tcont');
-    const existing = this.parseTcontProfileFromOutput(output, profile.name);
+    const existing = this.parseTcontProfilesFromOutput(output).find((p) => p.name === profile.name);
     if (existing) {
       return;
     }
-    await session.executeCommand(`profile tcont ${profile.name} type 1 fixed ${profile.fixedKbps}`);
+    await session.executeCommand('configure terminal');
+    await session.executeCommand('gpon');
+    await session.executeCommand(`profile tcont ${profile.name} type 5 fixed 64 assured 64 maximum ${profile.fixedKbps}`);
+    await session.executeCommand('exit');
+    await session.executeCommand('exit');
+    await session.executeCommand('write');
   }
 
   /**
@@ -760,45 +786,23 @@ export class ZteC320Driver implements IOltDriver {
    * real coincide con el documentado en el manual oficial (§2, Tabla 2-4/2-5):
    * columnas Type/FBW(kbps)/ABW(kbps)/MBW(kbps) por perfil.
    *
-   * IMPORTANTE -- hallazgo real que contradice la suposición de
-   * `ensureTcontProfileWithSession` (que solo crea perfiles "type 1 fixed"):
-   * casi todos los perfiles reales de producción son **type 5** (Fixed +
-   * Assured + Maximum, los 3 valores a la vez) -- el manual confirma en sus
-   * propios ejemplos que la velocidad "nombrada" de un perfil siempre
-   * coincide con `max(FBW, ABW, MBW)` sin importar el type (type 1 "2M" →
-   * FBW=2000; type 5 "20M" → fixed=2000/assured=5000/maximum=20000, nombre
-   * coincide con el máximo). Por eso `speedKbps` abajo usa ese mismo
-   * criterio en vez de asumir un campo fijo por type.
+   * IMPORTANTE -- este descubrimiento fue lo que expuso el bug corregido en
+   * `ensureTcontProfileWithSession` (antes creaba perfiles "type 1 fixed",
+   * incompatible con la convención real): casi todos los perfiles reales de
+   * producción son **type 5** (Fixed + Assured + Maximum, los 3 valores a la
+   * vez) -- el manual confirma en sus propios ejemplos que la velocidad
+   * "nombrada" de un perfil siempre coincide con `max(FBW, ABW, MBW)` sin
+   * importar el type (type 1 "2M" → FBW=2000; type 5 "20M" →
+   * fixed=2000/assured=5000/maximum=20000, nombre coincide con el máximo).
+   * Por eso `speedKbps` abajo usa ese mismo criterio en vez de asumir un
+   * campo fijo por type.
    */
   async getTcontProfiles(params: OltConnectionParams): Promise<DiscoveredTcontProfile[]> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
       const output = await session.executeCommand('show gpon profile tcont');
-
-      // "Profile name :<nombre>" seguido (con ruido de paginación/backspace
-      // posible en medio) de la fila de datos "Type FBW ABW MBW PRIORITY
-      // WEIGHT" -- se salta de forma perezosa hasta la primera fila que
-      // calce el patrón numérico real, sin depender del texto exacto de la
-      // cabecera (que puede variar o llegar fragmentado por "--More--").
-      const profileRegex = /Profile name\s*:\s*(\S+)[\s\S]*?\r?\n\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)/g;
-      const results: DiscoveredTcontProfile[] = [];
-      let match: RegExpExecArray | null;
-      while ((match = profileRegex.exec(output)) !== null) {
-        const [, name, type, fbw, abw, mbw] = match;
-        const fbwKbps = parseInt(fbw, 10);
-        const abwKbps = parseInt(abw, 10);
-        const mbwKbps = parseInt(mbw, 10);
-        results.push({
-          name,
-          type: parseInt(type, 10),
-          fbwKbps,
-          abwKbps,
-          mbwKbps,
-          speedKbps: Math.max(fbwKbps, abwKbps, mbwKbps),
-        });
-      }
-      return results;
+      return this.parseTcontProfilesFromOutput(output);
     } finally {
       session.close();
     }
@@ -955,11 +959,12 @@ export class ZteC320Driver implements IOltDriver {
       onuAdminState: true,
       onuDelete: true,
       interfaceAdminState: true,
-      // Implementados con lógica real a partir de documentación pública oficial
-      // de ZTE C320, pero NUNCA verificados contra un equipo real propio —
-      // se mantienen en false hasta confirmarlo en vivo (ver ensureTcontProfile
-      // y configureVlanTranslation).
-      dbaProfile: false,
+      // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): se creó y
+      // eliminó un perfil TCONT de prueba real ("SUMTECH-TEST-DELETE-ME",
+      // type 5 fixed/assured/maximum) con el flujo completo configure
+      // terminal/gpon/profile tcont/exit/exit/write -- ver ensureTcontProfile.
+      dbaProfile: true,
+      // vlanTranslation sigue sin evidencia completa -- ver configureVlanTranslation.
       vlanTranslation: false,
       alarms: false,
       tr069AutoProvisioning: false,
@@ -977,7 +982,7 @@ export class ZteC320Driver implements IOltDriver {
   getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>> {
     return {
       tr069AutoProvisioning:
-        'El driver ya envía "tr069-mgmt" al autorizar (sintaxis de documentación pública del C320), pero no se ha confirmado contra un equipo real -- mismo criterio ya aplicado a dbaProfile en este driver.',
+        'El driver ya envía "tr069-mgmt" al autorizar (sintaxis de documentación pública del C320), pero no se ha confirmado contra un equipo real -- mismo criterio aplicado a vlanTranslation en este driver.',
     };
   }
 }

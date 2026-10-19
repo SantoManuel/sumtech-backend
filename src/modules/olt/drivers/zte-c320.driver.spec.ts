@@ -470,40 +470,43 @@ describe('ZteC320Driver', () => {
     expect(result.error).toBe('% Invalid input');
   });
 
-  describe('findTcontProfileByName / ensureTcontProfile (sintaxis documentada públicamente, no verificada en vivo)', () => {
+  describe('findTcontProfileByName / ensureTcontProfile (confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-19)', () => {
+    const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_gpon_profile_tcont.txt');
+    const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
+
     it('findTcontProfileByName devuelve null si el nombre no aparece en "show gpon profile tcont"', async () => {
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand: jest.fn().mockResolvedValue('PROFILE NAME   TYPE   FIXED\nOTHER5M        1      5000'),
+        executeCommand: jest.fn().mockResolvedValue(fixtureContent),
         close: jest.fn(),
       });
 
       const result = await driver.findTcontProfileByName(
         { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        'FIXED5M',
+        'NO-EXISTE',
       );
 
       expect(result).toBeNull();
     });
 
-    it('findTcontProfileByName encuentra el perfil y extrae el valor fixed cercano', async () => {
+    it('findTcontProfileByName encuentra el perfil real y usa max(FBW,ABW,MBW) como fixedKbps', async () => {
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand: jest.fn().mockResolvedValue('PROFILE NAME   TYPE   FIXED\nFIXED5M        1      fixed 5000'),
+        executeCommand: jest.fn().mockResolvedValue(fixtureContent),
         close: jest.fn(),
       });
 
       const result = await driver.findTcontProfileByName(
         { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        'FIXED5M',
+        'SMARTOLT-100M-UP',
       );
 
-      expect(result).toEqual({ name: 'FIXED5M', fixedKbps: 5000 });
+      expect(result).toEqual({ name: 'SMARTOLT-100M-UP', fixedKbps: 110080 });
     });
 
-    it('ensureTcontProfile crea el perfil con "profile tcont <nombre> type 1 fixed <kbps>" si no existe', async () => {
+    it('ensureTcontProfile crea el perfil entrando a "configure terminal"/"gpon" y usando "type 5 fixed 64 assured 64 maximum <kbps>" si no existe', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd === 'show gpon profile tcont') return Promise.resolve('PROFILE NAME   TYPE   FIXED');
+        if (cmd === 'show gpon profile tcont') return Promise.resolve('');
         return Promise.resolve('');
       });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -514,27 +517,37 @@ describe('ZteC320Driver', () => {
 
       const result = await driver.ensureTcontProfile(
         { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        { name: 'FIXED5M', fixedKbps: 5000 },
+        { name: 'SUMTECH-NUEVO-5M', fixedKbps: 5000 },
       );
 
       expect(result.ok).toBe(true);
-      expect(executeCommand).toHaveBeenCalledWith('profile tcont FIXED5M type 1 fixed 5000');
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'show gpon profile tcont',
+        'configure terminal',
+        'gpon',
+        'profile tcont SUMTECH-NUEVO-5M type 5 fixed 64 assured 64 maximum 5000',
+        'exit',
+        'exit',
+        'write',
+      ]);
     });
 
     it('ensureTcontProfile es idempotente: no vuelve a crear si el perfil ya existe', async () => {
-      const executeCommand = jest.fn().mockResolvedValue('PROFILE NAME   TYPE   FIXED\nFIXED5M  1  fixed 5000');
+      const executeCommand = jest.fn().mockResolvedValue(fixtureContent);
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
         close: jest.fn(),
       });
 
-      await driver.ensureTcontProfile(
+      const result = await driver.ensureTcontProfile(
         { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        { name: 'FIXED5M', fixedKbps: 5000 },
+        { name: 'SMARTOLT-100M-UP', fixedKbps: 110080 },
       );
 
-      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('profile tcont FIXED5M type'));
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledTimes(1);
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
     });
   });
 
@@ -568,7 +581,7 @@ describe('ZteC320Driver', () => {
       expect(result.ok).toBe(true);
       const calledCommands = executeCommand.mock.calls.map((c) => c[0]);
       expect(calledCommands.indexOf('show gpon profile tcont')).toBeGreaterThanOrEqual(0);
-      expect(calledCommands.indexOf('profile tcont FIXED5M type 1 fixed 5000')).toBeGreaterThan(
+      expect(calledCommands.indexOf('profile tcont FIXED5M type 5 fixed 64 assured 64 maximum 5000')).toBeGreaterThan(
         calledCommands.indexOf('show gpon profile tcont'),
       );
     });
@@ -615,9 +628,13 @@ describe('ZteC320Driver', () => {
     expect(driver.getCapabilities().alarms).toBe(false);
   });
 
-  it('tr069AutoProvisioning se mantiene en false pese a tener código real (mismo criterio que dbaProfile), con nota que lo distingue de "no implementado"', () => {
+  it('tr069AutoProvisioning se mantiene en false pese a tener código real (mismo criterio que vlanTranslation), con nota que lo distingue de "no implementado"', () => {
     expect(driver.getCapabilities().tr069AutoProvisioning).toBe(false);
     expect(driver.getCapabilityNotes().tr069AutoProvisioning).toMatch(/tr069-mgmt/i);
+  });
+
+  it('dbaProfile (TCONT) ya está en true -- confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19)', () => {
+    expect(driver.getCapabilities().dbaProfile).toBe(true);
   });
 });
 
