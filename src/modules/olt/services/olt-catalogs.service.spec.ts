@@ -716,6 +716,18 @@ describe('OltCatalogsService', () => {
       await expect(service.scanRealInterfaceVlans('iface-1')).rejects.toThrow(BadRequestException);
     });
 
+    it('convierte el rechazo de la OLT (Error plano del driver) en BadRequestException legible, no en un 500 genérico (regresión real: gei_1/3/X rechazado por la OLT)', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      ifaceVlanRepo.find.mockResolvedValue([]);
+      const getVlanConfigForInterface = jest.fn().mockRejectedValue(
+        new Error('La OLT rechazó la interfaz "gei_1/3/4": ^\n%Error 20202: Invalid input detected'),
+      );
+      driverRegistry.resolve.mockReturnValue({ getVlanConfigForInterface });
+
+      await expect(service.scanRealInterfaceVlans('iface-1')).rejects.toThrow(BadRequestException);
+      await expect(service.scanRealInterfaceVlans('iface-1')).rejects.toThrow(/rechazó la interfaz/);
+    });
+
     it('lanza NotFoundException si la interfaz no existe', async () => {
       ifaceRepo.findOne.mockResolvedValue(null);
       await expect(service.scanRealInterfaceVlans('iface-x')).rejects.toThrow(NotFoundException);

@@ -181,10 +181,22 @@ export class OltCatalogsService {
     }
 
     const connParams = await this.connectionResolver.resolve(iface.olt);
-    const [realVlans, trackedRows] = await Promise.all([
-      driver.getVlanConfigForInterface(connParams, iface.name),
-      this.ifaceVlanRepository.find({ where: { interfaceId }, relations: ['vlan'] }),
-    ]);
+    let realVlans: import('../ports/olt-driver.port').DiscoveredInterfaceVlan[];
+    let trackedRows: OltInterfaceVlanEntity[];
+    try {
+      [realVlans, trackedRows] = await Promise.all([
+        driver.getVlanConfigForInterface(connParams, iface.name),
+        this.ifaceVlanRepository.find({ where: { interfaceId }, relations: ['vlan'] }),
+      ]);
+    } catch (err: any) {
+      // El driver ya lanza un mensaje legible cuando la OLT rechaza la
+      // interfaz (ej. "gei_1/3/X" en un slot sin GEI reales) -- pero es un
+      // Error plano de JS, no una excepción de Nest, así que sin este catch
+      // el filtro global lo convierte en un 500 genérico sin información
+      // (confirmado en producción: el error real quedaba en los logs del
+      // backend pero el frontend solo veía "500 Internal Server Error").
+      throw new BadRequestException(err.message || 'Error consultando VLANs reales de esta interfaz en la OLT.');
+    }
 
     const trackedKeys = new Set(trackedRows.map((row) => `${row.vlan.vlanId}:${row.mode}`));
 
