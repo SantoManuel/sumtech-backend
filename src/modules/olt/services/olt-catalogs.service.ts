@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { VlanEntity } from '../entities/vlan.entity';
@@ -153,6 +153,86 @@ export class OltCatalogsService {
       throw new BadRequestException(`No se pudo aplicar la VLAN en el hardware OLT: ${hardwareError}`);
     }
     return saved;
+  }
+
+  /**
+   * Descubre las VLANs que REALMENTE están tageadas/untagged en una
+   * interfaz física de la OLT (vía `getVlanConfigForInterface`, confirmado
+   * en vivo contra OLT_Tabara_Abajo), comparadas contra lo que Sumtech ya
+   * tiene registrado en `net.olt_interface_vlans`. Solo lectura -- no
+   * escribe nada todavía (ver `importDiscoveredInterfaceVlan`). Mismo
+   * problema de brownfield que ya se resolvió para RouterOS: un equipo en
+   * producción antes de darse de alta en el ERP puede tener VLANs reales
+   * que "Catálogo de VLANs"/"Permitir VLAN Trunk" nunca mostraron porque
+   * solo reflejaban lo que el propio Sumtech aplicó.
+   */
+  async scanRealInterfaceVlans(
+    interfaceId: string,
+  ): Promise<Array<{ vlanId: number; mode: 'TAG' | 'UNTAG'; alreadyTracked: boolean }>> {
+    const iface = await this.ifaceRepository.findOne({ where: { id: interfaceId }, relations: ['olt'] });
+    if (!iface) throw new NotFoundException('Interfaz OLT no encontrada.');
+    if (!iface.olt) throw new NotFoundException('La interfaz no tiene una OLT asociada.');
+
+    const driver = this.driverRegistry.resolve(iface.olt.vendor);
+    if (!driver.getVlanConfigForInterface) {
+      throw new BadRequestException(
+        `El fabricante "${iface.olt.vendor}" todavía no soporta descubrir VLANs reales de una interfaz.`,
+      );
+    }
+
+    const connParams = await this.connectionResolver.resolve(iface.olt);
+    const [realVlans, trackedRows] = await Promise.all([
+      driver.getVlanConfigForInterface(connParams, iface.name),
+      this.ifaceVlanRepository.find({ where: { interfaceId }, relations: ['vlan'] }),
+    ]);
+
+    const trackedKeys = new Set(trackedRows.map((row) => `${row.vlan.vlanId}:${row.mode}`));
+
+    return realVlans.map((v) => ({
+      vlanId: v.vlanId,
+      mode: v.mode,
+      alreadyTracked: trackedKeys.has(`${v.vlanId}:${v.mode}`),
+    }));
+  }
+
+  /**
+   * Da de alta en Sumtech una VLAN descubierta por `scanRealInterfaceVlans`
+   * -- no escribe nada en la OLT, ya estaba ahí de verdad. Si el número de
+   * VLAN nunca existió en el catálogo `net.vlans`, se crea un catálogo
+   * mínimo con nombre de placeholder (mismo criterio ya aplicado al
+   * catálogo de Tipos de ONU y al de VLANs de RouterOS: mejor un
+   * placeholder editable que bloquear la importación).
+   */
+  async importDiscoveredInterfaceVlan(
+    interfaceId: string,
+    discovered: { vlanId: number; mode: 'TAG' | 'UNTAG' },
+  ): Promise<OltInterfaceVlanEntity> {
+    const iface = await this.ifaceRepository.findOne({ where: { id: interfaceId }, relations: ['olt'] });
+    if (!iface) throw new NotFoundException('Interfaz OLT no encontrada.');
+
+    let vlan = await this.vlanRepository.findOneBy({ vlanId: discovered.vlanId });
+    if (!vlan) {
+      vlan = await this.vlanRepository.save(
+        this.vlanRepository.create({
+          vlanId: discovered.vlanId,
+          name: `VLAN ${discovered.vlanId} (importada de ${iface.olt?.name || iface.name})`,
+          type: 'INTERNET',
+        }),
+      );
+    }
+
+    const existing = await this.ifaceVlanRepository.findOneBy({ interfaceId, vlanId: vlan.id, mode: discovered.mode });
+    if (existing) {
+      throw new ConflictException(`La VLAN ${discovered.vlanId} (${discovered.mode}) ya está registrada para esta interfaz.`);
+    }
+
+    const mapping = this.ifaceVlanRepository.create({
+      interfaceId,
+      vlanId: vlan.id,
+      mode: discovered.mode,
+      applyStatus: 'APPLIED' as const,
+    });
+    return this.ifaceVlanRepository.save(mapping);
   }
 
   /**

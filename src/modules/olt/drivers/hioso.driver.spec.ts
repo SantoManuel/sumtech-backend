@@ -36,6 +36,7 @@ describe('HiosoDriver', () => {
       alarms: true,
       tr069AutoProvisioning: false,
       onuPassiveImport: false,
+      vlanDiscovery: false,
     });
   });
 

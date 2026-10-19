@@ -360,6 +360,81 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * Expande una lista de VLANs tal como la reporta "show vlan port" --
+   * confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19) que viene en
+   * formato "1,46,400-405,700" (coma-separado, CON rangos con guión) y no
+   * solo números individuales como sugerían los únicos ejemplos del manual
+   * oficial (todos de 1 sola VLAN). Si no se expanden los rangos, "400-405"
+   * se interpretaría como solo "400" y "401-404" se perdería silenciosamente.
+   */
+  private parseVlanList(text: string): number[] {
+    const result: number[] = [];
+    for (const token of text.split(',')) {
+      const trimmed = token.trim();
+      if (!trimmed) continue;
+      const rangeMatch = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (rangeMatch) {
+        const start = parseInt(rangeMatch[1], 10);
+        const end = parseInt(rangeMatch[2], 10);
+        for (let v = start; v <= end && v - start < 4094; v++) {
+          result.push(v);
+        }
+        continue;
+      }
+      const single = parseInt(trimmed, 10);
+      if (!Number.isNaN(single)) {
+        result.push(single);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * VLANs REALES (tag/untag) ya configuradas en una interfaz física, vía
+   * "show vlan port <interfaz>" -- confirmado en vivo contra OLT_Tabara_Abajo
+   * en los puertos uplink (gei_1/4/1) y PON (gpon-olt_1/2/1, siempre vacío
+   * ahí porque el modo access de los puertos PON maneja VLANs por
+   * service-port, no por este mecanismo de trunk). Ver `vlanDiscovery` en
+   * OltDriverCapabilities.
+   */
+  async getVlanConfigForInterface(
+    params: OltConnectionParams,
+    interfaceName: string,
+  ): Promise<import('../ports/olt-driver.port').DiscoveredInterfaceVlan[]> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand(`show vlan port ${interfaceName}`);
+
+      if (/%Error/i.test(output)) {
+        throw new Error(`La OLT rechazó la interfaz "${interfaceName}": ${output.trim()}`);
+      }
+
+      // Ancladas a inicio de línea (^ con /m): "UntaggedVlan:" contiene
+      // literalmente la subcadena "TaggedVlan:" (Un+TaggedVlan:), así que un
+      // regex sin anclar hace match ahí primero por error y nunca llega a la
+      // línea real "TaggedVlan:" -- confirmado con el fixture real, donde
+      // esto hacía desaparecer la primera VLAN de la lista en silencio.
+      // Además captura "hasta el final" (no solo la primera línea): una
+      // lista larga puede envolverse en varias líneas de la terminal sin
+      // marcador de continuación -- parseVlanList() no se confunde con
+      // saltos de línea embebidos (split(',') + trim por token).
+      const untaggedMatch = output.match(/^UntaggedVlan:[ \t]*([\s\S]*?)^[ \t]*TaggedVlan:/im);
+      const taggedMatch = output.match(/^TaggedVlan:[ \t]*([\s\S]*)$/im);
+
+      const untagged = untaggedMatch ? this.parseVlanList(untaggedMatch[1]) : [];
+      const tagged = taggedMatch ? this.parseVlanList(taggedMatch[1]) : [];
+
+      const result: import('../ports/olt-driver.port').DiscoveredInterfaceVlan[] = [];
+      for (const vlanId of untagged) result.push({ vlanId, mode: 'UNTAG' });
+      for (const vlanId of tagged) result.push({ vlanId, mode: 'TAG' });
+      return result;
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
    * Obtiene la lista de ONUs no autorizadas descubiertas (RF-OLT-014).
    * Ejecuta `show gpon onu uncfg [ponInterface]`.
    */
@@ -836,6 +911,10 @@ export class ZteC320Driver implements IOltDriver {
       alarms: false,
       tr069AutoProvisioning: false,
       onuPassiveImport: true,
+      // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show vlan
+      // port <interfaz>" responde con datos reales tanto en uplink
+      // (gei_1/4/1) como en PON (gpon-olt_1/2/1).
+      vlanDiscovery: true,
     };
   }
 

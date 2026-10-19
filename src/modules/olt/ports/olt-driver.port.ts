@@ -25,6 +25,12 @@ export interface DiscoveredCard {
   status: string;
 }
 
+/** VLAN real encontrada por `getVlanConfigForInterface` -- ver `vlanDiscovery` en OltDriverCapabilities. */
+export interface DiscoveredInterfaceVlan {
+  vlanId: number;
+  mode: 'TAG' | 'UNTAG';
+}
+
 export interface DiscoveredInterface {
   name: string; // ej: 'gpon-olt_1/1/1', 'gei_1/3/1'
   type: 'PON' | 'UPLINK' | 'DOWNLINK' | 'MGMT';
@@ -191,6 +197,17 @@ export interface OltDriverCapabilities {
    * IOltDriver -- no todos los drivers lo implementan).
    */
   onuPassiveImport: boolean;
+  /**
+   * Consultar qué VLANs están REALMENTE tageadas/untagged en una interfaz
+   * física de la OLT (ver `getVlanConfigForInterface`, método opcional de
+   * IOltDriver) -- a diferencia de `configureVlan`, que solo escribe a
+   * ciegas. Sin esto, "Catálogo de VLANs" y "Permitir VLAN Trunk" solo
+   * reflejan lo que el propio Sumtech aplicó, nunca lo que ya traía un
+   * equipo en producción antes de darse de alta en el ERP (mismo punto
+   * ciego que ya se resolvió para MikroTik -- ver
+   * Plan_Implementacion_Descubrimiento_OLT_VLANs.md).
+   */
+  vlanDiscovery: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -211,6 +228,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   alarms: false,
   tr069AutoProvisioning: false,
   onuPassiveImport: false,
+  vlanDiscovery: false,
 };
 
 /**
@@ -256,6 +274,12 @@ export interface IOltDriver {
    * los fabricantes tienen comandos de solo lectura equivalentes todavía.
    */
   getAuthorizedOnus?(params: OltConnectionParams, ponInterface: string): Promise<DiscoveredAuthorizedOnu[]>;
+  /**
+   * VLANs REALES (tag/untag) ya configuradas en una interfaz física (ver
+   * `vlanDiscovery` en OltDriverCapabilities) -- opcional porque no todos los
+   * fabricantes tienen un comando de solo lectura equivalente confirmado.
+   */
+  getVlanConfigForInterface?(params: OltConnectionParams, interfaceName: string): Promise<DiscoveredInterfaceVlan[]>;
   getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower>;
   authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }>;
   setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }>;

@@ -227,6 +227,66 @@ describe('ZteC320Driver', () => {
     ).rejects.toThrow('no reconoce el puerto PON');
   });
 
+  it('getVlanConfigForInterface() expande rangos con guión en la lista de VLANs reales (RF: brownfield -- confirmado en vivo contra OLT_Tabara_Abajo)', async () => {
+    const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_vlan_port_uplink_tagged.txt');
+    const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(fixtureContent),
+      close: jest.fn(),
+    });
+
+    const result = await driver.getVlanConfigForInterface(
+      { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+      'gei_1/4/1',
+    );
+
+    // "1,46,400-405,700" -- el rango 400-405 debe expandirse completo, no
+    // interpretarse como un solo valor "400" perdiendo 401-404 en silencio.
+    expect(result).toEqual([
+      { vlanId: 1, mode: 'TAG' },
+      { vlanId: 46, mode: 'TAG' },
+      { vlanId: 400, mode: 'TAG' },
+      { vlanId: 401, mode: 'TAG' },
+      { vlanId: 402, mode: 'TAG' },
+      { vlanId: 403, mode: 'TAG' },
+      { vlanId: 404, mode: 'TAG' },
+      { vlanId: 405, mode: 'TAG' },
+      { vlanId: 700, mode: 'TAG' },
+    ]);
+  });
+
+  it('getVlanConfigForInterface() devuelve lista vacía para un puerto PON sin VLANs trunk (modo access real)', async () => {
+    const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_vlan_port_pon_empty.txt');
+    const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(fixtureContent),
+      close: jest.fn(),
+    });
+
+    const result = await driver.getVlanConfigForInterface(
+      { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+      'gpon-olt_1/2/1',
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it('getVlanConfigForInterface() lanza error si la OLT rechaza la interfaz', async () => {
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue('%Error 20202: Invalid input detected'),
+      close: jest.fn(),
+    });
+
+    await expect(
+      driver.getVlanConfigForInterface({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' }, 'gei_9/9/9'),
+    ).rejects.toThrow('rechazó la interfaz');
+  });
+
   it('parsea correctamente el inventario de tarjetas del chasis (show card)', async () => {
     const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_card.txt');
     const fixtureContent = fs.readFileSync(fixturePath, 'utf8');

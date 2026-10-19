@@ -1,0 +1,5 @@
+PortMode      Pvid  CPvid Tpid/mode   TLSStatus TLSVlan  ProtEn   PrioEn
+-------------------------------------------------------------------------
+accessUn      0     0     0x0   /PORT disable   0        disable  disable
+UntaggedVlan:
+TaggedVlan:

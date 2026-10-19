@@ -41,6 +41,7 @@ describe('OltCatalogsService', () => {
     ifaceVlanRepo = {
       count: jest.fn(),
       findOneBy: jest.fn(),
+      find: jest.fn().mockResolvedValue([]),
       create: jest.fn((dto) => dto),
       save: jest.fn((dto) => Promise.resolve(dto)),
     };
@@ -680,6 +681,93 @@ describe('OltCatalogsService', () => {
       const [calledParams] = configureVlanOnInterface.mock.calls[0];
       expect(calledParams.host).not.toBe('192.168.0.88');
       expect(res.applyStatus).toBe('APPLIED');
+    });
+  });
+
+  describe('scanRealInterfaceVlans (descubrimiento brownfield, confirmado en vivo contra OLT_Tabara_Abajo)', () => {
+    const mockIface = {
+      id: 'iface-1',
+      name: 'gei_1/4/1',
+      olt: { id: 'olt-1', vendor: 'ZTE', host: '10.0.0.10', port: 23, username: 'admin', passwordEnc: 'enc' },
+    };
+
+    it('distingue las VLANs ya rastreadas de las reales-pero-desconocidas', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      ifaceVlanRepo.find.mockResolvedValue([{ id: 'ifv-1', mode: 'TAG', vlan: { vlanId: 46 } }]);
+      const getVlanConfigForInterface = jest.fn().mockResolvedValue([
+        { vlanId: 46, mode: 'TAG' },
+        { vlanId: 700, mode: 'TAG' },
+      ]);
+      driverRegistry.resolve.mockReturnValue({ getVlanConfigForInterface });
+
+      const result = await service.scanRealInterfaceVlans('iface-1');
+
+      expect(result).toEqual([
+        { vlanId: 46, mode: 'TAG', alreadyTracked: true },
+        { vlanId: 700, mode: 'TAG', alreadyTracked: false },
+      ]);
+      expect(getVlanConfigForInterface).toHaveBeenCalledWith(expect.anything(), 'gei_1/4/1');
+    });
+
+    it('lanza BadRequestException si el driver del fabricante no soporta descubrir VLANs reales', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      driverRegistry.resolve.mockReturnValue({}); // sin getVlanConfigForInterface
+
+      await expect(service.scanRealInterfaceVlans('iface-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza NotFoundException si la interfaz no existe', async () => {
+      ifaceRepo.findOne.mockResolvedValue(null);
+      await expect(service.scanRealInterfaceVlans('iface-x')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('importDiscoveredInterfaceVlan', () => {
+    const mockIface = {
+      id: 'iface-1',
+      name: 'gei_1/4/1',
+      olt: { id: 'olt-1', name: 'OLT_Tabara_Abajo', vendor: 'ZTE' },
+    };
+
+    it('crea un catálogo VLAN placeholder si el número descubierto no existe todavía en net.vlans', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      vlanRepo.findOneBy.mockResolvedValue(null);
+      ifaceVlanRepo.findOneBy.mockResolvedValue(null);
+
+      const result = await service.importDiscoveredInterfaceVlan('iface-1', { vlanId: 700, mode: 'TAG' });
+
+      expect(vlanRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ vlanId: 700, name: expect.stringContaining('VLAN 700'), type: 'INTERNET' }),
+      );
+      expect(result.applyStatus).toBe('APPLIED');
+      expect(result.mode).toBe('TAG');
+    });
+
+    it('reutiliza el catálogo VLAN existente en vez de crear uno duplicado', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      vlanRepo.findOneBy.mockResolvedValue({ id: 'vlan-1', vlanId: 46, name: 'TR-069' });
+      ifaceVlanRepo.findOneBy.mockResolvedValue(null);
+
+      await service.importDiscoveredInterfaceVlan('iface-1', { vlanId: 46, mode: 'TAG' });
+
+      expect(vlanRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rechaza con ConflictException si esa VLAN+modo ya estaba registrada para esta interfaz', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      vlanRepo.findOneBy.mockResolvedValue({ id: 'vlan-1', vlanId: 46, name: 'TR-069' });
+      ifaceVlanRepo.findOneBy.mockResolvedValue({ id: 'ifv-existing' });
+
+      await expect(
+        service.importDiscoveredInterfaceVlan('iface-1', { vlanId: 46, mode: 'TAG' }),
+      ).rejects.toThrow(/ya está registrada/);
+    });
+
+    it('lanza NotFoundException si la interfaz no existe', async () => {
+      ifaceRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.importDiscoveredInterfaceVlan('iface-x', { vlanId: 46, mode: 'TAG' }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

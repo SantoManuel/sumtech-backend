@@ -223,6 +223,23 @@ export class OltController {
     );
   }
 
+  /** Descubrimiento brownfield: VLANs que YA están tageadas/untagged en la OLT real para esta interfaz. Solo lectura. */
+  @Get('interfaces/:id/vlans/scan')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async scanInterfaceRealVlans(@Param('id') interfaceId: string) {
+    return this.catalogsService.scanRealInterfaceVlans(interfaceId);
+  }
+
+  /** Da de alta en Sumtech una VLAN descubierta por /vlans/scan -- no escribe nada en la OLT, ya existía. */
+  @Post('interfaces/:id/vlans/import')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async importInterfaceDiscoveredVlan(
+    @Param('id') interfaceId: string,
+    @Body() body: { vlanId: number; mode: 'TAG' | 'UNTAG' },
+  ) {
+    return this.catalogsService.importDiscoveredInterfaceVlan(interfaceId, body);
+  }
+
   @Post('interfaces/:id/admin-state')
   @Roles(Role.ADMIN, Role.GERENTE)
   async setInterfaceAdminState(@Param('id') interfaceId: string, @Body() body: { state: 'UP' | 'DOWN' }) {

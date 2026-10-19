@@ -1,0 +1,6 @@
+PortMode      Pvid  CPvid Tpid/mode   TLSStatus TLSVlan  ProtEn   PrioEn
+-------------------------------------------------------------------------
+trunk>0       1     0     0x8100/PORT disable   0        disable  disable
+UntaggedVlan:
+TaggedVlan:
+1,46,400-405,700
