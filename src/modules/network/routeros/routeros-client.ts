@@ -1148,7 +1148,7 @@ export class RouterOsClient {
   }
 
   /** Busca un servidor DHCP ya configurado sobre una interfaz (/ip/dhcp-server). */
-  async findDhcpServerByInterface(interfaceName: string): Promise<{ id: string; name: string } | null> {
+  async findDhcpServerByInterface(interfaceName: string): Promise<{ id: string; name: string; addressPool?: string } | null> {
     let response;
     try {
       response = await this.http.get(this.buildUrl('ip/dhcp-server'), {
@@ -1160,7 +1160,7 @@ export class RouterOsClient {
     }
     const results = Array.isArray(response.data) ? response.data : [];
     const match = results.find((entry: any) => entry?.interface === interfaceName);
-    return match ? { id: match['.id'], name: match.name } : null;
+    return match ? { id: match['.id'], name: match.name, addressPool: match['address-pool'] } : null;
   }
 
   /**

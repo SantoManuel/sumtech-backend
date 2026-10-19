@@ -864,6 +864,92 @@ describe('NetworkNodeInfrastructureService', () => {
     });
   });
 
+  describe('scanRealVlanPools (detección en vivo del pool real por VLAN, solo lectura)', () => {
+    it('DHCP: usa el "address-pool" directo del servidor DHCP de esa interfaz', async () => {
+      nodeVlanRepo.find.mockResolvedValue([
+        { id: 'nv-1', vlanId: 'vlan-1', pppPool: undefined, vlan: { vlanId: 400, name: 'Clientes DHCP' } },
+      ]);
+      const findDhcpServerByInterface = jest.fn().mockResolvedValue({ id: '*1', name: 'dhcp-vlan400', addressPool: 'pool-vlan400' });
+      const findPppoeServerByInterface = jest.fn();
+      clientFactory.mockReturnValue({ findDhcpServerByInterface, findPppoeServerByInterface });
+
+      const result = await service.scanRealVlanPools('node-1');
+
+      expect(result).toEqual([
+        {
+          vlanId: 'vlan-1',
+          vlanNumericId: 400,
+          vlanName: 'Clientes DHCP',
+          interfaceName: 'vlan400',
+          discoveredPool: 'pool-vlan400',
+          discoverySource: 'DHCP',
+          currentPppPool: undefined,
+        },
+      ]);
+      // DHCP resuelve el pool directo -- no hace falta ni debe consultar PPPoE.
+      expect(findPppoeServerByInterface).not.toHaveBeenCalled();
+    });
+
+    it('PPPoE: sin servidor DHCP, resuelve vía default-profile del servidor PPPoE -> remote-address del perfil', async () => {
+      nodeVlanRepo.find.mockResolvedValue([
+        { id: 'nv-1', vlanId: 'vlan-1', pppPool: undefined, vlan: { vlanId: 200, name: 'Clientes PPPoE' } },
+      ]);
+      const findDhcpServerByInterface = jest.fn().mockResolvedValue(null);
+      const findPppoeServerByInterface = jest.fn().mockResolvedValue({
+        id: '*1',
+        serviceName: 'pppoe-vlan200',
+        interface: 'vlan200',
+        defaultProfile: 'Sumtech-20M',
+        disabled: false,
+      });
+      const findProfileByName = jest.fn().mockResolvedValue({ id: '*p1', name: 'Sumtech-20M', remoteAddress: 'pool-vlan200' });
+      clientFactory.mockReturnValue({ findDhcpServerByInterface, findPppoeServerByInterface, findProfileByName });
+
+      const result = await service.scanRealVlanPools('node-1');
+
+      expect(result).toEqual([
+        {
+          vlanId: 'vlan-1',
+          vlanNumericId: 200,
+          vlanName: 'Clientes PPPoE',
+          interfaceName: 'vlan200',
+          discoveredPool: 'pool-vlan200',
+          discoverySource: 'PPPOE',
+          currentPppPool: undefined,
+        },
+      ]);
+      expect(findProfileByName).toHaveBeenCalledWith('Sumtech-20M');
+    });
+
+    it('sin DHCP ni PPPoE asegurados en la interfaz, devuelve discoveredPool null', async () => {
+      nodeVlanRepo.find.mockResolvedValue([
+        { id: 'nv-1', vlanId: 'vlan-1', pppPool: 'pool-manual', vlan: { vlanId: 300, name: 'VLAN Sin Servicio' } },
+      ]);
+      const findDhcpServerByInterface = jest.fn().mockResolvedValue(null);
+      const findPppoeServerByInterface = jest.fn().mockResolvedValue(null);
+      clientFactory.mockReturnValue({ findDhcpServerByInterface, findPppoeServerByInterface });
+
+      const result = await service.scanRealVlanPools('node-1');
+
+      expect(result).toEqual([
+        {
+          vlanId: 'vlan-1',
+          vlanNumericId: 300,
+          vlanName: 'VLAN Sin Servicio',
+          interfaceName: 'vlan300',
+          discoveredPool: null,
+          discoverySource: null,
+          currentPppPool: 'pool-manual',
+        },
+      ]);
+    });
+
+    it('lanza NotFoundException si el nodo no existe', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.scanRealVlanPools('node-x')).rejects.toThrow(NotFoundException);
+    });
+  });
+
   describe('getRealNatRules / getRealFirewallRules (solo lectura, sin importar nada)', () => {
     it('getRealNatRules devuelve la lista cruda del router tal cual, incluidas reglas que Sumtech no creó', async () => {
       const listNatRules = jest.fn().mockResolvedValue([

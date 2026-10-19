@@ -510,6 +510,79 @@ export class NetworkNodeInfrastructureService {
   }
 
   /**
+   * Detecta, por cada VLAN ya sincronizada de este nodo, qué pool de IP
+   * REALMENTE usa en RouterOS -- sin pedirle al admin que lo adivine (ver
+   * `setVlanPppPool`). RouterOS no tiene un campo "pool de esta VLAN"
+   * directo para PPPoE (el pool vive en el Perfil PPP, no en la VLAN), así
+   * que la resolución depende del medio:
+   *
+   *   DHCP:  /ip/dhcp-server tiene "address-pool" directo por interfaz --
+   *          confiable al 100%, sin ambigüedad.
+   *   PPPoE: /interface/pppoe-server/server da el "default-profile" de esa
+   *          interfaz, y ese perfil (/ppp/profile) tiene "remote-address"
+   *          (el pool). Es el pool que usaría un Secret NUEVO sin perfil
+   *          explícito -- un Secret existente podría tener otro perfil
+   *          asignado a mano, así que esto es la mejor inferencia posible,
+   *          no una garantía absoluta (RouterOS no vincula VLAN↔pool
+   *          directamente para PPPoE).
+   *
+   * Solo lectura -- no escribe nada, ni en RouterOS ni en Sumtech. El admin
+   * decide si aplica lo detectado vía `setVlanPppPool`.
+   */
+  async scanRealVlanPools(nodeId: string): Promise<
+    Array<{
+      vlanId: string;
+      vlanNumericId: number;
+      vlanName: string;
+      interfaceName: string;
+      discoveredPool: string | null;
+      discoverySource: 'DHCP' | 'PPPOE' | null;
+      currentPppPool?: string;
+    }>
+  > {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
+    }
+
+    const nodeVlans = await this.nodeVlanRepository.find({ where: { nodeId }, relations: ['vlan'] });
+    const client = await this.resolveClient(node);
+
+    return Promise.all(
+      nodeVlans.map(async (nv) => {
+        const interfaceName = `vlan${nv.vlan.vlanId}`;
+        let discoveredPool: string | null = null;
+        let discoverySource: 'DHCP' | 'PPPOE' | null = null;
+
+        const dhcpServer = await client.findDhcpServerByInterface(interfaceName).catch(() => null);
+        if (dhcpServer?.addressPool) {
+          discoveredPool = dhcpServer.addressPool;
+          discoverySource = 'DHCP';
+        } else {
+          const pppoeServer = await client.findPppoeServerByInterface(interfaceName).catch(() => null);
+          if (pppoeServer?.defaultProfile) {
+            const profile = await client.findProfileByName(pppoeServer.defaultProfile).catch(() => null);
+            if (profile?.remoteAddress) {
+              discoveredPool = profile.remoteAddress;
+              discoverySource = 'PPPOE';
+            }
+          }
+        }
+
+        return {
+          vlanId: nv.vlanId,
+          vlanNumericId: nv.vlan.vlanId,
+          vlanName: nv.vlan.name,
+          interfaceName,
+          discoveredPool,
+          discoverySource,
+          currentPppPool: nv.pppPool,
+        };
+      }),
+    );
+  }
+
+  /**
    * NAT de salida (masquerade) sobre la interfaz WAN del nodo — sin esto
    * ningún cliente detrás del router sale a Internet aunque el WAN ya tenga
    * IP real. Depende de que `wanInterfaceName` ya esté configurado (Fase B).

@@ -195,6 +195,13 @@ export class NetworkNodesController {
     return this.infrastructureService.getVlanServiceStatuses(id);
   }
 
+  /** Detecta en vivo qué pool de IP usa REALMENTE cada VLAN en RouterOS (DHCP directo, PPPoE vía perfil default) -- solo lectura, no escribe nada. */
+  @Get(':id/vlans/pools/scan')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async scanNodeVlanPools(@Param('id') id: string) {
+    return this.infrastructureService.scanRealVlanPools(id);
+  }
+
   @Post(':id/vlans/:vlanId/sync')
   @Roles(Role.ADMIN, Role.GERENTE)
   async syncNodeVlan(
