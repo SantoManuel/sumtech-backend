@@ -583,6 +583,35 @@ describe('OltCatalogsService', () => {
         { name: 'FIXED5M', fixedKbps: 5000 },
       );
       expect(result.success).toBe(true);
+      expect(result.message).toMatch(/SUBIDA/);
+    });
+
+    it('si el perfil tiene vendorTrafficProfile, también llama driver.ensureTrafficProfile con el ancho de banda de bajada', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      speedProfileRepo.findOneBy.mockResolvedValue({ ...profile, vendorTrafficProfile: 'TRAFFIC5M' });
+      const ensureTcontProfile = jest.fn().mockResolvedValue({ ok: true });
+      const ensureTrafficProfile = jest.fn().mockResolvedValue({ ok: true });
+      driverRegistry.resolve.mockReturnValue({ ensureTcontProfile, ensureTrafficProfile });
+
+      const result = await service.syncSpeedProfileToOlt('olt-1', 'prof-1');
+
+      expect(ensureTrafficProfile).toHaveBeenCalledWith(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: expect.any(String) },
+        { name: 'TRAFFIC5M', downKbps: 5000 },
+      );
+      expect(result.success).toBe(true);
+      expect(result.message).toMatch(/subida.*bajada|TRAFFIC5M/i);
+    });
+
+    it('lanza BadRequestException si el TCONT se sincroniza pero el driver rechaza el traffic-profile de bajada', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      speedProfileRepo.findOneBy.mockResolvedValue({ ...profile, vendorTrafficProfile: 'TRAFFIC5M' });
+      driverRegistry.resolve.mockReturnValue({
+        ensureTcontProfile: jest.fn().mockResolvedValue({ ok: true }),
+        ensureTrafficProfile: jest.fn().mockResolvedValue({ ok: false, error: '% Unknown command' }),
+      });
+
+      await expect(service.syncSpeedProfileToOlt('olt-1', 'prof-1')).rejects.toThrow(BadRequestException);
     });
 
     it('lanza BadRequestException con el mensaje del driver si la OLT rechaza el comando', async () => {

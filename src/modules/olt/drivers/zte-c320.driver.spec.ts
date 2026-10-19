@@ -62,6 +62,31 @@ describe('ZteC320Driver', () => {
     expect(commands[tr069MgmtIdx + 1]).toBe('end');
   });
 
+  it('genera "traffic-profile <nombre> vport 1 direction egress" (bajada) solo si config.trafficProfile está presente', () => {
+    const withTraffic = driver.generateAuthorizationScript({
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'ZTE-F660',
+      serialNumber: 'ZTEGC0123456',
+      serviceVlan: 200,
+      trafficProfile: 'TRAFFIC-50M',
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+    });
+    expect(withTraffic).toContain('traffic-profile TRAFFIC-50M vport 1 direction egress');
+
+    const withoutTraffic = driver.generateAuthorizationScript({
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'ZTE-F660',
+      serialNumber: 'ZTEGC0123456',
+      serviceVlan: 200,
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+    });
+    expect(withoutTraffic.some((c) => c.startsWith('traffic-profile'))).toBe(false);
+  });
+
   it('parsea correctamente las ONUs no configuradas y extrae serial y fabricante (RF-OLT-014)', async () => {
     const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_gpon_onu_uncfg.txt');
     const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
@@ -551,6 +576,49 @@ describe('ZteC320Driver', () => {
     });
   });
 
+  describe('ensureTrafficProfile (bajada/downstream, confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-19)', () => {
+    it('ensureTrafficProfile declara el perfil con "configure terminal"/"traffic-profile ... ip cir <kbps> cbs 1000 pir <kbps> pbs 1000"/"exit"/"write", sin chequeo de existencia previo', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.ensureTrafficProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'TRAFFIC-NUEVO-5M', downKbps: 5000 },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'configure terminal',
+        'traffic-profile TRAFFIC-NUEVO-5M ip cir 5000 cbs 1000 pir 5000 pbs 1000',
+        'exit',
+        'write',
+      ]);
+    });
+
+    it('redeclarar un perfil que ya existe es en sí mismo idempotente (confirmado en vivo: sin error al repetir el mismo comando)', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.ensureTrafficProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'TRAFFIC-50M', downKbps: 51200 },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith(
+        'traffic-profile TRAFFIC-50M ip cir 51200 cbs 1000 pir 51200 pbs 1000',
+      );
+    });
+  });
+
   describe('authorizeOnu() + TCONT', () => {
     it('asegura el perfil TCONT antes de correr el script de autorización cuando hay tcontProfile + upKbps', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
@@ -609,6 +677,57 @@ describe('ZteC320Driver', () => {
 
       expect(executeCommand).not.toHaveBeenCalledWith('show gpon profile tcont');
     });
+
+    it('asegura también el traffic-profile de bajada cuando hay trafficProfile + downKbps', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        {
+          ponInterface: 'gpon-olt_1/1/1',
+          onuId: 1,
+          modelTypeName: 'ZTE-F660',
+          serialNumber: 'ZTEGC0123456',
+          serviceVlan: 400,
+          trafficProfile: 'TRAFFIC5M',
+          downKbps: 5000,
+          managementMethod: 'OMCI',
+          operationMode: 'ROUTER',
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('traffic-profile TRAFFIC5M ip cir 5000 cbs 1000 pir 5000 pbs 1000');
+    });
+
+    it('no intenta asegurar ningún traffic-profile si no se provee trafficProfile/downKbps', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        {
+          ponInterface: 'gpon-olt_1/1/1',
+          onuId: 1,
+          modelTypeName: 'ZTE-F660',
+          serialNumber: 'ZTEGC0123456',
+          serviceVlan: 400,
+          managementMethod: 'OMCI',
+          operationMode: 'ROUTER',
+        },
+      );
+
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('traffic-profile'));
+    });
   });
 
   it('configureVlanTranslation() sigue señalando DRIVER_NOT_IMPLEMENTED: solo se confirmó el nombre del comando, no la sintaxis completa', async () => {
@@ -635,6 +754,10 @@ describe('ZteC320Driver', () => {
 
   it('dbaProfile (TCONT) ya está en true -- confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19)', () => {
     expect(driver.getCapabilities().dbaProfile).toBe(true);
+  });
+
+  it('downstreamTrafficProfile ya está en true -- confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19)', () => {
+    expect(driver.getCapabilities().downstreamTrafficProfile).toBe(true);
   });
 });
 

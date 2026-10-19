@@ -121,6 +121,12 @@ export interface TcontProfile {
   fixedKbps: number;
 }
 
+export interface TrafficProfile {
+  name: string;
+  /** Ancho de banda de BAJADA (downstream) en kbps, aplicado como CIR=PIR del traffic-profile (ver `downstreamTrafficProfile` en OltDriverCapabilities). */
+  downKbps: number;
+}
+
 export interface VlanTranslationParams {
   interfaceName: string;
   /** VLAN que llega del lado del cliente/ONU (interior). */
@@ -137,6 +143,8 @@ export interface AuthorizeOnuParams {
   clientName?: string;
   serviceVlan: number;
   tcontProfile?: string;
+  /** Nombre del traffic-profile de bajada (`net.olt_speed_profiles.vendor_traffic_profile`) -- ver `downstreamTrafficProfile` en OltDriverCapabilities. */
+  trafficProfile?: string;
   downKbps?: number;
   upKbps?: number;
   managementMethod: 'OMCI' | 'TR069';
@@ -167,11 +175,10 @@ export interface OltDriverCapabilities {
   interfaceAdminState: boolean;
   /**
    * Crear/consultar perfiles DBA-TCONT como objetos reales en la OLT (no
-   * solo referenciarlos por nombre). Para ZTE la sintaxis sale de
-   * documentación pública oficial del C320 (no de reconocimiento en vivo
-   * contra un equipo propio) — por eso esta capacidad se mantiene en
-   * `false` hasta confirmarlo contra hardware real, aunque el método ya
-   * tenga lógica funcional. Ver ZteC320Driver.ensureTcontProfile().
+   * solo referenciarlos por nombre). Para ZTE, CONFIRMADO EN VIVO contra
+   * OLT_Tabara_Abajo (2026-10-19): se creó y eliminó limpiamente un perfil
+   * de prueba con la sintaxis real (type 5 fixed/assured/maximum). Ver
+   * ZteC320Driver.ensureTcontProfile().
    */
   dbaProfile: boolean;
   /**
@@ -227,15 +234,25 @@ export interface OltDriverCapabilities {
   /**
    * Consultar qué perfiles TCONT (bandwidth) REALMENTE existen en la OLT,
    * vía `getTcontProfiles` (método opcional de IOltDriver) -- a diferencia
-   * de `dbaProfile`/`ensureTcontProfile`, que escribe perfiles nuevos y
-   * sigue sin confirmarse en vivo (y ya se sabe que usa una sintaxis
-   * "type 1 fixed" incompatible con los perfiles "type 5" reales de
-   * producción), esto es puramente de lectura y SÍ se confirmó en vivo
-   * contra OLT_Tabara_Abajo. Permite importar al catálogo de Sumtech
+   * de `dbaProfile`/`ensureTcontProfile`, que ESCRIBE perfiles nuevos, esto
+   * es puramente de lectura. Permite importar al catálogo de Sumtech
    * (`net.olt_speed_profiles`) lo que la OLT ya tiene configurado, sin
    * escribir nada en el equipo.
    */
   tcontDiscovery: boolean;
+  /**
+   * Crear/asegurar el "traffic-profile" (CIR/PIR) que limita el ancho de
+   * banda de BAJADA (downstream) en el vport de la ONU -- distinto de
+   * `dbaProfile`/TCONT, que en GPON solo gobierna la SUBIDA (ITU-T G.984).
+   * Para ZTE, CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-19): se
+   * creó y eliminó limpiamente un perfil de prueba. Nota: el comando "show
+   * traffic-profile <nombre>" documentado en el manual oficial (§7.3.11)
+   * NO EXISTE en este firmware real (confirmado: %Error 20201) -- por eso
+   * `ensureTrafficProfile` no hace un chequeo de existencia previo, sino
+   * que confía en que redeclarar el mismo nombre es en sí mismo idempotente
+   * (también confirmado en vivo). Ver ZteC320Driver.ensureTrafficProfile().
+   */
+  downstreamTrafficProfile: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -258,6 +275,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   onuPassiveImport: false,
   vlanDiscovery: false,
   tcontDiscovery: false,
+  downstreamTrafficProfile: false,
 };
 
 /**
@@ -331,6 +349,8 @@ export interface IOltDriver {
   findTcontProfileByName(params: OltConnectionParams, name: string): Promise<TcontProfile | null>;
   /** Asegura que el perfil exista con el ancho de banda indicado (idempotente: crea si falta, no duplica si ya existe). */
   ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }>;
+  /** Asegura que el traffic-profile de BAJADA exista (idempotente) -- ver `downstreamTrafficProfile` en OltDriverCapabilities. */
+  ensureTrafficProfile(params: OltConnectionParams, profile: TrafficProfile): Promise<{ ok: boolean; error?: string }>;
   /** Traducción de VLAN cliente↔red en una interfaz (VLAN translation/QinQ) — ver `vlanTranslation` en OltDriverCapabilities sobre por qué sigue sin evidencia suficiente para implementarse. */
   configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }>;
   /** Alarmas/eventos reales del equipo (ver `alarms` en OltDriverCapabilities). */

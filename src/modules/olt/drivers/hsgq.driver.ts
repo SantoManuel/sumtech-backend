@@ -11,6 +11,7 @@ import {
   OnuOpticalPower,
   AuthorizeOnuParams,
   TcontProfile,
+  TrafficProfile,
   VlanTranslationParams,
   OltDriverCapabilities,
   NO_DRIVER_CAPABILITIES,
@@ -82,6 +83,10 @@ export class HsgqDriver implements IOltDriver {
 
   async ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureTcontProfile').message };
+  }
+
+  async ensureTrafficProfile(params: OltConnectionParams, profile: TrafficProfile): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureTrafficProfile').message };
   }
 
   async configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }> {

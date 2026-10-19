@@ -15,6 +15,7 @@ import {
   NO_DRIVER_CAPABILITIES,
   DriverNotImplementedError,
   TcontProfile,
+  TrafficProfile,
   VlanTranslationParams,
   OltAlarm,
 } from '../ports/olt-driver.port';
@@ -605,6 +606,15 @@ export class HiosoDriver implements IOltDriver {
 
   async ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureTcontProfile').message };
+  }
+
+  /**
+   * Mismo caso que ensureTcontProfile: este hardware ya aplica el ancho de
+   * banda de bajada directo por ONU (ver `buildBandwidthCommand`), no como
+   * un objeto "traffic-profile" con nombre -- no hay nada que asegurar aquí.
+   */
+  async ensureTrafficProfile(params: OltConnectionParams, profile: TrafficProfile): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureTrafficProfile').message };
   }
 
   /** Sin evidencia de que este hardware EPON soporte traducción de VLAN/QinQ. */

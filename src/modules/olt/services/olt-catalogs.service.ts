@@ -280,15 +280,17 @@ export class OltCatalogsService {
 
   /**
    * Empuja un perfil de velocidad del catálogo (`net.olt_speed_profiles`)
-   * como un objeto DBA/TCONT real en una OLT específica — acción explícita
-   * (no automática al crear/editar el perfil) porque el mismo perfil del
+   * como objetos reales en una OLT específica — acción explícita (no
+   * automática al crear/editar el perfil) porque el mismo perfil del
    * catálogo puede aplicarse a OLTs de distintos fabricantes, y "crear el
    * objeto en la OLT" es por definición una operación contra un equipo
    * puntual, igual que `assignVlanToInterface`.
    *
    * Requiere `vendor_tcont_profile` ya cargado en el perfil (el nombre con
    * el que se referenciará en la OLT, ej. "FIXED5M") — sin eso no hay un
-   * nombre determinístico que usar.
+   * nombre determinístico que usar. `vendor_traffic_profile` (bajada) es
+   * opcional: si no está configurado, solo se sincroniza la subida (TCONT)
+   * y el mensaje de respuesta lo deja explícito.
    */
   async syncSpeedProfileToOlt(oltId: string, speedProfileId: string) {
     const olt = await this.oltRepository.findOneBy({ id: oltId });
@@ -322,9 +324,27 @@ export class OltCatalogsService {
       throw new BadRequestException(`No se pudo sincronizar el perfil en la OLT: ${result.error}`);
     }
 
+    if (!profile.vendorTrafficProfile) {
+      return {
+        success: true,
+        message: `Perfil TCONT "${profile.vendorTcontProfile}" asegurado en la OLT "${olt.name}". Nota: no tiene un nombre de perfil de bajada (vendorTrafficProfile) configurado, así que esto solo cubre el ancho de banda de SUBIDA — asígnalo y vuelve a sincronizar para cubrir también la bajada.`,
+      };
+    }
+
+    const trafficResult = await driver.ensureTrafficProfile(connParams, {
+      name: profile.vendorTrafficProfile,
+      downKbps: profile.downKbps,
+    });
+
+    if (!trafficResult.ok) {
+      throw new BadRequestException(
+        `El perfil TCONT (subida) se sincronizó, pero falló el de bajada en la OLT: ${trafficResult.error}`,
+      );
+    }
+
     return {
       success: true,
-      message: `Perfil TCONT "${profile.vendorTcontProfile}" asegurado en la OLT "${olt.name}". Nota: esto solo cubre el ancho de banda de SUBIDA — la bajada no se gestiona por esta vía todavía.`,
+      message: `Perfiles de subida ("${profile.vendorTcontProfile}") y de bajada ("${profile.vendorTrafficProfile}") asegurados en la OLT "${olt.name}".`,
     };
   }
 

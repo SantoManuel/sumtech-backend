@@ -9,6 +9,7 @@ import {
   DiscoveredInterface,
   ConfigureVlanParams,
   TcontProfile,
+  TrafficProfile,
   VlanTranslationParams,
   OltDriverCapabilities,
   DriverNotImplementedError,
@@ -619,8 +620,17 @@ export class ZteC320Driver implements IOltDriver {
       'gemport 1 tcont 1',
       'switchport mode hybrid vport 1',
       `service-port 1 vport 1 user-vlan ${config.serviceVlan} vlan ${config.serviceVlan}`,
-      'exit',
     ];
+
+    // Aplica el traffic-profile de bajada al vport (§7.3.11 del manual del
+    // C300) -- "direction egress" porque, desde la óptica de la interfaz de
+    // la ONU, "egress" es el tráfico que SALE de la OLT hacia la ONU, osea
+    // el sentido de bajada hacia el cliente.
+    if (config.trafficProfile) {
+      commands.push(`traffic-profile ${config.trafficProfile} vport 1 direction egress`);
+    }
+
+    commands.push('exit');
 
     if (config.managementMethod === 'TR069' && config.tr069Url) {
       commands.push(
@@ -662,6 +672,10 @@ export class ZteC320Driver implements IOltDriver {
 
       if (config.tcontProfile && config.upKbps) {
         await this.ensureTcontProfileWithSession(session, { name: config.tcontProfile, fixedKbps: config.upKbps });
+      }
+
+      if (config.trafficProfile && config.downKbps) {
+        await this.ensureTrafficProfileWithSession(session, { name: config.trafficProfile, downKbps: config.downKbps });
       }
 
       const commands = this.generateAuthorizationScript(config);
@@ -741,12 +755,10 @@ export class ZteC320Driver implements IOltDriver {
    *
    * IMPORTANTE — alcance: TCONT en GPON gobierna el ancho de banda de
    * SUBIDA del ONU únicamente (ITU-T G.984). El ancho de banda de BAJADA
-   * normalmente se gestiona con un mecanismo aparte (ej. un "traffic
-   * profile" aplicado al gemport/service-port) — esta sesión no tiene
-   * evidencia documentada de esa sintaxis para este equipo, así que
-   * `net.olt_speed_profiles.vendor_traffic_profile` sigue sin usarse por
-   * ningún driver. No asumir que crear el TCONT ya configuró la velocidad
-   * completa del cliente en ambos sentidos.
+   * se gestiona con un mecanismo aparte -- ver `ensureTrafficProfile` más
+   * abajo, que sí lo cubre usando `net.olt_speed_profiles.vendor_traffic_profile`.
+   * No asumir que crear el TCONT ya configuró la velocidad completa del
+   * cliente en ambos sentidos: para eso hacen falta AMBOS métodos.
    */
   async ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }> {
     const session = this.createSession(params);
@@ -774,6 +786,55 @@ export class ZteC320Driver implements IOltDriver {
     await session.executeCommand('gpon');
     await session.executeCommand(`profile tcont ${profile.name} type 5 fixed 64 assured 64 maximum ${profile.fixedKbps}`);
     await session.executeCommand('exit');
+    await session.executeCommand('exit');
+    await session.executeCommand('write');
+  }
+
+  /**
+   * Crea (o redeclara) el traffic-profile de BAJADA (CIR=PIR=downKbps) --
+   * CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-19) con un perfil de
+   * prueba ("SUMTECH-TEST-DELETE-ME"), creado y eliminado limpiamente:
+   *   configure terminal / traffic-profile <nombre> ip cir <kbps> cbs 1000
+   *   pir <kbps> pbs 1000 / exit / write
+   * A diferencia de TCONT, este comando NO entra a un submodo "gpon" -- se
+   * manda directo en "(config)#". CIR=PIR (sin distinguir tasa comprometida
+   * de tasa pico) porque no hay todavía una política de negocio para dar
+   * margen de ráfaga por encima del plan contratado -- si se necesita,
+   * ajustar aquí.
+   *
+   * IMPORTANTE -- por qué NO hay chequeo de existencia previo (a diferencia
+   * de ensureTcontProfileWithSession): "show traffic-profile <nombre>",
+   * documentado en el manual oficial (§7.3.11), NO EXISTE en este firmware
+   * -- confirmado en vivo: responde "%Error 20201: Invalid input detected"
+   * tanto desde "(config)#" como desde "(config-if)#". En su lugar, se
+   * confirmó en vivo que redeclarar el MISMO nombre con los mismos
+   * parámetros es en sí mismo silencioso/idempotente (sin error), así que
+   * el comando de creación DOBLA como "ensure" sin necesitar una consulta
+   * previa. No usar "show running-config" como verificación aquí: se probó
+   * y la salida es demasiado grande/paginada para un timeout razonable
+   * contra esta OLT real (quedó colgado >90s en una prueba).
+   */
+  async ensureTrafficProfile(params: OltConnectionParams, profile: TrafficProfile): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await this.ensureTrafficProfileWithSession(session, profile);
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  private async ensureTrafficProfileWithSession(
+    session: { executeCommand(cmd: string, timeoutMs?: number): Promise<string> },
+    profile: TrafficProfile,
+  ): Promise<void> {
+    await session.executeCommand('configure terminal');
+    await session.executeCommand(
+      `traffic-profile ${profile.name} ip cir ${profile.downKbps} cbs 1000 pir ${profile.downKbps} pbs 1000`,
+    );
     await session.executeCommand('exit');
     await session.executeCommand('write');
   }
@@ -976,6 +1037,11 @@ export class ZteC320Driver implements IOltDriver {
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show gpon
       // profile tcont" responde con ~40 perfiles reales ya configurados.
       tcontDiscovery: true,
+      // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): se creó y
+      // eliminó un traffic-profile de prueba real ("SUMTECH-TEST-DELETE-ME")
+      // con el flujo completo configure terminal/traffic-profile/exit/write
+      // -- ver ensureTrafficProfile().
+      downstreamTrafficProfile: true,
     };
   }
 

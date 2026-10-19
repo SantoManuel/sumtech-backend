@@ -623,6 +623,35 @@ describe('OnuManagementService', () => {
       );
     });
 
+    it('resuelve también vendorTrafficProfile a trafficProfile si el perfil lo tiene configurado', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+      speedProfileRepo.findOneBy.mockResolvedValueOnce({
+        id: 'profile-1',
+        code: 'OLT-100M',
+        downKbps: 102400,
+        upKbps: 102400,
+        vendorTcontProfile: 'TCONT-100M',
+        vendorTrafficProfile: 'TRAFFIC-100M',
+      });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        onuTypeId: 'type-1',
+        speedProfileId: 'profile-1',
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+      });
+
+      expect(zteDriver.authorizeOnu).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          trafficProfile: 'TRAFFIC-100M',
+          downKbps: 102400,
+        }),
+      );
+    });
+
     it('con managementMethod TR069 y tr069NetworkId, llama a CpeConfiguratorService.configureCpe() y marca cpeConfigured:true', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
       zteDriver.authorizeOnu.mockResolvedValue({ ok: true });

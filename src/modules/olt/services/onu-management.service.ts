@@ -1153,12 +1153,14 @@ export class OnuManagementService {
     // dto.speedProfileId, así que ningún fabricante recibía el perfil que el
     // usuario elegía en el modal (ZTE siempre caía en su default hardcodeado).
     let tcontProfile: string | undefined;
+    let trafficProfile: string | undefined;
     let downKbps: number | undefined;
     let upKbps: number | undefined;
     if (dto.speedProfileId) {
       const profile = await this.speedProfileRepository.findOneBy({ id: dto.speedProfileId });
       if (profile) {
         tcontProfile = profile.vendorTcontProfile || undefined;
+        trafficProfile = profile.vendorTrafficProfile || undefined;
         downKbps = profile.downKbps;
         upKbps = profile.upKbps;
       }
@@ -1172,6 +1174,7 @@ export class OnuManagementService {
       clientName: dto.clientName || undefined,
       serviceVlan,
       tcontProfile,
+      trafficProfile,
       downKbps,
       upKbps,
       managementMethod: dto.managementMethod || 'TR069',
