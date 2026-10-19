@@ -287,6 +287,27 @@ describe('ZteC320Driver', () => {
     ).rejects.toThrow('rechazó la interfaz');
   });
 
+  it('getTcontProfiles() parsea perfiles TCONT reales de los 5 tipos documentados, usando max(FBW,ABW,MBW) como velocidad (RF: brownfield -- confirmado en vivo contra OLT_Tabara_Abajo)', async () => {
+    const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_gpon_profile_tcont.txt');
+    const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
+
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(fixtureContent),
+      close: jest.fn(),
+    });
+
+    const result = await driver.getTcontProfiles({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+
+    expect(result).toEqual([
+      { name: 'default', type: 1, fbwKbps: 10000, abwKbps: 0, mbwKbps: 0, speedKbps: 10000 },
+      { name: 'voip', type: 2, fbwKbps: 0, abwKbps: 2048, mbwKbps: 0, speedKbps: 2048 },
+      { name: 'internet', type: 4, fbwKbps: 0, abwKbps: 0, mbwKbps: 100240, speedKbps: 100240 },
+      { name: 'SMARTOLT-VOIPMNG-10M', type: 5, fbwKbps: 512, abwKbps: 1024, mbwKbps: 11264, speedKbps: 11264 },
+      { name: 'SMARTOLT-100M-UP', type: 5, fbwKbps: 64, abwKbps: 64, mbwKbps: 110080, speedKbps: 110080 },
+    ]);
+  });
+
   it('parsea correctamente el inventario de tarjetas del chasis (show card)', async () => {
     const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_card.txt');
     const fixtureContent = fs.readFileSync(fixturePath, 'utf8');

@@ -310,6 +310,71 @@ describe('OltCatalogsService', () => {
     });
   });
 
+  describe('scanRealSpeedProfiles / importDiscoveredSpeedProfile (descubrimiento brownfield, confirmado en vivo contra OLT_Tabara_Abajo)', () => {
+    const mockOlt = { id: 'olt-1', vendor: 'ZTE', host: '10.0.0.10', port: 23, username: 'admin', passwordEnc: 'enc' };
+
+    it('distingue los perfiles TCONT ya rastreados de los reales-pero-desconocidos', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      speedProfileRepo.find.mockResolvedValue([{ id: 'p1', vendorTcontProfile: 'SMARTOLT-100M-UP' }]);
+      const getTcontProfiles = jest.fn().mockResolvedValue([
+        { name: 'SMARTOLT-100M-UP', type: 5, fbwKbps: 64, abwKbps: 64, mbwKbps: 110080, speedKbps: 110080 },
+        { name: 'SMARTOLT-500M-UP', type: 5, fbwKbps: 64, abwKbps: 64, mbwKbps: 524032, speedKbps: 524032 },
+      ]);
+      driverRegistry.resolve.mockReturnValue({ getTcontProfiles });
+
+      const result = await service.scanRealSpeedProfiles('olt-1');
+
+      expect(result).toEqual([
+        { name: 'SMARTOLT-100M-UP', type: 5, fbwKbps: 64, abwKbps: 64, mbwKbps: 110080, speedKbps: 110080, alreadyTracked: true },
+        { name: 'SMARTOLT-500M-UP', type: 5, fbwKbps: 64, abwKbps: 64, mbwKbps: 524032, speedKbps: 524032, alreadyTracked: false },
+      ]);
+    });
+
+    it('lanza BadRequestException si el driver del fabricante no soporta descubrir perfiles TCONT reales', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      driverRegistry.resolve.mockReturnValue({}); // sin getTcontProfiles
+
+      await expect(service.scanRealSpeedProfiles('olt-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('convierte el rechazo de la OLT en BadRequestException legible, no en un 500 genérico', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      const getTcontProfiles = jest.fn().mockRejectedValue(new Error('Timeout ejecutando comando OLT'));
+      driverRegistry.resolve.mockReturnValue({ getTcontProfiles });
+
+      await expect(service.scanRealSpeedProfiles('olt-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza NotFoundException si la OLT no existe', async () => {
+      oltRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.scanRealSpeedProfiles('olt-x')).rejects.toThrow(NotFoundException);
+    });
+
+    it('importDiscoveredSpeedProfile crea el perfil con downKbps=upKbps=speedKbps y un code derivado del nombre real', async () => {
+      speedProfileRepo.findOneBy.mockResolvedValue(null);
+
+      const result = await service.importDiscoveredSpeedProfile({ name: 'SMARTOLT-500M-UP', speedKbps: 524032 });
+
+      expect(speedProfileRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: 'SMARTOLT-500M-UP',
+          vendorTcontProfile: 'SMARTOLT-500M-UP',
+          downKbps: 524032,
+          upKbps: 524032,
+        }),
+      );
+      expect(result.vendorTcontProfile).toBe('SMARTOLT-500M-UP');
+    });
+
+    it('importDiscoveredSpeedProfile rechaza con ConflictException si ese perfil TCONT ya está registrado', async () => {
+      speedProfileRepo.findOneBy.mockResolvedValue({ id: 'p1', vendorTcontProfile: 'SMARTOLT-500M-UP' });
+
+      await expect(
+        service.importDiscoveredSpeedProfile({ name: 'SMARTOLT-500M-UP', speedKbps: 524032 }),
+      ).rejects.toThrow(/ya está registrado/);
+    });
+  });
+
   describe('OnuTypes CRUD (catálogo real, reemplaza el seed roto de la migración 064)', () => {
     it('crea un tipo de ONU GPON nuevo', async () => {
       onuTypeRepo.findOneBy.mockResolvedValue(null);

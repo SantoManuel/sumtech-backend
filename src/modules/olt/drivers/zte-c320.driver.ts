@@ -14,6 +14,7 @@ import {
   DriverNotImplementedError,
   OltAlarm,
   DiscoveredAuthorizedOnu,
+  DiscoveredTcontProfile,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
@@ -752,6 +753,58 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * Lista TODOS los perfiles TCONT reales configurados en la OLT, vía
+   * "show gpon profile tcont" -- confirmado en vivo contra OLT_Tabara_Abajo
+   * (2026-10-19): ~40 perfiles reales, con nombres que ya coinciden con la
+   * convención del catálogo de Sumtech (ej. "SMARTOLT-100M-UP"). El formato
+   * real coincide con el documentado en el manual oficial (§2, Tabla 2-4/2-5):
+   * columnas Type/FBW(kbps)/ABW(kbps)/MBW(kbps) por perfil.
+   *
+   * IMPORTANTE -- hallazgo real que contradice la suposición de
+   * `ensureTcontProfileWithSession` (que solo crea perfiles "type 1 fixed"):
+   * casi todos los perfiles reales de producción son **type 5** (Fixed +
+   * Assured + Maximum, los 3 valores a la vez) -- el manual confirma en sus
+   * propios ejemplos que la velocidad "nombrada" de un perfil siempre
+   * coincide con `max(FBW, ABW, MBW)` sin importar el type (type 1 "2M" →
+   * FBW=2000; type 5 "20M" → fixed=2000/assured=5000/maximum=20000, nombre
+   * coincide con el máximo). Por eso `speedKbps` abajo usa ese mismo
+   * criterio en vez de asumir un campo fijo por type.
+   */
+  async getTcontProfiles(params: OltConnectionParams): Promise<DiscoveredTcontProfile[]> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand('show gpon profile tcont');
+
+      // "Profile name :<nombre>" seguido (con ruido de paginación/backspace
+      // posible en medio) de la fila de datos "Type FBW ABW MBW PRIORITY
+      // WEIGHT" -- se salta de forma perezosa hasta la primera fila que
+      // calce el patrón numérico real, sin depender del texto exacto de la
+      // cabecera (que puede variar o llegar fragmentado por "--More--").
+      const profileRegex = /Profile name\s*:\s*(\S+)[\s\S]*?\r?\n\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)/g;
+      const results: DiscoveredTcontProfile[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = profileRegex.exec(output)) !== null) {
+        const [, name, type, fbw, abw, mbw] = match;
+        const fbwKbps = parseInt(fbw, 10);
+        const abwKbps = parseInt(abw, 10);
+        const mbwKbps = parseInt(mbw, 10);
+        results.push({
+          name,
+          type: parseInt(type, 10),
+          fbwKbps,
+          abwKbps,
+          mbwKbps,
+          speedKbps: Math.max(fbwKbps, abwKbps, mbwKbps),
+        });
+      }
+      return results;
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
    * Solo se confirmó el NOMBRE de este comando en documentación pública
    * ("vlan-translate ingress-port", manual de VLAN translation/Smart QinQ
    * del ZTE C300/C320) — sin un ejemplo completo de sintaxis (orden de
@@ -915,6 +968,9 @@ export class ZteC320Driver implements IOltDriver {
       // port <interfaz>" responde con datos reales tanto en uplink
       // (gei_1/4/1) como en PON (gpon-olt_1/2/1).
       vlanDiscovery: true,
+      // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show gpon
+      // profile tcont" responde con ~40 perfiles reales ya configurados.
+      tcontDiscovery: true,
     };
   }
 

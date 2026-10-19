@@ -31,6 +31,22 @@ export interface DiscoveredInterfaceVlan {
   mode: 'TAG' | 'UNTAG';
 }
 
+/**
+ * Perfil TCONT real encontrado por `getTcontProfiles` -- ver `tcontDiscovery`
+ * en OltDriverCapabilities. `speedKbps` es `max(fbwKbps, abwKbps, mbwKbps)`,
+ * confirmado contra los ejemplos del manual oficial del C320 (Tabla 2-5):
+ * la velocidad "nombrada" de un perfil siempre coincide con ese máximo, sin
+ * importar el `type`.
+ */
+export interface DiscoveredTcontProfile {
+  name: string;
+  type: number;
+  fbwKbps: number;
+  abwKbps: number;
+  mbwKbps: number;
+  speedKbps: number;
+}
+
 export interface DiscoveredInterface {
   name: string; // ej: 'gpon-olt_1/1/1', 'gei_1/3/1'
   type: 'PON' | 'UPLINK' | 'DOWNLINK' | 'MGMT';
@@ -208,6 +224,18 @@ export interface OltDriverCapabilities {
    * Plan_Implementacion_Descubrimiento_OLT_VLANs.md).
    */
   vlanDiscovery: boolean;
+  /**
+   * Consultar qué perfiles TCONT (bandwidth) REALMENTE existen en la OLT,
+   * vía `getTcontProfiles` (método opcional de IOltDriver) -- a diferencia
+   * de `dbaProfile`/`ensureTcontProfile`, que escribe perfiles nuevos y
+   * sigue sin confirmarse en vivo (y ya se sabe que usa una sintaxis
+   * "type 1 fixed" incompatible con los perfiles "type 5" reales de
+   * producción), esto es puramente de lectura y SÍ se confirmó en vivo
+   * contra OLT_Tabara_Abajo. Permite importar al catálogo de Sumtech
+   * (`net.olt_speed_profiles`) lo que la OLT ya tiene configurado, sin
+   * escribir nada en el equipo.
+   */
+  tcontDiscovery: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -229,6 +257,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   tr069AutoProvisioning: false,
   onuPassiveImport: false,
   vlanDiscovery: false,
+  tcontDiscovery: false,
 };
 
 /**
@@ -280,6 +309,12 @@ export interface IOltDriver {
    * fabricantes tienen un comando de solo lectura equivalente confirmado.
    */
   getVlanConfigForInterface?(params: OltConnectionParams, interfaceName: string): Promise<DiscoveredInterfaceVlan[]>;
+  /**
+   * Perfiles TCONT REALES configurados en la OLT (ver `tcontDiscovery` en
+   * OltDriverCapabilities) -- opcional porque no todos los fabricantes
+   * tienen un comando de solo lectura equivalente confirmado.
+   */
+  getTcontProfiles?(params: OltConnectionParams): Promise<DiscoveredTcontProfile[]>;
   getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower>;
   authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }>;
   setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }>;

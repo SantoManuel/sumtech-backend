@@ -1,0 +1,19 @@
+Profile name :default
+ Type           FBW(kbps)   ABW(kbps)   MBW(kbps)   PRIORITY   WEIGHT
+ 1              10000       0           0           N/A         N/A
+
+Profile name :voip
+ Type           FBW(kbps)   ABW(kbps)   MBW(kbps)   PRIORITY   WEIGHT
+ 2              0           2048        0           N/A         N/A
+
+Profile name :internet
+ Type           FBW(kbps)   ABW(kbps)   MBW(kbps)   PRIORITY   WEIGHT
+ 4              0           0           100240      N/A         N/A
+
+Profile name :SMARTOLT-VOIPMNG-10M
+ Type           FBW(kbps)   ABW(kbps)   MBW(kbps)   PRIORITY   WEIGHT
+ 5              512         1024        11264       N/A         N/A
+
+Profile name :SMARTOLT-100M-UP
+ Type           FBW(kbps)   ABW(kbps)   MBW(kbps)   PRIORITY   WEIGHT
+ 5              64          64          110080      N/A         N/A

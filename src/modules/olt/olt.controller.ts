@@ -252,6 +252,20 @@ export class OltController {
     return this.catalogsService.syncSpeedProfileToOlt(oltId, profileId);
   }
 
+  /** Descubrimiento brownfield: perfiles TCONT que YA existen en la OLT real. Solo lectura. */
+  @Get('olts/:oltId/speed-profiles/scan')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async scanOltRealSpeedProfiles(@Param('oltId') oltId: string) {
+    return this.catalogsService.scanRealSpeedProfiles(oltId);
+  }
+
+  /** Da de alta en Sumtech un perfil TCONT descubierto por /speed-profiles/scan -- no escribe nada en la OLT, ya existía. */
+  @Post('speed-profiles/import')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async importDiscoveredSpeedProfile(@Body() body: { name: string; speedKbps: number }) {
+    return this.catalogsService.importDiscoveredSpeedProfile(body);
+  }
+
   // ══════════════════════════════════════════════════
   // Perfiles de Velocidad OLT (RF-OLT-008)
   // ══════════════════════════════════════════════════

@@ -396,6 +396,79 @@ export class OltCatalogsService {
     return { success: true, message: `Perfil OLT "${profile.name}" eliminado correctamente.` };
   }
 
+  /**
+   * Descubre los perfiles TCONT que REALMENTE existen en una OLT (vía
+   * `getTcontProfiles`, confirmado en vivo contra OLT_Tabara_Abajo),
+   * comparados contra el catálogo global `net.olt_speed_profiles` por
+   * `vendorTcontProfile` (el nombre real del objeto en la OLT). Solo
+   * lectura -- no escribe nada todavía (ver `importDiscoveredSpeedProfile`).
+   * Mismo problema de brownfield que VLANs: el catálogo de Sumtech puede
+   * estar desincronizado de lo que la OLT realmente tiene configurado.
+   */
+  async scanRealSpeedProfiles(
+    oltId: string,
+  ): Promise<Array<{ name: string; type: number; fbwKbps: number; abwKbps: number; mbwKbps: number; speedKbps: number; alreadyTracked: boolean }>> {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException('OLT no encontrada.');
+
+    const driver = this.driverRegistry.resolve(olt.vendor);
+    if (!driver.getTcontProfiles) {
+      throw new BadRequestException(
+        `El fabricante "${olt.vendor}" todavía no soporta descubrir perfiles TCONT reales.`,
+      );
+    }
+
+    const connParams = await this.connectionResolver.resolve(olt);
+    let realProfiles: Awaited<ReturnType<NonNullable<typeof driver.getTcontProfiles>>>;
+    try {
+      realProfiles = await driver.getTcontProfiles(connParams);
+    } catch (err: any) {
+      throw new BadRequestException(err.message || 'Error consultando perfiles TCONT reales de esta OLT.');
+    }
+
+    const trackedNames = new Set(
+      (await this.speedProfileRepository.find()).map((p) => p.vendorTcontProfile).filter(Boolean),
+    );
+
+    return realProfiles.map((p) => ({ ...p, alreadyTracked: trackedNames.has(p.name) }));
+  }
+
+  /**
+   * Da de alta en Sumtech un perfil TCONT descubierto por
+   * `scanRealSpeedProfiles` -- no escribe nada en la OLT, ya existía. El
+   * `code` se genera a partir del nombre real, evitando colisión si ya hay
+   * uno igual (poco probable dado lo específico de los nombres reales, pero
+   * no se asume). `downKbps`/`upKbps` se fijan igual a `speedKbps`: TCONT
+   * en GPON solo gobierna la SUBIDA (ver nota en `ensureTcontProfile`), así
+   * que no hay forma de inferir la bajada real desde este comando -- el
+   * admin puede ajustarla después desde el formulario de edición.
+   */
+  async importDiscoveredSpeedProfile(
+    discovered: { name: string; speedKbps: number },
+  ): Promise<OltSpeedProfileEntity> {
+    const existingByTcont = await this.speedProfileRepository.findOneBy({ vendorTcontProfile: discovered.name });
+    if (existingByTcont) {
+      throw new ConflictException(`El perfil TCONT "${discovered.name}" ya está registrado en el catálogo.`);
+    }
+
+    const baseCode = discovered.name.toUpperCase().replace(/[^A-Z0-9-]/g, '-').slice(0, 45);
+    let code = baseCode;
+    let suffix = 2;
+    while (await this.speedProfileRepository.findOneBy({ code })) {
+      code = `${baseCode}-${suffix}`.slice(0, 50);
+      suffix += 1;
+    }
+
+    const profile = this.speedProfileRepository.create({
+      code,
+      name: `Perfil real de OLT (${discovered.name})`,
+      downKbps: discovered.speedKbps,
+      upKbps: discovered.speedKbps,
+      vendorTcontProfile: discovered.name,
+    });
+    return this.speedProfileRepository.save(profile);
+  }
+
   // ══════════════════════════════════════════════════
   // 4. Tipos de ONU (RF-OLT-010)
   // ══════════════════════════════════════════════════
