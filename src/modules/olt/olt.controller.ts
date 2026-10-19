@@ -26,6 +26,7 @@ import { OltExportService } from './services/olt-export.service';
 import { OltDriverRegistry } from './drivers/olt-driver.registry';
 import { OltPermissionGuard, RequireOltAction } from './guards/olt-permission.guard';
 import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from './dto/speed-profile.dto';
+import { CreateOnuTypeDto, UpdateOnuTypeDto } from './dto/onu-type.dto';
 import { CreateTr069NetworkDto } from './dto/create-tr069-network.dto';
 import { UpdateTr069NetworkDto } from './dto/update-tr069-network.dto';
 import { ExportOltsDto } from './dto/export-olts.dto';
@@ -272,14 +273,29 @@ export class OltController {
   // ══════════════════════════════════════════════════
   @Get('onu-types')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
-  async findAllOnuTypes(@Query('ponType') ponType?: string) {
-    return this.catalogsService.findAllOnuTypes(ponType);
+  async findAllOnuTypes(
+    @Query('ponType') ponType?: string,
+    @Query('includeInactive') includeInactive?: string,
+  ) {
+    return this.catalogsService.findAllOnuTypes(ponType, includeInactive === 'true');
   }
 
   @Post('onu-types')
   @Roles(Role.ADMIN, Role.GERENTE)
-  async createOnuType(@Body() dto: any) {
+  async createOnuType(@Body() dto: CreateOnuTypeDto) {
     return this.catalogsService.createOnuType(dto);
+  }
+
+  @Patch('onu-types/:id')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async updateOnuType(@Param('id') id: string, @Body() dto: UpdateOnuTypeDto) {
+    return this.catalogsService.updateOnuType(id, dto);
+  }
+
+  @Delete('onu-types/:id')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async deleteOnuType(@Param('id') id: string) {
+    return this.catalogsService.deleteOnuType(id);
   }
 
   // ══════════════════════════════════════════════════

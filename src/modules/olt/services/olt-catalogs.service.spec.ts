@@ -7,6 +7,7 @@ import { OltInterfaceEntity } from '../entities/olt-interface.entity';
 import { OltInterfaceVlanEntity } from '../entities/olt-interface-vlan.entity';
 import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { OnuTypeEntity } from '../entities/onu-type.entity';
+import { OnuEntity } from '../entities/onu.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
@@ -22,6 +23,8 @@ describe('OltCatalogsService', () => {
   let ifaceVlanRepo: any;
   let tr069Repo: any;
   let speedProfileRepo: any;
+  let onuTypeRepo: any;
+  let onuRepo: any;
   let planRepo: any;
   let driverRegistry: any;
   let oltRepo: any;
@@ -55,6 +58,16 @@ describe('OltCatalogsService', () => {
       create: jest.fn((dto) => ({ id: 'prof-new', ...dto })),
       save: jest.fn((dto) => Promise.resolve(dto)),
       delete: jest.fn().mockResolvedValue(undefined),
+    };
+    onuTypeRepo = {
+      find: jest.fn(),
+      findOneBy: jest.fn(),
+      create: jest.fn((dto) => ({ id: 'onu-type-new', ...dto })),
+      save: jest.fn((dto) => Promise.resolve(dto)),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
+    onuRepo = {
+      count: jest.fn(),
     };
     planRepo = {
       count: jest.fn(),
@@ -90,7 +103,8 @@ describe('OltCatalogsService', () => {
         { provide: getRepositoryToken(OltInterfaceEntity), useValue: ifaceRepo },
         { provide: getRepositoryToken(OltInterfaceVlanEntity), useValue: ifaceVlanRepo },
         { provide: getRepositoryToken(OltSpeedProfileEntity), useValue: speedProfileRepo },
-        { provide: getRepositoryToken(OnuTypeEntity), useValue: {} },
+        { provide: getRepositoryToken(OnuTypeEntity), useValue: onuTypeRepo },
+        { provide: getRepositoryToken(OnuEntity), useValue: onuRepo },
         { provide: getRepositoryToken(Tr069NetworkEntity), useValue: tr069Repo },
         { provide: getRepositoryToken(OltEntity), useValue: oltRepo },
         { provide: getRepositoryToken(PlanEntity), useValue: planRepo },
@@ -292,6 +306,97 @@ describe('OltCatalogsService', () => {
 
       expect(res.success).toBe(true);
       expect(speedProfileRepo.delete).toHaveBeenCalledWith('p1');
+    });
+  });
+
+  describe('OnuTypes CRUD (catálogo real, reemplaza el seed roto de la migración 064)', () => {
+    it('crea un tipo de ONU GPON nuevo', async () => {
+      onuTypeRepo.findOneBy.mockResolvedValue(null);
+
+      const res = await service.createOnuType({
+        vendor: 'ZTE',
+        model: 'F670L',
+        vendorTypeName: 'ZTE-F670L',
+        ponType: 'GPON',
+      });
+
+      expect(res.vendor).toBe('ZTE');
+      expect(onuTypeRepo.save).toHaveBeenCalled();
+    });
+
+    it('rechaza la creación si ya existe el mismo fabricante+modelo', async () => {
+      onuTypeRepo.findOneBy.mockResolvedValue({ id: 'type-1', vendor: 'ZTE', model: 'F670L' });
+
+      await expect(
+        service.createOnuType({ vendor: 'ZTE', model: 'F670L', vendorTypeName: 'ZTE-F670L', ponType: 'GPON' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza NotFoundException al actualizar un tipo de ONU inexistente', async () => {
+      onuTypeRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(service.updateOnuType('nope', { isActive: false })).rejects.toThrow(NotFoundException);
+    });
+
+    it('actualiza un tipo de ONU existente', async () => {
+      onuTypeRepo.findOneBy.mockResolvedValue({
+        id: 'type-1',
+        vendor: 'ZTE',
+        model: 'F670L',
+        vendorTypeName: 'ZTE-F670L',
+        ponType: 'GPON',
+        isActive: true,
+      });
+
+      const res = await service.updateOnuType('type-1', { isActive: false });
+
+      expect(res.isActive).toBe(false);
+      expect(onuTypeRepo.save).toHaveBeenCalled();
+    });
+
+    it('rechaza renombrar un tipo de ONU a un fabricante+modelo que ya usa otro registro', async () => {
+      onuTypeRepo.findOneBy
+        .mockResolvedValueOnce({ id: 'type-1', vendor: 'ZTE', model: 'F670L' }) // el propio registro a editar
+        .mockResolvedValueOnce({ id: 'type-2', vendor: 'Huawei', model: 'HG8245H' }); // colisión
+
+      await expect(
+        service.updateOnuType('type-1', { vendor: 'Huawei', model: 'HG8245H' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('prohíbe eliminar un tipo de ONU si hay ONUs reales asignadas', async () => {
+      onuTypeRepo.findOneBy.mockResolvedValue({ id: 'type-1', vendor: 'ZTE', model: 'F670L' });
+      onuRepo.count.mockResolvedValue(3);
+
+      await expect(service.deleteOnuType('type-1')).rejects.toThrow(
+        /No se puede eliminar el tipo de ONU.*3 ONU\(s\) real\(es\)/,
+      );
+    });
+
+    it('elimina un tipo de ONU si no tiene ONUs reales vinculadas', async () => {
+      onuTypeRepo.findOneBy.mockResolvedValue({ id: 'type-1', vendor: 'ZTE', model: 'F670L' });
+      onuRepo.count.mockResolvedValue(0);
+
+      const res = await service.deleteOnuType('type-1');
+
+      expect(res.success).toBe(true);
+      expect(onuTypeRepo.delete).toHaveBeenCalledWith('type-1');
+    });
+
+    it('findAllOnuTypes filtra por activos por defecto, y trae todos con includeInactive', async () => {
+      onuTypeRepo.find.mockResolvedValue([]);
+
+      await service.findAllOnuTypes('GPON');
+      expect(onuTypeRepo.find).toHaveBeenLastCalledWith({
+        where: { ponType: 'GPON', isActive: true },
+        order: { vendor: 'ASC', model: 'ASC' },
+      });
+
+      await service.findAllOnuTypes('GPON', true);
+      expect(onuTypeRepo.find).toHaveBeenLastCalledWith({
+        where: { ponType: 'GPON' },
+        order: { vendor: 'ASC', model: 'ASC' },
+      });
     });
   });
 

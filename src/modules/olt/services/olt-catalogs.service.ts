@@ -6,6 +6,7 @@ import { OltInterfaceEntity } from '../entities/olt-interface.entity';
 import { OltInterfaceVlanEntity } from '../entities/olt-interface-vlan.entity';
 import { OltSpeedProfileEntity } from '../entities/olt-speed-profile.entity';
 import { OnuTypeEntity } from '../entities/onu-type.entity';
+import { OnuEntity } from '../entities/onu.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
@@ -15,6 +16,7 @@ import { encryptCredential } from '../../network-connectivity/utils/crypto.util'
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { CreateOltSpeedProfileDto, UpdateOltSpeedProfileDto } from '../dto/speed-profile.dto';
+import { CreateOnuTypeDto, UpdateOnuTypeDto } from '../dto/onu-type.dto';
 import { CreateTr069NetworkDto } from '../dto/create-tr069-network.dto';
 import { UpdateTr069NetworkDto } from '../dto/update-tr069-network.dto';
 
@@ -31,6 +33,8 @@ export class OltCatalogsService {
     private readonly speedProfileRepository: Repository<OltSpeedProfileEntity>,
     @InjectRepository(OnuTypeEntity)
     private readonly onuTypeRepository: Repository<OnuTypeEntity>,
+    @InjectRepository(OnuEntity)
+    private readonly onuRepository: Repository<OnuEntity>,
     @InjectRepository(Tr069NetworkEntity)
     private readonly tr069Repository: Repository<Tr069NetworkEntity>,
     @InjectRepository(OltEntity)
@@ -308,17 +312,67 @@ export class OltCatalogsService {
    * OLT EPON (ej. HiOSO) se puede conectar cualquier ONU EPON de cualquier
    * marca, no hay vendor-lock como suele asumirse en GPON — ver migración
    * 077. Sin `ponType` devuelve todo el catálogo (comportamiento previo).
+   *
+   * Por defecto solo trae modelos activos -- el selector de "Autorizar ONU"
+   * no debe ofrecer modelos descontinuados. `includeInactive` es para el
+   * modal de administración del catálogo, que sí necesita verlos todos para
+   * poder reactivarlos.
    */
-  async findAllOnuTypes(ponType?: string) {
+  async findAllOnuTypes(ponType?: string, includeInactive?: boolean) {
+    const where: Record<string, unknown> = {};
+    if (ponType) where.ponType = ponType;
+    if (!includeInactive) where.isActive = true;
+
     return this.onuTypeRepository.find({
-      where: ponType ? { ponType } : {},
+      where,
       order: { vendor: 'ASC', model: 'ASC' },
     });
   }
 
-  async createOnuType(dto: any) {
-    const onuType = this.onuTypeRepository.create(dto);
+  private async assertOnuTypeNotDuplicate(vendor: string, model: string, excludeId?: string) {
+    const existing = await this.onuTypeRepository.findOneBy({ vendor, model });
+    if (existing && existing.id !== excludeId) {
+      throw new BadRequestException(`Ya existe un tipo de ONU "${vendor} ${model}" en el catálogo.`);
+    }
+  }
+
+  async createOnuType(dto: CreateOnuTypeDto) {
+    await this.assertOnuTypeNotDuplicate(dto.vendor, dto.model);
+    const onuType = this.onuTypeRepository.create({ ...dto });
     return this.onuTypeRepository.save(onuType);
+  }
+
+  async updateOnuType(id: string, dto: UpdateOnuTypeDto) {
+    const onuType = await this.onuTypeRepository.findOneBy({ id });
+    if (!onuType) {
+      throw new NotFoundException(`Tipo de ONU ${id} no encontrado.`);
+    }
+
+    const nextVendor = dto.vendor ?? onuType.vendor;
+    const nextModel = dto.model ?? onuType.model;
+    if (dto.vendor !== undefined || dto.model !== undefined) {
+      await this.assertOnuTypeNotDuplicate(nextVendor, nextModel, id);
+    }
+
+    Object.assign(onuType, dto);
+    return this.onuTypeRepository.save(onuType);
+  }
+
+  async deleteOnuType(id: string) {
+    const onuType = await this.onuTypeRepository.findOneBy({ id });
+    if (!onuType) {
+      throw new NotFoundException(`Tipo de ONU ${id} no encontrado.`);
+    }
+
+    const linkedOnus = await this.onuRepository.count({ where: { onuTypeId: id } });
+    if (linkedOnus > 0) {
+      throw new BadRequestException(
+        `No se puede eliminar el tipo de ONU "${onuType.vendor} ${onuType.model}": ${linkedOnus} ONU(s) real(es) lo tienen asignado. Desactívelo (isActive: false) en vez de eliminarlo.`,
+      );
+    }
+
+    await this.onuTypeRepository.delete(id);
+    return { success: true, message: `Tipo de ONU "${onuType.vendor} ${onuType.model}" eliminado correctamente.` };
   }
 
   // ══════════════════════════════════════════════════
