@@ -149,6 +149,35 @@ export interface RouterOsRoute {
   comment?: string;
 }
 
+/** Fila cruda de /ip/firewall/nat -- usada por listNatRules() (descubrimiento, solo lectura). */
+export interface RouterOsNatRule {
+  id: string;
+  chain: string;
+  action: string;
+  outInterface?: string;
+  comment?: string;
+  disabled: boolean;
+}
+
+/** Fila cruda de /ip/firewall/filter -- usada por listFilterRules() (descubrimiento, solo lectura). */
+export interface RouterOsFilterRule {
+  id: string;
+  chain: string;
+  action: string;
+  connectionState?: string;
+  comment?: string;
+  disabled: boolean;
+}
+
+/** Fila cruda de /ip/dhcp-server -- usada por listDhcpServers() (descubrimiento, solo lectura). */
+export interface RouterOsDhcpServer {
+  id: string;
+  name: string;
+  interface: string;
+  addressPool?: string;
+  disabled: boolean;
+}
+
 export interface RouterOsDhcpLease {
   id: string;
   address: string;
@@ -740,6 +769,29 @@ export class RouterOsClient {
   }
 
   /**
+   * Lista TODAS las sub-interfaces VLAN reales configuradas en el router
+   * (/interface/vlan), sin filtrar por ninguna ya conocida por Sumtech --
+   * usada para el descubrimiento de configuración brownfield (ver
+   * Plan_Implementacion_Descubrimiento_RouterOS_Brownfield.md Fase 0/1).
+   * Solo lectura, sin side-effects.
+   */
+  async listVlanInterfaces(): Promise<RouterOsVlanInterface[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('interface/vlan'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'],
+      name: entry.name,
+      vlanId: Number(entry['vlan-id']),
+      interface: entry.interface,
+    }));
+  }
+
+  /**
    * Asegura que exista la sub-interfaz VLAN (idempotente: crea si falta,
    * no hace nada si ya existe con la misma interfaz padre — en RouterOS no
    * hay "modo trunk" aparte: un puerto con varias VLAN encima YA ES trunk).
@@ -1111,6 +1163,29 @@ export class RouterOsClient {
     return match ? { id: match['.id'], name: match.name } : null;
   }
 
+  /**
+   * Lista TODOS los servidores DHCP reales configurados en el router
+   * (/ip/dhcp-server), sin filtrar por interfaz -- descubrimiento brownfield
+   * (ver Plan_Implementacion_Descubrimiento_RouterOS_Brownfield.md Fase 2).
+   * Solo lectura.
+   */
+  async listDhcpServers(): Promise<RouterOsDhcpServer[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/dhcp-server'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'],
+      name: entry.name,
+      interface: entry.interface,
+      addressPool: entry['address-pool'],
+      disabled: entry.disabled === true || entry.disabled === 'true',
+    }));
+  }
+
   /** Asegura el servidor DHCP sobre una interfaz, usando un pool ya asegurado (idempotente). */
   async ensureDhcpServer(name: string, interfaceName: string, addressPool: string, leaseTimeSec = 86400): Promise<{ id: string; name: string }> {
     const existing = await this.findDhcpServerByInterface(interfaceName);
@@ -1143,21 +1218,40 @@ export class RouterOsClient {
     }
     const results = Array.isArray(response.data) ? response.data : [];
     const match = results.find((entry: any) => entry?.interface === interfaceName);
-    if (!match) {
-      return null;
-    }
+    return match ? this.mapPppoeServerEntry(match) : null;
+  }
+
+  private mapPppoeServerEntry(entry: any): RouterOsPppoeServer {
     return {
-      id: match['.id'],
-      serviceName: match['service-name'] || match.name || '',
-      interface: match.interface,
-      defaultProfile: match['default-profile'] || 'default',
-      disabled: match.disabled === true || match.disabled === 'true',
+      id: entry['.id'],
+      serviceName: entry['service-name'] || entry.name || '',
+      interface: entry.interface,
+      defaultProfile: entry['default-profile'] || 'default',
+      disabled: entry.disabled === true || entry.disabled === 'true',
       oneSessionPerHost:
-        match['one-session-per-host'] === true ||
-        match['one-session-per-host'] === 'yes' ||
-        match['one-session-per-host'] === 'true',
-      authentication: match.authentication,
+        entry['one-session-per-host'] === true ||
+        entry['one-session-per-host'] === 'yes' ||
+        entry['one-session-per-host'] === 'true',
+      authentication: entry.authentication,
     };
+  }
+
+  /**
+   * Lista TODOS los servidores PPPoE reales configurados en el router
+   * (/interface/pppoe-server/server), sin filtrar por interfaz --
+   * descubrimiento brownfield (ver
+   * Plan_Implementacion_Descubrimiento_RouterOS_Brownfield.md Fase 2).
+   * Solo lectura.
+   */
+  async listPppoeServers(): Promise<RouterOsPppoeServer[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('interface/pppoe-server/server'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => this.mapPppoeServerEntry(entry));
   }
 
   /** Asegura un servidor PPPoE sobre una interfaz (idempotente: no duplica si ya existe). */
@@ -1436,6 +1530,32 @@ export class RouterOsClient {
   }
 
   /**
+   * Lista TODAS las reglas NAT reales configuradas en el router
+   * (/ip/firewall/nat), sin filtrar por comentario -- descubrimiento
+   * brownfield, puramente informativo (ver
+   * Plan_Implementacion_Descubrimiento_RouterOS_Brownfield.md Fase 3). A
+   * propósito NO se ofrece "importar" estas reglas: una regla preexistente
+   * puede tener condiciones que ensureNatMasquerade() no replica.
+   */
+  async listNatRules(): Promise<RouterOsNatRule[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/firewall/nat'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'],
+      chain: entry.chain,
+      action: entry.action,
+      outInterface: entry['out-interface'],
+      comment: entry.comment,
+      disabled: entry.disabled === true || entry.disabled === 'true',
+    }));
+  }
+
+  /**
    * Asegura la regla de NAT masquerade de salida hacia Internet (idempotente
    * por `comment` — a diferencia de `addFirewallNatRule`, que no verifica
    * nada antes de insertar). Sin esto, ningún cliente detrás del router
@@ -1468,6 +1588,33 @@ export class RouterOsClient {
     const results = Array.isArray(response.data) ? response.data : [];
     const match = results.find((entry: any) => entry?.comment === comment);
     return match ? { id: match['.id'] } : null;
+  }
+
+  /**
+   * Lista TODAS las reglas de filter reales configuradas en el router
+   * (/ip/firewall/filter), sin filtrar por comentario -- descubrimiento
+   * brownfield, puramente informativo (ver
+   * Plan_Implementacion_Descubrimiento_RouterOS_Brownfield.md Fase 3). A
+   * propósito NO se ofrece "importar" estas reglas: el orden y las
+   * condiciones de una regla de firewall preexistente pueden tener
+   * implicaciones de seguridad que Sumtech no puede inferir con seguridad.
+   */
+  async listFilterRules(): Promise<RouterOsFilterRule[]> {
+    let response;
+    try {
+      response = await this.http.get(this.buildUrl('ip/firewall/filter'), this.buildRequestConfig());
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+    const results = Array.isArray(response.data) ? response.data : [];
+    return results.map((entry: any) => ({
+      id: entry['.id'],
+      chain: entry.chain,
+      action: entry.action,
+      connectionState: entry['connection-state'],
+      comment: entry.comment,
+      disabled: entry.disabled === true || entry.disabled === 'true',
+    }));
   }
 
   /**

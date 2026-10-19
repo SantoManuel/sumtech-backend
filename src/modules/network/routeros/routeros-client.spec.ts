@@ -378,6 +378,28 @@ describe('RouterOsClient', () => {
     });
   });
 
+  describe('listVlanInterfaces (descubrimiento brownfield)', () => {
+    it('devuelve TODAS las sub-interfaces VLAN reales, no solo una', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*1', name: 'vlan100-clientes', 'vlan-id': '100', interface: 'ether5' },
+          { '.id': '*2', name: 'vlan777', 'vlan-id': '777', interface: 'ether5' },
+        ],
+      });
+
+      const result = await client.listVlanInterfaces();
+
+      expect(result).toEqual([
+        { id: '*1', name: 'vlan100-clientes', vlanId: 100, interface: 'ether5' },
+        { id: '*2', name: 'vlan777', vlanId: 777, interface: 'ether5' },
+      ]);
+      expect(http.get).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/vlan',
+        expect.not.objectContaining({ params: expect.anything() }),
+      );
+    });
+  });
+
   describe('getIpAddresses', () => {
     it('devuelve todas las IPs configuradas en el router', async () => {
       http.get.mockResolvedValue({
@@ -583,6 +605,24 @@ describe('RouterOsClient', () => {
     });
   });
 
+  describe('listNatRules (descubrimiento brownfield, solo lectura)', () => {
+    it('devuelve TODAS las reglas NAT reales, incluidas las que Sumtech no creó', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*1', chain: 'srcnat', action: 'masquerade', 'out-interface': 'ether1', comment: 'NAT manual del cliente', disabled: false },
+          { '.id': '*2', chain: 'srcnat', action: 'masquerade', 'out-interface': 'ether1', comment: 'sumtech-nat-masquerade', disabled: 'false' },
+        ],
+      });
+
+      const result = await client.listNatRules();
+
+      expect(result).toEqual([
+        { id: '*1', chain: 'srcnat', action: 'masquerade', outInterface: 'ether1', comment: 'NAT manual del cliente', disabled: false },
+        { id: '*2', chain: 'srcnat', action: 'masquerade', outInterface: 'ether1', comment: 'sumtech-nat-masquerade', disabled: false },
+      ]);
+    });
+  });
+
   describe('ensureFirewallBaseline', () => {
     it('crea las 2 reglas base (established/related + drop invalid) si no existen', async () => {
       http.get.mockResolvedValue({ data: [] });
@@ -611,6 +651,24 @@ describe('RouterOsClient', () => {
       await client.ensureFirewallBaseline();
 
       expect(http.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listFilterRules (descubrimiento brownfield, solo lectura)', () => {
+    it('devuelve TODAS las reglas de filter reales, incluidas las que Sumtech no creó', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*1', chain: 'input', action: 'drop', comment: 'Bloqueo manual del cliente', disabled: false },
+          { '.id': '*2', chain: 'input', action: 'accept', 'connection-state': 'established,related', comment: 'sumtech-baseline-established', disabled: false },
+        ],
+      });
+
+      const result = await client.listFilterRules();
+
+      expect(result).toEqual([
+        { id: '*1', chain: 'input', action: 'drop', connectionState: undefined, comment: 'Bloqueo manual del cliente', disabled: false },
+        { id: '*2', chain: 'input', action: 'accept', connectionState: 'established,related', comment: 'sumtech-baseline-established', disabled: false },
+      ]);
     });
   });
 
@@ -662,6 +720,24 @@ describe('RouterOsClient', () => {
         expect.anything(),
       );
       expect(result.name).toBe('dhcp-vlan400');
+    });
+  });
+
+  describe('listDhcpServers (descubrimiento brownfield, solo lectura)', () => {
+    it('devuelve TODOS los servidores DHCP reales, sin filtrar por interfaz', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          { '.id': '*1', name: 'dhcp-vlan100', interface: 'vlan100', 'address-pool': 'pool-vlan100', disabled: false },
+          { '.id': '*2', name: 'DHCP-Clientes-Manual', interface: 'vlan777', 'address-pool': 'pool-manual', disabled: 'false' },
+        ],
+      });
+
+      const result = await client.listDhcpServers();
+
+      expect(result).toEqual([
+        { id: '*1', name: 'dhcp-vlan100', interface: 'vlan100', addressPool: 'pool-vlan100', disabled: false },
+        { id: '*2', name: 'DHCP-Clientes-Manual', interface: 'vlan777', addressPool: 'pool-manual', disabled: false },
+      ]);
     });
   });
 
@@ -893,6 +969,57 @@ describe('RouterOsClient', () => {
       const result = await client.findPppoeServerByInterface('vlan500');
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe('listPppoeServers (descubrimiento brownfield, solo lectura)', () => {
+    it('devuelve TODOS los servidores PPPoE reales, sin filtrar por interfaz', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            '.id': '*1',
+            'service-name': 'pppoe-vlan400',
+            interface: 'vlan400',
+            'default-profile': 'default',
+            'one-session-per-host': 'yes',
+            disabled: false,
+          },
+          {
+            '.id': '*2',
+            'service-name': 'PPPoE-Clientes-Manual',
+            interface: 'vlan777',
+            'default-profile': 'basico',
+            disabled: 'false',
+          },
+        ],
+      });
+
+      const result = await client.listPppoeServers();
+
+      expect(result).toEqual([
+        {
+          id: '*1',
+          serviceName: 'pppoe-vlan400',
+          interface: 'vlan400',
+          defaultProfile: 'default',
+          disabled: false,
+          oneSessionPerHost: true,
+          authentication: undefined,
+        },
+        {
+          id: '*2',
+          serviceName: 'PPPoE-Clientes-Manual',
+          interface: 'vlan777',
+          defaultProfile: 'basico',
+          disabled: false,
+          oneSessionPerHost: false,
+          authentication: undefined,
+        },
+      ]);
+      expect(http.get).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/interface/pppoe-server/server',
+        expect.not.objectContaining({ params: expect.anything() }),
+      );
     });
   });
 

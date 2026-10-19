@@ -28,6 +28,7 @@ import { PppManagementService } from './services/ppp-management.service';
 import { NetworkNodeInfrastructureService } from './services/network-node-infrastructure.service';
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
 import { SyncNodeVlanDto } from './dto/sync-node-vlan.dto';
+import { ImportDiscoveredVlanDto } from './dto/import-discovered-vlan.dto';
 import { EnsureDhcpServerDto } from './dto/ensure-dhcp-server.dto';
 import { EnsurePppoeServerDto } from './dto/ensure-pppoe-server.dto';
 import { EnsureAcsAutoProvisioningDto } from './dto/ensure-acs-auto-provisioning.dto';
@@ -168,6 +169,31 @@ export class NetworkNodesController {
     return this.infrastructureService.listVlans(id);
   }
 
+  /** Descubrimiento brownfield: VLANs que YA existen en el router real, sincronizadas o no por Sumtech. Solo lectura. */
+  @Get(':id/vlans/scan')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async scanNodeRealVlans(@Param('id') id: string) {
+    return this.infrastructureService.scanRealVlans(id);
+  }
+
+  /** Da de alta en Sumtech una VLAN descubierta por /vlans/scan -- no escribe nada en RouterOS, ya existía. */
+  @Post(':id/vlans/import')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async importNodeDiscoveredVlan(
+    @Param('id') id: string,
+    @Body() dto: ImportDiscoveredVlanDto,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.infrastructureService.importDiscoveredVlan(id, dto, userId);
+  }
+
+  /** Estado real de PPPoE/DHCP por VLAN ya registrada (solo lectura, ver Fase 2 del plan de descubrimiento). */
+  @Get(':id/vlans/service-status')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeVlanServiceStatuses(@Param('id') id: string) {
+    return this.infrastructureService.getVlanServiceStatuses(id);
+  }
+
   @Post(':id/vlans/:vlanId/sync')
   @Roles(Role.ADMIN, Role.GERENTE)
   async syncNodeVlan(
@@ -228,6 +254,20 @@ export class NetworkNodesController {
   @Roles(Role.ADMIN, Role.GERENTE)
   async ensureNodeFirewallBaseline(@Param('id') id: string, @CurrentUser('sub') userId?: string) {
     return this.infrastructureService.ensureFirewallBaseline(id, userId);
+  }
+
+  /** Reglas NAT reales en el router (solo lectura, sin filtrar por el comentario de Sumtech -- Fase 3 del plan de descubrimiento). */
+  @Get(':id/nat/real')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeRealNatRules(@Param('id') id: string) {
+    return this.infrastructureService.getRealNatRules(id);
+  }
+
+  /** Reglas de Filter reales en el router (solo lectura, mismo criterio que /nat/real). */
+  @Get(':id/firewall/real')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeRealFirewallRules(@Param('id') id: string) {
+    return this.infrastructureService.getRealFirewallRules(id);
   }
 
   /** Reconciliación de solo lectura: confirma contra el router real si VLANs/NAT/Firewall siguen aplicados. */

@@ -169,6 +169,105 @@ export class NetworkNodeInfrastructureService {
   }
 
   /**
+   * Descubre las sub-interfaces VLAN que REALMENTE existen en el router,
+   * comparadas contra lo que Sumtech ya tiene registrado en
+   * `net.network_node_vlans`. Solo lectura -- no crea nada todavía (ver
+   * `importDiscoveredVlan`). Necesario porque `listVlans()` solo refleja lo
+   * que el propio Sumtech sincronizó: un MikroTik que ya estaba en
+   * producción antes de darse de alta en el ERP, o tocado directo por
+   * WinBox, puede tener VLANs reales que el ERP nunca supo que existían
+   * (ver Plan_Implementacion_Descubrimiento_RouterOS_Brownfield.md Fase 1).
+   */
+  async scanRealVlans(nodeId: string): Promise<
+    Array<{ vlanId: number; interfaceName: string; gatewayCidr: string | null; alreadyTracked: boolean }>
+  > {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
+    }
+
+    const client = await this.resolveClient(node);
+    const [realInterfaces, trackedRows] = await Promise.all([
+      client.listVlanInterfaces(),
+      this.nodeVlanRepository.find({ where: { nodeId }, relations: ['vlan'] }),
+    ]);
+    const trackedVlanNumbers = new Set(trackedRows.map((row) => row.vlan.vlanId));
+
+    return Promise.all(
+      realInterfaces.map(async (iface) => {
+        const alreadyTracked = trackedVlanNumbers.has(iface.vlanId);
+        let gatewayCidr: string | null = null;
+        if (!alreadyTracked) {
+          const ip = await client.findIpAddressByInterface(iface.name);
+          gatewayCidr = ip?.address ?? null;
+        }
+        return {
+          vlanId: iface.vlanId,
+          interfaceName: iface.interface,
+          gatewayCidr,
+          alreadyTracked,
+        };
+      }),
+    );
+  }
+
+  /**
+   * Da de alta en Sumtech una VLAN que ya existe de verdad en el router
+   * (descubierta por `scanRealVlans`) -- no escribe nada en RouterOS, solo
+   * registra lo que ya estaba. Si el número de VLAN nunca existió en el
+   * catálogo `net.vlans`, se crea un catálogo mínimo con nombre de
+   * placeholder (mismo criterio ya aplicado al catálogo de Tipos de ONU:
+   * mejor un placeholder editable que bloquear la importación).
+   */
+  async importDiscoveredVlan(
+    nodeId: string,
+    discovered: { vlanId: number; interfaceName: string; gatewayCidr?: string | null },
+    actorUserId?: string,
+  ): Promise<NetworkNodeVlanEntity> {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
+    }
+
+    let vlan = await this.vlanRepository.findOneBy({ vlanId: discovered.vlanId });
+    if (!vlan) {
+      vlan = await this.vlanRepository.save(
+        this.vlanRepository.create({
+          vlanId: discovered.vlanId,
+          name: `VLAN ${discovered.vlanId} (importada de ${node.name})`,
+          type: 'INTERNET',
+        }),
+      );
+    }
+
+    const existing = await this.nodeVlanRepository.findOneBy({ nodeId, vlanId: vlan.id });
+    if (existing) {
+      throw new ConflictException(`La VLAN ${discovered.vlanId} ya está registrada para este nodo.`);
+    }
+
+    const record = this.nodeVlanRepository.create({
+      nodeId,
+      vlanId: vlan.id,
+      uplinkInterface: discovered.interfaceName,
+      gatewayCidr: discovered.gatewayCidr || undefined,
+      applyStatus: 'APPLIED',
+      lastSyncAt: new Date(),
+    });
+    await this.nodeVlanRepository.save(record);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: node.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `VLAN ${discovered.vlanId} importada desde la configuración real de "${node.name}" (ya existía en el router, no se escribió nada nuevo).`,
+      actorUserId,
+      rawDetails: { nodeId: node.id, vlanId: vlan.id, operation: 'importDiscoveredVlan' },
+    });
+
+    return record;
+  }
+
+  /**
    * Revierte una sincronización de VLAN: borra la IP de gateway (si tenía) y
    * la sub-interfaz en RouterOS, y el registro local. Rechaza con 409 si la
    * interfaz todavía tiene un servidor PPPoE o DHCP asegurado encima -- eso
@@ -350,6 +449,44 @@ export class NetworkNodeInfrastructureService {
   }
 
   /**
+   * Estado REAL de PPPoE/DHCP por cada VLAN ya registrada en Sumtech para
+   * este nodo -- a diferencia de `ensurePppoeServerForVlan`/
+   * `ensureDhcpServerForVlan`, que escriben a ciegas, esto es de solo
+   * lectura: `findPppoeServerByInterface`/`findDhcpServerByInterface` ya
+   * buscan por interfaz (no por un nombre específico de Sumtech), así que
+   * detectan un servidor real aunque lo haya creado otra persona a mano
+   * (ver Plan_Implementacion_Descubrimiento_RouterOS_Brownfield.md Fase 2).
+   * Útil para que el admin vea lo que ya existe antes de pulsar "asegurar".
+   */
+  async getVlanServiceStatuses(nodeId: string): Promise<
+    Array<{ vlanId: string; interfaceName: string; pppoe: { serviceName: string; defaultProfile: string } | null; dhcp: { name: string } | null }>
+  > {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
+    }
+
+    const nodeVlans = await this.nodeVlanRepository.find({ where: { nodeId }, relations: ['vlan'] });
+    const client = await this.resolveClient(node);
+
+    return Promise.all(
+      nodeVlans.map(async (nv) => {
+        const interfaceName = `vlan${nv.vlan.vlanId}`;
+        const [pppoe, dhcp] = await Promise.all([
+          client.findPppoeServerByInterface(interfaceName),
+          client.findDhcpServerByInterface(interfaceName),
+        ]);
+        return {
+          vlanId: nv.vlanId,
+          interfaceName,
+          pppoe: pppoe ? { serviceName: pppoe.serviceName, defaultProfile: pppoe.defaultProfile } : null,
+          dhcp: dhcp ? { name: dhcp.name } : null,
+        };
+      }),
+    );
+  }
+
+  /**
    * NAT de salida (masquerade) sobre la interfaz WAN del nodo — sin esto
    * ningún cliente detrás del router sale a Internet aunque el WAN ya tenga
    * IP real. Depende de que `wanInterfaceName` ya esté configurado (Fase B).
@@ -442,6 +579,41 @@ export class NetworkNodeInfrastructureService {
       });
       throw err;
     }
+  }
+
+  /**
+   * Reglas NAT reales en el router, SIN filtrar por el comentario que
+   * Sumtech usa para sus propias reglas -- a propósito no se ofrece
+   * "importar" nada aquí: una regla preexistente puede tener condiciones
+   * (interfaz, dirección, protocolo) que `ensureNatMasquerade()` no
+   * replica, así que solo se muestra para que el admin decida con
+   * contexto completo antes de pulsar "Asegurar" (ver
+   * Plan_Implementacion_Descubrimiento_RouterOS_Brownfield.md Fase 3).
+   * Solo lectura, sin side-effects.
+   */
+  async getRealNatRules(nodeId: string) {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    return client.listNatRules();
+  }
+
+  /**
+   * Reglas de Filter reales en el router, sin filtrar por el comentario de
+   * Sumtech -- mismo criterio que `getRealNatRules`: solo informativo, sin
+   * botón de importar (el orden y las condiciones de una regla de firewall
+   * preexistente tienen implicaciones de seguridad que no se pueden inferir
+   * con seguridad desde aquí).
+   */
+  async getRealFirewallRules(nodeId: string) {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
+    }
+    const client = await this.resolveClient(node);
+    return client.listFilterRules();
   }
 
   /**

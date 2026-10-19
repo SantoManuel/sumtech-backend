@@ -35,7 +35,11 @@ describe('NetworkNodeInfrastructureService', () => {
       find: jest.fn(),
       delete: jest.fn().mockResolvedValue(undefined),
     };
-    vlanRepo = { findOneBy: jest.fn().mockResolvedValue(vlan) };
+    vlanRepo = {
+      findOneBy: jest.fn().mockResolvedValue(vlan),
+      create: jest.fn((dto) => ({ ...dto })),
+      save: jest.fn((entity) => Promise.resolve({ ...entity, id: entity.id || 'vlan-new' })),
+    };
     clientFactory = jest.fn();
     reachabilityResolver = {
       resolveEndpoint: jest.fn().mockResolvedValue({ host: '10.10.0.1', port: 8729, useHttps: false }),
@@ -729,6 +733,142 @@ describe('NetworkNodeInfrastructureService', () => {
       const res = await service.getRouterOsLogs('node-1', 'firewall');
 
       expect(res).toHaveLength(1);
+    });
+  });
+
+  describe('scanRealVlans (descubrimiento brownfield)', () => {
+    it('distingue las VLANs ya rastreadas de las reales-pero-desconocidas, y trae el gateway de las nuevas', async () => {
+      nodeVlanRepo.find.mockResolvedValue([{ id: 'nv-1', vlan: { vlanId: 400 } }]);
+      const listVlanInterfaces = jest.fn().mockResolvedValue([
+        { id: '*1', name: 'vlan400', vlanId: 400, interface: 'ether5' },
+        { id: '*2', name: 'vlan777', vlanId: 777, interface: 'ether5' },
+      ]);
+      const findIpAddressByInterface = jest.fn().mockResolvedValue({ id: '*9', address: '10.77.0.1/24', interface: 'vlan777' });
+      clientFactory.mockReturnValue({ listVlanInterfaces, findIpAddressByInterface });
+
+      const result = await service.scanRealVlans('node-1');
+
+      expect(result).toEqual([
+        { vlanId: 400, interfaceName: 'ether5', gatewayCidr: null, alreadyTracked: true },
+        { vlanId: 777, interfaceName: 'ether5', gatewayCidr: '10.77.0.1/24', alreadyTracked: false },
+      ]);
+      // No se consulta el gateway de una VLAN que ya se conoce -- innecesario.
+      expect(findIpAddressByInterface).toHaveBeenCalledTimes(1);
+      expect(findIpAddressByInterface).toHaveBeenCalledWith('vlan777');
+    });
+
+    it('lanza NotFoundException si el nodo no existe', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.scanRealVlans('node-x')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('importDiscoveredVlan', () => {
+    it('crea un catálogo VLAN placeholder si el número descubierto no existe todavía en net.vlans', async () => {
+      vlanRepo.findOneBy.mockResolvedValue(null);
+      nodeVlanRepo.findOneBy.mockResolvedValue(null);
+
+      const result = await service.importDiscoveredVlan(
+        'node-1',
+        { vlanId: 777, interfaceName: 'ether5', gatewayCidr: '10.77.0.1/24' },
+        'admin-1',
+      );
+
+      expect(vlanRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ vlanId: 777, name: expect.stringContaining('VLAN 777'), type: 'INTERNET' }),
+      );
+      expect(result.applyStatus).toBe('APPLIED');
+      expect(result.uplinkInterface).toBe('ether5');
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'SUCCESS', rawDetails: expect.objectContaining({ operation: 'importDiscoveredVlan' }) }),
+      );
+    });
+
+    it('reutiliza el catálogo VLAN existente en vez de crear uno duplicado', async () => {
+      vlanRepo.findOneBy.mockResolvedValue(vlan); // vlanId 400 ya existe
+      nodeVlanRepo.findOneBy.mockResolvedValue(null);
+
+      await service.importDiscoveredVlan('node-1', { vlanId: 400, interfaceName: 'ether5' });
+
+      expect(vlanRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rechaza con ConflictException si esa VLAN ya estaba registrada para este nodo', async () => {
+      vlanRepo.findOneBy.mockResolvedValue(vlan);
+      nodeVlanRepo.findOneBy.mockResolvedValue({ id: 'nv-existing' });
+
+      await expect(
+        service.importDiscoveredVlan('node-1', { vlanId: 400, interfaceName: 'ether5' }),
+      ).rejects.toThrow(/ya está registrada/);
+    });
+
+    it('lanza NotFoundException si el nodo no existe', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      await expect(
+        service.importDiscoveredVlan('node-x', { vlanId: 400, interfaceName: 'ether5' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getVlanServiceStatuses (PPPoE/DHCP reales, solo lectura)', () => {
+    it('detecta un PPPoE/DHCP real creado a mano (sin nombre Sumtech) porque busca por interfaz', async () => {
+      nodeVlanRepo.find.mockResolvedValue([{ id: 'nv-1', vlanId: 'vlan-1', vlan: { vlanId: 400 } }]);
+      const findPppoeServerByInterface = jest.fn().mockResolvedValue({
+        id: '*1',
+        serviceName: 'PPPoE-Clientes-Manual',
+        interface: 'vlan400',
+        defaultProfile: 'basico',
+        disabled: false,
+      });
+      const findDhcpServerByInterface = jest.fn().mockResolvedValue(null);
+      clientFactory.mockReturnValue({ findPppoeServerByInterface, findDhcpServerByInterface });
+
+      const result = await service.getVlanServiceStatuses('node-1');
+
+      expect(result).toEqual([
+        {
+          vlanId: 'vlan-1',
+          interfaceName: 'vlan400',
+          pppoe: { serviceName: 'PPPoE-Clientes-Manual', defaultProfile: 'basico' },
+          dhcp: null,
+        },
+      ]);
+      expect(findPppoeServerByInterface).toHaveBeenCalledWith('vlan400');
+      expect(findDhcpServerByInterface).toHaveBeenCalledWith('vlan400');
+    });
+  });
+
+  describe('getRealNatRules / getRealFirewallRules (solo lectura, sin importar nada)', () => {
+    it('getRealNatRules devuelve la lista cruda del router tal cual, incluidas reglas que Sumtech no creó', async () => {
+      const listNatRules = jest.fn().mockResolvedValue([
+        { id: '*1', chain: 'srcnat', action: 'masquerade', outInterface: 'ether1', comment: 'NAT manual', disabled: false },
+      ]);
+      clientFactory.mockReturnValue({ listNatRules });
+
+      const result = await service.getRealNatRules('node-1');
+
+      expect(result).toEqual([
+        { id: '*1', chain: 'srcnat', action: 'masquerade', outInterface: 'ether1', comment: 'NAT manual', disabled: false },
+      ]);
+    });
+
+    it('getRealFirewallRules devuelve la lista cruda del router tal cual', async () => {
+      const listFilterRules = jest.fn().mockResolvedValue([
+        { id: '*1', chain: 'input', action: 'drop', comment: 'Bloqueo manual', disabled: false },
+      ]);
+      clientFactory.mockReturnValue({ listFilterRules });
+
+      const result = await service.getRealFirewallRules('node-1');
+
+      expect(result).toEqual([
+        { id: '*1', chain: 'input', action: 'drop', comment: 'Bloqueo manual', disabled: false },
+      ]);
+    });
+
+    it('ambas lanzan NotFoundException si el nodo no existe', async () => {
+      nodeRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.getRealNatRules('node-x')).rejects.toThrow(NotFoundException);
+      await expect(service.getRealFirewallRules('node-x')).rejects.toThrow(NotFoundException);
     });
   });
 });
