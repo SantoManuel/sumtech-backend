@@ -53,6 +53,13 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('pon-onu-mng gpon-olt_1/1/1:5');
     expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/ tag pri 2 vlan 46');
     expect(commands).toContain('write');
+
+    // Sale de "pon-onu-mng" con "end", NUNCA con "exit" -- con "exit" la OLT
+    // real pregunta "Confirm to logout without saving? [yes/no]:" y la
+    // sesión se cuelga (bug real en producción, 2026-10-19, ver también los
+    // ejemplos del manual ZXA10 C300 §2.11-2.13, todos usan "end" ahí).
+    const tr069MgmtIdx = commands.indexOf('tr069-mgmt 1 acs http://10.46.0.1:7547/ tag pri 2 vlan 46');
+    expect(commands[tr069MgmtIdx + 1]).toBe('end');
   });
 
   it('parsea correctamente las ONUs no configuradas y extrae serial y fabricante (RF-OLT-014)', async () => {
@@ -582,5 +589,23 @@ describe('ZteTelnetSession.executeCommand() -- bug real de producción (2026-10-
 
     expect(result).toContain('resto');
     expect(fakeSocket.write).toHaveBeenCalledWith(' ');
+  });
+
+  it('falla de inmediato (sin esperar el timeout completo) si la OLT pide una confirmación interactiva inesperada', async () => {
+    const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+    const fakeSocket = createFakeSocket();
+    (session as any).socket = fakeSocket;
+
+    // Reproduce el bug real: "exit" en vez de "end" al salir de
+    // "pon-onu-mng" dispara esta pregunta, que el driver no puede responder
+    // genéricamente (la OLT quedaría pendiente del yes/no para siempre).
+    const promise = session.executeCommand('exit', 20000);
+
+    fakeSocket.emit(
+      'data',
+      Buffer.from('\r\nThe configuration is changed,confirm to logout without saving? [yes/no]:'),
+    );
+
+    await expect(promise).rejects.toThrow(/confirmación interactiva/i);
   });
 });

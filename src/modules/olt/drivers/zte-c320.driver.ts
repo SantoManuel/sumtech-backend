@@ -550,7 +550,14 @@ export class ZteC320Driver implements IOltDriver {
       commands.push(
         `pon-onu-mng ${config.ponInterface}:${config.onuId}`,
         `tr069-mgmt 1 acs ${config.tr069Url} tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
-        'exit',
+        // "end", NO "exit": todos los ejemplos reales del manual (ZXA10 C300
+        // Configuration Manual CLI, ej. §2.11/2.12/2.13) salen de
+        // "(gpon-onu-mng)#" con "end" -- usar "exit" ahí dispara el prompt
+        // interactivo "Confirm to logout without saving? [yes/no]:" que este
+        // driver no sabe responder, y la sesión se cuelga hasta el timeout
+        // (confirmado en producción: ONU CMDCDD4D131E / OLT_Tabara_Abajo,
+        // 2026-10-19).
+        'end',
       );
     }
 
@@ -980,6 +987,27 @@ export class ZteTelnetSession {
         const cleaned = this.handleIac(raw);
         const chunk = cleaned.toString('ascii');
         output += chunk;
+
+        // Confirmación interactiva inesperada (ej. "Confirm to logout
+        // without saving? [yes/no]:" al salir de "pon-onu-mng" con "exit" en
+        // vez de "end" -- ver generateAuthorizationScript). No hay una
+        // respuesta "correcta" genérica (según el comando, "yes" puede
+        // significar "confirmar" o "descartar cambios"), así que en vez de
+        // adivinar, se falla de inmediato con el texto exacto de la OLT en
+        // vez de colgarse hasta agotar el timeout completo.
+        if (/\[yes\/no\]:\s*$/i.test(output.trim())) {
+          finished = true;
+          clearTimeout(timer);
+          socket.removeListener('data', onData);
+          const prompt = output.trim().slice(-200);
+          this.logger.warn(`[diag] executeCommand: confirmación interactiva inesperada en "${command}": "${prompt}"`);
+          reject(
+            new Error(
+              `La OLT pidió una confirmación interactiva que el comando "${command}" no esperaba: "${prompt}". Revisa la secuencia de comandos del driver.`,
+            ),
+          );
+          return;
+        }
 
         if (output.includes('--More--') || output.toLowerCase().includes('-- more --')) {
           moreCount += 1;
