@@ -54,15 +54,21 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('gemport 1 tcont 1');
     expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
     expect(commands).toContain('pon-onu-mng gpon-onu_1/1/1:5');
-    expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/ tag pri 2 vlan 46');
+    // "acs <url>" y "tag pri <n> vlan <n>" son DOS comandos separados --
+    // confirmado en vivo contra OLT_Tabara_Abajo (2026-10-20) vía ayuda
+    // contextual ("tr069-mgmt 1 ?"): antes se mandaban como uno solo
+    // ("tr069-mgmt 1 acs <url> tag pri 2 vlan 46"), rechazado con "%Error
+    // 20201: Invalid input detected ... Invalid command key word".
+    expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
+    expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
     expect(commands).toContain('write');
 
     // Sale de "pon-onu-mng" con "end", NUNCA con "exit" -- con "exit" la OLT
     // real pregunta "Confirm to logout without saving? [yes/no]:" y la
     // sesión se cuelga (bug real en producción, 2026-10-19, ver también los
     // ejemplos del manual ZXA10 C300 §2.11-2.13, todos usan "end" ahí).
-    const tr069MgmtIdx = commands.indexOf('tr069-mgmt 1 acs http://10.46.0.1:7547/ tag pri 2 vlan 46');
-    expect(commands[tr069MgmtIdx + 1]).toBe('end');
+    const tagIdx = commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46');
+    expect(commands[tagIdx + 1]).toBe('end');
   });
 
   it('genera "traffic-profile <nombre> vport 1 direction egress" (bajada) solo si config.trafficProfile está presente', () => {

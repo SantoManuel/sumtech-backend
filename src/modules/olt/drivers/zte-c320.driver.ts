@@ -693,7 +693,16 @@ export class ZteC320Driver implements IOltDriver {
     if (config.managementMethod === 'TR069' && config.tr069Url) {
       commands.push(
         `pon-onu-mng ${onuInterface}`,
-        `tr069-mgmt 1 acs ${config.tr069Url} tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
+        // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20) vía ayuda
+        // contextual ("tr069-mgmt 1 ?" en el prompt "(gpon-onu-mng)#"): "acs
+        // <url>" y "tag pri <0-7> vlan <1-4094>" son DOS comandos SEPARADOS
+        // (hermanos en el árbol de sintaxis), no uno encadenado -- antes se
+        // mandaban juntos como "tr069-mgmt 1 acs <url> tag pri 2 vlan <vlan>",
+        // que la OLT rechazaba con "%Error 20201: Invalid input detected ...
+        // Invalid command key word" porque "tag" nunca es un parámetro válido
+        // después de la URL del ACS.
+        `tr069-mgmt 1 acs ${config.tr069Url}`,
+        `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
         // "end", NO "exit": todos los ejemplos reales del manual (ZXA10 C300
         // Configuration Manual CLI, ej. §2.11/2.12/2.13) salen de
         // "(gpon-onu-mng)#" con "end" -- usar "exit" ahí dispara el prompt
@@ -1219,6 +1228,16 @@ export class ZteC320Driver implements IOltDriver {
       // vlanTranslation sigue sin evidencia completa -- ver configureVlanTranslation.
       vlanTranslation: false,
       alarms: false,
+      // Sintaxis corregida (2026-10-20) tras un primer intento en vivo
+      // rechazado: "tr069-mgmt 1 acs <url>" y "tr069-mgmt 1 tag pri <n> vlan
+      // <n>" son dos comandos separados, confirmado vía ayuda contextual
+      // ("tr069-mgmt 1 ?") en "(gpon-onu-mng)#" -- pero la aplicación
+      // completa contra un ONT real todavía no terminó de confirmarse
+      // (la exploración de sintaxis con "tr069-mgmt 1 acs <url> ?" devolvió
+      // "%Code 63990-GPONRM : ONT return error: command processing error.",
+      // sin quedar claro si fue por el "?" de más o por el propio ONT), así
+      // que se deja en `false` hasta una autorización real exitosa de punta
+      // a punta.
       tr069AutoProvisioning: false,
       onuPassiveImport: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show vlan
@@ -1248,7 +1267,7 @@ export class ZteC320Driver implements IOltDriver {
   getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>> {
     return {
       tr069AutoProvisioning:
-        'El driver ya envía "tr069-mgmt" al autorizar (sintaxis de documentación pública del C320), pero no se ha confirmado contra un equipo real -- mismo criterio aplicado a vlanTranslation en este driver.',
+        'El driver ya envía "tr069-mgmt" al autorizar, con sintaxis corregida (2026-10-20) tras un primer intento en vivo rechazado -- "acs <url>" y "tag pri <n> vlan <n>" son comandos separados, confirmado vía ayuda contextual del propio equipo -- pero la aplicación completa contra un ONT real todavía no terminó de confirmarse.',
       onuTypeProfileProvisioning:
         'El driver ya intenta crear el "onu-type" automáticamente al autorizar, con sintaxis confirmada contra el manual oficial (ZXA10 C300 Configuration Manual (CLI), §2.1) después de que un primer intento en vivo fallara por mandar "description" entre comillas con espacios -- la corrección todavía no se reprobó contra la OLT real.',
     };
