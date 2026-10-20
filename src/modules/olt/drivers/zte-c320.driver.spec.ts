@@ -907,6 +907,52 @@ describe('ZteC320Driver', () => {
       expect(result.error).toContain('Invalid parameter');
     });
 
+    it('tolera "%Code 62391-GPONSRV : The entry is existed. This is a re-create operation." en "onu <id> type ... sn ..." y sigue con el resto del script -- bug real confirmado en vivo contra OLT_Tabara_Abajo (2026-10-20): un reintento tras una autorización previa que falló DESPUÉS de este paso dejaba el ONU ya registrado, y tratar esto como rechazo fatal nunca llegaba a aplicar tcont/vlan/service-port', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd.startsWith('onu ')) {
+          return Promise.resolve('\r\n%Code 62391-GPONSRV : The entry is existed. This is a re-create operation.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('un "%Code 62391-GPONSRV" en un comando DISTINTO de "onu ..." sigue tratándose como rechazo fatal', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd.startsWith('tcont ')) {
+          return Promise.resolve('\r\n%Code 62391-GPONSRV : The entry is existed. This is a re-create operation.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+
     it('tiene éxito y ejecuta "write" cuando ningún comando es rechazado', async () => {
       const executeCommand = jest.fn().mockResolvedValue('\r\n.[Successful]\r\nOLT#');
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({

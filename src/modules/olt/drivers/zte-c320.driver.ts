@@ -55,6 +55,25 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * "%Code 62391-GPONSRV : The entry is existed. This is a re-create
+   * operation." -- CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20):
+   * no es un rechazo real, sino que la OLT informa que el ONU (mismo id en
+   * ese puerto) ya fue autorizado en un intento anterior y sigue registrado
+   * tal cual (confirmado vía "show gpon onu baseinfo": state "ready", mismo
+   * tipo/serial) -- típicamente porque una autorización previa falló DESPUÉS
+   * de este paso (ej. por el bug real de "gpon-olt_" vs "gpon-onu_" ya
+   * corregido en `toOnuInterfaceName`) dejando el "onu type sn" ya aplicado.
+   * Tratar esto como fatal abortaba el resto del script (tcont/vlan/
+   * service-port) aunque el ONU ya estuviera listo para recibirlo. Solo se
+   * reconoce en la respuesta del comando "onu <id> type ... sn ..." --
+   * `isOltErrorResponse()` sigue tratando cualquier otro "%Code" como
+   * rechazo real en el resto de los comandos.
+   */
+  private isOnuAlreadyExistsResponse(output: string): boolean {
+    return /62391-GPONSRV/i.test(output);
+  }
+
+  /**
    * Realiza un pre-flight check de conectividad y credenciales Telnet contra la OLT.
    */
   async testConnection(
@@ -716,6 +735,12 @@ export class ZteC320Driver implements IOltDriver {
    *      `tcontProfile` + `upKbps` (TCONT es ancho de banda de SUBIDA en
    *      GPON — ver `ensureTcontProfile`, el ancho de banda de bajada no se
    *      gestiona por esta vía).
+   *   3. Tolera "%Code 62391-GPONSRV : The entry is existed. This is a
+   *      re-create operation." en el comando "onu <id> type ... sn ..." --
+   *      ver `isOnuAlreadyExistsResponse` -- sin esto, un reintento tras una
+   *      autorización previa que falló DESPUÉS de este paso (dejando el ONU
+   *      ya registrado en la OLT) abortaba de nuevo sin aplicar nunca el
+   *      resto del script (tcont/vlan/service-port).
    */
   async authorizeOnu(
     params: OltConnectionParams,
@@ -744,6 +769,9 @@ export class ZteC320Driver implements IOltDriver {
       for (const cmd of commands) {
         const output = await session.executeCommand(cmd);
         if (this.isOltErrorResponse(output)) {
+          if (cmd.startsWith('onu ') && this.isOnuAlreadyExistsResponse(output)) {
+            continue;
+          }
           throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
         }
       }
