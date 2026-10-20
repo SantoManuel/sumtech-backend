@@ -1008,6 +1008,8 @@ export class OnuManagementService {
         ponInterface,
         onuId,
         modelTypeName: onu.onuType?.vendorTypeName || onu.onuType?.model || 'ZTE-F660',
+        ethPorts: onu.onuType?.ethPorts,
+        potsPorts: onu.onuType?.potsPorts,
         serialNumber: onu.serialNumber,
         clientName: onu.contract?.client?.name || undefined,
         serviceVlan: onu.serviceConfig?.serviceVlan?.vlanId || 100,
@@ -1120,11 +1122,19 @@ export class OnuManagementService {
       onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
     }
 
-    // Tipo / modelo técnico
+    // Tipo / modelo técnico -- ethPorts/potsPorts viajan también para que el
+    // driver pueda auto-crear el "onu-type" en la OLT si todavía no existe
+    // ahí (ver ensureOnuTypeProfile en ZteC320Driver).
     let modelTypeName = 'ZTE-F660';
+    let onuTypeEthPorts: number | undefined;
+    let onuTypePotsPorts: number | undefined;
     if (dto.onuTypeId) {
       const type = await this.onuTypeRepository.findOneBy({ id: dto.onuTypeId });
-      if (type) modelTypeName = type.vendorTypeName || type.model;
+      if (type) {
+        modelTypeName = type.vendorTypeName || type.model;
+        onuTypeEthPorts = type.ethPorts;
+        onuTypePotsPorts = type.potsPorts;
+      }
     }
 
     // VLAN de servicio
@@ -1170,6 +1180,8 @@ export class OnuManagementService {
       ponInterface,
       onuId,
       modelTypeName,
+      ethPorts: onuTypeEthPorts,
+      potsPorts: onuTypePotsPorts,
       serialNumber: onu.serialNumber,
       clientName: dto.clientName || undefined,
       serviceVlan,

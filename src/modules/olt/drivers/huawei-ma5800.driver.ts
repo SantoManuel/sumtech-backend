@@ -12,6 +12,7 @@ import {
   AuthorizeOnuParams,
   TcontProfile,
   TrafficProfile,
+  OnuTypeProfile,
   VlanTranslationParams,
   OltDriverCapabilities,
   NO_DRIVER_CAPABILITIES,
@@ -88,6 +89,10 @@ export class HuaweiMa5800Driver implements IOltDriver {
 
   async ensureTrafficProfile(params: OltConnectionParams, profile: TrafficProfile): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureTrafficProfile').message };
+  }
+
+  async ensureOnuTypeProfile(params: OltConnectionParams, profile: OnuTypeProfile): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureOnuTypeProfile').message };
   }
 
   async configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }> {

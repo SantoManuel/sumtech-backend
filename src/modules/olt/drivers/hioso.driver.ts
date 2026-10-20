@@ -16,6 +16,7 @@ import {
   DriverNotImplementedError,
   TcontProfile,
   TrafficProfile,
+  OnuTypeProfile,
   VlanTranslationParams,
   OltAlarm,
 } from '../ports/olt-driver.port';
@@ -615,6 +616,16 @@ export class HiosoDriver implements IOltDriver {
    */
   async ensureTrafficProfile(params: OltConnectionParams, profile: TrafficProfile): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureTrafficProfile').message };
+  }
+
+  /**
+   * Este hardware EPON autoriza ONUs por MAC sin requerir un "onu-type"
+   * registrado aparte (confirmado por `authorizeOnu`/`generateAuthorizationScript`
+   * de este driver, que nunca referencian un catálogo de tipos en la OLT) --
+   * no hay nada que asegurar aquí.
+   */
+  async ensureOnuTypeProfile(params: OltConnectionParams, profile: OnuTypeProfile): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'ensureOnuTypeProfile').message };
   }
 
   /** Sin evidencia de que este hardware EPON soporte traducción de VLAN/QinQ. */

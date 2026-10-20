@@ -649,6 +649,94 @@ describe('ZteC320Driver', () => {
     });
   });
 
+  describe('ensureOnuTypeProfile (perfil de capacidades OMCI -- diseñado por analogía, AÚN NO verificado en vivo)', () => {
+    it('no crea nada si "show onu-type gpon <nombre>" ya reporta el perfil existente', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-HG8546M') {
+          return Promise.resolve('Onu Type Name :HUAWEY-HG8546M\r\nMax-Tcont :8');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.ensureOnuTypeProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'HUAWEY-HG8546M', ethPorts: 4, potsPorts: 2 },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
+    });
+
+    it('crea el perfil entrando a "configure terminal"/"pon" y declarando max-tcont/max-gemport/etc. + puertos eth/pots si no existe', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.ensureOnuTypeProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'HUAWEY-HG8546M', ethPorts: 4, potsPorts: 2 },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'show onu-type gpon HUAWEY-HG8546M',
+        'configure terminal',
+        'pon',
+        'onu-type HUAWEY-HG8546M gpon description "Auto-creado por Sumtech" max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8',
+        'onu-type-if HUAWEY-HG8546M eth_0/1-4',
+        'onu-type-if HUAWEY-HG8546M pots_0/1-2',
+        'exit',
+        'exit',
+        'write',
+      ]);
+    });
+
+    it('omite "onu-type-if" para eth/pots si ethPorts/potsPorts no vienen definidos', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      await driver.ensureOnuTypeProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'ZTE-F660' },
+      );
+
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('onu-type-if'));
+    });
+
+    it('responde ok:false si la OLT rechaza la creación del onu-type, sin llegar a "write"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('onu-type ')) return Promise.resolve('%Error 20200: Invalid input detected');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.ensureOnuTypeProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'BROKEN-TYPE' },
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('Invalid input detected');
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+  });
+
   describe('authorizeOnu() + TCONT', () => {
     it('asegura el perfil TCONT antes de correr el script de autorización cuando hay tcontProfile + upKbps', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
@@ -773,6 +861,9 @@ describe('ZteC320Driver', () => {
 
     it('falla con ok:false si la OLT rechaza con formato "%Code <n>-<módulo> : <mensaje>" (ej. Tipo de ONU inválido)', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        // El onu-type ya existe -- esta prueba es sobre el rechazo del script
+        // principal de autorización, no sobre el aprovisionamiento del tipo.
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
         if (cmd.startsWith('onu ')) return Promise.resolve('\r\n%Code 63904-GPONRM : Not support this ONU.\r\nOLT#');
         return Promise.resolve('');
       });
@@ -859,6 +950,41 @@ describe('ZteC320Driver', () => {
 
   it('downstreamTrafficProfile ya está en true -- confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19)', () => {
     expect(driver.getCapabilities().downstreamTrafficProfile).toBe(true);
+  });
+
+  it('onuTypeProfileProvisioning se mantiene en false pese a tener código real (crear un onu-type nuevo aún no se probó en vivo)', () => {
+    expect(driver.getCapabilities().onuTypeProfileProvisioning).toBe(false);
+    expect(driver.getCapabilityNotes().onuTypeProfileProvisioning).toMatch(/onu-type/i);
+  });
+
+  it('authorizeOnu() asegura el onu-type (modelTypeName + ethPorts/potsPorts) antes de correr el script de autorización', async () => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.authorizeOnu(
+      { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+      {
+        ponInterface: 'gpon-olt_1/1/1',
+        onuId: 1,
+        modelTypeName: 'HUAWEY-HG8546M',
+        ethPorts: 4,
+        potsPorts: 2,
+        serialNumber: 'ZTEGC0123456',
+        serviceVlan: 400,
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    const calledCommands = executeCommand.mock.calls.map((c) => c[0]);
+    expect(calledCommands.indexOf('show onu-type gpon HUAWEY-HG8546M')).toBe(0);
+    expect(calledCommands).toContain('onu-type-if HUAWEY-HG8546M eth_0/1-4');
+    expect(calledCommands).toContain('onu-type-if HUAWEY-HG8546M pots_0/1-2');
   });
 });
 

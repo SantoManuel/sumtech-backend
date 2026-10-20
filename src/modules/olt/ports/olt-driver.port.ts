@@ -127,6 +127,21 @@ export interface TrafficProfile {
   downKbps: number;
 }
 
+/**
+ * Perfil de capacidades OMCI ("onu-type") que la OLT exige tener registrado
+ * ANTES de poder autorizar un modelo de ONU -- ver `onuTypeProfileProvisioning`
+ * en OltDriverCapabilities. `ethPorts`/`potsPorts` vienen de
+ * `net.onu_types.eth_ports`/`.pots_ports`; los límites OMCI (maxTcont/
+ * maxGemport/etc.) usan los mismos valores genéricos 8/32/8/8 que ya traían
+ * los perfiles Huawei preexistentes en OLT_Tabara_Abajo (no hay forma de
+ * descubrirlos por modelo real sin acceso al datasheet OMCI de cada ONU).
+ */
+export interface OnuTypeProfile {
+  name: string;
+  ethPorts?: number;
+  potsPorts?: number;
+}
+
 export interface VlanTranslationParams {
   interfaceName: string;
   /** VLAN que llega del lado del cliente/ONU (interior). */
@@ -139,6 +154,10 @@ export interface AuthorizeOnuParams {
   ponInterface: string; // ej. 'gpon-olt_1/1/1'
   onuId: number; // 1-128
   modelTypeName: string; // ej. 'ZTE-F660'
+  /** Puertos ETH del Tipo de ONU (net.onu_types.eth_ports) -- usado para auto-crear el "onu-type" en la OLT si no existe (ver `onuTypeProfileProvisioning` en OltDriverCapabilities). */
+  ethPorts?: number;
+  /** Puertos POTS del Tipo de ONU (net.onu_types.pots_ports) -- mismo propósito que ethPorts. */
+  potsPorts?: number;
   serialNumber: string;
   clientName?: string;
   serviceVlan: number;
@@ -253,6 +272,18 @@ export interface OltDriverCapabilities {
    * (también confirmado en vivo). Ver ZteC320Driver.ensureTrafficProfile().
    */
   downstreamTrafficProfile: boolean;
+  /**
+   * Auto-crear en la OLT el "onu-type" (perfil de capacidades OMCI: max-tcont,
+   * max-gemport, max-switch-perslot, max-flow-perswitch, puertos eth/pots) que
+   * exige `authorizeOnu()` cuando el modelo todavía no fue registrado a mano
+   * por Telnet -- hasta ahora, SIEMPRE había que crearlo manualmente antes de
+   * poder autorizar un modelo nuevo (confirmado en vivo contra
+   * OLT_Tabara_Abajo, 2026-10-16: `onu <id> type <X> sn <Y>` responde
+   * "%Code 63904-GPONRM : Not support this ONU." si el onu-type no existe).
+   * Empieza en `false` hasta verificarse en vivo, según la convención de este
+   * archivo. Ver ZteC320Driver.ensureOnuTypeProfile().
+   */
+  onuTypeProfileProvisioning: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -276,6 +307,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   vlanDiscovery: false,
   tcontDiscovery: false,
   downstreamTrafficProfile: false,
+  onuTypeProfileProvisioning: false,
 };
 
 /**
@@ -351,6 +383,8 @@ export interface IOltDriver {
   ensureTcontProfile(params: OltConnectionParams, profile: TcontProfile): Promise<{ ok: boolean; error?: string }>;
   /** Asegura que el traffic-profile de BAJADA exista (idempotente) -- ver `downstreamTrafficProfile` en OltDriverCapabilities. */
   ensureTrafficProfile(params: OltConnectionParams, profile: TrafficProfile): Promise<{ ok: boolean; error?: string }>;
+  /** Asegura que el "onu-type" (perfil de capacidades OMCI) exista en la OLT antes de autorizar (idempotente) -- ver `onuTypeProfileProvisioning` en OltDriverCapabilities. */
+  ensureOnuTypeProfile(params: OltConnectionParams, profile: OnuTypeProfile): Promise<{ ok: boolean; error?: string }>;
   /** Traducción de VLAN cliente↔red en una interfaz (VLAN translation/QinQ) — ver `vlanTranslation` en OltDriverCapabilities sobre por qué sigue sin evidencia suficiente para implementarse. */
   configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }>;
   /** Alarmas/eventos reales del equipo (ver `alarms` en OltDriverCapabilities). */

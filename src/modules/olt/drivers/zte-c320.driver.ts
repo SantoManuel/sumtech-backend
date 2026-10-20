@@ -10,6 +10,7 @@ import {
   ConfigureVlanParams,
   TcontProfile,
   TrafficProfile,
+  OnuTypeProfile,
   VlanTranslationParams,
   OltDriverCapabilities,
   DriverNotImplementedError,
@@ -683,14 +684,21 @@ export class ZteC320Driver implements IOltDriver {
 
   /**
    * Ejecuta el aprovisionamiento de la ONU en la OLT. Antes de correr el
-   * script generado, asegura que el perfil TCONT referenciado
-   * (`config.tcontProfile`) exista de verdad en la OLT — antes de esto,
-   * `generateAuthorizationScript()` solo lo referenciaba por nombre
-   * (`tcont 1 profile <nombre>`) asumiendo silenciosamente que ya existía;
-   * si no existía, la autorización fallaba sin explicación clara. Solo
-   * aplica si hay `tcontProfile` + `upKbps` (TCONT es ancho de banda de
-   * SUBIDA en GPON — ver `ensureTcontProfile`, el ancho de banda de bajada
-   * no se gestiona por esta vía).
+   * script generado:
+   *   1. Asegura que el "onu-type" (`config.modelTypeName`) exista en la OLT
+   *      -- sin esto, "onu <id> type <X> sn <Y>" rechaza con "%Code
+   *      63904-GPONRM : Not support this ONU." si el modelo nunca se registró
+   *      a mano por Telnet (ver `ensureOnuTypeProfile`). Antes de este fix,
+   *      Sumtech exigía crear el onu-type manualmente antes de poder
+   *      autorizar cualquier modelo nuevo.
+   *   2. Asegura que el perfil TCONT referenciado (`config.tcontProfile`)
+   *      exista de verdad en la OLT — antes de esto, `generateAuthorizationScript()`
+   *      solo lo referenciaba por nombre (`tcont 1 profile <nombre>`)
+   *      asumiendo silenciosamente que ya existía; si no existía, la
+   *      autorización fallaba sin explicación clara. Solo aplica si hay
+   *      `tcontProfile` + `upKbps` (TCONT es ancho de banda de SUBIDA en
+   *      GPON — ver `ensureTcontProfile`, el ancho de banda de bajada no se
+   *      gestiona por esta vía).
    */
   async authorizeOnu(
     params: OltConnectionParams,
@@ -699,6 +707,12 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
+
+      await this.ensureOnuTypeProfileWithSession(session, {
+        name: config.modelTypeName,
+        ethPorts: config.ethPorts,
+        potsPorts: config.potsPorts,
+      });
 
       if (config.tcontProfile && config.upKbps) {
         await this.ensureTcontProfileWithSession(session, { name: config.tcontProfile, fixedKbps: config.upKbps });
@@ -876,6 +890,79 @@ export class ZteC320Driver implements IOltDriver {
     if (this.isOltErrorResponse(createOutput)) {
       throw new Error(`La OLT rechazó el traffic-profile "${profile.name}": ${createOutput.trim()}`);
     }
+    await session.executeCommand('exit');
+    await session.executeCommand('write');
+  }
+
+  /**
+   * Asegura que el "onu-type" (perfil de capacidades OMCI que exige
+   * `onu <id> type <nombre> sn <serial>`) exista en la OLT antes de
+   * autorizar -- sin esto, la OLT rechaza con "%Code 63904-GPONRM : Not
+   * support this ONU." cualquier modelo que nunca se haya registrado antes
+   * a mano por Telnet. Los límites OMCI (max-tcont 8, max-gemport 32,
+   * max-switch-perslot 8, max-flow-perswitch 8) reutilizan los mismos
+   * valores genéricos que ya traen los 2 perfiles Huawei reales preexistentes
+   * en OLT_Tabara_Abajo (HUAWEY-HG8145V5, HUAWEY-BT546XG) -- no hay forma de
+   * descubrir los límites OMCI reales de un modelo sin su datasheet.
+   *
+   * TODAVÍA NO VERIFICADO EN VIVO (ver `onuTypeProfileProvisioning` en
+   * getCapabilities()) -- diseñado por analogía directa con
+   * `ensureTcontProfileWithSession` (mismo patrón "configure terminal" →
+   * submodo → comando de creación → "exit"/"exit"/"write"), pero el submodo
+   * real para "onu-type" es "pon", no "gpon".
+   */
+  async ensureOnuTypeProfile(params: OltConnectionParams, profile: OnuTypeProfile): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await this.ensureOnuTypeProfileWithSession(session, profile);
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  private async ensureOnuTypeProfileWithSession(
+    session: { executeCommand(cmd: string, timeoutMs?: number): Promise<string> },
+    profile: OnuTypeProfile,
+  ): Promise<void> {
+    const checkOutput = await session.executeCommand(`show onu-type gpon ${profile.name}`);
+    const alreadyExists = !this.isOltErrorResponse(checkOutput) && checkOutput.includes(profile.name);
+    if (alreadyExists) {
+      return;
+    }
+
+    await session.executeCommand('configure terminal');
+    await session.executeCommand('pon');
+    const createOutput = await session.executeCommand(
+      `onu-type ${profile.name} gpon description "Auto-creado por Sumtech" max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8`,
+    );
+    if (this.isOltErrorResponse(createOutput)) {
+      await session.executeCommand('exit');
+      await session.executeCommand('exit');
+      throw new Error(`La OLT rechazó el onu-type "${profile.name}": ${createOutput.trim()}`);
+    }
+
+    if (profile.ethPorts && profile.ethPorts > 0) {
+      const ethOutput = await session.executeCommand(`onu-type-if ${profile.name} eth_0/1-${profile.ethPorts}`);
+      if (this.isOltErrorResponse(ethOutput)) {
+        await session.executeCommand('exit');
+        await session.executeCommand('exit');
+        throw new Error(`La OLT rechazó los puertos ETH del onu-type "${profile.name}": ${ethOutput.trim()}`);
+      }
+    }
+    if (profile.potsPorts && profile.potsPorts > 0) {
+      const potsOutput = await session.executeCommand(`onu-type-if ${profile.name} pots_0/1-${profile.potsPorts}`);
+      if (this.isOltErrorResponse(potsOutput)) {
+        await session.executeCommand('exit');
+        await session.executeCommand('exit');
+        throw new Error(`La OLT rechazó los puertos POTS del onu-type "${profile.name}": ${potsOutput.trim()}`);
+      }
+    }
+
+    await session.executeCommand('exit');
     await session.executeCommand('exit');
     await session.executeCommand('write');
   }
@@ -1092,6 +1179,15 @@ export class ZteC320Driver implements IOltDriver {
       // con el flujo completo configure terminal/traffic-profile/exit/write
       // -- ver ensureTrafficProfile().
       downstreamTrafficProfile: true,
+      // Implementado pero AÚN NO verificado en vivo contra OLT_Tabara_Abajo
+      // (los comandos "configure terminal"/"pon"/"onu-type ... gpon
+      // description ... max-tcont 8 max-gemport 32 max-switch-perslot 8
+      // max-flow-perswitch 8"/"onu-type-if ... eth_0/1-N"/"write" se derivaron
+      // de inspeccionar los 2 perfiles Huawei reales ya existentes en esta
+      // OLT, HUAWEY-HG8145V5 y HUAWEY-BT546XG, pero crear uno nuevo todavía
+      // no se probó en vivo) -- queda en `false` hasta confirmarse, según la
+      // convención de este archivo. Ver ensureOnuTypeProfile().
+      onuTypeProfileProvisioning: false,
     };
   }
 
@@ -1099,6 +1195,8 @@ export class ZteC320Driver implements IOltDriver {
     return {
       tr069AutoProvisioning:
         'El driver ya envía "tr069-mgmt" al autorizar (sintaxis de documentación pública del C320), pero no se ha confirmado contra un equipo real -- mismo criterio aplicado a vlanTranslation en este driver.',
+      onuTypeProfileProvisioning:
+        'El driver ya intenta crear el "onu-type" automáticamente al autorizar (por analogía directa con ensureTcontProfile), pero crear uno nuevo todavía no se probó contra un equipo real -- solo se verificaron en vivo los 2 perfiles Huawei preexistentes que sirvieron de referencia.',
     };
   }
 }

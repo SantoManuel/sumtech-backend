@@ -39,6 +39,7 @@ describe('HiosoDriver', () => {
       vlanDiscovery: false,
       tcontDiscovery: false,
       downstreamTrafficProfile: false,
+      onuTypeProfileProvisioning: false,
     });
   });
 
