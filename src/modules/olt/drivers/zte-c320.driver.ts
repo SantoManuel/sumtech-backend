@@ -1282,12 +1282,26 @@ export class ZteC320Driver implements IOltDriver {
       //      command"/"Invalid command" en los 3 lugares plausibles: config
       //      terminal, "pon", "gpon"), y "default" no es un nombre válido
       //      ("%Code 63981-GPONRM : Profile does not exist.").
-      // Conclusión: esto requiere crear un objeto "vlan-profile" que este
-      // Telnet CLI no expone -- probablemente solo existe vía el NMS
-      // propietario de ZTE (NetNumen/U31), al que Sumtech no tiene acceso.
-      // Es un límite real de la interfaz CLI, no una sintaxis más por
-      // adivinar -- se deja en `false` hasta encontrar esa vía o confirmar
-      // una autorización real exitosa de punta a punta por otro medio.
+      // Conclusión inicial: esto requiere crear un objeto "vlan-profile" que
+      // este Telnet CLI no expone en "wan-ip".
+      //
+      // SEGUIMIENTO (mismo día): SÍ existe un sistema más profundo de
+      // plantillas completas de ONU vía "pon" → "onu-profile gpon line
+      // <nombre>" (confirmado creando y eliminando limpiamente un perfil de
+      // prueba, "TEST-PROBE") -- entra a un sub-modo con "tcont"/"gemport"/
+      // "vport"/"vport-map"/"remote" (este último es, con alta probabilidad,
+      // donde vive la configuración real de WAN/VLAN/ACS que haría falta).
+      // Pero intentar avanzar ahí también se bloquea con sus propios
+      // prerequisitos no documentados: "vport 1" responde "%Code
+      // 62373-GPONSRV : Not support this operation." y "remote" (sin crear
+      // antes un vport) responde "%Code 10: Invalid parameter!" -- es decir,
+      // esta plantilla exige una secuencia de configuración previa (quizás
+      // "vport-mode", quizás algo no listado en "?") que no se pudo
+      // descubrir por prueba y error ciego. Esto va más allá de lo que este
+      // manual de Telnet documenta -- seguir necesitaría documentación OMCI
+      // oficial de ZTE o acceso al NMS (NetNumen/U31), no otra adivinanza de
+      // sintaxis. Se deja en `false` hasta confirmar una autorización real
+      // exitosa de punta a punta por esa vía u otra.
       tr069AutoProvisioning: false,
       onuPassiveImport: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show vlan
