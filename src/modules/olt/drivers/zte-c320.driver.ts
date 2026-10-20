@@ -1300,8 +1300,31 @@ export class ZteC320Driver implements IOltDriver {
       // descubrir por prueba y error ciego. Esto va más allá de lo que este
       // manual de Telnet documenta -- seguir necesitaría documentación OMCI
       // oficial de ZTE o acceso al NMS (NetNumen/U31), no otra adivinanza de
-      // sintaxis. Se deja en `false` hasta confirmar una autorización real
-      // exitosa de punta a punta por esa vía u otra.
+      // sintaxis.
+      //
+      // SEGUNDO SEGUIMIENTO (mismo día): "wan <N> service <tipo>" SÍ admite
+      // varios servicios en el MISMO WAN (confirmado: "wan 3 service
+      // internet" y luego "wan 3 service tr069" sobre el mismo índice, cada
+      // uno ligado a un "ip-host <id>" vía "wan 3 service internet host
+      // <id>") -- osea que un WAN combinado "internet+tr069" (la hipótesis
+      // de que SmartOLT usa algo como "INTERNET_TR069") es real y se pudo
+      // reproducir. Pero con ese WAN ya armado así (confirmado por "%Code
+      // 63869-GPONRM : Record already exists." al reintentar cada pieza) y
+      // confirmado con "write", "tr069-mgmt 1 acs <url>" sigue fallando con
+      // EXACTAMENTE el mismo "%Code 63990-GPONRM" de siempre -- es decir, ya
+      // se probaron las 4 variantes de configuración de WAN disponibles
+      // (ninguna, solo tr069, internet+tr069 separados, internet+tr069
+      // combinados con ip-host) sin que ninguna cambiara el resultado. Esto
+      // es evidencia fuerte de que el rechazo es un límite real del propio
+      // firmware del ONT (no soporta el ME de ManagementServer que ZTE
+      // intenta escribirle vía OMCI), no una pieza de configuración que
+      // todavía falte descubrir. Se deja en `false`.
+      //
+      // NOTA OPERATIVA para quien retome esto: este firmware NO tiene
+      // "show wan"/"show wan-ip" -- no hay forma de leer el estado real de
+      // estos objetos, y un "?" sobre un comando ya sintácticamente completo
+      // puede EJECUTARLO de verdad (confirmado en esta misma investigación)
+      // -- extremar cuidado al explorar con "?" más allá de este punto.
       tr069AutoProvisioning: false,
       onuPassiveImport: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show vlan
