@@ -109,7 +109,10 @@ export class OnuManagementService {
 
     const [data, total] = await this.onuRepository.findAndCount({
       where,
-      relations: ['olt', 'ponInterface'],
+      // 'olt.zone' -- así el frontend conoce la zona de la OLT sin un
+      // round-trip extra, para autogenerar la "description" (ver
+      // docs/onu-tr069-provisioning-zte-c320.md) antes de autorizar.
+      relations: ['olt', 'olt.zone', 'ponInterface'],
       order: { detectedAt: 'DESC' },
       skip,
       take: limit,
@@ -1204,6 +1207,11 @@ export class OnuManagementService {
       potsPorts: onuTypePotsPorts,
       serialNumber: onu.serialNumber,
       clientName: dto.clientName || undefined,
+      // Autogenerada en el frontend (zona de la OLT + GPS del contrato si
+      // hay + fecha) y editable antes de autorizar -- el backend confía en
+      // el valor que llega, no lo recalcula. Ver
+      // docs/onu-tr069-provisioning-zte-c320.md.
+      description: dto.description || undefined,
       serviceVlan,
       tcontProfile,
       trafficProfile,

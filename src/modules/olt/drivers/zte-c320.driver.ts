@@ -688,6 +688,7 @@ export class ZteC320Driver implements IOltDriver {
       'exit',
       `interface ${onuInterface}`,
       `name ${config.clientName ? config.clientName.replace(/\s+/g, '_') : `ONU-${config.onuId}`}`,
+      ...(config.description ? [`description ${config.description.replace(/\s+/g, '_')}`] : []),
       `tcont 1 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
       'gemport 1 tcont 1',
       'switchport mode hybrid vport 1',
@@ -741,7 +742,10 @@ export class ZteC320Driver implements IOltDriver {
           `flow 2 pri 0 vlan ${config.tr069Vlan}`,
           'gemport 2 flow 2',
           'switchport-bind switch_0/1 iphost 2',
-          'ip-host 2 dhcp-enable enable',
+          // "ping-response"/"traceroute-response" dejan que un técnico haga
+          // ping/traceroute a la IP de gestión del ONT directamente --
+          // confirmado en el config real de un ONU Villar Pando (SmartOLT).
+          'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
           'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
           `vlan-filter iphost 2 pri 0 vlan ${config.tr069Vlan}`,
           'veip 1 port udp 1232 host 2',

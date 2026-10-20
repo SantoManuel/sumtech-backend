@@ -6,6 +6,7 @@ import { GenieAcsAuditLogEntity } from './entities/genieacs-audit-log.entity';
 import { SerialNumberEntity } from '../inventory/entities/serial-number.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
 import { TicketEntity } from '../tickets/entities/ticket.entity';
+import { OnuEntity } from '../olt/entities/onu.entity';
 import { GenieAcsDeviceResolverService } from './genieacs-device-resolver.service';
 import { GenieAcsWifiService } from './genieacs-wifi.service';
 import { GenieAcsMonitoringService } from './genieacs-monitoring.service';
@@ -26,6 +27,7 @@ import { TicketsModule } from '../tickets/tickets.module';
       SerialNumberEntity,
       ContractEntity,
       TicketEntity,
+      OnuEntity,
     ]),
     TicketsModule,
     JwtModule.register({}),

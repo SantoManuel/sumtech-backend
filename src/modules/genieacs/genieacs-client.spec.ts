@@ -208,6 +208,24 @@ describe('GenieAcsClient', () => {
       expect(status.opticalRxPowerDbm).toBe(-18.5);
       expect(status.manufacturer).toBe('Huawei');
       expect(status.lastInformAt).toEqual(new Date('2026-09-14T23:18:42.971Z'));
+      expect(status.tags).toEqual([]);
+    });
+
+    it('expone los tags reales del documento ("_tags") -- usados para identificar tenant/OLT en una NBI compartida entre tenants', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            _id: '00259E-ONT-16',
+            _deviceId: {},
+            _tags: ['tenant:sumtech', 'olt:OLT_Tabara_Abajo'],
+            InternetGatewayDevice: {},
+          },
+        ],
+      });
+
+      const status = await client.getDeviceStatus('00259E-ONT-16');
+
+      expect(status.tags).toEqual(['tenant:sumtech', 'olt:OLT_Tabara_Abajo']);
     });
 
     it('parsea un documento TR-181 (Device.*)', async () => {

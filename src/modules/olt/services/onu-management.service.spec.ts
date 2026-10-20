@@ -283,7 +283,7 @@ describe('OnuManagementService', () => {
       expect(result.totalPages).toBe(1);
       expect(onuRepo.findAndCount).toHaveBeenCalledWith({
         where: { status: 'UNCONFIGURED', oltId: 'olt-uuid-1' },
-        relations: ['olt', 'ponInterface'],
+        relations: ['olt', 'olt.zone', 'ponInterface'],
         order: { detectedAt: 'DESC' },
         skip: 0,
         take: 20,
@@ -619,6 +619,28 @@ describe('OnuManagementService', () => {
           tcontProfile: 'TCONT-100M',
           downKbps: 102400,
           upKbps: 102400,
+        }),
+      );
+    });
+
+    it('pasa clientName/description tal cual al driver -- el backend no los recalcula, confía en lo que resolvió el frontend (ver docs/onu-tr069-provisioning-zte-c320.md)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        onuTypeId: 'type-1',
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+        clientName: 'Juan_Perez',
+        description: 'zone_Tabara_Abajo_lat_18.65_long_-71.03_authd_20261020',
+      });
+
+      expect(zteDriver.authorizeOnu).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          clientName: 'Juan_Perez',
+          description: 'zone_Tabara_Abajo_lat_18.65_long_-71.03_authd_20261020',
         }),
       );
     });

@@ -160,6 +160,8 @@ export interface AuthorizeOnuParams {
   potsPorts?: number;
   serialNumber: string;
   clientName?: string;
+  /** Identificación legible en la propia OLT (zona/GPS/fecha de autorización) -- ver docs/onu-tr069-provisioning-zte-c320.md. Autogenerada por el frontend, editable antes de autorizar. */
+  description?: string;
   serviceVlan: number;
   tcontProfile?: string;
   /** Nombre del traffic-profile de bajada (`net.olt_speed_profiles.vendor_traffic_profile`) -- ver `downstreamTrafficProfile` en OltDriverCapabilities. */

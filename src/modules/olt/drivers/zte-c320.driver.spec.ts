@@ -34,6 +34,7 @@ describe('ZteC320Driver', () => {
       modelTypeName: 'ZTE-F660',
       serialNumber: 'ZTEGC0123456',
       clientName: 'CLI-001-JuanPerez',
+      description: 'zone_Tabara Abajo_lat_18.65_long_-71.03_authd_20261020',
       serviceVlan: 200,
       tr069Vlan: 46,
       tr069Url: 'http://10.46.0.1:7547/',
@@ -50,6 +51,11 @@ describe('ZteC320Driver', () => {
     // OLT_Tabara_Abajo (2026-10-20), ver toOnuInterfaceName().
     expect(commands).toContain('interface gpon-onu_1/1/1:5');
     expect(commands).toContain('name CLI-001-JuanPerez');
+    // "description" se sanea igual que "name" (espacios -> "_") por el mismo
+    // patrón de bug real ya documentado para "onu-type ... description".
+    expect(commands).toContain('description zone_Tabara_Abajo_lat_18.65_long_-71.03_authd_20261020');
+    const nameIdx = commands.indexOf('name CLI-001-JuanPerez');
+    expect(commands[nameIdx + 1]).toBe('description zone_Tabara_Abajo_lat_18.65_long_-71.03_authd_20261020');
     expect(commands).toContain('tcont 1 profile UP-50M');
     expect(commands).toContain('gemport 1 tcont 1');
     expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
@@ -77,7 +83,7 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('flow 2 pri 0 vlan 46');
     expect(commands).toContain('gemport 2 flow 2');
     expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
-    expect(commands).toContain('ip-host 2 dhcp-enable enable');
+    expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
     expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('vlan-filter iphost 2 pri 0 vlan 46');
     expect(commands).toContain('veip 1 port udp 1232 host 2');
@@ -116,6 +122,21 @@ describe('ZteC320Driver', () => {
     expect(commands.some((c) => c.includes('veip 1'))).toBe(false);
     expect(commands).not.toContain(REBOOT_ONU_SENTINEL);
     expect(commands.slice(-2)).toEqual(['end', 'write']);
+  });
+
+  it('sin "description", no agrega esa línea -- opcional, no rompe compatibilidad con llamadas existentes', () => {
+    const commands = driver.generateAuthorizationScript({
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'ZTE-F660',
+      serialNumber: 'ZTEGC0123456',
+      clientName: 'JuanPerez',
+      serviceVlan: 200,
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+    });
+
+    expect(commands.some((c) => c.startsWith('description '))).toBe(false);
   });
 
   it('genera "traffic-profile <nombre> vport 1 direction egress" (bajada) solo si config.trafficProfile está presente', () => {

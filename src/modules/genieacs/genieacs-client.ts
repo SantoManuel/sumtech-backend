@@ -20,6 +20,8 @@ export interface GenieAcsDeviceStatus {
   ssid?: string;
   ssid5g?: string;
   opticalRxPowerDbm?: number;
+  /** Tags reales del dispositivo en GenieACS (ej. "tenant:sumtech", "olt:OLT_Tabara_Abajo") -- ver setDeviceTag/deleteDeviceTag. */
+  tags: string[];
 }
 
 export interface WifiCredentialsInput {
@@ -257,6 +259,7 @@ export class GenieAcsClient {
           ? getParamValue(doc, 'Device.Optical.Interface.1.OpticalSignalLevel')
           : getParamValue(doc, 'InternetGatewayDevice.WANDevice.1.WANDSLInterfaceConfig.X_Sumtech_OpticalRxPower'),
       ),
+      tags: Array.isArray(doc._tags) ? doc._tags : [],
     };
   }
 

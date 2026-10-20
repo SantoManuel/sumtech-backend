@@ -11,6 +11,8 @@ import { GenieAcsClient } from './genieacs-client';
 import { GENIEACS_CLIENT } from './genieacs-client-factory';
 import { computeOnlineStatus, isOpticalPowerCritical, ONU_OPTICAL_ALERT_THRESHOLD_DBM } from './genieacs-online-status.util';
 import { TenantIteratorService } from '../../common/tenancy/tenant-iterator.service';
+import { OnuEntity } from '../olt/entities/onu.entity';
+import { TenantEntity } from '../platform/entities/tenant.entity';
 
 /** Título exacto usado para detectar si ya existe una alerta abierta y no duplicarla — nunca cambiar sin migrar los tickets ya creados con este título. */
 const OPTICAL_ALERT_TICKET_TITLE = '[Alerta GenieACS] Potencia óptica degradada';
@@ -40,6 +42,8 @@ export class GenieAcsReconciliationService {
     private readonly ticketRepository: Repository<TicketEntity>,
     @InjectRepository(ContractEntity)
     private readonly contractRepository: Repository<ContractEntity>,
+    @InjectRepository(OnuEntity)
+    private readonly onuRepository: Repository<OnuEntity>,
     private readonly ticketsService: TicketsService,
     @Inject(GENIEACS_CLIENT)
     private readonly client: GenieAcsClient | null,
@@ -56,6 +60,7 @@ export class GenieAcsReconciliationService {
     await this.tenantIterator.runForEachActiveTenant('genieacs-reconciliation', async (tenant) => {
       this.logger.log(`Reconciliación GenieACS — tenant '${tenant.slug}'`);
       await this.reconcileAll();
+      await this.reconcileOnuTags(tenant);
     });
   }
 
@@ -112,6 +117,60 @@ export class GenieAcsReconciliationService {
         `${result.alertsCreated} alerta(s) de potencia óptica creada(s), ${result.failed} fallo(s).`,
     );
     return result;
+  }
+
+  /**
+   * Etiqueta cada ONU gestionada por TR-069 en GenieACS con `tenant:<slug>` y
+   * `olt:<nombre-olt>` -- GenieACS hoy es **una sola instancia compartida por
+   * todos los tenants** (ver nota arriba en `handleReconciliation`), así que
+   * sin esto no hay forma de saber, mirando un dispositivo ahí, a qué ISP ni
+   * a qué OLT pertenece.
+   *
+   * Deliberadamente independiente de `GenieAcsDeviceEntity`/
+   * `GenieAcsDeviceResolverService` (que son por-contrato, pensados para CPEs
+   * no necesariamente detrás de una OLT) -- este flujo vive en `net.onus`,
+   * que ya tiene `oltId` directo sin necesitar un join extra. `genieacsDeviceId`
+   * en `net.onus` existía como columna desde antes pero nunca se escribía
+   * desde ningún lado -- aquí se resuelve y se persiste por primera vez.
+   */
+  private async reconcileOnuTags(tenant: TenantEntity): Promise<void> {
+    if (!this.client) {
+      return;
+    }
+
+    const onus = await this.onuRepository.find({
+      where: { status: 'ACTIVE' },
+      relations: ['olt', 'serviceConfig'],
+    });
+
+    const tr069Onus = onus.filter((onu) => onu.serviceConfig?.managementMethod === 'TR069');
+
+    for (const onu of tr069Onus) {
+      try {
+        if (!onu.genieacsDeviceId) {
+          const deviceId = await this.client.findDeviceBySerial(onu.serialNumber);
+          if (!deviceId) {
+            continue;
+          }
+          onu.genieacsDeviceId = deviceId;
+          await this.onuRepository.update(onu.id, { genieacsDeviceId: deviceId });
+        }
+
+        const status = await this.client.getDeviceStatus(onu.genieacsDeviceId);
+        const desiredTags = [`tenant:${tenant.slug}`, `olt:${onu.olt?.name}`];
+        const missingTags = desiredTags.filter((tag) => !status.tags.includes(tag));
+
+        for (const tag of missingTags) {
+          await this.client.setDeviceTag(onu.genieacsDeviceId, tag);
+        }
+      } catch (error) {
+        this.logger.error(
+          `Error etiquetando en GenieACS la ONU ${onu.id} (serial ${onu.serialNumber}): ${(error as Error).message}`,
+        );
+        // No se aborta el resto del ciclo por una ONU individual -- mismo
+        // criterio que reconcileAll().
+      }
+    }
   }
 
   /** Devuelve true si se creó un ticket nuevo; false si ya había uno abierto (no se duplica) o si el contrato no existe. */
