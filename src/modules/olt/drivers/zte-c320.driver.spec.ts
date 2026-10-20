@@ -936,11 +936,34 @@ describe('ZteC320Driver', () => {
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
-    it('un "%Code 62391-GPONSRV" en un comando DISTINTO de "onu ..." sigue tratándose como rechazo fatal', async () => {
+    it('tolera "%Code 66661: The service is already existed." en "service-port ..." y sigue con el resto del script -- segundo mensaje real distinto confirmado en vivo contra OLT_Tabara_Abajo (2026-10-20), mismo significado que el "entry is existed" del paso "onu type sn": un reintento tras un fallo posterior a este paso no debe abortar de nuevo aquí', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd.startsWith('service-port ')) {
+          return Promise.resolve('\r\n%Code 66661: The service is already existed.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('un "%Code" que NO menciona "existed" sigue tratándose como rechazo fatal, sin importar el comando', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
         if (cmd.startsWith('tcont ')) {
-          return Promise.resolve('\r\n%Code 62391-GPONSRV : The entry is existed. This is a re-create operation.\r\nOLT#');
+          return Promise.resolve('\r\n%Code 10: Invalid parameter!\r\nOLT#');
         }
         return Promise.resolve('');
       });

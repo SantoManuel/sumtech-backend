@@ -55,22 +55,26 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
-   * "%Code 62391-GPONSRV : The entry is existed. This is a re-create
-   * operation." -- CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20):
-   * no es un rechazo real, sino que la OLT informa que el ONU (mismo id en
-   * ese puerto) ya fue autorizado en un intento anterior y sigue registrado
-   * tal cual (confirmado vía "show gpon onu baseinfo": state "ready", mismo
-   * tipo/serial) -- típicamente porque una autorización previa falló DESPUÉS
-   * de este paso (ej. por el bug real de "gpon-olt_" vs "gpon-onu_" ya
-   * corregido en `toOnuInterfaceName`) dejando el "onu type sn" ya aplicado.
-   * Tratar esto como fatal abortaba el resto del script (tcont/vlan/
-   * service-port) aunque el ONU ya estuviera listo para recibirlo. Solo se
-   * reconoce en la respuesta del comando "onu <id> type ... sn ..." --
-   * `isOltErrorResponse()` sigue tratando cualquier otro "%Code" como
-   * rechazo real en el resto de los comandos.
+   * Detecta el idioma recurrente de este firmware para "este paso del script
+   * ya se aplicó en un intento anterior" -- NO es un rechazo real. Confirmado
+   * en vivo contra OLT_Tabara_Abajo (2026-10-20) con DOS mensajes distintos,
+   * mismo significado:
+   *   "%Code 62391-GPONSRV : The entry is existed. This is a re-create
+   *   operation." (en "onu <id> type ... sn ...")
+   *   "%Code 66661: The service is already existed." (en
+   *   "service-port 1 vport 1 user-vlan ... vlan ...")
+   * Ambos aparecen cuando una autorización previa de la MISMA ONU falló
+   * DESPUÉS de ese paso (ej. por los bugs reales de "gpon-olt_" vs
+   * "gpon-onu_" y de "tr069-mgmt" ya corregidos), dejando ese paso concreto
+   * ya aplicado en la OLT con el mismo valor que se está volviendo a enviar.
+   * Tratar esto como fatal abortaba el resto del script (los pasos
+   * siguientes nunca llegaban a aplicarse) aunque ese paso puntual ya
+   * estuviera correctamente configurado. Se reconoce en CUALQUIER comando
+   * del script de autorización -- `isOltErrorResponse()` sigue tratando
+   * cualquier otro texto de error como rechazo real.
    */
-  private isOnuAlreadyExistsResponse(output: string): boolean {
-    return /62391-GPONSRV/i.test(output);
+  private isAlreadyAppliedResponse(output: string): boolean {
+    return /\bis\s+(?:already\s+)?existed\b/i.test(output);
   }
 
   /**
@@ -744,12 +748,12 @@ export class ZteC320Driver implements IOltDriver {
    *      `tcontProfile` + `upKbps` (TCONT es ancho de banda de SUBIDA en
    *      GPON — ver `ensureTcontProfile`, el ancho de banda de bajada no se
    *      gestiona por esta vía).
-   *   3. Tolera "%Code 62391-GPONSRV : The entry is existed. This is a
-   *      re-create operation." en el comando "onu <id> type ... sn ..." --
-   *      ver `isOnuAlreadyExistsResponse` -- sin esto, un reintento tras una
-   *      autorización previa que falló DESPUÉS de este paso (dejando el ONU
-   *      ya registrado en la OLT) abortaba de nuevo sin aplicar nunca el
-   *      resto del script (tcont/vlan/service-port).
+   *   3. Tolera "ya existe"/"already existed" en CUALQUIER comando del script
+   *      -- ver `isAlreadyAppliedResponse` -- sin esto, un reintento tras una
+   *      autorización previa que falló a MITAD del script (dejando algunos
+   *      pasos ya aplicados en la OLT, ej. el "onu type sn" o el
+   *      "service-port") abortaba de nuevo en el primer paso ya aplicado,
+   *      sin llegar nunca a los pasos siguientes.
    */
   async authorizeOnu(
     params: OltConnectionParams,
@@ -778,7 +782,7 @@ export class ZteC320Driver implements IOltDriver {
       for (const cmd of commands) {
         const output = await session.executeCommand(cmd);
         if (this.isOltErrorResponse(output)) {
-          if (cmd.startsWith('onu ') && this.isOnuAlreadyExistsResponse(output)) {
+          if (this.isAlreadyAppliedResponse(output)) {
             continue;
           }
           throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
