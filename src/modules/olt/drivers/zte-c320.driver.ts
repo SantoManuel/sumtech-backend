@@ -1325,6 +1325,26 @@ export class ZteC320Driver implements IOltDriver {
       // estos objetos, y un "?" sobre un comando ya sintácticamente completo
       // puede EJECUTARLO de verdad (confirmado en esta misma investigación)
       // -- extremar cuidado al explorar con "?" más allá de este punto.
+      //
+      // TERCER SEGUIMIENTO (mismo día): se probó forzar un "reboot" real de
+      // la ONU por OMCI (confirmado: "pon-onu-mng .../reboot" existe, pero
+      // exige confirmación interactiva "[yes/no]:" que executeCommand()
+      // nunca responde por diseño -- hay que escribir directo al socket
+      // crudo de la sesión, ver reboot_onu.js en el historial). Tras el
+      // reboot y la ONU volviendo a "ready"/"working", NO intentó ningún
+      // DHCP nuevo en la VLAN de gestión -- descarta que "solo faltaba un
+      // reinicio" para que el propio ONT dispare su cliente DHCP.
+      //
+      // Se investigó además el sistema de plantillas "onu-profile gpon line
+      // <nombre>" como posible lugar alternativo para la config de WAN/IP:
+      // confirmado que "vport 1" dentro de un line profile SÍ se puede crear
+      // (antes fallaba con "Not support this operation" solo por faltarle
+      // "tcont 1 profile ..." + "gemport 1 tcont 1" primero), pero sigue
+      // siendo puramente una plantilla de ancho de banda (tcont/gemport/
+      // vport) -- nada de VLAN/IP ahí. "remote ?" (el sub-modo que se
+      // sospechaba que sí tendría esa config) sigue fallando con "%Code 10:
+      // Invalid parameter!" incluso con tcont+gemport+vport ya configurados
+      // -- su condición de activación real sigue sin descubrirse.
       tr069AutoProvisioning: false,
       onuPassiveImport: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show vlan
