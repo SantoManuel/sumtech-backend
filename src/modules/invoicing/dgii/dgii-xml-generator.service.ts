@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { DgiiConfig, DEFAULT_DGII_CONFIG } from './dgii-config.interface';
+import { formatDateDgii, formatDateTimeDgii } from '../../../common/utils/dgii-date.util';
 
 export interface EcfItemSubDescuento {
   tipo: string;
@@ -341,26 +342,17 @@ export class DgiiXmlGeneratorService {
   }
 
   /**
-   * Formatea una fecha al formato requerido por la DGII (dd-MM-yyyy)
+   * Formatea una fecha al formato requerido por la DGII (dd-MM-yyyy), en hora de RD.
    */
   private formatDateDgii(date: Date = new Date()): string {
-    const d = String(date.getDate()).padStart(2, '0');
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const y = date.getFullYear();
-    return `${d}-${m}-${y}`;
+    return formatDateDgii(date);
   }
 
   /**
-   * Formatea fecha y hora para el nodo FechaHoraFirma (dd-MM-yyyy HH:mm:ss)
+   * Formatea fecha y hora para el nodo FechaHoraFirma (dd-MM-yyyy HH:mm:ss), en hora de RD.
    */
   private formatDateTimeDgii(date: Date = new Date()): string {
-    const d = String(date.getDate()).padStart(2, '0');
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const y = date.getFullYear();
-    const hr = String(date.getHours()).padStart(2, '0');
-    const min = String(date.getMinutes()).padStart(2, '0');
-    const sec = String(date.getSeconds()).padStart(2, '0');
-    return `${d}-${m}-${y} ${hr}:${min}:${sec}`;
+    return formatDateTimeDgii(date);
   }
 
   /**

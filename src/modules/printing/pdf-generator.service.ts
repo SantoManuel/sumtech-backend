@@ -3,6 +3,9 @@ import * as PDFDocument from 'pdfkit';
 import * as QRCode from 'qrcode';
 import { CONTRACT_CLAUSES_PLACEHOLDER } from './contract-clauses.constant';
 import { ClientsListPdfData, CompanyPdfInfo, ContractPdfData, EquipmentListPdfData, InvoiceReceiptMetadata } from './pdf-generator.types';
+import { formatDateDgii, formatDateTimeDgii } from '../../common/utils/dgii-date.util';
+
+const PRINT_TIME_ZONE = 'America/Santo_Domingo';
 
 const NCF_TYPE_LABELS: Record<string, string> = {
   E31: 'FACTURA DE CRÉDITO FISCAL ELECTRÓNICA',
@@ -80,8 +83,8 @@ function buildDgiiQrUrl(metadata: InvoiceReceiptMetadata): string {
   const securityCode = metadata.invoice.securityCode || '000000';
   const issuedAt = metadata.invoice.issuedAt instanceof Date ? metadata.invoice.issuedAt : new Date(metadata.invoice.issuedAt || Date.now());
   const env = 'certecf';
-  const fechaEmiStr = `${String(issuedAt.getDate()).padStart(2, '0')}-${String(issuedAt.getMonth() + 1).padStart(2, '0')}-${issuedAt.getFullYear()}`;
-  const fechaFirStr = `${fechaEmiStr} ${String(issuedAt.getHours()).padStart(2, '0')}:${String(issuedAt.getMinutes()).padStart(2, '0')}:${String(issuedAt.getSeconds()).padStart(2, '0')}`;
+  const fechaEmiStr = formatDateDgii(issuedAt);
+  const fechaFirStr = formatDateTimeDgii(issuedAt);
   const montoStr = montoTotal.toFixed(2);
 
   const isConsumoMenor = eNcf.startsWith('E32') && montoTotal < 250000;
@@ -181,14 +184,14 @@ function formatDate(value: Date | string | undefined): string {
   if (!value) return 'N/A';
   const date = typeof value === 'string' ? new Date(value) : value;
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return date.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: PRINT_TIME_ZONE });
 }
 
 function formatDateTime(value: Date | string | undefined): string {
   if (!value) return 'N/A';
   const date = typeof value === 'string' ? new Date(value) : value;
   if (Number.isNaN(date.getTime())) return String(value);
-  return `${formatDate(date)} ${date.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })}`;
+  return `${formatDate(date)} ${date.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', timeZone: PRINT_TIME_ZONE })}`;
 }
 
 /**

@@ -23,6 +23,7 @@ import { InvoiceReceiptMetadata } from '../printing/pdf-generator.types';
 import { CompanyService } from '../company/company.service';
 import { isOpenInvoiceStatus, OPEN_INVOICE_STATUSES } from './invoice-status.util';
 import { BillingSettingsEntity } from '../billing/entities/billing-settings.entity';
+import { formatDateDgii } from '../../common/utils/dgii-date.util';
 import { MinioStorageService } from '../storage/minio-storage.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { loadMinioConfig, MinioConfig } from '../../config/minio.config';
@@ -668,10 +669,7 @@ export class InvoicingService {
   }
 
   private formatDateDgii(date: Date): string {
-    const d = new Date(date);
-    const dd = String(d.getDate()).padStart(2, '0');
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    return `${dd}-${mm}-${d.getFullYear()}`;
+    return formatDateDgii(date);
   }
 
   private normalizeSalePaymentMethod(
