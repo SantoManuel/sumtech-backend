@@ -628,15 +628,32 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * Deriva el nombre de la sub-interfaz lógica de la ONU (ej.
+   * "gpon-onu_1/2/15:1") a partir del puerto físico PON (ej.
+   * "gpon-olt_1/2/15") -- CONFIRMADO CONTRA EL MANUAL OFICIAL (ZXA10 C300
+   * Configuration Manual (CLI), §3.1: "interface gpon-olt_1/5/1" / "onu 2
+   * type ... sn ..." / "exit" / "interface gpon-onu_1/5/1:2") que son DOS
+   * prefijos distintos ("olt" para el puerto físico, "onu" para la
+   * sub-interfaz de cada ONU autorizada en ese puerto), no el mismo nombre
+   * con ":<id>" pegado. Bug real confirmado en vivo contra OLT_Tabara_Abajo
+   * (2026-10-20): "interface gpon-olt_1/2/15:1" rechazado con "%Error
+   * 20202: Invalid input detected ... Invalid parameter".
+   */
+  private toOnuInterfaceName(ponInterface: string, onuId: number): string {
+    return `${ponInterface.replace(/^gpon-olt_/, 'gpon-onu_')}:${onuId}`;
+  }
+
+  /**
    * Genera la lista de comandos Telnet de autorización y aprovisionamiento (RF-OLT-016 / RF-ONU-001..007).
    */
   generateAuthorizationScript(config: import('../ports/olt-driver.port').AuthorizeOnuParams): string[] {
+    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
     const commands: string[] = [
       'configure terminal',
       `interface ${config.ponInterface}`,
       `onu ${config.onuId} type ${config.modelTypeName} sn ${config.serialNumber}`,
       'exit',
-      `interface ${config.ponInterface}:${config.onuId}`,
+      `interface ${onuInterface}`,
       `name ${config.clientName ? config.clientName.replace(/\s+/g, '_') : `ONU-${config.onuId}`}`,
       `tcont 1 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
       'gemport 1 tcont 1',
@@ -656,7 +673,7 @@ export class ZteC320Driver implements IOltDriver {
 
     if (config.managementMethod === 'TR069' && config.tr069Url) {
       commands.push(
-        `pon-onu-mng ${config.ponInterface}:${config.onuId}`,
+        `pon-onu-mng ${onuInterface}`,
         `tr069-mgmt 1 acs ${config.tr069Url} tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
         // "end", NO "exit": todos los ejemplos reales del manual (ZXA10 C300
         // Configuration Manual CLI, ej. §2.11/2.12/2.13) salen de

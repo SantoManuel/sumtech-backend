@@ -952,6 +952,19 @@ describe('OnuManagementService', () => {
       await expect(service.blockOnu('onu-uuid-1', 'admin-id')).rejects.toThrow(BadRequestException);
       expect(zteDriver.setOnuAdminState).not.toHaveBeenCalled();
     });
+
+    it('cuando onuIndex es un número suelto (caso normal tras descubrir una ONU), arma la sub-interfaz como "gpon-onu_X/Y/Z:N" -- NO "gpon-olt_X/Y/Z:N" (bug real confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-20: la OLT distingue el puerto físico de la sub-interfaz lógica de la ONU)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', onuIndex: '1' });
+      zteDriver.setOnuAdminState.mockResolvedValue({ ok: true });
+
+      await service.blockOnu('onu-uuid-1', 'admin-id');
+
+      expect(zteDriver.setOnuAdminState).toHaveBeenCalledWith(
+        expect.anything(),
+        'gpon-onu_1/1/1:1',
+        'BLOCKED',
+      );
+    });
   });
 
   describe('findById', () => {

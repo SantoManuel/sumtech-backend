@@ -396,9 +396,7 @@ export class OnuManagementService {
     const driver = this.resolveDriver(onu.olt);
     const connParams = await this.connectionResolver.resolve(onu.olt);
 
-    const onuTarget = onu.onuIndex.startsWith('gpon-onu_')
-      ? onu.onuIndex
-      : `${onu.ponInterface?.name || 'gpon-olt_1/1/1'}:${onu.onuIndex}`;
+    const onuTarget = this.buildOnuTarget(onu);
 
     const power = await this.callDriver(() => driver.getOnuOpticalPower(connParams, onuTarget));
 
@@ -1104,11 +1102,26 @@ export class OnuManagementService {
     };
   }
 
+  /**
+   * Construye el nombre de la sub-interfaz lógica de la ONU (ej.
+   * "gpon-onu_1/2/15:1") -- CONFIRMADO CONTRA EL MANUAL OFICIAL (ZXA10 C300
+   * Configuration Manual (CLI), §3.1): el puerto físico PON usa el prefijo
+   * "gpon-olt_", pero la sub-interfaz de cada ONU autorizada en ese puerto
+   * usa el prefijo DISTINTO "gpon-onu_", no el mismo nombre con ":<id>"
+   * pegado. Antes de este fix, cuando `onu.onuIndex` era un número suelto
+   * (el caso normal tras descubrir una ONU, ver `DiscoveredUncfgOnu`), esto
+   * generaba "gpon-olt_X/Y/Z:N" -- bug real confirmado en vivo contra
+   * OLT_Tabara_Abajo (2026-10-20) que también rompía bloquear/reactivar ONU
+   * (`setOnuAdminState`) y la lectura de potencia óptica
+   * (`getOnuOpticalPower`), no solo `authorizeOnu` (ver
+   * `ZteC320Driver.toOnuInterfaceName`, que tiene el mismo fix del lado del
+   * driver para el script de autorización).
+   */
   private buildOnuTarget(onu: OnuEntity): string {
     if (onu.onuIndex.startsWith('gpon-onu_')) {
       return onu.onuIndex;
     }
-    const ifaceName = onu.ponInterface?.name || 'gpon-olt_1/1/1';
+    const ifaceName = (onu.ponInterface?.name || 'gpon-olt_1/1/1').replace(/^gpon-olt_/, 'gpon-onu_');
     return `${ifaceName}:${onu.onuIndex}`;
   }
 

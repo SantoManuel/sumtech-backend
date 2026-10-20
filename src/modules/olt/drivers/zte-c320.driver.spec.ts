@@ -45,12 +45,15 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('configure terminal');
     expect(commands).toContain('interface gpon-olt_1/1/1');
     expect(commands).toContain('onu 5 type ZTE-F660 sn ZTEGC0123456');
-    expect(commands).toContain('interface gpon-olt_1/1/1:5');
+    // La sub-interfaz lógica de la ONU usa el prefijo "gpon-onu_", DISTINTO
+    // del puerto físico "gpon-olt_" -- bug real confirmado en vivo contra
+    // OLT_Tabara_Abajo (2026-10-20), ver toOnuInterfaceName().
+    expect(commands).toContain('interface gpon-onu_1/1/1:5');
     expect(commands).toContain('name CLI-001-JuanPerez');
     expect(commands).toContain('tcont 1 profile UP-50M');
     expect(commands).toContain('gemport 1 tcont 1');
     expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
-    expect(commands).toContain('pon-onu-mng gpon-olt_1/1/1:5');
+    expect(commands).toContain('pon-onu-mng gpon-onu_1/1/1:5');
     expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/ tag pri 2 vlan 46');
     expect(commands).toContain('write');
 
