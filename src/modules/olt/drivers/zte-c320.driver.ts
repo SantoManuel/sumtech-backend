@@ -33,6 +33,27 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * Detecta si la OLT rechazó un comando -- CONFIRMADO EN VIVO contra
+   * OLT_Tabara_Abajo (2026-10-19) que existen DOS formatos de error
+   * distintos en este firmware, no uno:
+   *   "%Error <código>: <mensaje>"           (ej. interfaz/puerto inexistente)
+   *   "%Code <código>-<MÓDULO> : <mensaje>"  (ej. "%Code 63904-GPONRM : Not
+   *                                           support this ONU." -- un Tipo
+   *                                           de ONU inválido en
+   *                                           "onu <id> type <X> sn <Y>";
+   *                                           también "%Code 10: Invalid
+   *                                           parameter!" por un serial con
+   *                                           formato inválido)
+   * `authorizeOnu()` nunca revisaba ninguno de los dos antes de este fix:
+   * una autorización rechazada por la OLT (ej. por un Tipo de ONU
+   * placeholder como "Generico", que no existe como perfil real en la OLT)
+   * se reportaba como éxito sin haber escrito nada de verdad.
+   */
+  private isOltErrorResponse(output: string): boolean {
+    return /%Error\b/i.test(output) || /%Code\s+\d+(-\w+)?\s*:/i.test(output);
+  }
+
+  /**
    * Realiza un pre-flight check de conectividad y credenciales Telnet contra la OLT.
    */
   async testConnection(
@@ -291,7 +312,7 @@ export class ZteC320Driver implements IOltDriver {
           const ifaceName = `gei_1/${card.slot}/${port}`;
           try {
             const ifaceOut = await session.executeCommand(`show interface ${ifaceName}`, 15000);
-            if (/%Error\s+\d+:/i.test(ifaceOut) || !ifaceOut.includes(ifaceName)) {
+            if (this.isOltErrorResponse(ifaceOut) || !ifaceOut.includes(ifaceName)) {
               continue;
             }
 
@@ -408,7 +429,7 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
       const output = await session.executeCommand(`show vlan port ${interfaceName}`);
 
-      if (/%Error/i.test(output)) {
+      if (this.isOltErrorResponse(output)) {
         throw new Error(`La OLT rechazó la interfaz "${interfaceName}": ${output.trim()}`);
       }
 
@@ -523,7 +544,7 @@ export class ZteC320Driver implements IOltDriver {
       // (importar un puerto puntual), no un sondeo frecuente, así que se
       // tolera bastante margen en vez de intentar resolver la contención aquí.
       const baseInfoOutput = await session.executeCommand(`show gpon onu baseinfo ${ponInterface}`, 180000);
-      if (/%Error\s+\d+:/i.test(baseInfoOutput)) {
+      if (this.isOltErrorResponse(baseInfoOutput)) {
         throw new Error(`La OLT no reconoce el puerto PON "${ponInterface}".`);
       }
 
@@ -645,6 +666,15 @@ export class ZteC320Driver implements IOltDriver {
         // 2026-10-19).
         'end',
       );
+    } else {
+      // Sin TR069, el script nunca sale de "(config)#" -- "write" EXIGE estar
+      // en el prompt top-level "#", confirmado en vivo contra
+      // OLT_Tabara_Abajo (2026-10-19): sin este "exit" extra, "write" falla
+      // con "%Error 20200: Invalid input detected" y la autorización nunca
+      // se persiste a flash (aunque el "onu type sn" sí haya quedado
+      // aplicado en caliente). Con TR069 no hace falta: "end" ya deja la
+      // sesión en el prompt top-level.
+      commands.push('exit');
     }
 
     commands.push('write');
@@ -681,7 +711,10 @@ export class ZteC320Driver implements IOltDriver {
       const commands = this.generateAuthorizationScript(config);
 
       for (const cmd of commands) {
-        await session.executeCommand(cmd);
+        const output = await session.executeCommand(cmd);
+        if (this.isOltErrorResponse(output)) {
+          throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
+        }
       }
 
       return { ok: true };
@@ -784,7 +817,12 @@ export class ZteC320Driver implements IOltDriver {
     }
     await session.executeCommand('configure terminal');
     await session.executeCommand('gpon');
-    await session.executeCommand(`profile tcont ${profile.name} type 5 fixed 64 assured 64 maximum ${profile.fixedKbps}`);
+    const createOutput = await session.executeCommand(
+      `profile tcont ${profile.name} type 5 fixed 64 assured 64 maximum ${profile.fixedKbps}`,
+    );
+    if (this.isOltErrorResponse(createOutput)) {
+      throw new Error(`La OLT rechazó el perfil TCONT "${profile.name}": ${createOutput.trim()}`);
+    }
     await session.executeCommand('exit');
     await session.executeCommand('exit');
     await session.executeCommand('write');
@@ -832,9 +870,12 @@ export class ZteC320Driver implements IOltDriver {
     profile: TrafficProfile,
   ): Promise<void> {
     await session.executeCommand('configure terminal');
-    await session.executeCommand(
+    const createOutput = await session.executeCommand(
       `traffic-profile ${profile.name} ip cir ${profile.downKbps} cbs 1000 pir ${profile.downKbps} pbs 1000`,
     );
+    if (this.isOltErrorResponse(createOutput)) {
+      throw new Error(`La OLT rechazó el traffic-profile "${profile.name}": ${createOutput.trim()}`);
+    }
     await session.executeCommand('exit');
     await session.executeCommand('write');
   }
@@ -1016,6 +1057,15 @@ export class ZteC320Driver implements IOltDriver {
       configureVlan: true,
       onuDiscovery: true,
       onuOpticalPower: true,
+      // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): el camino
+      // de autorización (authorizeOnu/generateAuthorizationScript) nunca se
+      // había probado contra esta OLT -- se encontraron y corrigieron 2 bugs
+      // reales: (1) sin TR069, el script nunca salía de "(config)#" antes de
+      // "write", que falla si no está en el prompt top-level "#"; (2) ningún
+      // comando revisaba si la OLT respondía con error ("%Error ..." o
+      // "%Code <n>-<módulo> : ...", confirmado que existen AMBOS formatos),
+      // así que un rechazo real (ej. Tipo de ONU inválido) se reportaba como
+      // éxito sin haber autorizado nada. Ver isOltErrorResponse().
       onuAuthorize: true,
       onuAdminState: true,
       onuDelete: true,

@@ -87,6 +87,36 @@ describe('ZteC320Driver', () => {
     expect(withoutTraffic.some((c) => c.startsWith('traffic-profile'))).toBe(false);
   });
 
+  it('sin TR069, agrega un "exit" extra antes de "write" para llegar al prompt top-level "#" -- bug real confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): sin este exit, "write" se queda en "(config)#" y la OLT lo rechaza con "%Error 20200"', () => {
+    const omciCommands = driver.generateAuthorizationScript({
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'ZTE-F660',
+      serialNumber: 'ZTEGC0123456',
+      serviceVlan: 200,
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+    });
+    // El bloque de interfaz de la ONU cierra con "exit" (-> vuelve a
+    // "(config)#"); sin TR069 (que usa "end" y ya llega al top-level) hace
+    // falta OTRO "exit" para salir de "(config)#" antes de "write".
+    expect(omciCommands.slice(-3)).toEqual(['exit', 'exit', 'write']);
+
+    const tr069Commands = driver.generateAuthorizationScript({
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'ZTE-F660',
+      serialNumber: 'ZTEGC0123456',
+      serviceVlan: 200,
+      tr069Url: 'http://10.46.0.1:7547/',
+      managementMethod: 'TR069',
+      operationMode: 'ROUTER',
+    });
+    // Con TR069, "end" ya deja la sesión en el prompt top-level -- un exit
+    // extra ahí sería incorrecto (podría cerrar la sesión).
+    expect(tr069Commands.slice(-2)).toEqual(['end', 'write']);
+  });
+
   it('parsea correctamente las ONUs no configuradas y extrae serial y fabricante (RF-OLT-014)', async () => {
     const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_gpon_onu_uncfg.txt');
     const fixtureContent = fs.readFileSync(fixturePath, 'utf8');
@@ -727,6 +757,77 @@ describe('ZteC320Driver', () => {
       );
 
       expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('traffic-profile'));
+    });
+  });
+
+  describe('authorizeOnu() detecta rechazos reales de la OLT (bug real confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-19: antes se reportaba éxito sin haber autorizado nada)', () => {
+    const baseConfig = {
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 2,
+      modelTypeName: 'Generico',
+      serialNumber: 'TEST0000FA11',
+      serviceVlan: 400,
+      managementMethod: 'OMCI' as const,
+      operationMode: 'ROUTER' as const,
+    };
+
+    it('falla con ok:false si la OLT rechaza con formato "%Code <n>-<módulo> : <mensaje>" (ej. Tipo de ONU inválido)', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('onu ')) return Promise.resolve('\r\n%Code 63904-GPONRM : Not support this ONU.\r\nOLT#');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('Not support this ONU');
+      // No debe seguir ejecutando el resto del script tras el rechazo.
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+
+    it('falla con ok:false si la OLT rechaza con formato "%Error <n>: <mensaje>"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('onu ')) return Promise.resolve('\r\n%Error 10: Invalid parameter!\r\nOLT#');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('Invalid parameter');
+    });
+
+    it('tiene éxito y ejecuta "write" cuando ningún comando es rechazado', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('\r\n.[Successful]\r\nOLT#');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { ...baseConfig, modelTypeName: 'ZTE-F660' },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('write');
     });
   });
 
