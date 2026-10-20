@@ -1,4 +1,4 @@
-import { ZteC320Driver, ZteTelnetSession } from './zte-c320.driver';
+import { ZteC320Driver, ZteTelnetSession, REBOOT_ONU_SENTINEL } from './zte-c320.driver';
 import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
@@ -63,12 +63,59 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
     expect(commands).toContain('write');
 
-    // Sale de "pon-onu-mng" con "end", NUNCA con "exit" -- con "exit" la OLT
-    // real pregunta "Confirm to logout without saving? [yes/no]:" y la
-    // sesión se cuelga (bug real en producción, 2026-10-19, ver también los
-    // ejemplos del manual ZXA10 C300 §2.11-2.13, todos usan "end" ahí).
-    const tagIdx = commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46');
-    expect(commands[tagIdx + 1]).toBe('end');
+    // Con "tr069Vlan" presente, también se genera el segundo camino de datos
+    // GPON (VLAN de gestión) y el cableado OMCI interno que lo conecta al
+    // VEIP -- CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20, ONU
+    // CMDCDD4D131E): sin esto, "tr069-mgmt ... acs ..." puede aceptarse pero
+    // el ONT nunca llega a usarlo. Ver docs/onu-tr069-provisioning-zte-c320.md.
+    expect(commands).toContain('tcont 2 profile UP-50M');
+    expect(commands).toContain('gemport 2 tcont 2');
+    expect(commands).toContain('switchport mode hybrid vport 2');
+    expect(commands).toContain('service-port 2 vport 2 user-vlan 46 vlan 46');
+    expect(commands).toContain('flow 2 switch switch_0/1');
+    expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
+    expect(commands).toContain('flow 2 pri 0 vlan 46');
+    expect(commands).toContain('gemport 2 flow 2');
+    expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
+    expect(commands).toContain('ip-host 2 dhcp-enable enable');
+    expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
+    expect(commands).toContain('vlan-filter iphost 2 pri 0 vlan 46');
+    expect(commands).toContain('veip 1 port udp 1232 host 2');
+    expect(commands).toContain('tr069-mgmt 1 state unlock');
+
+    // El cableado OMCI (flow/iphost/veip/state unlock) va ANTES de "acs" --
+    // orden confirmado en vivo, cambiarlo rompería la secuencia real.
+    const unlockIdx = commands.indexOf('tr069-mgmt 1 state unlock');
+    const acsIdx = commands.indexOf('tr069-mgmt 1 acs http://10.46.0.1:7547/');
+    expect(unlockIdx).toBeLessThan(acsIdx);
+
+    // Los SET de OMCI de este ONT no son idempotentes -- un reinicio
+    // obligatorio (vía el sentinel que `authorizeOnu()` intercepta, ver
+    // REBOOT_ONU_SENTINEL) va justo antes de "end", que sigue siendo NUNCA
+    // "exit" -- con "exit" la OLT real pregunta "Confirm to logout without
+    // saving? [yes/no]:" y la sesión se cuelga (bug real en producción,
+    // 2026-10-19, ver también los ejemplos del manual ZXA10 C300 §2.11-2.13,
+    // todos usan "end" ahí).
+    expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
+  });
+
+  it('sin "tr069Vlan" (solo "tr069Url"), NO genera el segundo camino de datos GPON ni el reinicio OMCI -- no hay VLAN de gestión distinta que cablear, así que el comportamiento queda igual al de antes de este fix', () => {
+    const commands = driver.generateAuthorizationScript({
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'ZTE-F660',
+      serialNumber: 'ZTEGC0123456',
+      serviceVlan: 200,
+      tr069Url: 'http://10.46.0.1:7547/',
+      managementMethod: 'TR069',
+      operationMode: 'ROUTER',
+    });
+
+    expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
+    expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
+    expect(commands.some((c) => c.includes('veip 1'))).toBe(false);
+    expect(commands).not.toContain(REBOOT_ONU_SENTINEL);
+    expect(commands.slice(-2)).toEqual(['end', 'write']);
   });
 
   it('genera "traffic-profile <nombre> vport 1 direction egress" (bajada) solo si config.trafficProfile está presente', () => {
@@ -1021,9 +1068,11 @@ describe('ZteC320Driver', () => {
         }
         return Promise.resolve('');
       });
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
+        rebootOnu,
         close: jest.fn(),
       });
 
@@ -1035,17 +1084,20 @@ describe('ZteC320Driver', () => {
       expect(result.ok).toBe(true);
       expect(result.warning).toContain('TR-069/ACS');
       expect(result.warning).toContain('ONT return error');
-      // El resto del script (tag/end/write) debe seguir ejecutándose.
+      // El resto del script (tag/reboot/end/write) debe seguir ejecutándose.
       expect(executeCommand).toHaveBeenCalledWith('tr069-mgmt 1 tag pri 2 vlan 46');
+      expect(rebootOnu).toHaveBeenCalled();
       expect(executeCommand).toHaveBeenCalledWith('end');
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
-    it('si TODO el bloque TR-069 tiene éxito, el resultado es ok:true SIN "warning"', async () => {
+    it('si TODO el bloque TR-069 tiene éxito, el resultado es ok:true SIN "warning" y se reinicia el ONT (los SET de OMCI no son idempotentes -- ver REBOOT_ONU_SENTINEL)', async () => {
       const executeCommand = jest.fn().mockResolvedValue('');
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
+        rebootOnu,
         close: jest.fn(),
       });
 
@@ -1056,6 +1108,32 @@ describe('ZteC320Driver', () => {
 
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
+      expect(rebootOnu).toHaveBeenCalled();
+      // El sentinel nunca debe llegar a executeCommand -- authorizeOnu() lo
+      // intercepta y llama a session.rebootOnu() en su lugar.
+      expect(executeCommand).not.toHaveBeenCalledWith(REBOOT_ONU_SENTINEL);
+    });
+
+    it('si "rebootOnu()" rechaza (ej. el ONT no confirma el "[yes/no]:" a tiempo), el resultado sigue siendo ok:true con "warning" -- mismo criterio de mejor esfuerzo', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      const rebootOnu = jest.fn().mockRejectedValue(new Error('Timeout esperando confirmación de reinicio OMCI del ONT.'));
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('reinicio OMCI');
+      // El resto del script (end/write) debe seguir ejecutándose pese al fallo.
+      expect(executeCommand).toHaveBeenCalledWith('end');
+      expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
     it('un rechazo ANTES de entrar al bloque TR-069 (ej. "onu type sn" inválido) sigue siendo fatal -- el mejor esfuerzo solo aplica dentro de "pon-onu-mng"', async () => {
@@ -1064,9 +1142,11 @@ describe('ZteC320Driver', () => {
         if (cmd.startsWith('onu ')) return Promise.resolve('\r\n%Code 63904-GPONRM : Not support this ONU.\r\nOLT#');
         return Promise.resolve('');
       });
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
+        rebootOnu,
         close: jest.fn(),
       });
 
@@ -1077,6 +1157,7 @@ describe('ZteC320Driver', () => {
 
       expect(result.ok).toBe(false);
       expect(executeCommand).not.toHaveBeenCalledWith('write');
+      expect(rebootOnu).not.toHaveBeenCalled();
     });
   });
 
@@ -1099,7 +1180,7 @@ describe('ZteC320Driver', () => {
 
   it('tr069AutoProvisioning se mantiene en false pese a tener código real (mismo criterio que vlanTranslation), con nota que lo distingue de "no implementado"', () => {
     expect(driver.getCapabilities().tr069AutoProvisioning).toBe(false);
-    expect(driver.getCapabilityNotes().tr069AutoProvisioning).toMatch(/tr069-mgmt/i);
+    expect(driver.getCapabilityNotes().tr069AutoProvisioning).toMatch(/veip/i);
   });
 
   it('dbaProfile (TCONT) ya está en true -- confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19)', () => {
@@ -1213,5 +1294,31 @@ describe('ZteTelnetSession.executeCommand() -- bug real de producción (2026-10-
     );
 
     await expect(promise).rejects.toThrow(/confirmación interactiva/i);
+  });
+
+  it('rebootOnu() responde el prompt interactivo "[yes/no]:" con "yes" y resuelve cuando vuelve el prompt de la OLT -- CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20, ONU CMDCDD4D131E): a diferencia de executeCommand(), este SÍ debe responder esa confirmación en vez de rechazar', async () => {
+    const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+    const fakeSocket = createFakeSocket();
+    (session as any).socket = fakeSocket;
+
+    const promise = session.rebootOnu(5000);
+
+    fakeSocket.emit('data', Buffer.from('\r\nConfirm to reboot? [yes/no]:'));
+    expect(fakeSocket.write).toHaveBeenCalledWith('yes\r\n');
+
+    fakeSocket.emit('data', Buffer.from('\r\n(gpon-onu-mng)#'));
+
+    await expect(promise).resolves.toBeUndefined();
+    expect(fakeSocket.write).toHaveBeenCalledWith('reboot\r\n');
+  });
+
+  it('rebootOnu() rechaza si el prompt "[yes/no]:" nunca llega (timeout) -- quien llame esto debe tratarlo como mejor esfuerzo, igual que el resto del bloque TR-069', async () => {
+    const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+    const fakeSocket = createFakeSocket();
+    (session as any).socket = fakeSocket;
+
+    const promise = session.rebootOnu(50);
+
+    await expect(promise).rejects.toThrow(/timeout/i);
   });
 });

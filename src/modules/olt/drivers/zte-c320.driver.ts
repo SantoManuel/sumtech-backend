@@ -21,6 +21,15 @@ import {
 
 const VENDOR = 'ZTE';
 
+/**
+ * Sentinel reconocido por `authorizeOnu()` dentro del array de comandos que
+ * devuelve `generateAuthorizationScript()` -- un reinicio OMCI del ONT exige
+ * confirmar un prompt interactivo ("Confirm to reboot? [yes/no]:") que no es
+ * un comando CLI plano, así que no puede representarse como una cadena normal
+ * en ese array. Ver `ZteTelnetSession.rebootOnu()`.
+ */
+export const REBOOT_ONU_SENTINEL = '__SUMTECH_REBOOT_ONU__';
+
 @Injectable()
 export class ZteC320Driver implements IOltDriver {
   private readonly logger = new Logger(ZteC320Driver.name);
@@ -28,6 +37,7 @@ export class ZteC320Driver implements IOltDriver {
   protected createSession(params: OltConnectionParams): {
     connectAndLogin(): Promise<void>;
     executeCommand(cmd: string, timeoutMs?: number): Promise<string>;
+    rebootOnu(timeoutMs?: number): Promise<void>;
     close(): void;
   } {
     return new ZteTelnetSession(params);
@@ -692,11 +702,57 @@ export class ZteC320Driver implements IOltDriver {
       commands.push(`traffic-profile ${config.trafficProfile} vport 1 direction egress`);
     }
 
+    // Segundo camino de datos GPON, dedicado a la VLAN de gestión TR-069 --
+    // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20, ONU
+    // CMDCDD4D131E / Huawei HG8546M) que sin este segundo tcont/gemport/
+    // service-port (uno por cada VLAN que la ONU deba cargar a través de la
+    // OLT, no solo uno fijo), "tr069-mgmt 1 acs <url>" puede aceptarse en la
+    // OLT pero el ONT lo rechaza a nivel OMCI, o directamente nunca intenta
+    // DHCP en la VLAN de gestión. Ver docs/onu-tr069-provisioning-zte-c320.md
+    // para el diagnóstico completo. Solo se genera si hay una VLAN de gestión
+    // distinta configurada (`tr069Vlan`) -- sin eso no hay nada real que
+    // cablear por separado.
+    const hasTr069Datapath =
+      config.managementMethod === 'TR069' && !!config.tr069Url && !!config.tr069Vlan;
+
+    if (hasTr069Datapath) {
+      commands.push(
+        `tcont 2 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
+        'gemport 2 tcont 2',
+        'switchport mode hybrid vport 2',
+        `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
+      );
+    }
+
     commands.push('exit');
 
     if (config.managementMethod === 'TR069' && config.tr069Url) {
+      commands.push(`pon-onu-mng ${onuInterface}`);
+
+      if (hasTr069Datapath) {
+        // Cableado interno OMCI que conecta el service-port 2 (arriba) con el
+        // VEIP (interfaz virtual que usa el ONT para TR-069) -- CONFIRMADO EN
+        // VIVO contra OLT_Tabara_Abajo (2026-10-20): esta es la pieza que
+        // faltaba, no la sintaxis de "tr069-mgmt". Debe ir ANTES de
+        // "tr069-mgmt ... acs ..." (orden importa).
+        commands.push(
+          'flow 2 switch switch_0/1',
+          'flow mode 2 tag-filter vlan-filter untag-filter discard',
+          `flow 2 pri 0 vlan ${config.tr069Vlan}`,
+          'gemport 2 flow 2',
+          'switchport-bind switch_0/1 iphost 2',
+          'ip-host 2 dhcp-enable enable',
+          'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
+          `vlan-filter iphost 2 pri 0 vlan ${config.tr069Vlan}`,
+          'veip 1 port udp 1232 host 2',
+          // Sin esto el ME de ManagementServer puede quedar administrativamente
+          // bloqueado -- confirmado como parte de la secuencia real que
+          // finalmente funcionó (2026-10-20).
+          'tr069-mgmt 1 state unlock',
+        );
+      }
+
       commands.push(
-        `pon-onu-mng ${onuInterface}`,
         // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20) vía ayuda
         // contextual ("tr069-mgmt 1 ?" en el prompt "(gpon-onu-mng)#"): "acs
         // <url>" y "tag pri <0-7> vlan <1-4094>" son DOS comandos SEPARADOS
@@ -707,6 +763,19 @@ export class ZteC320Driver implements IOltDriver {
         // después de la URL del ACS.
         `tr069-mgmt 1 acs ${config.tr069Url}`,
         `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
+      );
+
+      if (hasTr069Datapath) {
+        // Los SET de OMCI de este ONT no son idempotentes y cualquier cambio
+        // puede dejar "Config state" en "fail" (ver `show gpon onu
+        // detail-info <iface>`) hasta que el ONT se reinicia -- CONFIRMADO EN
+        // VIVO (2026-10-20) que un reinicio por OMCI es obligatorio para que
+        // el resync realmente tome efecto y el ONT empiece a pedir DHCP /
+        // hablar con el ACS en la VLAN de gestión.
+        commands.push(REBOOT_ONU_SENTINEL);
+      }
+
+      commands.push(
         // "end", NO "exit": todos los ejemplos reales del manual (ZXA10 C300
         // Configuration Manual CLI, ej. §2.11/2.12/2.13) salen de
         // "(gpon-onu-mng)#" con "end" -- usar "exit" ahí dispara el prompt
@@ -796,6 +865,22 @@ export class ZteC320Driver implements IOltDriver {
       for (const cmd of commands) {
         if (cmd.startsWith('pon-onu-mng ')) {
           inTr069Block = true;
+        }
+
+        if (cmd === REBOOT_ONU_SENTINEL) {
+          // No es un comando CLI -- ver REBOOT_ONU_SENTINEL. Mismo criterio
+          // de mejor esfuerzo que el resto del bloque TR-069: si el ONT no
+          // confirma el reinicio a tiempo, no debe tumbar la autorización
+          // completa (el internet del cliente ya quedó aplicado antes).
+          try {
+            await session.rebootOnu();
+          } catch (err: any) {
+            if (!warning) {
+              warning = `No se pudo confirmar el reinicio OMCI del ONT tras configurar TR-069: ${err.message}. El resto de la autorización sí se aplicó.`;
+              this.logger.warn(`[diag] authorizeOnu: rebootOnu() best-effort falló, continuando: ${warning}`);
+            }
+          }
+          continue;
         }
 
         const output = await session.executeCommand(cmd);
@@ -1261,90 +1346,27 @@ export class ZteC320Driver implements IOltDriver {
       // vlanTranslation sigue sin evidencia completa -- ver configureVlanTranslation.
       vlanTranslation: false,
       alarms: false,
-      // INVESTIGACIÓN EXTENSA EN VIVO (2026-10-20) contra OLT_Tabara_Abajo /
-      // ONU CMDCDD4D131E (Huawei HG8546M bajo gestión ZTE) -- "tr069-mgmt 1
-      // acs <url>" (sintaxis ya corregida: es un comando separado de "tag
-      // pri/vlan", confirmado vía ayuda contextual) sigue siendo rechazado
-      // SIEMPRE por el propio ONT con "%Code 63990-GPONRM : ONT return
-      // error: command processing error.", probado contra TODAS estas
-      // variantes sin que ninguna cambiara el resultado:
-      //   1. Comando plano (bug original).
-      //   2. "tr069-mgmt 1 state unlock" antes de "acs" (sugerencia externa).
-      //   3. "wan <N> service tr069" (vincular un WAN al servicio TR069,
-      //      coincide con un caso real documentado en el foro de GenieACS
-      //      para C320/MikroTik) antes de "acs", con y sin "write" de por
-      //      medio.
-      //   4. Intento de completar "wan-ip <N> mode dhcp id <N> vlan-profile
-      //      <nombre>" (siguiente paso lógico del punto 3, ya que "tag
-      //      pri/vlan" SÍ funciona en el mismo VEIP, aislando el problema al
-      //      ME de ACS) -- bloqueado en seco: "vlan-profile" NO tiene ningún
-      //      comando de creación en este CLI (confirmado "Unrecognized
-      //      command"/"Invalid command" en los 3 lugares plausibles: config
-      //      terminal, "pon", "gpon"), y "default" no es un nombre válido
-      //      ("%Code 63981-GPONRM : Profile does not exist.").
-      // Conclusión inicial: esto requiere crear un objeto "vlan-profile" que
-      // este Telnet CLI no expone en "wan-ip".
+      // RESUELTO (2026-10-20) contra OLT_Tabara_Abajo / ONU CMDCDD4D131E
+      // (Huawei HG8546M): el rechazo "%Code 63990-GPONRM : ONT return error:
+      // command processing error." en "tr069-mgmt 1 acs <url>" NO era un
+      // límite del firmware del ONT (conclusión errónea de una investigación
+      // anterior, ya descartada) -- faltaba un segundo camino de datos GPON
+      // (tcont/gemport/service-port) para la VLAN de gestión TR-069 y el
+      // cableado OMCI interno que lo conecta al VEIP (flow/switchport-bind/
+      // ip-host/vlan-filter/veip). `generateAuthorizationScript()` ya genera
+      // ambos (ver `hasTr069Datapath`) + un reinicio OMCI obligatorio al
+      // final (los SET de este ONT no son idempotentes; cualquier cambio
+      // puede dejar "Config state" en "fail" hasta reiniciar). Historial
+      // completo de la investigación y del fix de NAT/WireGuard (fuera del
+      // alcance de este driver) en docs/onu-tr069-provisioning-zte-c320.md.
       //
-      // SEGUIMIENTO (mismo día): SÍ existe un sistema más profundo de
-      // plantillas completas de ONU vía "pon" → "onu-profile gpon line
-      // <nombre>" (confirmado creando y eliminando limpiamente un perfil de
-      // prueba, "TEST-PROBE") -- entra a un sub-modo con "tcont"/"gemport"/
-      // "vport"/"vport-map"/"remote" (este último es, con alta probabilidad,
-      // donde vive la configuración real de WAN/VLAN/ACS que haría falta).
-      // Pero intentar avanzar ahí también se bloquea con sus propios
-      // prerequisitos no documentados: "vport 1" responde "%Code
-      // 62373-GPONSRV : Not support this operation." y "remote" (sin crear
-      // antes un vport) responde "%Code 10: Invalid parameter!" -- es decir,
-      // esta plantilla exige una secuencia de configuración previa (quizás
-      // "vport-mode", quizás algo no listado en "?") que no se pudo
-      // descubrir por prueba y error ciego. Esto va más allá de lo que este
-      // manual de Telnet documenta -- seguir necesitaría documentación OMCI
-      // oficial de ZTE o acceso al NMS (NetNumen/U31), no otra adivinanza de
-      // sintaxis.
-      //
-      // SEGUNDO SEGUIMIENTO (mismo día): "wan <N> service <tipo>" SÍ admite
-      // varios servicios en el MISMO WAN (confirmado: "wan 3 service
-      // internet" y luego "wan 3 service tr069" sobre el mismo índice, cada
-      // uno ligado a un "ip-host <id>" vía "wan 3 service internet host
-      // <id>") -- osea que un WAN combinado "internet+tr069" (la hipótesis
-      // de que SmartOLT usa algo como "INTERNET_TR069") es real y se pudo
-      // reproducir. Pero con ese WAN ya armado así (confirmado por "%Code
-      // 63869-GPONRM : Record already exists." al reintentar cada pieza) y
-      // confirmado con "write", "tr069-mgmt 1 acs <url>" sigue fallando con
-      // EXACTAMENTE el mismo "%Code 63990-GPONRM" de siempre -- es decir, ya
-      // se probaron las 4 variantes de configuración de WAN disponibles
-      // (ninguna, solo tr069, internet+tr069 separados, internet+tr069
-      // combinados con ip-host) sin que ninguna cambiara el resultado. Esto
-      // es evidencia fuerte de que el rechazo es un límite real del propio
-      // firmware del ONT (no soporta el ME de ManagementServer que ZTE
-      // intenta escribirle vía OMCI), no una pieza de configuración que
-      // todavía falte descubrir. Se deja en `false`.
-      //
-      // NOTA OPERATIVA para quien retome esto: este firmware NO tiene
-      // "show wan"/"show wan-ip" -- no hay forma de leer el estado real de
-      // estos objetos, y un "?" sobre un comando ya sintácticamente completo
-      // puede EJECUTARLO de verdad (confirmado en esta misma investigación)
-      // -- extremar cuidado al explorar con "?" más allá de este punto.
-      //
-      // TERCER SEGUIMIENTO (mismo día): se probó forzar un "reboot" real de
-      // la ONU por OMCI (confirmado: "pon-onu-mng .../reboot" existe, pero
-      // exige confirmación interactiva "[yes/no]:" que executeCommand()
-      // nunca responde por diseño -- hay que escribir directo al socket
-      // crudo de la sesión, ver reboot_onu.js en el historial). Tras el
-      // reboot y la ONU volviendo a "ready"/"working", NO intentó ningún
-      // DHCP nuevo en la VLAN de gestión -- descarta que "solo faltaba un
-      // reinicio" para que el propio ONT dispare su cliente DHCP.
-      //
-      // Se investigó además el sistema de plantillas "onu-profile gpon line
-      // <nombre>" como posible lugar alternativo para la config de WAN/IP:
-      // confirmado que "vport 1" dentro de un line profile SÍ se puede crear
-      // (antes fallaba con "Not support this operation" solo por faltarle
-      // "tcont 1 profile ..." + "gemport 1 tcont 1" primero), pero sigue
-      // siendo puramente una plantilla de ancho de banda (tcont/gemport/
-      // vport) -- nada de VLAN/IP ahí. "remote ?" (el sub-modo que se
-      // sospechaba que sí tendría esa config) sigue fallando con "%Code 10:
-      // Invalid parameter!" incluso con tcont+gemport+vport ya configurados
-      // -- su condición de activación real sigue sin descubrirse.
+      // Se deja en `false` todavía porque este código no se reconfirmó en
+      // vivo contra una ONU recién autorizada por Sumtech (la prueba del
+      // 2026-10-20 reutilizó un "onu-type" ya existente en la OLT, creado por
+      // SmartOLT) -- en particular, `ensureOnuTypeProfileWithSession()` crea
+      // los "onu-type" nuevos sin ningún parámetro de capacidad VEIP, así que
+      // no se sabe si un "onu-type" creado por este driver soporta "veip 1
+      // port udp ...". Ver OnuTypeProfileProvisioning.
       tr069AutoProvisioning: false,
       onuPassiveImport: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show vlan
@@ -1374,7 +1396,7 @@ export class ZteC320Driver implements IOltDriver {
   getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>> {
     return {
       tr069AutoProvisioning:
-        'El driver ya envía "tr069-mgmt" al autorizar, con sintaxis corregida (2026-10-20) tras un primer intento en vivo rechazado -- "acs <url>" y "tag pri <n> vlan <n>" son comandos separados, confirmado vía ayuda contextual del propio equipo -- pero la aplicación completa contra un ONT real todavía no terminó de confirmarse.',
+        'El driver ya genera el segundo camino de datos GPON para la VLAN de gestión y todo el cableado OMCI (flow/switchport-bind/ip-host/vlan-filter/veip) que conecta con el VEIP, más un reinicio OMCI obligatorio al final -- causa raíz real encontrada y corregida el 2026-10-20 (ver docs/onu-tr069-provisioning-zte-c320.md). Falta reconfirmar en vivo contra una ONU recién autorizada por Sumtech (no una que reutilice un onu-type preexistente) antes de pasar esta capacidad a `true`.',
       onuTypeProfileProvisioning:
         'El driver ya intenta crear el "onu-type" automáticamente al autorizar, con sintaxis confirmada contra el manual oficial (ZXA10 C300 Configuration Manual (CLI), §2.1) después de que un primer intento en vivo fallara por mandar "description" entre comillas con espacios -- la corrección todavía no se reprobó contra la OLT real.',
     };
@@ -1576,6 +1598,67 @@ export class ZteTelnetSession {
 
       socket.on('data', onData);
       socket.write(`${command}\r\n`);
+    });
+  }
+
+  /**
+   * Reinicia el ONT por OMCI -- asume que la sesión YA está posicionada
+   * dentro de "pon-onu-mng <iface>" (no entra el submodo por su cuenta). A
+   * diferencia de `executeCommand()`, este comando SÍ espera (y responde) la
+   * confirmación interactiva "Confirm to reboot? [yes/no]:" -- CONFIRMADO EN
+   * VIVO contra OLT_Tabara_Abajo (2026-10-20, ONU CMDCDD4D131E) escribiendo
+   * directo al socket en vez de usar `executeCommand()`, que por diseño
+   * rechaza cualquier prompt "[yes/no]:" inesperado en vez de adivinar.
+   */
+  async rebootOnu(timeoutMs = 20000): Promise<void> {
+    const socket = this.socket;
+    if (!socket) {
+      throw new Error('Socket Telnet no inicializado.');
+    }
+
+    const t0 = Date.now();
+    this.logger.log('[diag] rebootOnu INICIO');
+
+    await new Promise<void>((resolve, reject) => {
+      let output = '';
+      let confirmed = false;
+      let finished = false;
+
+      const timer = setTimeout(() => {
+        if (!finished) {
+          finished = true;
+          socket.removeListener('data', onData);
+          this.logger.warn(`[diag] rebootOnu TIMEOUT a los ${Date.now() - t0}ms. Últimos 300 chars: ${JSON.stringify(output.slice(-300))}`);
+          reject(new Error('Timeout esperando confirmación de reinicio OMCI del ONT.'));
+        }
+      }, timeoutMs);
+
+      const onData = (raw: Buffer) => {
+        const cleaned = this.handleIac(raw);
+        output += cleaned.toString('ascii');
+
+        if (!confirmed && /\[yes\/no\]:\s*$/i.test(output.trim())) {
+          confirmed = true;
+          output = '';
+          socket.write('yes\r\n');
+          return;
+        }
+
+        if (confirmed) {
+          const lines = output.split('\n');
+          const lastLine = lines[lines.length - 1]?.trim() || '';
+          if (lastLine.endsWith('#') || lastLine.endsWith(')#')) {
+            finished = true;
+            clearTimeout(timer);
+            socket.removeListener('data', onData);
+            this.logger.log(`[diag] rebootOnu OK a los ${Date.now() - t0}ms`);
+            resolve();
+          }
+        }
+      };
+
+      socket.on('data', onData);
+      socket.write('reboot\r\n');
     });
   }
 
