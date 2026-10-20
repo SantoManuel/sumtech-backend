@@ -1261,16 +1261,33 @@ export class ZteC320Driver implements IOltDriver {
       // vlanTranslation sigue sin evidencia completa -- ver configureVlanTranslation.
       vlanTranslation: false,
       alarms: false,
-      // Sintaxis corregida (2026-10-20) tras un primer intento en vivo
-      // rechazado: "tr069-mgmt 1 acs <url>" y "tr069-mgmt 1 tag pri <n> vlan
-      // <n>" son dos comandos separados, confirmado vía ayuda contextual
-      // ("tr069-mgmt 1 ?") en "(gpon-onu-mng)#" -- pero la aplicación
-      // completa contra un ONT real todavía no terminó de confirmarse
-      // (la exploración de sintaxis con "tr069-mgmt 1 acs <url> ?" devolvió
-      // "%Code 63990-GPONRM : ONT return error: command processing error.",
-      // sin quedar claro si fue por el "?" de más o por el propio ONT), así
-      // que se deja en `false` hasta una autorización real exitosa de punta
-      // a punta.
+      // INVESTIGACIÓN EXTENSA EN VIVO (2026-10-20) contra OLT_Tabara_Abajo /
+      // ONU CMDCDD4D131E (Huawei HG8546M bajo gestión ZTE) -- "tr069-mgmt 1
+      // acs <url>" (sintaxis ya corregida: es un comando separado de "tag
+      // pri/vlan", confirmado vía ayuda contextual) sigue siendo rechazado
+      // SIEMPRE por el propio ONT con "%Code 63990-GPONRM : ONT return
+      // error: command processing error.", probado contra TODAS estas
+      // variantes sin que ninguna cambiara el resultado:
+      //   1. Comando plano (bug original).
+      //   2. "tr069-mgmt 1 state unlock" antes de "acs" (sugerencia externa).
+      //   3. "wan <N> service tr069" (vincular un WAN al servicio TR069,
+      //      coincide con un caso real documentado en el foro de GenieACS
+      //      para C320/MikroTik) antes de "acs", con y sin "write" de por
+      //      medio.
+      //   4. Intento de completar "wan-ip <N> mode dhcp id <N> vlan-profile
+      //      <nombre>" (siguiente paso lógico del punto 3, ya que "tag
+      //      pri/vlan" SÍ funciona en el mismo VEIP, aislando el problema al
+      //      ME de ACS) -- bloqueado en seco: "vlan-profile" NO tiene ningún
+      //      comando de creación en este CLI (confirmado "Unrecognized
+      //      command"/"Invalid command" en los 3 lugares plausibles: config
+      //      terminal, "pon", "gpon"), y "default" no es un nombre válido
+      //      ("%Code 63981-GPONRM : Profile does not exist.").
+      // Conclusión: esto requiere crear un objeto "vlan-profile" que este
+      // Telnet CLI no expone -- probablemente solo existe vía el NMS
+      // propietario de ZTE (NetNumen/U31), al que Sumtech no tiene acceso.
+      // Es un límite real de la interfaz CLI, no una sintaxis más por
+      // adivinar -- se deja en `false` hasta encontrar esa vía o confirmar
+      // una autorización real exitosa de punta a punta por otro medio.
       tr069AutoProvisioning: false,
       onuPassiveImport: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show vlan
