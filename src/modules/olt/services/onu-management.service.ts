@@ -525,6 +525,10 @@ export class OnuManagementService {
     if (!result.ok) {
       throw new BadRequestException(`Fallo aprovisionando ONU en OLT: ${result.error}`);
     }
+    // `result.warning` (ver IOltDriver.authorizeOnu): un paso de mejor
+    // esfuerzo no crítico (hoy, en ZTE: el push OMCI de TR-069/ACS) falló sin
+    // abortar el resto -- se surte igual que `cpeConfigWarning` más abajo.
+    const oltWarning = result.warning;
 
     // 2. Persistir configuración de servicio en net.onu_service_config
     // Normaliza campos UUID opcionales: un "" (select sin elegir, ej.
@@ -691,7 +695,7 @@ export class OnuManagementService {
     }
 
     const saved = await this.findById(onu.id);
-    return { ...saved, cpeConfigured, cpeConfigWarning };
+    return { ...saved, cpeConfigured, cpeConfigWarning, oltWarning };
   }
 
   /**
@@ -1022,6 +1026,9 @@ export class OnuManagementService {
       const authResult = await this.callDriver(() => driver.authorizeOnu(connParams, authParams));
       if (authResult.ok) {
         oltReauthorized = true;
+        if (authResult.warning) {
+          oltWarning = authResult.warning;
+        }
       } else {
         oltWarning = `OLT devolvió error en reautorización: ${authResult.error}`;
       }

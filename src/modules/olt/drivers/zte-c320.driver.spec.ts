@@ -1000,6 +1000,86 @@ describe('ZteC320Driver', () => {
     });
   });
 
+  describe('authorizeOnu() trata el push OMCI de TR-069/ACS como mejor esfuerzo, no crítico (bug real confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-20: "%Code 63990-GPONRM : ONT return error: command processing error." en "tr069-mgmt 1 acs <url>")', () => {
+    const tr069Config = {
+      ponInterface: 'gpon-olt_1/2/15',
+      onuId: 1,
+      modelTypeName: 'HUAWEY-HG8546M',
+      serialNumber: 'CMDCDD4D131E',
+      serviceVlan: 404,
+      tr069Url: 'http://acs.sumtech.com.do:7547',
+      tr069Vlan: 46,
+      managementMethod: 'TR069' as const,
+      operationMode: 'ROUTER' as const,
+    };
+
+    it('si el ONT rechaza "tr069-mgmt ... acs ..." a nivel OMCI, el resto del script (incluido "write") igual se ejecuta y el resultado es ok:true con "warning"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :HUAWEY-HG8546M');
+        if (cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ')) {
+          return Promise.resolve('\r\n%Code 63990-GPONRM : ONT return error:command processing error.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('TR-069/ACS');
+      expect(result.warning).toContain('ONT return error');
+      // El resto del script (tag/end/write) debe seguir ejecutándose.
+      expect(executeCommand).toHaveBeenCalledWith('tr069-mgmt 1 tag pri 2 vlan 46');
+      expect(executeCommand).toHaveBeenCalledWith('end');
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('si TODO el bloque TR-069 tiene éxito, el resultado es ok:true SIN "warning"', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+    });
+
+    it('un rechazo ANTES de entrar al bloque TR-069 (ej. "onu type sn" inválido) sigue siendo fatal -- el mejor esfuerzo solo aplica dentro de "pon-onu-mng"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :HUAWEY-HG8546M');
+        if (cmd.startsWith('onu ')) return Promise.resolve('\r\n%Code 63904-GPONRM : Not support this ONU.\r\nOLT#');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+  });
+
   it('configureVlanTranslation() sigue señalando DRIVER_NOT_IMPLEMENTED: solo se confirmó el nombre del comando, no la sintaxis completa', async () => {
     const result = await driver.configureVlanTranslation(
       { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },

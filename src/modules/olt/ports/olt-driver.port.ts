@@ -366,7 +366,15 @@ export interface IOltDriver {
    */
   getTcontProfiles?(params: OltConnectionParams): Promise<DiscoveredTcontProfile[]>;
   getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower>;
-  authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * `warning` (opcional, solo con `ok: true`): la autorización en sí tuvo
+   * éxito (ONU creada, tcont/vlan/service-port aplicados, "write" ejecutado)
+   * pero un paso de MEJOR ESFUERZO no crítico falló -- hoy, en ZTE, el push
+   * OMCI de "tr069-mgmt" (ver ZteC320Driver.authorizeOnu) -- mismo criterio
+   * que `cpeConfigWarning` en onu-management.service.ts: nunca debe hacer
+   * fallar la autorización completa, que ya dejó al ONU pasando tráfico.
+   */
+  authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string; warning?: string }>;
   setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }>;
   deleteOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;
   /**

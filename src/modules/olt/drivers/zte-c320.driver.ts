@@ -754,11 +754,22 @@ export class ZteC320Driver implements IOltDriver {
    *      pasos ya aplicados en la OLT, ej. el "onu type sn" o el
    *      "service-port") abortaba de nuevo en el primer paso ya aplicado,
    *      sin llegar nunca a los pasos siguientes.
+   *   4. Trata el bloque "pon-onu-mng .../tr069-mgmt ...⁄end" (push OMCI de
+   *      WAN/ACS, solo con TR069) como MEJOR ESFUERZO, no crítico -- mismo
+   *      criterio que `cpeConfigWarning` del lado del servicio. Confirmado en
+   *      vivo contra OLT_Tabara_Abajo (2026-10-20) que la OLT puede aceptar
+   *      el comando pero el ONT lo rechace a nivel OMCI ("%Code 63990-GPONRM
+   *      : ONT return error: command processing error.", posiblemente por
+   *      "Max VEIP: 0" en el onu-type -- ver nota en `ensureOnuTypeProfile`).
+   *      El resto de la autorización (ONU/tcont/vlan/service-port, que deja
+   *      al cliente con Internet funcionando) NUNCA debe abortar por esto --
+   *      se reporta como `warning` en vez de `error`, igual que ya hace
+   *      `onu-management.service.ts` cuando falla el push a GenieACS.
    */
   async authorizeOnu(
     params: OltConnectionParams,
     config: import('../ports/olt-driver.port').AuthorizeOnuParams,
-  ): Promise<{ ok: boolean; error?: string }> {
+  ): Promise<{ ok: boolean; error?: string; warning?: string }> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
@@ -779,17 +790,35 @@ export class ZteC320Driver implements IOltDriver {
 
       const commands = this.generateAuthorizationScript(config);
 
+      let warning: string | undefined;
+      let inTr069Block = false;
+
       for (const cmd of commands) {
+        if (cmd.startsWith('pon-onu-mng ')) {
+          inTr069Block = true;
+        }
+
         const output = await session.executeCommand(cmd);
         if (this.isOltErrorResponse(output)) {
           if (this.isAlreadyAppliedResponse(output)) {
-            continue;
+            // ok, ya aplicado en un intento anterior -- seguir con el resto.
+          } else if (inTr069Block) {
+            if (!warning) {
+              warning =
+                `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${output.trim()}. ` +
+                'El resto de la autorización (tráfico de Internet) sí se aplicó -- configura el WAN manualmente en la ONU.';
+              this.logger.warn(`[diag] authorizeOnu: TR-069/ACS best-effort falló, continuando: ${warning}`);
+            }
+            // No se relanza: el resto del script (incluido "end" para salir
+            // limpio de "(gpon-onu-mng)#" y el "write" final) debe seguir
+            // corriendo igual.
+          } else {
+            throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
           }
-          throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
         }
       }
 
-      return { ok: true };
+      return { ok: true, warning };
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
