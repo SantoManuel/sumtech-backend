@@ -905,11 +905,19 @@ export class ZteC320Driver implements IOltDriver {
    * en OLT_Tabara_Abajo (HUAWEY-HG8145V5, HUAWEY-BT546XG) -- no hay forma de
    * descubrir los límites OMCI reales de un modelo sin su datasheet.
    *
-   * TODAVÍA NO VERIFICADO EN VIVO (ver `onuTypeProfileProvisioning` en
-   * getCapabilities()) -- diseñado por analogía directa con
-   * `ensureTcontProfileWithSession` (mismo patrón "configure terminal" →
-   * submodo → comando de creación → "exit"/"exit"/"write"), pero el submodo
-   * real para "onu-type" es "pon", no "gpon".
+   * CONFIRMADO CONTRA EL MANUAL OFICIAL (ZXA10 C300 Configuration Manual
+   * (CLI), §2.1, SJ-20130520164529-007): el flujo "configure terminal" /
+   * "pon" / "onu-type <nombre> gpon description <desc> max-tcont <n>
+   * max-gemport <n> max-switch-perslot <n> max-flow-perswitch <n>" /
+   * "onu-type-if <nombre> eth_0/1-<N>" / "onu-type-if <nombre> pots_0/1-<N>"
+   * es correcto -- PERO el primer intento en vivo contra OLT_Tabara_Abajo
+   * (2026-10-19) falló con "%Error 20201: Invalid input detected ... Invalid
+   * command key word" porque `description` se mandaba entre comillas con
+   * espacios (`"Auto-creado por Sumtech"`). El manual (ejemplo real:
+   * "description 4ETH,2POTS") deja claro que NO es una cadena libre, sino
+   * un solo token SIN espacios ni comillas -- por eso ahora se genera como
+   * "<ethPorts>ETH,<potsPorts>POTS", replicando la misma convención que usa
+   * el propio fabricante en sus tipos nativos (ZTEG-F620, etc.).
    */
   async ensureOnuTypeProfile(params: OltConnectionParams, profile: OnuTypeProfile): Promise<{ ok: boolean; error?: string }> {
     const session = this.createSession(params);
@@ -936,8 +944,9 @@ export class ZteC320Driver implements IOltDriver {
 
     await session.executeCommand('configure terminal');
     await session.executeCommand('pon');
+    const description = `${profile.ethPorts ?? 0}ETH,${profile.potsPorts ?? 0}POTS`;
     const createOutput = await session.executeCommand(
-      `onu-type ${profile.name} gpon description "Auto-creado por Sumtech" max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8`,
+      `onu-type ${profile.name} gpon description ${description} max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8`,
     );
     if (this.isOltErrorResponse(createOutput)) {
       await session.executeCommand('exit');
@@ -1179,13 +1188,13 @@ export class ZteC320Driver implements IOltDriver {
       // con el flujo completo configure terminal/traffic-profile/exit/write
       // -- ver ensureTrafficProfile().
       downstreamTrafficProfile: true,
-      // Implementado pero AÚN NO verificado en vivo contra OLT_Tabara_Abajo
-      // (los comandos "configure terminal"/"pon"/"onu-type ... gpon
-      // description ... max-tcont 8 max-gemport 32 max-switch-perslot 8
-      // max-flow-perswitch 8"/"onu-type-if ... eth_0/1-N"/"write" se derivaron
-      // de inspeccionar los 2 perfiles Huawei reales ya existentes en esta
-      // OLT, HUAWEY-HG8145V5 y HUAWEY-BT546XG, pero crear uno nuevo todavía
-      // no se probó en vivo) -- queda en `false` hasta confirmarse, según la
+      // Sintaxis ahora confirmada contra el manual oficial (ZXA10 C300
+      // Configuration Manual (CLI), §2.1) tras un primer intento en vivo
+      // fallido contra OLT_Tabara_Abajo (2026-10-19: "%Error 20201" por
+      // mandar "description" entre comillas con espacios, cuando el manual
+      // exige un solo token sin espacios, ej. "4ETH,2POTS") -- pero la
+      // corrección en sí (description sin comillas) TODAVÍA no se reprobó
+      // en vivo, así que se deja en `false` hasta confirmarse, según la
       // convención de este archivo. Ver ensureOnuTypeProfile().
       onuTypeProfileProvisioning: false,
     };
@@ -1196,7 +1205,7 @@ export class ZteC320Driver implements IOltDriver {
       tr069AutoProvisioning:
         'El driver ya envía "tr069-mgmt" al autorizar (sintaxis de documentación pública del C320), pero no se ha confirmado contra un equipo real -- mismo criterio aplicado a vlanTranslation en este driver.',
       onuTypeProfileProvisioning:
-        'El driver ya intenta crear el "onu-type" automáticamente al autorizar (por analogía directa con ensureTcontProfile), pero crear uno nuevo todavía no se probó contra un equipo real -- solo se verificaron en vivo los 2 perfiles Huawei preexistentes que sirvieron de referencia.',
+        'El driver ya intenta crear el "onu-type" automáticamente al autorizar, con sintaxis confirmada contra el manual oficial (ZXA10 C300 Configuration Manual (CLI), §2.1) después de que un primer intento en vivo fallara por mandar "description" entre comillas con espacios -- la corrección todavía no se reprobó contra la OLT real.',
     };
   }
 }

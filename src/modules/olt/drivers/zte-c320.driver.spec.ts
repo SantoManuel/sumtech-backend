@@ -690,7 +690,7 @@ describe('ZteC320Driver', () => {
         'show onu-type gpon HUAWEY-HG8546M',
         'configure terminal',
         'pon',
-        'onu-type HUAWEY-HG8546M gpon description "Auto-creado por Sumtech" max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8',
+        'onu-type HUAWEY-HG8546M gpon description 4ETH,2POTS max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8',
         'onu-type-if HUAWEY-HG8546M eth_0/1-4',
         'onu-type-if HUAWEY-HG8546M pots_0/1-2',
         'exit',
