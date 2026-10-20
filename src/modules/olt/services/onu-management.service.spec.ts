@@ -698,6 +698,12 @@ describe('OnuManagementService', () => {
       );
       expect((result as any).cpeConfigured).toBe(true);
       expect((result as any).cpeConfigWarning).toBeUndefined();
+      // Persistido en onu_service_config -- OnuCpeSyncReconciliationService
+      // usa esto (no "apply_status", que es del lado OLT) para saber que ya
+      // no hace falta reintentar.
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ cpeConfigStatus: 'APPLIED', cpeConfigSyncedAt: expect.any(Date) }),
+      );
     });
 
     it('con wanMode PPPOE y contractId, resuelve usuario/contraseña desde el network_access ya vinculado (fuente única de verdad)', async () => {
@@ -812,6 +818,10 @@ describe('OnuManagementService', () => {
       expect((result as any).cpeConfigured).toBe(false);
       expect((result as any).cpeConfigWarning).toContain('ONU autorizada en la OLT');
       expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', expect.objectContaining({ status: 'ACTIVE' }));
+      // Persistido para que OnuCpeSyncReconciliationService la reintente sola.
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ cpeConfigStatus: 'ERROR', lastCpeConfigError: expect.stringContaining('GenieACS') }),
+      );
     });
 
     it('con managementMethod OMCI, nunca llama a CpeConfiguratorService', async () => {

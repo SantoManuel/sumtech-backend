@@ -83,13 +83,28 @@ export class CpeConfiguratorService {
       throw new BadRequestException(`Fallo enviando configuración TR-069 al CPE: ${err.message}`);
     }
 
-    // 5. Asignar tag multitenant TENANT:<slug> si fue especificado
+    // 5. Asignar tags multitenant/OLT si fueron especificados -- GenieACS es
+    // una sola instancia compartida por todos los tenants/OLTs, así que esto
+    // es lo único que identifica a quién pertenece un CPE ahí. Idempotente:
+    // reusa los tags ya leídos en el paso 2 (deviceStatus) para no llamar
+    // setDeviceTag si ya están puestos -- importante porque este método se
+    // reintenta automáticamente (ver OnuCpeSyncReconciliationService).
+    const existingTags = deviceStatus.tags || [];
+    const desiredTags: string[] = [];
     if (input.tenantSlug) {
-      const tenantTag = `TENANT:${input.tenantSlug.toLowerCase().trim()}`;
+      desiredTags.push(`TENANT:${input.tenantSlug.toLowerCase().trim()}`);
+    }
+    if (input.oltName) {
+      desiredTags.push(`OLT:${input.oltName}`);
+    }
+    for (const tag of desiredTags) {
+      if (existingTags.includes(tag)) {
+        continue;
+      }
       try {
-        await client.setDeviceTag(deviceId, tenantTag);
+        await client.setDeviceTag(deviceId, tag);
       } catch (err: any) {
-        this.logger.warn(`[CPE-CONFIG] No se pudo asignar tag ${tenantTag} a ${deviceId}: ${err.message}`);
+        this.logger.warn(`[CPE-CONFIG] No se pudo asignar tag ${tag} a ${deviceId}: ${err.message}`);
       }
     }
 

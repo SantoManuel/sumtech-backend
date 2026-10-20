@@ -78,6 +78,47 @@ describe('CpeConfiguratorService', () => {
     expect(mockClient.getParameterValues).toHaveBeenCalled();
   });
 
+  it('asigna también el tag OLT:<nombre> si se provee oltName', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
+    mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-ONT123', isTR181: false, tags: [] });
+    mockClient.setParameterValues.mockResolvedValue(undefined);
+    mockClient.getParameterValues.mockResolvedValue({});
+
+    const input: CpeConfigurationInput = {
+      serialNumber: 'ONT123',
+      wanMode: 'PPPOE',
+      tenantSlug: 'isp-azua',
+      oltName: 'OLT_Tabara_Abajo',
+    };
+
+    await service.configureCpe(input);
+
+    expect(mockClient.setDeviceTag).toHaveBeenCalledWith('00259E-ONT123', 'TENANT:isp-azua');
+    expect(mockClient.setDeviceTag).toHaveBeenCalledWith('00259E-ONT123', 'OLT:OLT_Tabara_Abajo');
+  });
+
+  it('es idempotente: no vuelve a llamar setDeviceTag si el dispositivo ya tiene los tags puestos (necesario para el reintento automático)', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
+    mockClient.getDeviceStatus.mockResolvedValue({
+      deviceId: '00259E-ONT123',
+      isTR181: false,
+      tags: ['TENANT:isp-azua', 'OLT:OLT_Tabara_Abajo'],
+    });
+    mockClient.setParameterValues.mockResolvedValue(undefined);
+    mockClient.getParameterValues.mockResolvedValue({});
+
+    const input: CpeConfigurationInput = {
+      serialNumber: 'ONT123',
+      wanMode: 'PPPOE',
+      tenantSlug: 'isp-azua',
+      oltName: 'OLT_Tabara_Abajo',
+    };
+
+    await service.configureCpe(input);
+
+    expect(mockClient.setDeviceTag).not.toHaveBeenCalled();
+  });
+
   it('debe refrescar el dispositivo llamando a refreshObject', async () => {
     mockClient.refreshObject.mockResolvedValue(undefined);
 

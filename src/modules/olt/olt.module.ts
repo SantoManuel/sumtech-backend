@@ -36,6 +36,7 @@ import { OltCatalogsService } from './services/olt-catalogs.service';
 import { OltConnectionResolverService } from './services/olt-connection-resolver.service';
 import { OltNatManagerService } from './services/olt-nat-manager.service';
 import { OnuManagementService } from './services/onu-management.service';
+import { OnuCpeSyncReconciliationService } from './services/onu-cpe-sync-reconciliation.service';
 import { OltMonitoringService } from './services/olt-monitoring.service';
 import { OltExportService } from './services/olt-export.service';
 import { OltPermissionGuard } from './guards/olt-permission.guard';
@@ -81,6 +82,7 @@ import { OnuController } from './onu.controller';
     OltConnectionResolverService,
     OltNatManagerService,
     OnuManagementService,
+    OnuCpeSyncReconciliationService,
     OltMonitoringService,
     OltExportService,
     OltPermissionGuard,

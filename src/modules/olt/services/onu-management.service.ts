@@ -616,89 +616,142 @@ export class OnuManagementService {
       },
     });
 
-    // 4. Empujar WiFi/VLAN/WAN reales al CPE vía GenieACS (RF-OLT-013), solo
-    // si se eligió gestión TR-069. Esto NUNCA debe hacer fallar la
+    // 4. Empujar WiFi/VLAN/WAN/tags reales al CPE vía GenieACS (RF-OLT-013),
+    // solo si se eligió gestión TR-069. Esto NUNCA debe hacer fallar la
     // autorización completa: el ONU ya quedó pasando tráfico a nivel OLT en
     // el paso 1 — este es un paso adicional que depende de que el propio
-    // ONU ya haya hecho su primer Inform hacia nuestro ACS
-    // (ver CpeConfiguratorService.configureCpe -> findDeviceBySerial). Para
-    // hardware donde no hay forma verificada de apuntar el ONU al ACS desde
-    // la OLT (hoy: HiOSO/EPON), esto normalmente fallará la primera vez —
-    // es un estado esperado a comunicar, no un bug que se deba esconder.
-    let cpeConfigured: boolean | undefined;
-    let cpeConfigWarning: string | undefined;
-    if (dto.managementMethod === 'TR069' && dto.tr069NetworkId) {
-      try {
-        const tr069Network = await this.tr069Repository.findOneBy({ id: dto.tr069NetworkId });
-        if (!tr069Network) {
-          throw new Error(`Red TR-069 "${dto.tr069NetworkId}" no encontrada.`);
-        }
-        const onuType = dto.onuTypeId ? await this.onuTypeRepository.findOneBy({ id: dto.onuTypeId }) : null;
-        const wanMode = dto.wanMode || 'PPPOE';
-
-        // PPPoE: usuario/contraseña vienen del network_access ya vinculado al
-        // contrato (única fuente de verdad, ver Plan_Implementacion_Red_RF.md
-        // §8 Fase 8) -- nunca se piden de nuevo en este modal para no terminar
-        // con dos credenciales PPPoE distintas (la del secret en RouterOS y la
-        // que el propio ONU usa) para el mismo acceso.
-        let pppoeUsername: string | undefined;
-        let pppoePassword: string | undefined;
-        if (wanMode === 'PPPOE' && dto.contractId) {
-          const networkAccess = await this.networkAccessRepository.findOneBy({ contractId: dto.contractId });
-          if (networkAccess) {
-            pppoeUsername = networkAccess.username || undefined;
-            pppoePassword = networkAccess.pppoePasswordEnc
-              ? decryptCredential(networkAccess.pppoePasswordEnc)
-              : undefined;
-          }
-        }
-
-        await this.cpeConfiguratorService.configureCpe({
-          serialNumber: onu.serialNumber,
-          vendor: onuType?.vendor,
-          model: onuType?.model,
-          // Dispara el tag TENANT:<slug> en GenieACS (ver
-          // CpeConfiguratorService.configureCpe) — único mecanismo real para
-          // saber a qué tenant pertenece un CPE, dado que GenieACS no expone
-          // el Host de la conexión TR-069 a su lógica de negocio (un dominio
-          // por tenant sería cosmético, no cambia esto).
-          tenantSlug: this.tenantContext.getSlug(),
-          operationMode: dto.operationMode || 'ROUTER',
-          wanMode,
-          pppoeUsername,
-          pppoePassword,
-          wanStaticIp: wanMode === 'STATIC' ? dto.wanStaticIp : undefined,
-          wanStaticMask: wanMode === 'STATIC' ? dto.wanStaticMask : undefined,
-          wanStaticGw: wanMode === 'STATIC' ? dto.wanStaticGw : undefined,
-          serviceVlan: authParams.serviceVlan,
-          managementServer: {
-            acsUrl: tr069Network.acsUrl,
-            acsUsername: tr069Network.acsUsername || undefined,
-            acsPassword: tr069Network.acsPasswordEnc ? decryptCredential(tr069Network.acsPasswordEnc) : undefined,
-            connReqUsername: tr069Network.connReqUsername || undefined,
-            connReqPassword: tr069Network.connReqPasswordEnc
-              ? decryptCredential(tr069Network.connReqPasswordEnc)
-              : undefined,
-            informIntervalSec: tr069Network.informIntervalSec,
-          },
-        });
-        cpeConfigured = true;
-      } catch (err: any) {
-        cpeConfigured = false;
-        cpeConfigWarning = `ONU autorizada en la OLT. Pendiente de aplicar WiFi/VLAN/WAN vía GenieACS: ${err.message}`;
-        await this.deviceOperationLogger.logEvent({
-          nodeId: olt.viaNodeId || olt.id,
-          eventType: 'PROVISION',
-          status: 'FAILURE',
-          message: `[${olt.vendor}] ONU ${onu.serialNumber} autorizada en la OLT pero no se pudo configurar vía GenieACS: ${err.message}`,
-          actorUserId,
-          rawDetails: { onuId: onu.id, oltId: olt.id, operation: 'authorizeOnu.configureCpe' },
-        });
-      }
-    }
+    // ONU ya haya hecho su primer Inform hacia nuestro ACS (ver
+    // pushCpeConfiguration -> CpeConfiguratorService.configureCpe ->
+    // findDeviceBySerial). Para hardware donde no hay forma verificada de
+    // apuntar el ONU al ACS desde la OLT (hoy: HiOSO/EPON), esto normalmente
+    // fallará la primera vez — es un estado esperado a comunicar, no un bug
+    // que se deba esconder. `cpeConfigStatus` queda persistido en `config`
+    // (ver pushCpeConfiguration) para que OnuCpeSyncReconciliationService
+    // reintente automáticamente mientras no quede en 'APPLIED'.
+    const { cpeConfigured, cpeConfigWarning } = await this.pushCpeConfiguration(
+      onu,
+      config,
+      olt,
+      { wanStaticIp: dto.wanStaticIp, wanStaticMask: dto.wanStaticMask, wanStaticGw: dto.wanStaticGw },
+      {
+        warningPrefix: 'ONU autorizada en la OLT. Pendiente de aplicar WiFi/VLAN/WAN vía GenieACS',
+        failureLogMessagePrefix: `[${olt.vendor}] ONU ${onu.serialNumber} autorizada en la OLT pero no se pudo configurar vía GenieACS`,
+        operation: 'authorizeOnu.configureCpe',
+        actorUserId,
+      },
+    );
 
     const saved = await this.findById(onu.id);
     return { ...saved, cpeConfigured, cpeConfigWarning, oltWarning };
+  }
+
+  /**
+   * Empuja WAN/PPPoE/WiFi y los tags `TENANT:<slug>`/`OLT:<nombre>` al CPE
+   * vía GenieACS (RF-OLT-013) -- extraído de `authorizeOnu()`/`reprovisionOnu()`,
+   * que antes duplicaban este bloque casi línea por línea. Siempre "mejor
+   * esfuerzo": nunca lanza, y persiste el resultado real en
+   * `config.cpeConfigStatus` (distinto de `config.applyStatus`, que es del
+   * lado OLT) para que `OnuCpeSyncReconciliationService` sepa qué ONUs
+   * reintentar. No-op (`{}`) si la ONU no usa gestión TR-069.
+   *
+   * Público (no privado) a propósito: `OnuCpeSyncReconciliationService` lo
+   * reutiliza para reintentar automáticamente, sin duplicar de nuevo esta
+   * lógica.
+   */
+  async pushCpeConfiguration(
+    onu: OnuEntity,
+    config: OnuServiceConfigEntity,
+    olt: OltEntity,
+    wanStatic: { wanStaticIp?: string; wanStaticMask?: string; wanStaticGw?: string },
+    options: { warningPrefix: string; failureLogMessagePrefix: string; operation: string; actorUserId?: string },
+  ): Promise<{ cpeConfigured?: boolean; cpeConfigWarning?: string }> {
+    if (config.managementMethod !== 'TR069' || !config.tr069NetworkId) {
+      return {};
+    }
+
+    try {
+      const tr069Network = await this.tr069Repository.findOneBy({ id: config.tr069NetworkId });
+      if (!tr069Network) {
+        throw new Error(`Red TR-069 "${config.tr069NetworkId}" no encontrada.`);
+      }
+      const onuType = onu.onuTypeId ? await this.onuTypeRepository.findOneBy({ id: onu.onuTypeId }) : null;
+      const wanMode = config.wanMode || 'PPPOE';
+
+      // PPPoE: usuario/contraseña vienen del network_access ya vinculado al
+      // contrato (única fuente de verdad, ver Plan_Implementacion_Red_RF.md
+      // §8 Fase 8) -- nunca se piden de nuevo en este modal para no terminar
+      // con dos credenciales PPPoE distintas (la del secret en RouterOS y la
+      // que el propio ONU usa) para el mismo acceso.
+      let pppoeUsername: string | undefined;
+      let pppoePassword: string | undefined;
+      if (wanMode === 'PPPOE' && onu.contractId) {
+        const networkAccess = await this.networkAccessRepository.findOneBy({ contractId: onu.contractId });
+        if (networkAccess) {
+          pppoeUsername = networkAccess.username || undefined;
+          pppoePassword = networkAccess.pppoePasswordEnc
+            ? decryptCredential(networkAccess.pppoePasswordEnc)
+            : undefined;
+        }
+      }
+
+      let serviceVlan = 100;
+      if (config.serviceVlanId) {
+        const v = await this.vlanRepository.findOneBy({ id: config.serviceVlanId });
+        if (v) serviceVlan = v.vlanId;
+      }
+
+      await this.cpeConfiguratorService.configureCpe({
+        serialNumber: onu.serialNumber,
+        vendor: onuType?.vendor,
+        model: onuType?.model,
+        // Dispara los tags TENANT:<slug>/OLT:<nombre> en GenieACS (ver
+        // CpeConfiguratorService.configureCpe) — único mecanismo real para
+        // saber a qué tenant/OLT pertenece un CPE, dado que GenieACS es una
+        // sola instancia compartida por todos los tenants.
+        tenantSlug: this.tenantContext.getSlug(),
+        oltName: olt.name,
+        operationMode: config.operationMode || 'ROUTER',
+        wanMode,
+        pppoeUsername,
+        pppoePassword,
+        wanStaticIp: wanMode === 'STATIC' ? wanStatic.wanStaticIp : undefined,
+        wanStaticMask: wanMode === 'STATIC' ? wanStatic.wanStaticMask : undefined,
+        wanStaticGw: wanMode === 'STATIC' ? wanStatic.wanStaticGw : undefined,
+        serviceVlan,
+        managementServer: {
+          acsUrl: tr069Network.acsUrl,
+          acsUsername: tr069Network.acsUsername || undefined,
+          acsPassword: tr069Network.acsPasswordEnc ? decryptCredential(tr069Network.acsPasswordEnc) : undefined,
+          connReqUsername: tr069Network.connReqUsername || undefined,
+          connReqPassword: tr069Network.connReqPasswordEnc
+            ? decryptCredential(tr069Network.connReqPasswordEnc)
+            : undefined,
+          informIntervalSec: tr069Network.informIntervalSec,
+        },
+      });
+
+      config.cpeConfigStatus = 'APPLIED';
+      config.lastCpeConfigError = undefined;
+      config.cpeConfigSyncedAt = new Date();
+      await this.configRepository.save(config);
+
+      return { cpeConfigured: true };
+    } catch (err: any) {
+      await this.deviceOperationLogger.logEvent({
+        nodeId: olt.viaNodeId || olt.id,
+        eventType: 'PROVISION',
+        status: 'FAILURE',
+        message: `${options.failureLogMessagePrefix}: ${err.message}`,
+        actorUserId: options.actorUserId,
+        rawDetails: { onuId: onu.id, oltId: olt.id, operation: options.operation },
+      });
+
+      config.cpeConfigStatus = 'ERROR';
+      config.lastCpeConfigError = err.message;
+      await this.configRepository.save(config);
+
+      return { cpeConfigured: false, cpeConfigWarning: `${options.warningPrefix}: ${err.message}` };
+    }
   }
 
   /**
@@ -749,74 +802,18 @@ export class OnuManagementService {
     // Reintentar push a GenieACS con los parámetros (posiblemente nuevos) de
     // gestión. Mismo manejo best-effort que en authorizeOnu paso 4: nunca
     // debe hacer fallar la reconfiguración ya guardada en BD.
-    let cpeConfigured: boolean | undefined;
-    let cpeConfigWarning: string | undefined;
-
-    let serviceVlan = 100;
-    if (config.serviceVlanId) {
-      const v = await this.vlanRepository.findOneBy({ id: config.serviceVlanId });
-      if (v) serviceVlan = v.vlanId;
-    }
-
-    if (config.managementMethod === 'TR069' && config.tr069NetworkId) {
-      try {
-        const tr069Network = await this.tr069Repository.findOneBy({ id: config.tr069NetworkId });
-        if (!tr069Network) {
-          throw new Error(`Red TR-069 "${config.tr069NetworkId}" no encontrada.`);
-        }
-        const onuType = onu.onuTypeId ? await this.onuTypeRepository.findOneBy({ id: onu.onuTypeId }) : null;
-        const wanMode = config.wanMode || 'PPPOE';
-
-        let pppoeUsername: string | undefined;
-        let pppoePassword: string | undefined;
-        if (wanMode === 'PPPOE' && onu.contractId) {
-          const networkAccess = await this.networkAccessRepository.findOneBy({ contractId: onu.contractId });
-          if (networkAccess) {
-            pppoeUsername = networkAccess.username || undefined;
-            pppoePassword = networkAccess.pppoePasswordEnc
-              ? decryptCredential(networkAccess.pppoePasswordEnc)
-              : undefined;
-          }
-        }
-
-        await this.cpeConfiguratorService.configureCpe({
-          serialNumber: onu.serialNumber,
-          vendor: onuType?.vendor,
-          model: onuType?.model,
-          tenantSlug: this.tenantContext.getSlug(),
-          operationMode: config.operationMode || 'ROUTER',
-          wanMode,
-          pppoeUsername,
-          pppoePassword,
-          wanStaticIp: wanMode === 'STATIC' ? dto.wanStaticIp : undefined,
-          wanStaticMask: wanMode === 'STATIC' ? dto.wanStaticMask : undefined,
-          wanStaticGw: wanMode === 'STATIC' ? dto.wanStaticGw : undefined,
-          serviceVlan,
-          managementServer: {
-            acsUrl: tr069Network.acsUrl,
-            acsUsername: tr069Network.acsUsername || undefined,
-            acsPassword: tr069Network.acsPasswordEnc ? decryptCredential(tr069Network.acsPasswordEnc) : undefined,
-            connReqUsername: tr069Network.connReqUsername || undefined,
-            connReqPassword: tr069Network.connReqPasswordEnc
-              ? decryptCredential(tr069Network.connReqPasswordEnc)
-              : undefined,
-            informIntervalSec: tr069Network.informIntervalSec,
-          },
-        });
-        cpeConfigured = true;
-      } catch (err: any) {
-        cpeConfigured = false;
-        cpeConfigWarning = `Configuración guardada, pero no se pudo aplicar vía GenieACS: ${err.message}`;
-        await this.deviceOperationLogger.logEvent({
-          nodeId: olt.viaNodeId || olt.id,
-          eventType: 'PROVISION',
-          status: 'FAILURE',
-          message: `[${olt.vendor}] Reconfiguración de ONU ${onu.serialNumber} guardada pero no se pudo aplicar vía GenieACS: ${err.message}`,
-          actorUserId,
-          rawDetails: { onuId: onu.id, oltId: olt.id, operation: 'reprovisionOnu.configureCpe' },
-        });
-      }
-    }
+    const { cpeConfigured, cpeConfigWarning } = await this.pushCpeConfiguration(
+      onu,
+      config,
+      olt,
+      { wanStaticIp: dto.wanStaticIp, wanStaticMask: dto.wanStaticMask, wanStaticGw: dto.wanStaticGw },
+      {
+        warningPrefix: 'Configuración guardada, pero no se pudo aplicar vía GenieACS',
+        failureLogMessagePrefix: `[${olt.vendor}] Reconfiguración de ONU ${onu.serialNumber} guardada pero no se pudo aplicar vía GenieACS`,
+        operation: 'reprovisionOnu.configureCpe',
+        actorUserId,
+      },
+    );
 
     const saved = await this.findById(onu.id);
     return { ...saved, cpeConfigured, cpeConfigWarning };

@@ -98,6 +98,21 @@ export class OnuServiceConfigEntity {
   @Column({ name: 'last_apply_error', type: 'text', nullable: true })
   lastApplyError?: string;
 
+  /**
+   * Estado del push a GenieACS (CpeConfiguratorService.configureCpe), NO del
+   * lado OLT -- "apply_status" (arriba) se pone en APPLIED sin importar si
+   * GenieACS confirmó algo. Ver OnuCpeSyncReconciliationService, que reintenta
+   * automáticamente mientras esto no sea 'APPLIED'.
+   */
+  @Column({ name: 'cpe_config_status', type: 'varchar', length: 20, default: 'PENDING' })
+  cpeConfigStatus: 'PENDING' | 'APPLIED' | 'ERROR';
+
+  @Column({ name: 'last_cpe_config_error', type: 'text', nullable: true })
+  lastCpeConfigError?: string;
+
+  @Column({ name: 'cpe_config_synced_at', type: 'timestamp with time zone', nullable: true })
+  cpeConfigSyncedAt?: Date;
+
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamp with time zone' })
   updatedAt: Date;
 }

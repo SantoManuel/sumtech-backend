@@ -14,6 +14,8 @@ export interface CpeConfigurationInput {
   model?: string;
   serialNumber: string;
   tenantSlug?: string;
+  /** Nombre de la OLT a la que está conectado este CPE -- usado para el tag "OLT:<nombre>" (ver CpeConfiguratorService.configureCpe). */
+  oltName?: string;
   operationMode?: 'BRIDGE' | 'ROUTER';
   ipProtocol?: 'IPV4' | 'IPV6' | 'DUAL';
   wanMode?: 'STATIC' | 'DHCP' | 'PPPOE';
