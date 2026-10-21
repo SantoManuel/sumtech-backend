@@ -169,7 +169,9 @@ describe('OnuManagementService', () => {
       getAuthorizedOnus: jest.fn(),
       getOnuOpticalPower: jest.fn(),
       generateAuthorizationScript: jest.fn(),
+      generateTr069ManagementScript: jest.fn(),
       authorizeOnu: jest.fn(),
+      applyTr069Management: jest.fn(),
       setOnuAdminState: jest.fn(),
       deleteOnu: jest.fn(),
       constructor: { name: 'ZteC320Driver' },
@@ -575,27 +577,54 @@ describe('OnuManagementService', () => {
       );
     });
 
-    it('normaliza tr069NetworkId/mgmtVlanId/tr069VlanId/speedProfileId "" a undefined antes de guardar onu_service_config (regresión: Postgres rechaza "" como uuid)', async () => {
+    it('crea onu_service_config SOLO con campos ópticos (Etapa 1) -- managementMethod/tr069NetworkId/wanMode ya NO se deciden acá, quedan para applyTr069Profile/pushWanConfig (Etapas 2/3)', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
       zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
 
       await service.authorizeOnu('onu-uuid-1', {
         serviceVlanId: 'vlan-1',
         onuTypeId: 'type-1',
-        managementMethod: 'TR069',
         operationMode: 'ROUTER',
-        tr069NetworkId: '',
-        mgmtVlanId: '',
-        tr069VlanId: '',
         speedProfileId: '',
       });
 
       expect(configRepo.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          tr069NetworkId: undefined,
-          mgmtVlanId: undefined,
-          tr069VlanId: undefined,
+          serviceVlanId: 'vlan-1',
+          operationMode: 'ROUTER',
+          managementMethod: 'OMCI',
           speedProfileId: undefined,
+        }),
+      );
+      // Ya no manda nada de TR-069/WAN al driver tampoco.
+      expect(zteDriver.authorizeOnu).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.not.objectContaining({ tr069Url: expect.anything() }),
+      );
+    });
+
+    it('re-autorizar una ONU existente NO pisa managementMethod/tr069NetworkId/wanMode ya aplicados por las Etapas 2/3', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({
+        onuId: 'onu-uuid-1',
+        serviceVlanId: 'vlan-old',
+        managementMethod: 'TR069',
+        tr069NetworkId: 'tr069-1',
+        wanMode: 'PPPOE',
+        operationMode: 'ROUTER',
+        appliedVersion: 1,
+        desiredVersion: 1,
+      });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      await service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-2' }, 'admin-id');
+
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serviceVlanId: 'vlan-2',
+          managementMethod: 'TR069',
+          tr069NetworkId: 'tr069-1',
+          wanMode: 'PPPOE',
         }),
       );
     });
@@ -674,7 +703,7 @@ describe('OnuManagementService', () => {
       );
     });
 
-    it('con managementMethod TR069 y tr069NetworkId, llama a CpeConfiguratorService.configureCpe() y marca cpeConfigured:true', async () => {
+    it('NUNCA llama a CpeConfiguratorService ni toca GenieACS -- eso es ahora applyTr069Profile/pushWanConfig (Etapas 2/3), sin importar qué venga en el dto', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
       zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
 
@@ -687,41 +716,125 @@ describe('OnuManagementService', () => {
         wanMode: 'DHCP',
       });
 
-      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
+      expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
+      expect((result as any).cpeConfigured).toBeUndefined();
+      expect((result as any).cpeConfigWarning).toBeUndefined();
+    });
+
+    it('lanza BadRequestException si el driver de la OLT falla aprovisionando', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: false, error: 'ONU index already in use' });
+
+      await expect(
+        service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-1' }, 'admin-id'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('applyTr069Profile (Etapa 2: apuntar la ONU al ACS)', () => {
+    const mockConfig = {
+      onuId: 'onu-uuid-1',
+      serviceVlanId: 'vlan-1',
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+      wanMode: 'PPPOE',
+      appliedVersion: 1,
+      desiredVersion: 1,
+    };
+
+    it('lanza BadRequestException si la ONU no tiene config previa (no se autorizó en la OLT todavía)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(
+        service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza BadRequestException si no se selecciona Red TR-069', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+
+      await expect(service.applyTr069Profile('onu-uuid-1', {} as any)).rejects.toThrow(BadRequestException);
+    });
+
+    it('llama a driver.applyTr069Management() con los parámetros resueltos y persiste managementMethod/tr069NetworkId', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      zteDriver.applyTr069Management.mockResolvedValue({ ok: true });
+
+      const result = await service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' }, 'admin-id');
+
+      expect(zteDriver.applyTr069Management).toHaveBeenCalledWith(
+        expect.anything(),
         expect.objectContaining({
-          serialNumber: mockOnu.serialNumber,
-          operationMode: 'BRIDGE',
-          wanMode: 'DHCP',
-          tenantSlug: 'sumtech',
-          managementServer: expect.objectContaining({ acsUrl: 'http://10.46.0.1:7547/' }),
+          serviceVlan: 200,
+          managementMethod: 'TR069',
+          tr069Url: 'http://10.46.0.1:7547/',
+          tr069Vlan: 46,
         }),
       );
-      expect((result as any).cpeConfigured).toBe(true);
-      expect((result as any).cpeConfigWarning).toBeUndefined();
-      // Persistido en onu_service_config -- OnuCpeSyncReconciliationService
-      // usa esto (no "apply_status", que es del lado OLT) para saber que ya
-      // no hace falta reintentar.
       expect(configRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ cpeConfigStatus: 'APPLIED', cpeConfigSyncedAt: expect.any(Date) }),
+        expect.objectContaining({ managementMethod: 'TR069', tr069NetworkId: 'tr069-1' }),
+      );
+      expect((result as any).tr069Warning).toBeUndefined();
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'PROVISION', status: 'SUCCESS' }),
       );
     });
 
+    it('propaga el warning de mejor esfuerzo del driver sin fallar', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      zteDriver.applyTr069Management.mockResolvedValue({ ok: true, warning: 'La OLT rechazó tr069-mgmt' });
+
+      const result = await service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' });
+
+      expect((result as any).tr069Warning).toBe('La OLT rechazó tr069-mgmt');
+    });
+
+    it('lanza BadRequestException si el driver falla (ok:false)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      zteDriver.applyTr069Management.mockResolvedValue({ ok: false, error: 'Timeout de Telnet' });
+
+      await expect(
+        service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(configRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pushWanConfig (Etapa 3: WAN/PPPoE vía GenieACS)', () => {
+    const mockTr069Config = {
+      onuId: 'onu-uuid-1',
+      serviceVlanId: 'vlan-1',
+      managementMethod: 'TR069',
+      tr069NetworkId: 'tr069-1',
+      operationMode: 'ROUTER',
+      wanMode: 'PPPOE',
+      appliedVersion: 1,
+      desiredVersion: 1,
+    };
+
+    it('lanza BadRequestException si la ONU todavía no tiene el Perfil TR-069 aplicado (Etapa 2 pendiente)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config, managementMethod: 'OMCI', tr069NetworkId: undefined });
+
+      await expect(service.pushWanConfig('onu-uuid-1', {})).rejects.toThrow(BadRequestException);
+      expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
+    });
+
     it('con wanMode PPPOE y contractId, resuelve usuario/contraseña desde el network_access ya vinculado (fuente única de verdad)', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
-      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contractId: 'contract-1' });
+      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });
       networkAccessRepo.findOneBy.mockResolvedValue({
         contractId: 'contract-1',
         username: 'cliente123',
         pppoePasswordEnc: encryptCredential('ClavePppoeReal!'),
       });
 
-      await service.authorizeOnu('onu-uuid-1', {
-        serviceVlanId: 'vlan-1',
-        tr069NetworkId: 'tr069-1',
-        contractId: 'contract-1',
-        managementMethod: 'TR069',
-        wanMode: 'PPPOE',
-      });
+      const result = await service.pushWanConfig('onu-uuid-1', {});
 
       expect(networkAccessRepo.findOneBy).toHaveBeenCalledWith({ contractId: 'contract-1' });
       expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
@@ -729,39 +842,20 @@ describe('OnuManagementService', () => {
           wanMode: 'PPPOE',
           pppoeUsername: 'cliente123',
           pppoePassword: 'ClavePppoeReal!',
+          managementServer: expect.objectContaining({ acsUrl: 'http://10.46.0.1:7547/' }),
         }),
+      );
+      expect((result as any).cpeConfigured).toBe(true);
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ cpeConfigStatus: 'APPLIED', cpeConfigSyncedAt: expect.any(Date) }),
       );
     });
 
-    it('con wanMode PPPOE pero sin network_access para ese contrato, no rompe y manda las credenciales undefined', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
-      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
-      networkAccessRepo.findOneBy.mockResolvedValue(null);
+    it('con wanMode STATIC en el dto, actualiza config.wanMode y pasa wanStaticIp/Mask/Gw tal cual al configurador CPE', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });
 
-      await service.authorizeOnu('onu-uuid-1', {
-        serviceVlanId: 'vlan-1',
-        tr069NetworkId: 'tr069-1',
-        contractId: 'contract-1',
-        managementMethod: 'TR069',
-        wanMode: 'PPPOE',
-      });
-
-      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
-        expect.objectContaining({
-          pppoeUsername: undefined,
-          pppoePassword: undefined,
-        }),
-      );
-    });
-
-    it('con wanMode STATIC, pasa wanStaticIp/Mask/Gw tal cual al configurador CPE', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
-      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
-
-      await service.authorizeOnu('onu-uuid-1', {
-        serviceVlanId: 'vlan-1',
-        tr069NetworkId: 'tr069-1',
-        managementMethod: 'TR069',
+      await service.pushWanConfig('onu-uuid-1', {
         wanMode: 'STATIC',
         wanStaticIp: '200.1.1.50',
         wanStaticMask: '255.255.255.0',
@@ -780,16 +874,10 @@ describe('OnuManagementService', () => {
     });
 
     it('con wanMode DHCP, no consulta network_access ni manda campos de estática', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
-      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contractId: 'contract-1' });
+      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });
 
-      await service.authorizeOnu('onu-uuid-1', {
-        serviceVlanId: 'vlan-1',
-        tr069NetworkId: 'tr069-1',
-        contractId: 'contract-1',
-        managementMethod: 'TR069',
-        wanMode: 'DHCP',
-      });
+      await service.pushWanConfig('onu-uuid-1', { wanMode: 'DHCP' });
 
       expect(networkAccessRepo.findOneBy).not.toHaveBeenCalled();
       expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
@@ -802,49 +890,20 @@ describe('OnuManagementService', () => {
       );
     });
 
-    it('si GenieACS todavía no conoce el ONU, no falla la autorización completa — agrega cpeConfigWarning', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
-      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+    it('si GenieACS todavía no conoce el ONU, no lanza -- agrega cpeConfigWarning (OnuCpeSyncReconciliationService reintenta sola)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });
       cpeConfiguratorService.configureCpe.mockRejectedValue(
         new NotFoundException('El CPE con serial "ZTEGC0123456" no ha sido detectado por GenieACS (aún no ha enviado Inform).'),
       );
 
-      const result = await service.authorizeOnu('onu-uuid-1', {
-        serviceVlanId: 'vlan-1',
-        tr069NetworkId: 'tr069-1',
-        managementMethod: 'TR069',
-      });
+      const result = await service.pushWanConfig('onu-uuid-1', {});
 
       expect((result as any).cpeConfigured).toBe(false);
-      expect((result as any).cpeConfigWarning).toContain('ONU autorizada en la OLT');
-      expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', expect.objectContaining({ status: 'ACTIVE' }));
-      // Persistido para que OnuCpeSyncReconciliationService la reintente sola.
+      expect((result as any).cpeConfigWarning).toContain('GenieACS');
       expect(configRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ cpeConfigStatus: 'ERROR', lastCpeConfigError: expect.stringContaining('GenieACS') }),
       );
-    });
-
-    it('con managementMethod OMCI, nunca llama a CpeConfiguratorService', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
-      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
-
-      const result = await service.authorizeOnu('onu-uuid-1', {
-        serviceVlanId: 'vlan-1',
-        tr069NetworkId: 'tr069-1',
-        managementMethod: 'OMCI',
-      });
-
-      expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
-      expect((result as any).cpeConfigured).toBeUndefined();
-    });
-
-    it('lanza BadRequestException si el driver de la OLT falla aprovisionando', async () => {
-      onuRepo.findOne.mockResolvedValue(mockOnu);
-      zteDriver.authorizeOnu.mockResolvedValue({ ok: false, error: 'ONU index already in use' });
-
-      await expect(
-        service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-1' }, 'admin-id'),
-      ).rejects.toThrow(BadRequestException);
     });
   });
 

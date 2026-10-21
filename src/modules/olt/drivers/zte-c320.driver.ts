@@ -680,13 +680,12 @@ export class ZteC320Driver implements IOltDriver {
    * Genera la lista de comandos Telnet de autorización y aprovisionamiento (RF-OLT-016 / RF-ONU-001..007).
    */
   generateAuthorizationScript(config: import('../ports/olt-driver.port').AuthorizeOnuParams): string[] {
-    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
     const commands: string[] = [
       'configure terminal',
       `interface ${config.ponInterface}`,
       `onu ${config.onuId} type ${config.modelTypeName} sn ${config.serialNumber}`,
       'exit',
-      `interface ${onuInterface}`,
+      `interface ${this.toOnuInterfaceName(config.ponInterface, config.onuId)}`,
       `name ${config.clientName ? config.clientName.replace(/\s+/g, '_') : `ONU-${config.onuId}`}`,
       ...(config.description ? [`description ${config.description.replace(/\s+/g, '_')}`] : []),
       `tcont 1 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
@@ -703,6 +702,33 @@ export class ZteC320Driver implements IOltDriver {
       commands.push(`traffic-profile ${config.trafficProfile} vport 1 direction egress`);
     }
 
+    // Sin TR069, el script nunca sale de "(config)#" -- "write" EXIGE estar
+    // en el prompt top-level "#", confirmado en vivo contra
+    // OLT_Tabara_Abajo (2026-10-19): sin este "exit" extra, "write" falla
+    // con "%Error 20200: Invalid input detected" y la autorización nunca
+    // se persiste a flash (aunque el "onu type sn" sí haya quedado
+    // aplicado en caliente). Este script es SOLO óptico (Etapa 1 del flujo
+    // de 3 etapas) -- ver `generateTr069ManagementScript` para el bloque
+    // OMCI que apunta al ACS, que ahora corre como operación separada
+    // (`applyTr069Management`).
+    commands.push('exit', 'write');
+    return commands;
+  }
+
+  /**
+   * Script CLI del bloque OMCI que apunta la ONU al ACS (TR-069) -- Etapa 2
+   * del flujo de 3 etapas, separado de `generateAuthorizationScript()` para
+   * poder reintentarse sin re-autorizar la ONU ópticamente. Asume
+   * `config.managementMethod==='TR069' && config.tr069Url && config.tr069Vlan`
+   * (responsabilidad del caller, ver `OnuManagementService.applyTr069Profile`).
+   */
+  generateTr069ManagementScript(config: import('../ports/olt-driver.port').AuthorizeOnuParams): string[] {
+    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
+    const commands: string[] = [
+      'configure terminal',
+      `interface ${onuInterface}`,
+    ];
+
     // Segundo camino de datos GPON, dedicado a la VLAN de gestión TR-069 --
     // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20, ONU
     // CMDCDD4D131E / Huawei HG8546M) que sin este segundo tcont/gemport/
@@ -710,97 +736,63 @@ export class ZteC320Driver implements IOltDriver {
     // OLT, no solo uno fijo), "tr069-mgmt 1 acs <url>" puede aceptarse en la
     // OLT pero el ONT lo rechaza a nivel OMCI, o directamente nunca intenta
     // DHCP en la VLAN de gestión. Ver docs/onu-tr069-provisioning-zte-c320.md
-    // para el diagnóstico completo. Solo se genera si hay una VLAN de gestión
-    // distinta configurada (`tr069Vlan`) -- sin eso no hay nada real que
-    // cablear por separado.
-    const hasTr069Datapath =
-      config.managementMethod === 'TR069' && !!config.tr069Url && !!config.tr069Vlan;
+    // para el diagnóstico completo.
+    commands.push(
+      `tcont 2 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
+      'gemport 2 tcont 2',
+      'switchport mode hybrid vport 2',
+      `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
+      'exit',
+      `pon-onu-mng ${onuInterface}`,
+      // Cableado interno OMCI que conecta el service-port 2 (arriba) con el
+      // VEIP (interfaz virtual que usa el ONT para TR-069) -- CONFIRMADO EN
+      // VIVO contra OLT_Tabara_Abajo (2026-10-20): esta es la pieza que
+      // faltaba, no la sintaxis de "tr069-mgmt". Debe ir ANTES de
+      // "tr069-mgmt ... acs ..." (orden importa).
+      'flow 2 switch switch_0/1',
+      'flow mode 2 tag-filter vlan-filter untag-filter discard',
+      `flow 2 pri 0 vlan ${config.tr069Vlan}`,
+      'gemport 2 flow 2',
+      'switchport-bind switch_0/1 iphost 2',
+      // "ping-response"/"traceroute-response" dejan que un técnico haga
+      // ping/traceroute a la IP de gestión del ONT directamente --
+      // confirmado en el config real de un ONU Villar Pando (SmartOLT).
+      'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
+      'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
+      `vlan-filter iphost 2 pri 0 vlan ${config.tr069Vlan}`,
+      'veip 1 port udp 1232 host 2',
+      // Sin esto el ME de ManagementServer puede quedar administrativamente
+      // bloqueado -- confirmado como parte de la secuencia real que
+      // finalmente funcionó (2026-10-20).
+      'tr069-mgmt 1 state unlock',
+      // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20) vía ayuda
+      // contextual ("tr069-mgmt 1 ?" en el prompt "(gpon-onu-mng)#"): "acs
+      // <url>" y "tag pri <0-7> vlan <1-4094>" son DOS comandos SEPARADOS
+      // (hermanos en el árbol de sintaxis), no uno encadenado -- antes se
+      // mandaban juntos como "tr069-mgmt 1 acs <url> tag pri 2 vlan <vlan>",
+      // que la OLT rechazaba con "%Error 20201: Invalid input detected ...
+      // Invalid command key word" porque "tag" nunca es un parámetro válido
+      // después de la URL del ACS.
+      `tr069-mgmt 1 acs ${config.tr069Url}`,
+      `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
+      // Los SET de OMCI de este ONT no son idempotentes y cualquier cambio
+      // puede dejar "Config state" en "fail" (ver `show gpon onu
+      // detail-info <iface>`) hasta que el ONT se reinicia -- CONFIRMADO EN
+      // VIVO (2026-10-20) que un reinicio por OMCI es obligatorio para que
+      // el resync realmente tome efecto y el ONT empiece a pedir DHCP /
+      // hablar con el ACS en la VLAN de gestión.
+      REBOOT_ONU_SENTINEL,
+      // "end", NO "exit": todos los ejemplos reales del manual (ZXA10 C300
+      // Configuration Manual CLI, ej. §2.11/2.12/2.13) salen de
+      // "(gpon-onu-mng)#" con "end" -- usar "exit" ahí dispara el prompt
+      // interactivo "Confirm to logout without saving? [yes/no]:" que este
+      // driver no sabe responder, y la sesión se cuelga hasta el timeout
+      // (confirmado en producción: ONU CMDCDD4D131E / OLT_Tabara_Abajo,
+      // 2026-10-19).
+      'end',
+      'write',
+    );
 
-    if (hasTr069Datapath) {
-      commands.push(
-        `tcont 2 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
-        'gemport 2 tcont 2',
-        'switchport mode hybrid vport 2',
-        `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
-      );
-    }
-
-    commands.push('exit');
-
-    if (config.managementMethod === 'TR069' && config.tr069Url) {
-      commands.push(`pon-onu-mng ${onuInterface}`);
-
-      if (hasTr069Datapath) {
-        // Cableado interno OMCI que conecta el service-port 2 (arriba) con el
-        // VEIP (interfaz virtual que usa el ONT para TR-069) -- CONFIRMADO EN
-        // VIVO contra OLT_Tabara_Abajo (2026-10-20): esta es la pieza que
-        // faltaba, no la sintaxis de "tr069-mgmt". Debe ir ANTES de
-        // "tr069-mgmt ... acs ..." (orden importa).
-        commands.push(
-          'flow 2 switch switch_0/1',
-          'flow mode 2 tag-filter vlan-filter untag-filter discard',
-          `flow 2 pri 0 vlan ${config.tr069Vlan}`,
-          'gemport 2 flow 2',
-          'switchport-bind switch_0/1 iphost 2',
-          // "ping-response"/"traceroute-response" dejan que un técnico haga
-          // ping/traceroute a la IP de gestión del ONT directamente --
-          // confirmado en el config real de un ONU Villar Pando (SmartOLT).
-          'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
-          'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
-          `vlan-filter iphost 2 pri 0 vlan ${config.tr069Vlan}`,
-          'veip 1 port udp 1232 host 2',
-          // Sin esto el ME de ManagementServer puede quedar administrativamente
-          // bloqueado -- confirmado como parte de la secuencia real que
-          // finalmente funcionó (2026-10-20).
-          'tr069-mgmt 1 state unlock',
-        );
-      }
-
-      commands.push(
-        // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20) vía ayuda
-        // contextual ("tr069-mgmt 1 ?" en el prompt "(gpon-onu-mng)#"): "acs
-        // <url>" y "tag pri <0-7> vlan <1-4094>" son DOS comandos SEPARADOS
-        // (hermanos en el árbol de sintaxis), no uno encadenado -- antes se
-        // mandaban juntos como "tr069-mgmt 1 acs <url> tag pri 2 vlan <vlan>",
-        // que la OLT rechazaba con "%Error 20201: Invalid input detected ...
-        // Invalid command key word" porque "tag" nunca es un parámetro válido
-        // después de la URL del ACS.
-        `tr069-mgmt 1 acs ${config.tr069Url}`,
-        `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
-      );
-
-      if (hasTr069Datapath) {
-        // Los SET de OMCI de este ONT no son idempotentes y cualquier cambio
-        // puede dejar "Config state" en "fail" (ver `show gpon onu
-        // detail-info <iface>`) hasta que el ONT se reinicia -- CONFIRMADO EN
-        // VIVO (2026-10-20) que un reinicio por OMCI es obligatorio para que
-        // el resync realmente tome efecto y el ONT empiece a pedir DHCP /
-        // hablar con el ACS en la VLAN de gestión.
-        commands.push(REBOOT_ONU_SENTINEL);
-      }
-
-      commands.push(
-        // "end", NO "exit": todos los ejemplos reales del manual (ZXA10 C300
-        // Configuration Manual CLI, ej. §2.11/2.12/2.13) salen de
-        // "(gpon-onu-mng)#" con "end" -- usar "exit" ahí dispara el prompt
-        // interactivo "Confirm to logout without saving? [yes/no]:" que este
-        // driver no sabe responder, y la sesión se cuelga hasta el timeout
-        // (confirmado en producción: ONU CMDCDD4D131E / OLT_Tabara_Abajo,
-        // 2026-10-19).
-        'end',
-      );
-    } else {
-      // Sin TR069, el script nunca sale de "(config)#" -- "write" EXIGE estar
-      // en el prompt top-level "#", confirmado en vivo contra
-      // OLT_Tabara_Abajo (2026-10-19): sin este "exit" extra, "write" falla
-      // con "%Error 20200: Invalid input detected" y la autorización nunca
-      // se persiste a flash (aunque el "onu type sn" sí haya quedado
-      // aplicado en caliente). Con TR069 no hace falta: "end" ya deja la
-      // sesión en el prompt top-level.
-      commands.push('exit');
-    }
-
-    commands.push('write');
     return commands;
   }
 
@@ -827,17 +819,10 @@ export class ZteC320Driver implements IOltDriver {
    *      pasos ya aplicados en la OLT, ej. el "onu type sn" o el
    *      "service-port") abortaba de nuevo en el primer paso ya aplicado,
    *      sin llegar nunca a los pasos siguientes.
-   *   4. Trata el bloque "pon-onu-mng .../tr069-mgmt ...⁄end" (push OMCI de
-   *      WAN/ACS, solo con TR069) como MEJOR ESFUERZO, no crítico -- mismo
-   *      criterio que `cpeConfigWarning` del lado del servicio. Confirmado en
-   *      vivo contra OLT_Tabara_Abajo (2026-10-20) que la OLT puede aceptar
-   *      el comando pero el ONT lo rechace a nivel OMCI ("%Code 63990-GPONRM
-   *      : ONT return error: command processing error.", posiblemente por
-   *      "Max VEIP: 0" en el onu-type -- ver nota en `ensureOnuTypeProfile`).
-   *      El resto de la autorización (ONU/tcont/vlan/service-port, que deja
-   *      al cliente con Internet funcionando) NUNCA debe abortar por esto --
-   *      se reporta como `warning` en vez de `error`, igual que ya hace
-   *      `onu-management.service.ts` cuando falla el push a GenieACS.
+   *
+   * SOLO óptico (Etapa 1 del flujo de 3 etapas) -- ya no incluye el bloque
+   * OMCI de TR-069/ACS, que ahora es `applyTr069Management()`, una operación
+   * separada e independientemente reintentable (Etapa 2).
    */
   async authorizeOnu(
     params: OltConnectionParams,
@@ -863,6 +848,46 @@ export class ZteC320Driver implements IOltDriver {
 
       const commands = this.generateAuthorizationScript(config);
 
+      for (const cmd of commands) {
+        const output = await session.executeCommand(cmd);
+        if (this.isOltErrorResponse(output) && !this.isAlreadyAppliedResponse(output)) {
+          throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
+        }
+      }
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * Aplica SOLO el bloque OMCI que apunta la ONU al ACS (TR-069) -- Etapa 2
+   * del flujo de 3 etapas, separada de `authorizeOnu()` para poder
+   * reintentarse sin re-autorizar la ONU ópticamente. Asume que la ONU ya
+   * está autorizada en la OLT (vport1/service-port1 ya existen).
+   *
+   * Trata el bloque completo como MEJOR ESFUERZO, no crítico -- mismo
+   * criterio que `cpeConfigWarning` del lado del servicio. Confirmado en
+   * vivo contra OLT_Tabara_Abajo (2026-10-20) que la OLT puede aceptar el
+   * comando pero el ONT lo rechace a nivel OMCI ("%Code 63990-GPONRM : ONT
+   * return error: command processing error.", posiblemente por "Max VEIP: 0"
+   * en el onu-type -- ver nota en `ensureOnuTypeProfile`). Un rechazo acá
+   * nunca debe impedir que el admin vea el resultado -- se reporta como
+   * `warning`, no como `error` duro, igual que antes hacía `authorizeOnu()`
+   * con este mismo bloque.
+   */
+  async applyTr069Management(
+    params: OltConnectionParams,
+    config: import('../ports/olt-driver.port').AuthorizeOnuParams,
+  ): Promise<{ ok: boolean; error?: string; warning?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+
+      const commands = this.generateTr069ManagementScript(config);
       let warning: string | undefined;
       let inTr069Block = false;
 
@@ -874,14 +899,14 @@ export class ZteC320Driver implements IOltDriver {
         if (cmd === REBOOT_ONU_SENTINEL) {
           // No es un comando CLI -- ver REBOOT_ONU_SENTINEL. Mismo criterio
           // de mejor esfuerzo que el resto del bloque TR-069: si el ONT no
-          // confirma el reinicio a tiempo, no debe tumbar la autorización
-          // completa (el internet del cliente ya quedó aplicado antes).
+          // confirma el reinicio a tiempo, no debe tumbar el resultado
+          // completo (la OLT ya aceptó la configuración).
           try {
             await session.rebootOnu();
           } catch (err: any) {
             if (!warning) {
-              warning = `No se pudo confirmar el reinicio OMCI del ONT tras configurar TR-069: ${err.message}. El resto de la autorización sí se aplicó.`;
-              this.logger.warn(`[diag] authorizeOnu: rebootOnu() best-effort falló, continuando: ${warning}`);
+              warning = `No se pudo confirmar el reinicio OMCI del ONT tras configurar TR-069: ${err.message}. La configuración sí se aplicó en la OLT.`;
+              this.logger.warn(`[diag] applyTr069Management: rebootOnu() best-effort falló, continuando: ${warning}`);
             }
           }
           continue;
@@ -895,8 +920,8 @@ export class ZteC320Driver implements IOltDriver {
             if (!warning) {
               warning =
                 `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${output.trim()}. ` +
-                'El resto de la autorización (tráfico de Internet) sí se aplicó -- configura el WAN manualmente en la ONU.';
-              this.logger.warn(`[diag] authorizeOnu: TR-069/ACS best-effort falló, continuando: ${warning}`);
+                'Probablemente debas configurar el WAN manualmente en la ONU.';
+              this.logger.warn(`[diag] applyTr069Management: TR-069/ACS best-effort falló, continuando: ${warning}`);
             }
             // No se relanza: el resto del script (incluido "end" para salir
             // limpio de "(gpon-onu-mng)#" y el "write" final) debe seguir

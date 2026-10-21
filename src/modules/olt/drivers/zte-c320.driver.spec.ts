@@ -27,7 +27,7 @@ describe('ZteC320Driver', () => {
     expect(result.error).toBeDefined();
   });
 
-  it('genera correctamente los comandos CLI de autorización y provisión (RF-OLT-016 / RF-OLT-018)', () => {
+  it('genera correctamente los comandos CLI de autorización y provisión -- SOLO ópticos, ya no incluye el bloque TR-069 (Etapa 1 del flujo de 3 etapas, RF-OLT-016 / RF-OLT-018)', () => {
     const commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
@@ -36,6 +36,9 @@ describe('ZteC320Driver', () => {
       clientName: 'CLI-001-JuanPerez',
       description: 'zone_Tabara Abajo_lat_18.65_long_-71.03_authd_20261020',
       serviceVlan: 200,
+      // Aunque venga managementMethod/tr069Url/tr069Vlan, este generador los
+      // ignora por completo -- ese bloque ahora es `generateTr069ManagementScript`
+      // (Etapa 2, operación separada e independientemente reintentable).
       tr069Vlan: 46,
       tr069Url: 'http://10.46.0.1:7547/',
       tcontProfile: 'UP-50M',
@@ -59,69 +62,79 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('tcont 1 profile UP-50M');
     expect(commands).toContain('gemport 1 tcont 1');
     expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
-    expect(commands).toContain('pon-onu-mng gpon-onu_1/1/1:5');
-    // "acs <url>" y "tag pri <n> vlan <n>" son DOS comandos separados --
-    // confirmado en vivo contra OLT_Tabara_Abajo (2026-10-20) vía ayuda
-    // contextual ("tr069-mgmt 1 ?"): antes se mandaban como uno solo
-    // ("tr069-mgmt 1 acs <url> tag pri 2 vlan 46"), rechazado con "%Error
-    // 20201: Invalid input detected ... Invalid command key word".
-    expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
-    expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
     expect(commands).toContain('write');
 
-    // Con "tr069Vlan" presente, también se genera el segundo camino de datos
-    // GPON (VLAN de gestión) y el cableado OMCI interno que lo conecta al
-    // VEIP -- CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20, ONU
-    // CMDCDD4D131E): sin esto, "tr069-mgmt ... acs ..." puede aceptarse pero
-    // el ONT nunca llega a usarlo. Ver docs/onu-tr069-provisioning-zte-c320.md.
-    expect(commands).toContain('tcont 2 profile UP-50M');
-    expect(commands).toContain('gemport 2 tcont 2');
-    expect(commands).toContain('switchport mode hybrid vport 2');
-    expect(commands).toContain('service-port 2 vport 2 user-vlan 46 vlan 46');
-    expect(commands).toContain('flow 2 switch switch_0/1');
-    expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
-    expect(commands).toContain('flow 2 pri 0 vlan 46');
-    expect(commands).toContain('gemport 2 flow 2');
-    expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
-    expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
-    expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
-    expect(commands).toContain('vlan-filter iphost 2 pri 0 vlan 46');
-    expect(commands).toContain('veip 1 port udp 1232 host 2');
-    expect(commands).toContain('tr069-mgmt 1 state unlock');
+    // Nada de TR-069/OMCI acá, sin importar que managementMethod/tr069Url/
+    // tr069Vlan hayan venido en el config de entrada.
+    expect(commands.some((c) => c.includes('pon-onu-mng'))).toBe(false);
+    expect(commands.some((c) => c.includes('tr069-mgmt'))).toBe(false);
+    expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
+    expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
+    expect(commands.some((c) => c.includes('veip 1'))).toBe(false);
+    expect(commands).not.toContain(REBOOT_ONU_SENTINEL);
 
-    // El cableado OMCI (flow/iphost/veip/state unlock) va ANTES de "acs" --
-    // orden confirmado en vivo, cambiarlo rompería la secuencia real.
-    const unlockIdx = commands.indexOf('tr069-mgmt 1 state unlock');
-    const acsIdx = commands.indexOf('tr069-mgmt 1 acs http://10.46.0.1:7547/');
-    expect(unlockIdx).toBeLessThan(acsIdx);
-
-    // Los SET de OMCI de este ONT no son idempotentes -- un reinicio
-    // obligatorio (vía el sentinel que `authorizeOnu()` intercepta, ver
-    // REBOOT_ONU_SENTINEL) va justo antes de "end", que sigue siendo NUNCA
-    // "exit" -- con "exit" la OLT real pregunta "Confirm to logout without
-    // saving? [yes/no]:" y la sesión se cuelga (bug real en producción,
-    // 2026-10-19, ver también los ejemplos del manual ZXA10 C300 §2.11-2.13,
-    // todos usan "end" ahí).
-    expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
+    // Siempre cierra con "exit" (nunca "end") + "write" -- este script nunca
+    // entra a "(gpon-onu-mng)#", solo usa el prompt de configuración normal.
+    expect(commands.slice(-2)).toEqual(['exit', 'write']);
   });
 
-  it('sin "tr069Vlan" (solo "tr069Url"), NO genera el segundo camino de datos GPON ni el reinicio OMCI -- no hay VLAN de gestión distinta que cablear, así que el comportamiento queda igual al de antes de este fix', () => {
-    const commands = driver.generateAuthorizationScript({
+  describe('generateTr069ManagementScript (Etapa 2: apuntar la ONU al ACS)', () => {
+    const baseConfig = {
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
       modelTypeName: 'ZTE-F660',
       serialNumber: 'ZTEGC0123456',
       serviceVlan: 200,
+      tr069Vlan: 46,
       tr069Url: 'http://10.46.0.1:7547/',
-      managementMethod: 'TR069',
-      operationMode: 'ROUTER',
-    });
+      tcontProfile: 'UP-50M',
+      managementMethod: 'TR069' as const,
+      operationMode: 'ROUTER' as const,
+    };
 
-    expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
-    expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
-    expect(commands.some((c) => c.includes('veip 1'))).toBe(false);
-    expect(commands).not.toContain(REBOOT_ONU_SENTINEL);
-    expect(commands.slice(-2)).toEqual(['end', 'write']);
+    it('genera el bloque OMCI completo que apunta la ONU al ACS, con el segundo camino de datos GPON para la VLAN de gestión', () => {
+      const commands = driver.generateTr069ManagementScript(baseConfig);
+
+      expect(commands).toContain('configure terminal');
+      expect(commands).toContain('interface gpon-onu_1/1/1:5');
+      expect(commands).toContain('tcont 2 profile UP-50M');
+      expect(commands).toContain('gemport 2 tcont 2');
+      expect(commands).toContain('switchport mode hybrid vport 2');
+      expect(commands).toContain('service-port 2 vport 2 user-vlan 46 vlan 46');
+      expect(commands).toContain('pon-onu-mng gpon-onu_1/1/1:5');
+      expect(commands).toContain('flow 2 switch switch_0/1');
+      expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
+      expect(commands).toContain('flow 2 pri 0 vlan 46');
+      expect(commands).toContain('gemport 2 flow 2');
+      expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
+      expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
+      expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
+      expect(commands).toContain('vlan-filter iphost 2 pri 0 vlan 46');
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      expect(commands).toContain('tr069-mgmt 1 state unlock');
+      // "acs <url>" y "tag pri <n> vlan <n>" son DOS comandos separados --
+      // confirmado en vivo contra OLT_Tabara_Abajo (2026-10-20) vía ayuda
+      // contextual ("tr069-mgmt 1 ?"): antes se mandaban como uno solo
+      // ("tr069-mgmt 1 acs <url> tag pri 2 vlan 46"), rechazado con "%Error
+      // 20201: Invalid input detected ... Invalid command key word".
+      expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
+      expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
+
+      // El cableado OMCI (flow/iphost/veip/state unlock) va ANTES de "acs" --
+      // orden confirmado en vivo, cambiarlo rompería la secuencia real.
+      const unlockIdx = commands.indexOf('tr069-mgmt 1 state unlock');
+      const acsIdx = commands.indexOf('tr069-mgmt 1 acs http://10.46.0.1:7547/');
+      expect(unlockIdx).toBeLessThan(acsIdx);
+
+      // Los SET de OMCI de este ONT no son idempotentes -- un reinicio
+      // obligatorio (vía el sentinel que `applyTr069Management()` intercepta,
+      // ver REBOOT_ONU_SENTINEL) va justo antes de "end", que NUNCA es "exit"
+      // -- con "exit" la OLT real pregunta "Confirm to logout without
+      // saving? [yes/no]:" y la sesión se cuelga (bug real en producción,
+      // 2026-10-19, ver también los ejemplos del manual ZXA10 C300 §2.11-2.13,
+      // todos usan "end" ahí).
+      expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
+    });
   });
 
   it('sin "description", no agrega esa línea -- opcional, no rompe compatibilidad con llamadas existentes', () => {
@@ -164,7 +177,7 @@ describe('ZteC320Driver', () => {
     expect(withoutTraffic.some((c) => c.startsWith('traffic-profile'))).toBe(false);
   });
 
-  it('sin TR069, agrega un "exit" extra antes de "write" para llegar al prompt top-level "#" -- bug real confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): sin este exit, "write" se queda en "(config)#" y la OLT lo rechaza con "%Error 20200"', () => {
+  it('generateAuthorizationScript siempre cierra con "exit" + "write" (prompt top-level "#") -- bug real confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): sin este exit, "write" se queda en "(config)#" y la OLT lo rechaza con "%Error 20200", sin importar managementMethod (este generador ya no entra nunca a "(gpon-onu-mng)#")', () => {
     const omciCommands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
@@ -174,10 +187,7 @@ describe('ZteC320Driver', () => {
       managementMethod: 'OMCI',
       operationMode: 'ROUTER',
     });
-    // El bloque de interfaz de la ONU cierra con "exit" (-> vuelve a
-    // "(config)#"); sin TR069 (que usa "end" y ya llega al top-level) hace
-    // falta OTRO "exit" para salir de "(config)#" antes de "write".
-    expect(omciCommands.slice(-3)).toEqual(['exit', 'exit', 'write']);
+    expect(omciCommands.slice(-2)).toEqual(['exit', 'write']);
 
     const tr069Commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
@@ -189,9 +199,7 @@ describe('ZteC320Driver', () => {
       managementMethod: 'TR069',
       operationMode: 'ROUTER',
     });
-    // Con TR069, "end" ya deja la sesión en el prompt top-level -- un exit
-    // extra ahí sería incorrecto (podría cerrar la sesión).
-    expect(tr069Commands.slice(-2)).toEqual(['end', 'write']);
+    expect(tr069Commands.slice(-2)).toEqual(['exit', 'write']);
   });
 
   it('parsea correctamente las ONUs no configuradas y extrae serial y fabricante (RF-OLT-014)', async () => {
@@ -1068,7 +1076,7 @@ describe('ZteC320Driver', () => {
     });
   });
 
-  describe('authorizeOnu() trata el push OMCI de TR-069/ACS como mejor esfuerzo, no crítico (bug real confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-20: "%Code 63990-GPONRM : ONT return error: command processing error." en "tr069-mgmt 1 acs <url>")', () => {
+  describe('applyTr069Management() trata el push OMCI de TR-069/ACS como mejor esfuerzo, no crítico (bug real confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-20: "%Code 63990-GPONRM : ONT return error: command processing error." en "tr069-mgmt 1 acs <url>") -- Etapa 2 del flujo de 3 etapas, separada de authorizeOnu()', () => {
     const tr069Config = {
       ponInterface: 'gpon-olt_1/2/15',
       onuId: 1,
@@ -1083,7 +1091,6 @@ describe('ZteC320Driver', () => {
 
     it('si el ONT rechaza "tr069-mgmt ... acs ..." a nivel OMCI, el resto del script (incluido "write") igual se ejecuta y el resultado es ok:true con "warning"', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :HUAWEY-HG8546M');
         if (cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ')) {
           return Promise.resolve('\r\n%Code 63990-GPONRM : ONT return error:command processing error.\r\nOLT#');
         }
@@ -1097,7 +1104,7 @@ describe('ZteC320Driver', () => {
         close: jest.fn(),
       });
 
-      const result = await driver.authorizeOnu(
+      const result = await driver.applyTr069Management(
         { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
         tr069Config,
       );
@@ -1122,7 +1129,7 @@ describe('ZteC320Driver', () => {
         close: jest.fn(),
       });
 
-      const result = await driver.authorizeOnu(
+      const result = await driver.applyTr069Management(
         { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
         tr069Config,
       );
@@ -1130,8 +1137,8 @@ describe('ZteC320Driver', () => {
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
       expect(rebootOnu).toHaveBeenCalled();
-      // El sentinel nunca debe llegar a executeCommand -- authorizeOnu() lo
-      // intercepta y llama a session.rebootOnu() en su lugar.
+      // El sentinel nunca debe llegar a executeCommand -- applyTr069Management()
+      // lo intercepta y llama a session.rebootOnu() en su lugar.
       expect(executeCommand).not.toHaveBeenCalledWith(REBOOT_ONU_SENTINEL);
     });
 
@@ -1145,7 +1152,7 @@ describe('ZteC320Driver', () => {
         close: jest.fn(),
       });
 
-      const result = await driver.authorizeOnu(
+      const result = await driver.applyTr069Management(
         { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
         tr069Config,
       );
@@ -1157,10 +1164,9 @@ describe('ZteC320Driver', () => {
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
-    it('un rechazo ANTES de entrar al bloque TR-069 (ej. "onu type sn" inválido) sigue siendo fatal -- el mejor esfuerzo solo aplica dentro de "pon-onu-mng"', async () => {
+    it('un rechazo ANTES de entrar al bloque TR-069 (ej. "service-port 2" inválido) sigue siendo fatal -- el mejor esfuerzo solo aplica dentro de "pon-onu-mng"', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :HUAWEY-HG8546M');
-        if (cmd.startsWith('onu ')) return Promise.resolve('\r\n%Code 63904-GPONRM : Not support this ONU.\r\nOLT#');
+        if (cmd.startsWith('service-port 2')) return Promise.resolve('\r\n%Code 10: Invalid parameter!\r\nOLT#');
         return Promise.resolve('');
       });
       const rebootOnu = jest.fn().mockResolvedValue(undefined);
@@ -1171,7 +1177,7 @@ describe('ZteC320Driver', () => {
         close: jest.fn(),
       });
 
-      const result = await driver.authorizeOnu(
+      const result = await driver.applyTr069Management(
         { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
         tr069Config,
       );

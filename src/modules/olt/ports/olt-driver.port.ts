@@ -377,6 +377,18 @@ export interface IOltDriver {
    * fallar la autorización completa, que ya dejó al ONU pasando tráfico.
    */
   authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string; warning?: string }>;
+  /**
+   * Aplica SOLO el bloque OMCI que apunta la ONU al ACS (TR-069) -- Etapa 2
+   * del flujo de 3 etapas (Autorizar en OLT / Aplicar Perfil TR-069 /
+   * Configurar WAN-PPPoE), separado de `authorizeOnu()` para poder
+   * reintentarse de forma independiente sin volver a autorizar la ONU
+   * ópticamente. Asume que la ONU ya está autorizada en la OLT
+   * (`authorizeOnu()` ya corrió exitosamente antes). Mismo criterio de
+   * "mejor esfuerzo" que antes tenía el bloque TR-069 dentro de
+   * `authorizeOnu()`: un rechazo de la OLT en este bloque se reporta como
+   * `warning`, nunca lanza.
+   */
+  applyTr069Management(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string; warning?: string }>;
   setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }>;
   deleteOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -399,7 +411,10 @@ export interface IOltDriver {
   configureVlanTranslation(params: OltConnectionParams, config: VlanTranslationParams): Promise<{ ok: boolean; error?: string }>;
   /** Alarmas/eventos reales del equipo (ver `alarms` en OltDriverCapabilities). */
   getAlarms(params: OltConnectionParams): Promise<OltAlarm[]>;
+  /** Script CLI SOLO óptico (ONU/tcont/gemport/vport/service-port de servicio) -- ya no incluye el bloque TR-069/OMCI, ver `generateTr069ManagementScript`. */
   generateAuthorizationScript(config: AuthorizeOnuParams): string[];
+  /** Script CLI del bloque OMCI que apunta la ONU al ACS (TR-069) -- ver `applyTr069Management`. Asume `config.managementMethod==='TR069' && config.tr069Url && config.tr069Vlan`. */
+  generateTr069ManagementScript(config: AuthorizeOnuParams): string[];
   getRunningConfig?(params: OltConnectionParams): Promise<string>;
   getInterfaceTraffic?(params: OltConnectionParams, interfaceName: string): Promise<{ rxKbps: number; txKbps: number; rawBps?: { inputBps: number; outputBps: number } }>;
   getCapabilities(): OltDriverCapabilities;

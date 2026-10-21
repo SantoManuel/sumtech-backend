@@ -146,6 +146,38 @@ export class OnuController {
   }
 
   /**
+   * Etapa 2 (flujo de 3 etapas): apunta una ONU ya autorizada ópticamente al
+   * ACS (TR-069), sin tocar GenieACS/WAN todavía.
+   */
+  @Post(':id/tr069-profile')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async applyTr069Profile(
+    @Param('id') id: string,
+    @Body() dto: any,
+    @Req() req: any,
+  ) {
+    return this.onuService.applyTr069Profile(id, dto, req.user?.id);
+  }
+
+  /**
+   * Etapa 3 (flujo de 3 etapas): empuja WAN/PPPoE/WiFi al CPE vía GenieACS --
+   * exige que la Etapa 2 (tr069-profile) ya se haya aplicado.
+   */
+  @Post(':id/wan-config')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async pushWanConfig(
+    @Param('id') id: string,
+    @Body() dto: any,
+    @Req() req: any,
+  ) {
+    return this.onuService.pushWanConfig(id, dto, req.user?.id);
+  }
+
+  /**
    * Reconfigura método de gestión / VLANs de gestión / modo de operación de
    * una ONU ya autorizada y reintenta el push a GenieACS, sin volver a
    * disparar el CLI de autorización en la OLT.

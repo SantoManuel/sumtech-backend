@@ -533,6 +533,16 @@ export class HiosoDriver implements IOltDriver {
   }
 
   /**
+   * Este hardware EPON no tiene ningún comando para apuntar la ONU al ACS
+   * desde la propia OLT -- mismo motivo que `tr069AutoProvisioning: false`
+   * (ver `getCapabilityNotes`). El WAN debe configurarse manualmente en la
+   * propia ONU.
+   */
+  async applyTr069Management(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'applyTr069Management').message };
+  }
+
+  /**
    * "onu <id> activate" / "onu <id> deactivate" dentro de la interfaz PON
    * (ver cli_command_tree.txt nota 11): confirmados con efecto real sobre
    * hardware físico (el Status en "show onu upgrade-state" cambió Up<->Down
@@ -706,6 +716,11 @@ export class HiosoDriver implements IOltDriver {
 
     commands.push('exit', 'exit', 'write');
     return commands;
+  }
+
+  /** Este hardware EPON no tiene ningún comando para apuntar la ONU al ACS -- ver `applyTr069Management`. */
+  generateTr069ManagementScript(config: AuthorizeOnuParams): string[] {
+    throw new DriverNotImplementedError(VENDOR, 'generateTr069ManagementScript');
   }
 
   /**

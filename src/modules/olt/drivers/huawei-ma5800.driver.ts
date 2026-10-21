@@ -67,6 +67,10 @@ export class HuaweiMa5800Driver implements IOltDriver {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'authorizeOnu').message };
   }
 
+  async applyTr069Management(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string }> {
+    return { ok: false, error: new DriverNotImplementedError(VENDOR, 'applyTr069Management').message };
+  }
+
   async setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: new DriverNotImplementedError(VENDOR, 'setOnuAdminState').message };
   }
@@ -109,6 +113,10 @@ export class HuaweiMa5800Driver implements IOltDriver {
 
   generateAuthorizationScript(config: AuthorizeOnuParams): string[] {
     throw new DriverNotImplementedError(VENDOR, 'generateAuthorizationScript');
+  }
+
+  generateTr069ManagementScript(config: AuthorizeOnuParams): string[] {
+    throw new DriverNotImplementedError(VENDOR, 'generateTr069ManagementScript');
   }
 
   getCapabilities(): OltDriverCapabilities {

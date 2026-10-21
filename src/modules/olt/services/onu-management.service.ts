@@ -533,15 +533,13 @@ export class OnuManagementService {
     // abortar el resto -- se surte igual que `cpeConfigWarning` más abajo.
     const oltWarning = result.warning;
 
-    // 2. Persistir configuración de servicio en net.onu_service_config
-    // Normaliza campos UUID opcionales: un "" (select sin elegir, ej.
-    // tr069NetworkId cuando managementMethod=TR069 pero no se eligió red)
-    // es un valor inválido para una columna uuid nullable en Postgres
-    // ("invalid input syntax for type uuid"), a diferencia de omitir el
-    // campo. No confiar solo en que el cliente nunca mande "".
-    const mgmtVlanId = dto.mgmtVlanId || undefined;
-    const tr069VlanId = dto.tr069VlanId || undefined;
-    const tr069NetworkId = dto.tr069NetworkId || undefined;
+    // 2. Persistir configuración de servicio en net.onu_service_config --
+    // SOLO campos ópticos (Etapa 1 del flujo de 3 etapas: Autorizar en OLT /
+    // Aplicar Perfil TR-069 / Configurar WAN-PPPoE). `managementMethod`/
+    // `tr069NetworkId`/`wanMode` ya NO se deciden acá -- se quedan en
+    // 'OMCI'/null/default hasta que `applyTr069Profile()` (Etapa 2) los
+    // aplique explícitamente. Si `config` ya existía (re-autorizar), no se
+    // pisan esos campos: preservan lo que las etapas 2/3 ya hayan aplicado.
     const speedProfileId = dto.speedProfileId || undefined;
 
     let config = await this.configRepository.findOneBy({ onuId: onu.id });
@@ -549,12 +547,8 @@ export class OnuManagementService {
       config = this.configRepository.create({
         onuId: onu.id,
         serviceVlanId: dto.serviceVlanId,
-        mgmtVlanId,
-        tr069VlanId,
-        tr069NetworkId,
-        managementMethod: dto.managementMethod || 'TR069',
+        managementMethod: 'OMCI',
         operationMode: dto.operationMode || 'ROUTER',
-        wanMode: dto.wanMode || 'PPPOE',
         speedProfileId,
         desiredVersion: 1,
         appliedVersion: 1,
@@ -562,12 +556,7 @@ export class OnuManagementService {
       });
     } else {
       config.serviceVlanId = dto.serviceVlanId;
-      config.mgmtVlanId = mgmtVlanId;
-      config.tr069VlanId = tr069VlanId;
-      config.tr069NetworkId = tr069NetworkId;
-      config.managementMethod = dto.managementMethod || config.managementMethod;
       config.operationMode = dto.operationMode || config.operationMode;
-      config.wanMode = dto.wanMode || config.wanMode;
       config.speedProfileId = speedProfileId;
       config.appliedVersion += 1;
       config.desiredVersion = config.appliedVersion;
@@ -616,33 +605,14 @@ export class OnuManagementService {
       },
     });
 
-    // 4. Empujar WiFi/VLAN/WAN/tags reales al CPE vía GenieACS (RF-OLT-013),
-    // solo si se eligió gestión TR-069. Esto NUNCA debe hacer fallar la
-    // autorización completa: el ONU ya quedó pasando tráfico a nivel OLT en
-    // el paso 1 — este es un paso adicional que depende de que el propio
-    // ONU ya haya hecho su primer Inform hacia nuestro ACS (ver
-    // pushCpeConfiguration -> CpeConfiguratorService.configureCpe ->
-    // findDeviceBySerial). Para hardware donde no hay forma verificada de
-    // apuntar el ONU al ACS desde la OLT (hoy: HiOSO/EPON), esto normalmente
-    // fallará la primera vez — es un estado esperado a comunicar, no un bug
-    // que se deba esconder. `cpeConfigStatus` queda persistido en `config`
-    // (ver pushCpeConfiguration) para que OnuCpeSyncReconciliationService
-    // reintente automáticamente mientras no quede en 'APPLIED'.
-    const { cpeConfigured, cpeConfigWarning } = await this.pushCpeConfiguration(
-      onu,
-      config,
-      olt,
-      { wanStaticIp: dto.wanStaticIp, wanStaticMask: dto.wanStaticMask, wanStaticGw: dto.wanStaticGw },
-      {
-        warningPrefix: 'ONU autorizada en la OLT. Pendiente de aplicar WiFi/VLAN/WAN vía GenieACS',
-        failureLogMessagePrefix: `[${olt.vendor}] ONU ${onu.serialNumber} autorizada en la OLT pero no se pudo configurar vía GenieACS`,
-        operation: 'authorizeOnu.configureCpe',
-        actorUserId,
-      },
-    );
-
+    // Ya NO se empuja nada a GenieACS acá -- eso es ahora la Etapa 2
+    // (`applyTr069Profile`, apunta el ONU al ACS) y la Etapa 3
+    // (`pushWanConfig`, envía WAN/PPPoE), ambas acciones separadas e
+    // independientemente reintentables desde la Ficha 360 de la ONU, en vez
+    // de dispararse automáticamente acá con el riesgo de fallar porque el
+    // equipo recién autorizado todavía no le reportó nada al ACS.
     const saved = await this.findById(onu.id);
-    return { ...saved, cpeConfigured, cpeConfigWarning, oltWarning };
+    return { ...saved, oltWarning };
   }
 
   /**
@@ -755,6 +725,104 @@ export class OnuManagementService {
   }
 
   /**
+   * Etapa 2 del flujo de 3 etapas: apunta una ONU YA autorizada ópticamente
+   * (Etapa 1, `authorizeOnu`) al ACS (chain OMCI de `tr069-mgmt`) -- SIN
+   * tocar GenieACS/WAN todavía (eso es `pushWanConfig`, Etapa 3). Permite
+   * reintentar este paso de forma independiente, sin re-autorizar la ONU
+   * en la OLT cada vez.
+   */
+  async applyTr069Profile(id: string, dto: { tr069NetworkId: string }, actorUserId?: string) {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+    const driver = this.resolveDriver(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
+
+    const config = await this.configRepository.findOneBy({ onuId: onu.id });
+    if (!config) {
+      throw new BadRequestException(
+        'Esta ONU no tiene configuración de servicio previa -- autorízala en la OLT primero.',
+      );
+    }
+    if (!dto.tr069NetworkId) {
+      throw new BadRequestException('Selecciona una Red TR-069.');
+    }
+
+    const authParams = await this.buildAuthorizeParams(onu, {
+      onuTypeId: onu.onuTypeId,
+      serviceVlanId: config.serviceVlanId,
+      speedProfileId: config.speedProfileId,
+      tr069NetworkId: dto.tr069NetworkId,
+      managementMethod: 'TR069',
+      operationMode: config.operationMode,
+    });
+
+    const result = await this.callDriver(() => driver.applyTr069Management(connParams, authParams));
+    if (!result.ok) {
+      throw new BadRequestException(`Fallo aplicando el Perfil TR-069 en la OLT: ${result.error}`);
+    }
+
+    config.managementMethod = 'TR069';
+    config.tr069NetworkId = dto.tr069NetworkId;
+    await this.configRepository.save(config);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'PROVISION',
+      status: 'SUCCESS',
+      message: `[${olt.vendor}] Perfil TR-069 aplicado a ONU ${onu.serialNumber}.${result.warning ? ` Aviso: ${result.warning}` : ''}`,
+      actorUserId,
+      rawDetails: { onuId: onu.id, oltId: olt.id, operation: 'applyTr069Profile' },
+    });
+
+    const saved = await this.findById(onu.id);
+    return { ...saved, tr069Warning: result.warning };
+  }
+
+  /**
+   * Etapa 3 del flujo de 3 etapas: empuja WAN/PPPoE/WiFi + tags reales al
+   * CPE vía GenieACS (`pushCpeConfiguration`, sin cambios) -- exige que la
+   * Etapa 2 (`applyTr069Profile`) ya se haya aplicado. Expuesta como acción
+   * explícita y reintentable desde la Ficha 360, en vez de dispararse
+   * automáticamente dentro de `authorizeOnu`/`reprovisionOnu`.
+   */
+  async pushWanConfig(
+    id: string,
+    dto: { wanMode?: 'PPPOE' | 'DHCP' | 'STATIC'; wanStaticIp?: string; wanStaticMask?: string; wanStaticGw?: string },
+    actorUserId?: string,
+  ) {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+
+    const config = await this.configRepository.findOneBy({ onuId: onu.id });
+    if (!config || config.managementMethod !== 'TR069' || !config.tr069NetworkId) {
+      throw new BadRequestException(
+        'Aplica primero el Perfil TR-069 a esta ONU antes de enviar la configuración WAN/PPPoE.',
+      );
+    }
+
+    if (dto.wanMode) {
+      config.wanMode = dto.wanMode;
+      await this.configRepository.save(config);
+    }
+
+    const { cpeConfigured, cpeConfigWarning } = await this.pushCpeConfiguration(
+      onu,
+      config,
+      olt,
+      { wanStaticIp: dto.wanStaticIp, wanStaticMask: dto.wanStaticMask, wanStaticGw: dto.wanStaticGw },
+      {
+        warningPrefix: 'No se pudo confirmar la configuración WAN/PPPoE vía GenieACS',
+        failureLogMessagePrefix: `[${olt.vendor}] ONU ${onu.serialNumber}: fallo enviando WAN/PPPoE vía GenieACS`,
+        operation: 'pushWanConfig',
+        actorUserId,
+      },
+    );
+
+    const saved = await this.findById(onu.id);
+    return { ...saved, cpeConfigured, cpeConfigWarning };
+  }
+
+  /**
    * Reconfigura el método de gestión / modo de operación / VLANs de gestión
    * de una ONU YA autorizada, y reintenta el push a GenieACS -- SIN volver a
    * disparar el comando CLI de autorización en la OLT. VLAN de servicio y
@@ -762,6 +830,10 @@ export class OnuManagementService {
    * tocan aquí, cambiarlos requiere re-autorizar (authorizeOnu). Pensado
    * para el caso "quiero cambiar de TR-069 a OMCI" o "reintentar el push a
    * GenieACS" sin repetir toda la operación de autorización.
+   *
+   * NOTA: el flujo de 3 etapas (`applyTr069Profile` + `pushWanConfig`) es
+   * ahora el camino recomendado desde la UI (Ficha 360) -- este método se
+   * deja intacto por compatibilidad, sin wiring nuevo desde el frontend.
    */
   async reprovisionOnu(id: string, dto: any, actorUserId?: string) {
     const onu = await this.findById(id);
