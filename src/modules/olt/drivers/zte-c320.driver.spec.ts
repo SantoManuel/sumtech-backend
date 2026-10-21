@@ -73,9 +73,13 @@ describe('ZteC320Driver', () => {
     expect(commands.some((c) => c.includes('veip 1'))).toBe(false);
     expect(commands).not.toContain(REBOOT_ONU_SENTINEL);
 
-    // Siempre cierra con "exit" (nunca "end") + "write" -- este script nunca
-    // entra a "(gpon-onu-mng)#", solo usa el prompt de configuración normal.
-    expect(commands.slice(-2)).toEqual(['exit', 'write']);
+    // Siempre cierra con DOS "exit" (nunca "end") + "write" -- el primero
+    // cierra "interface <onuInterface>", el segundo "configure terminal":
+    // "write" exige estar en el prompt top-level "#", no en "(config)#"
+    // (bug real confirmado en producción 2026-10-21, ONU
+    // 8f84c4ce-04ec-443b-9f9b-32b5a6d3c733 -- un solo "exit" dejaba la
+    // sesión en "(config)#" y la OLT rechazaba "write").
+    expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
   });
 
   describe('generateTr069ManagementScript (Etapa 2: apuntar la ONU al ACS)', () => {
@@ -177,7 +181,7 @@ describe('ZteC320Driver', () => {
     expect(withoutTraffic.some((c) => c.startsWith('traffic-profile'))).toBe(false);
   });
 
-  it('generateAuthorizationScript siempre cierra con "exit" + "write" (prompt top-level "#") -- bug real confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): sin este exit, "write" se queda en "(config)#" y la OLT lo rechaza con "%Error 20200", sin importar managementMethod (este generador ya no entra nunca a "(gpon-onu-mng)#")', () => {
+  it('generateAuthorizationScript siempre cierra con DOS "exit" + "write" (prompt top-level "#") -- bug real confirmado en producción (2026-10-21, ONU 8f84c4ce-04ec-443b-9f9b-32b5a6d3c733): un solo "exit" deja la sesión en "(config)#" y la OLT rechaza "write" con "%Error 20200", sin importar managementMethod (este generador ya no entra nunca a "(gpon-onu-mng)#", que es donde "end" sí basta por sí solo)', () => {
     const omciCommands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
@@ -187,7 +191,7 @@ describe('ZteC320Driver', () => {
       managementMethod: 'OMCI',
       operationMode: 'ROUTER',
     });
-    expect(omciCommands.slice(-2)).toEqual(['exit', 'write']);
+    expect(omciCommands.slice(-3)).toEqual(['exit', 'exit', 'write']);
 
     const tr069Commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
@@ -199,7 +203,7 @@ describe('ZteC320Driver', () => {
       managementMethod: 'TR069',
       operationMode: 'ROUTER',
     });
-    expect(tr069Commands.slice(-2)).toEqual(['exit', 'write']);
+    expect(tr069Commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
   });
 
   it('parsea correctamente las ONUs no configuradas y extrae serial y fabricante (RF-OLT-014)', async () => {

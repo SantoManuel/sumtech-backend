@@ -702,16 +702,19 @@ export class ZteC320Driver implements IOltDriver {
       commands.push(`traffic-profile ${config.trafficProfile} vport 1 direction egress`);
     }
 
-    // Sin TR069, el script nunca sale de "(config)#" -- "write" EXIGE estar
-    // en el prompt top-level "#", confirmado en vivo contra
-    // OLT_Tabara_Abajo (2026-10-19): sin este "exit" extra, "write" falla
-    // con "%Error 20200: Invalid input detected" y la autorización nunca
-    // se persiste a flash (aunque el "onu type sn" sí haya quedado
-    // aplicado en caliente). Este script es SOLO óptico (Etapa 1 del flujo
-    // de 3 etapas) -- ver `generateTr069ManagementScript` para el bloque
-    // OMCI que apunta al ACS, que ahora corre como operación separada
-    // (`applyTr069Management`).
-    commands.push('exit', 'write');
+    // Hacen falta DOS "exit": el primero cierra "interface <onuInterface>"
+    // (-> vuelve a "(config)#"), el segundo cierra "configure terminal" (->
+    // vuelve al prompt top-level "#"). "write" EXIGE estar en el prompt
+    // top-level, confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19):
+    // con un solo "exit" el script se queda en "(config)#" y "write" falla
+    // con "%Error 20200: Invalid input detected" -- BUG REAL reintroducido
+    // al separar este script del bloque TR-069 (que usa "end" y sale de un
+    // solo golpe, por eso antes parecía bastar un "exit") y confirmado en
+    // producción (2026-10-21, ONU 8f84c4ce-04ec-443b-9f9b-32b5a6d3c733).
+    // Este script es SOLO óptico (Etapa 1 del flujo de 3 etapas) -- ver
+    // `generateTr069ManagementScript` para el bloque OMCI que apunta al ACS,
+    // que ahora corre como operación separada (`applyTr069Management`).
+    commands.push('exit', 'exit', 'write');
     return commands;
   }
 
