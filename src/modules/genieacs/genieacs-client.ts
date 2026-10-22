@@ -478,7 +478,34 @@ export class GenieAcsClient {
       if (results.length === 0) {
         throw new Error(`GenieACS no tiene ningún dispositivo con el id "${deviceId}".`);
       }
-      return nodeExists(results[0], dotPath);
+      const doc = results[0];
+
+      // TR-098: si existe un parámetro hermano "<NombreTabla>NumberOfEntries"
+      // (ej. "WANPPPConnectionNumberOfEntries" junto a "WANPPPConnection"),
+      // confiar en ESE contador en vez del nodo del objeto en sí -- es un
+      // parámetro HOJA que el propio CPE informa en cada Inform periódico.
+      // CONFIRMADO EN VIVO (2026-10-22, ONU CMDCDD4D131E): tras 3+ intentos
+      // previos a este fix que escribían directo sobre "WANPPPConnection.1.*"
+      // sin AddObject, GenieACS se quedó con un nodo "WANPPPConnection.1"
+      // fantasma en su documento local -- declarado por esos
+      // SetParameterValues fallidos, nunca confirmado por el equipo real --
+      // así que chequear el nodo directamente reportaba "ya existe" aunque
+      // el CPE real jamás creó esa instancia, y el AddObject real nunca
+      // llegaba a ejecutarse. TR-181 no tiene este parámetro -- cae al
+      // chequeo de nodo normal.
+      const segments = dotPath.split('.');
+      const instanceIndex = parseInt(segments[segments.length - 1], 10);
+      if (Number.isFinite(instanceIndex) && segments.length >= 2) {
+        const collectionName = segments[segments.length - 2];
+        const countPath = [...segments.slice(0, -2), `${collectionName}NumberOfEntries`].join('.');
+        const countValue = getParamValue(doc, countPath);
+        if (countValue !== undefined) {
+          const count = parseInt(countValue, 10);
+          return Number.isFinite(count) && count >= instanceIndex;
+        }
+      }
+
+      return nodeExists(doc, dotPath);
     } catch (error) {
       throw new Error(this.describeError(error));
     }

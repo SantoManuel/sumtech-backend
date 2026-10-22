@@ -452,6 +452,127 @@ describe('GenieAcsClient', () => {
     });
   });
 
+  describe('setParameterValues', () => {
+    it('lanza error si GenieACS respondió 2xx pero el CPE rechazó el cambio (fault real)', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-789' } });
+      http.get.mockResolvedValue({
+        data: [
+          {
+            _id: '00259E-ONT-16:task_task-789',
+            message: 'Invalid parameter name',
+            detail: { setParameterValuesFault: [{ faultString: 'Invalid parameter name' }] },
+          },
+        ],
+      });
+
+      await expect(
+        client.setParameterValues('00259E-ONT-16', [['InternetGatewayDevice.X', 'y', 'xsd:string']]),
+      ).rejects.toThrow(/Invalid parameter name/);
+    });
+
+    it('resuelve sin error si no hay fault registrado', async () => {
+      http.post.mockResolvedValue({ data: { _id: 'task-789' } });
+      http.get.mockResolvedValue({ data: [] });
+
+      await expect(
+        client.setParameterValues('00259E-ONT-16', [['InternetGatewayDevice.X', 'y', 'xsd:string']]),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('objectInstanceExists', () => {
+    const instancePath = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
+
+    it('usa "...NumberOfEntries" si existe como parámetro hermano, en vez del nodo del objeto', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            InternetGatewayDevice: {
+              WANDevice: {
+                '1': {
+                  WANConnectionDevice: {
+                    '1': {
+                      // Nodo "fantasma" declarado por un SetParameterValues previo fallido --
+                      // NO debe hacer que esto reporte "existe".
+                      WANPPPConnection: { '1': { Enable: { _value: 'true' } } },
+                      WANPPPConnectionNumberOfEntries: { _value: '0' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      });
+
+      await expect(client.objectInstanceExists('00259E-ONT-16', instancePath)).resolves.toBe(false);
+    });
+
+    it('reporta true si "...NumberOfEntries" confirma la instancia', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            InternetGatewayDevice: {
+              WANDevice: {
+                '1': {
+                  WANConnectionDevice: {
+                    '1': {
+                      WANPPPConnection: { '1': { Enable: { _value: 'true' } } },
+                      WANPPPConnectionNumberOfEntries: { _value: '1' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      });
+
+      await expect(client.objectInstanceExists('00259E-ONT-16', instancePath)).resolves.toBe(true);
+    });
+
+    it('sin "NumberOfEntries" hermano (ej. TR-181), cae al chequeo directo del nodo', async () => {
+      http.get.mockResolvedValue({
+        data: [{ Device: { PPP: { Interface: { '1': { Enable: { _value: 'true' } } } } } }],
+      });
+
+      await expect(client.objectInstanceExists('ZTE-ONT-20', 'Device.PPP.Interface.1')).resolves.toBe(true);
+      await expect(client.objectInstanceExists('ZTE-ONT-20', 'Device.PPP.Interface.2')).resolves.toBe(false);
+    });
+  });
+
+  describe('addObject', () => {
+    it('manda la tarea "addObject" con el objectName dado y verifica el resultado real', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-999' } });
+      http.get.mockResolvedValue({ data: [] });
+
+      await client.addObject(
+        '00259E-ONT-16',
+        'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.',
+      );
+
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
+        {
+          name: 'addObject',
+          objectName: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.',
+        },
+        expect.anything(),
+      );
+    });
+
+    it('lanza error si el CPE rechaza el AddObject (fault real)', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-999' } });
+      http.get.mockResolvedValue({
+        data: [{ _id: '00259E-ONT-16:task_task-999', message: 'No se pudo crear el objeto' }],
+      });
+
+      await expect(
+        client.addObject('00259E-ONT-16', 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.'),
+      ).rejects.toThrow(/No se pudo crear el objeto/);
+    });
+  });
+
   describe('clearWifiCustomization', () => {
     it('borra el tag WIFI_CUSTOMIZED', async () => {
       http.delete.mockResolvedValue({ data: {} });

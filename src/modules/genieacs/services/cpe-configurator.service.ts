@@ -66,7 +66,10 @@ export class CpeConfiguratorService {
     // instancia ".1") -- escribir directo sobre "WANPPPConnection.1.*" (como
     // hacía este método antes) el CPE lo rechaza con un fault TR-069
     // ("Invalid parameter name") que antes nadie verificaba (ver fix en
-    // `GenieAcsClient.setParameterValues`), así que quedaba como éxito falso.
+    // `GenieAcsClient.setParameterValues`). `objectInstanceExists` ya resuelve
+    // por su cuenta el caso "TR-098 con NumberOfEntries contaminado por
+    // intentos previos fallidos" (ver nota ahí) -- este método no necesita
+    // saber los detalles.
     const wanObject = this.getWanObjectPaths(input, isTR181);
     if (wanObject) {
       const exists = await client.objectInstanceExists(deviceId, wanObject.instancePath);
@@ -76,6 +79,12 @@ export class CpeConfiguratorService {
         );
         try {
           await client.addObject(deviceId, wanObject.parentPath);
+          // Refresca el subárbol ANTES de volver a chequear -- "addObject" ya
+          // esperó a que la sesión CWMP terminara (assertTaskSucceeded), pero
+          // eso no garantiza que GenieACS haya vuelto a leer "NumberOfEntries"
+          // como parte de esa misma sesión. Sin este refresh, la segunda
+          // llamada a objectInstanceExists() podría seguir viendo el valor viejo.
+          await client.refreshObject(deviceId, wanObject.parentPath);
         } catch (err: any) {
           throw new BadRequestException(
             `No se pudo crear el objeto WAN "${wanObject.parentPath}" en el CPE: ${err.message}`,
