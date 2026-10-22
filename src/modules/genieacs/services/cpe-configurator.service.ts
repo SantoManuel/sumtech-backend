@@ -58,6 +58,38 @@ export class CpeConfiguratorService {
     const deviceStatus = await client.getDeviceStatus(deviceId);
     const isTR181 = deviceStatus.isTR181;
 
+    // 2.5. Asegurar que la instancia de objeto WAN exista ANTES de escribirle
+    // parámetros -- "SetParameterValues" nunca puede crear una instancia
+    // nueva (solo "AddObject" puede). Confirmado en vivo (2026-10-22) contra
+    // la ONU CMDCDD4D131E: su árbol TR-098 tenía
+    // "WANConnectionDevice.1.WANPPPConnection" como tabla VACÍA (sin ninguna
+    // instancia ".1") -- escribir directo sobre "WANPPPConnection.1.*" (como
+    // hacía este método antes) el CPE lo rechaza con un fault TR-069
+    // ("Invalid parameter name") que antes nadie verificaba (ver fix en
+    // `GenieAcsClient.setParameterValues`), así que quedaba como éxito falso.
+    const wanObject = this.getWanObjectPaths(input, isTR181);
+    if (wanObject) {
+      const exists = await client.objectInstanceExists(deviceId, wanObject.instancePath);
+      if (!exists) {
+        this.logger.log(
+          `[CPE-CONFIG] "${wanObject.instancePath}" no existe todavía en ${deviceId} -- creándolo con AddObject antes de configurar la WAN.`,
+        );
+        try {
+          await client.addObject(deviceId, wanObject.parentPath);
+        } catch (err: any) {
+          throw new BadRequestException(
+            `No se pudo crear el objeto WAN "${wanObject.parentPath}" en el CPE: ${err.message}`,
+          );
+        }
+        const createdNow = await client.objectInstanceExists(deviceId, wanObject.instancePath);
+        if (!createdNow) {
+          throw new BadRequestException(
+            `El CPE no creó la instancia esperada "${wanObject.instancePath}" tras AddObject -- puede haber numerado la conexión con otro índice. Revisar manualmente el dispositivo en GenieACS.`,
+          );
+        }
+      }
+    }
+
     // 3. Generar parámetros con el mapper técnico
     const parameterValues = this.parameterMapper.buildParameterValues(input, isTR181);
 
@@ -125,6 +157,37 @@ export class CpeConfiguratorService {
       appliedParametersCount: parameterValues.length,
       verification,
       message: `Configuración TR-069 aplicada y encolada con éxito al CPE ${input.serialNumber}.`,
+    };
+  }
+
+  /**
+   * Resuelve a qué tabla de objetos TR-069 pertenece el modo WAN pedido, y
+   * cuál sería la ruta de su primera instancia -- usado por `configureCpe()`
+   * para saber si hace falta `AddObject` antes de escribir parámetros.
+   * `null` si el modo no requiere ningún objeto nuevo (ej. sin `wanMode`).
+   */
+  private getWanObjectPaths(
+    input: CpeConfigurationInput,
+    isTR181: boolean,
+  ): { instancePath: string; parentPath: string } | null {
+    if (!input.wanMode) {
+      return null;
+    }
+    if (isTR181) {
+      if (input.wanMode === 'PPPOE') {
+        return { instancePath: 'Device.PPP.Interface.1', parentPath: 'Device.PPP.Interface.' };
+      }
+      return { instancePath: 'Device.IP.Interface.1', parentPath: 'Device.IP.Interface.' };
+    }
+    if (input.wanMode === 'PPPOE') {
+      return {
+        instancePath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1',
+        parentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.',
+      };
+    }
+    return {
+      instancePath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1',
+      parentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.',
     };
   }
 

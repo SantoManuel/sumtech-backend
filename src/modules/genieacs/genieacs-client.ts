@@ -439,14 +439,65 @@ export class GenieAcsClient {
     }
   }
 
-  /** Aplica un conjunto arbitrario de parámetros TR-069 via setParameterValues */
+  /**
+   * Aplica un conjunto arbitrario de parámetros TR-069 via setParameterValues.
+   * Verifica el resultado real con `assertTaskSucceeded` (mismo criterio que
+   * `setWifiCredentials`) -- antes de este fix (2026-10-22) esta llamada
+   * nunca revisaba `/faults`, así que un rechazo real del CPE (ej. escribir
+   * sobre un objeto TR-069 que todavía no existe, "Invalid parameter name")
+   * quedaba reportado como éxito silencioso hacia quien llama.
+   */
   async setParameterValues(deviceId: string, parameterValues: Array<[string, string, string]>): Promise<void> {
     try {
-      await this.http.post(
+      const taskResponse = await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
         { name: 'setParameterValues', parameterValues },
         this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
+      await this.assertTaskSucceeded(deviceId, (taskResponse as any).data?._id);
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Indica si una instancia de objeto TR-069 ya existe en el árbol real del
+   * CPE (ej. "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1").
+   * `SetParameterValues` nunca puede crear una instancia nueva -- solo
+   * `AddObject` puede, así que hay que saber de antemano si ya existe antes
+   * de escribirle parámetros, o el CPE rechaza todo el set con un fault TR-069
+   * ("Invalid parameter name") porque el nodo no existe en su data model.
+   */
+  async objectInstanceExists(deviceId: string, dotPath: string): Promise<boolean> {
+    try {
+      const response = await this.http.get(this.buildUrl('devices'), {
+        ...this.buildRequestConfig(),
+        params: { query: JSON.stringify({ _id: deviceId }) },
+      });
+      const results = Array.isArray(response.data) ? response.data : [];
+      if (results.length === 0) {
+        throw new Error(`GenieACS no tiene ningún dispositivo con el id "${deviceId}".`);
+      }
+      return nodeExists(results[0], dotPath);
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Crea una instancia nueva dentro de una tabla de objetos TR-069 (ej.
+   * "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.",
+   * CON el punto final -- así lo exige CWMP AddObject). Verifica el resultado
+   * real con `assertTaskSucceeded`, igual que `setParameterValues`.
+   */
+  async addObject(deviceId: string, objectPath: string): Promise<void> {
+    try {
+      const taskResponse = await this.http.post(
+        `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
+        { name: 'addObject', objectName: objectPath },
+        this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
+      );
+      await this.assertTaskSucceeded(deviceId, (taskResponse as any).data?._id);
     } catch (error) {
       throw new Error(this.describeError(error));
     }
@@ -585,6 +636,24 @@ function getParamValue(doc: any, dotPath: string): string | undefined {
     node = node[segment];
   }
   return node && typeof node === 'object' ? node._value : undefined;
+}
+
+/**
+ * Indica si un nodo (parámetro U OBJETO, a diferencia de getParamValue que
+ * solo lee el `_value` de un parámetro hoja) existe en el árbol TR-069 del
+ * dispositivo -- usado para detectar instancias de objeto (ej.
+ * "WANPPPConnection.1") que todavía no fueron creadas en el CPE real.
+ */
+function nodeExists(doc: any, dotPath: string): boolean {
+  const segments = dotPath.split('.');
+  let node = doc;
+  for (const segment of segments) {
+    if (node === null || typeof node !== 'object' || !(segment in node)) {
+      return false;
+    }
+    node = node[segment];
+  }
+  return node !== undefined;
 }
 
 /**
