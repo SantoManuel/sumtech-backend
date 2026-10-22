@@ -27,6 +27,13 @@ export interface CpeConfigurationInput {
   wanStaticIp?: string;
   wanStaticMask?: string;
   wanStaticGw?: string;
+  // DNS manual (override) -- aplica a cualquier wanMode, confirmado en vivo
+  // como parámetro real (DNSServers/DNSOverrideAllowed) en WANPPPConnection
+  // y WANIPConnection para TR-098 (2026-10-22). TR-181 no implementado
+  // todavía -- ese modelo de datos pide un objeto Device.DNS.Client.Server
+  // por servidor en vez de un solo campo de texto, sin verificar en vivo.
+  dns1?: string;
+  dns2?: string;
   // Management Server
   managementServer?: CpeManagementServerConfig;
   // WiFi
@@ -229,6 +236,7 @@ export class CpeParameterMapper {
       if (config.ipProtocol === 'DUAL') {
         params.push([`${pppBase}.X_BROADCOM_COM_IPv6PrefixDelegationEnabled`, 'true', 'xsd:boolean']);
       }
+      this.pushDnsOverrideParams(params, pppBase, config);
     } else if (config.wanMode === 'STATIC') {
       params.push([`${ipBase}.Enable`, 'true', 'xsd:boolean']);
       params.push([`${ipBase}.ConnectionType`, 'IP_Routed', 'xsd:string']);
@@ -249,6 +257,7 @@ export class CpeParameterMapper {
           params.push([`${ipBase}.X_HW_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
         }
       }
+      this.pushDnsOverrideParams(params, ipBase, config);
     } else if (config.wanMode === 'DHCP') {
       params.push([`${ipBase}.Enable`, 'true', 'xsd:boolean']);
       params.push([`${ipBase}.ConnectionType`, 'IP_Routed', 'xsd:string']);
@@ -283,5 +292,24 @@ export class CpeParameterMapper {
         }
       }
     }
+  }
+
+  /**
+   * DNS manual (override) para TR-098 -- confirmado en vivo (2026-10-22,
+   * CMDCDD4D131E) que tanto WANPPPConnection como WANIPConnection exponen
+   * "DNSServers" (string separado por coma) y "DNSOverrideAllowed" como
+   * parámetros reales y escribibles en este firmware. Sin `dns1`, no se
+   * manda nada -- se deja que el ISP/PPPoE entregue el DNS normalmente.
+   */
+  private pushDnsOverrideParams(
+    params: Array<[string, string, string]>,
+    base: string,
+    config: CpeConfigurationInput,
+  ): void {
+    if (!config.dns1) return;
+    const servers = [config.dns1, config.dns2].filter(Boolean).join(',');
+    params.push([`${base}.DNSOverrideAllowed`, 'true', 'xsd:boolean']);
+    params.push([`${base}.DNSEnabled`, 'true', 'xsd:boolean']);
+    params.push([`${base}.DNSServers`, servers, 'xsd:string']);
   }
 }

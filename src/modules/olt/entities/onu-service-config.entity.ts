@@ -76,6 +76,12 @@ export class OnuServiceConfigEntity {
   @Column({ name: 'wan_static_gw', type: 'varchar', length: 45, nullable: true })
   wanStaticGw?: string;
 
+  @Column({ name: 'wan_dns1', type: 'varchar', length: 45, nullable: true })
+  wanDns1?: string;
+
+  @Column({ name: 'wan_dns2', type: 'varchar', length: 45, nullable: true })
+  wanDns2?: string;
+
   @Column({ name: 'pppoe_from_access', type: 'boolean', default: true })
   pppoeFromAccess: boolean;
 

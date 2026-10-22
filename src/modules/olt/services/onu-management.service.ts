@@ -684,12 +684,15 @@ export class OnuManagementService {
         tenantSlug: this.tenantContext.getSlug(),
         oltName: olt.name,
         operationMode: config.operationMode || 'ROUTER',
+        ipProtocol: config.ipProtocol,
         wanMode,
         pppoeUsername,
         pppoePassword,
         wanStaticIp: wanMode === 'STATIC' ? wanStatic.wanStaticIp : undefined,
         wanStaticMask: wanMode === 'STATIC' ? wanStatic.wanStaticMask : undefined,
         wanStaticGw: wanMode === 'STATIC' ? wanStatic.wanStaticGw : undefined,
+        dns1: config.wanDns1,
+        dns2: config.wanDns2,
         serviceVlan,
         managementServer: {
           acsUrl: tr069Network.acsUrl,
@@ -790,7 +793,15 @@ export class OnuManagementService {
    */
   async pushWanConfig(
     id: string,
-    dto: { wanMode?: 'PPPOE' | 'DHCP' | 'STATIC'; wanStaticIp?: string; wanStaticMask?: string; wanStaticGw?: string },
+    dto: {
+      wanMode?: 'PPPOE' | 'DHCP' | 'STATIC';
+      wanStaticIp?: string;
+      wanStaticMask?: string;
+      wanStaticGw?: string;
+      ipProtocol?: 'IPV4' | 'IPV6' | 'DUAL';
+      wanDns1?: string;
+      wanDns2?: string;
+    },
     actorUserId?: string,
   ) {
     const onu = await this.findById(id);
@@ -803,10 +814,11 @@ export class OnuManagementService {
       );
     }
 
-    if (dto.wanMode) {
-      config.wanMode = dto.wanMode;
-      await this.configRepository.save(config);
-    }
+    if (dto.wanMode) config.wanMode = dto.wanMode;
+    if (dto.ipProtocol) config.ipProtocol = dto.ipProtocol;
+    config.wanDns1 = dto.wanDns1 || undefined;
+    config.wanDns2 = dto.wanDns2 || undefined;
+    await this.configRepository.save(config);
 
     const { cpeConfigured, cpeConfigWarning } = await this.pushCpeConfiguration(
       onu,
