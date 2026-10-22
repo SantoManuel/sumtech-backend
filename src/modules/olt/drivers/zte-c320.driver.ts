@@ -1174,18 +1174,44 @@ export class ZteC320Driver implements IOltDriver {
       // "max-veip" sin tocar el resto -- AÚN NO reconfirmado en vivo (el
       // sandbox bloqueó el intento de probarlo manualmente), así que sigue
       // sin ser 100% seguro hasta la próxima autorización real.
+      //
+      // MEJOR ESFUERZO, nunca debe tumbar la autorización -- CONFIRMADO EN
+      // VIVO (2026-10-22) que la OLT puede rechazar esta corrección con
+      // "%Code 70296 : Profile is being used." cuando el onu-type ya tiene
+      // OTRAS ONUs reales asignadas (caso normal: un modelo común como
+      // HUAWEY-HG8145V5 suele ser compartido por varias ONUs en la misma
+      // OLT) -- un primer intento de este fix lo trataba como error duro y
+      // tumbaba la autorización óptica completa, rompiendo algo que antes
+      // funcionaba. Si la corrección falla, se registra un warning y se
+      // sigue -- el TR-069 de la Etapa 2 seguirá fallando para este
+      // onu-type hasta que se libere (ningún ONU usándolo) o se corrija a
+      // mano, pero eso nunca debe bloquear que el cliente quede con internet
+      // (Etapa 1).
       const maxVeipMatch = checkOutput.match(/Max VEIP:\s*(\d+)/i);
       const maxVeip = maxVeipMatch ? parseInt(maxVeipMatch[1], 10) : undefined;
       if (maxVeip !== undefined && maxVeip < 1) {
-        await session.executeCommand('configure terminal');
-        await session.executeCommand('pon');
-        const fixOutput = await session.executeCommand(`onu-type ${profile.name} gpon max-veip 1`);
-        await session.executeCommand('exit');
-        await session.executeCommand('exit');
-        if (this.isOltErrorResponse(fixOutput)) {
-          throw new Error(`La OLT rechazó corregir "max-veip" del onu-type "${profile.name}": ${fixOutput.trim()}`);
+        let fixSucceeded = false;
+        try {
+          await session.executeCommand('configure terminal');
+          await session.executeCommand('pon');
+          const fixOutput = await session.executeCommand(`onu-type ${profile.name} gpon max-veip 1`);
+          if (this.isOltErrorResponse(fixOutput)) {
+            this.logger.warn(
+              `[diag] ensureOnuTypeProfileWithSession: no se pudo corregir "max-veip" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
+            );
+          } else {
+            fixSucceeded = true;
+          }
+        } finally {
+          // "write" EXIGE estar en el prompt top-level "#" (mismo criterio
+          // que el resto de este archivo) -- nunca dentro de "configure
+          // terminal"/"pon", por eso corre DESPUÉS de los dos "exit", no antes.
+          await session.executeCommand('exit');
+          await session.executeCommand('exit');
         }
-        await session.executeCommand('write');
+        if (fixSucceeded) {
+          await session.executeCommand('write');
+        }
       }
       return;
     }

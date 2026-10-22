@@ -815,13 +815,13 @@ describe('ZteC320Driver', () => {
       expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
     });
 
-    it('responde ok:false si la OLT rechaza la reparación de "max-veip" sobre un onu-type existente', async () => {
+    it('responde ok:true (mejor esfuerzo) aunque la OLT rechace la reparación de "max-veip" -- ej. "Profile is being used" porque otras ONUs ya usan ese onu-type (bug real confirmado: esto tumbaba toda la autorización antes de este fix)', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd === 'show onu-type gpon HUAWEY-HG8145V5') {
           return Promise.resolve('ONU type name:          HUAWEY-HG8145V5\r\nMax VEIP:               0(default: 1 VEIP)\r\n');
         }
         if (cmd === 'onu-type HUAWEY-HG8145V5 gpon max-veip 1') {
-          return Promise.resolve('%Error 20200: Invalid input detected');
+          return Promise.resolve('%Code 70296 : Profile is being used.');
         }
         return Promise.resolve('');
       });
@@ -836,10 +836,20 @@ describe('ZteC320Driver', () => {
         { name: 'HUAWEY-HG8145V5' },
       );
 
-      expect(result.ok).toBe(false);
-      expect(result.error).toContain('Invalid input detected');
-      // No debe mandar "write" si la corrección fue rechazada.
+      expect(result.ok).toBe(true);
+      // No debe mandar "write" si la corrección fue rechazada...
       expect(executeCommand).not.toHaveBeenCalledWith('write');
+      // ...pero SÍ debe salir limpio de "configure terminal"/"pon" (no dejar
+      // la sesión colgada en modo config para los comandos que vienen después
+      // en el mismo script de autorización).
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'show onu-type gpon HUAWEY-HG8145V5',
+        'configure terminal',
+        'pon',
+        'onu-type HUAWEY-HG8145V5 gpon max-veip 1',
+        'exit',
+        'exit',
+      ]);
     });
 
     it('crea el perfil entrando a "configure terminal"/"pon" y declarando max-tcont/max-gemport/etc. + puertos eth/pots si no existe', async () => {
