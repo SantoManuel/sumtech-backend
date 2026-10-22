@@ -163,10 +163,13 @@ export class OnuManagementService {
     }
     if (dto?.search) {
       const q = `%${dto.search}%`;
-      qb.andWhere(
-        '(onu.serialNumber ILIKE :q OR onu.mac ILIKE :q OR client.firstName ILIKE :q OR client.lastName ILIKE :q)',
-        { q },
-      );
+      // ClientEntity solo tiene "name" (un solo campo, no firstName/lastName
+      // separados) -- "client.firstName"/"client.lastName" nunca existieron
+      // como propiedades reales, así que TypeORM no podía traducirlos a una
+      // columna real y Postgres los rechazaba con "column client.firstname
+      // does not exist" (500 real confirmado en producción, 2026-10-22,
+      // reproducido buscando por serial de ONU con filtro de status activo).
+      qb.andWhere('(onu.serialNumber ILIKE :q OR onu.mac ILIKE :q OR client.name ILIKE :q)', { q });
     }
 
     // Entidad cruda (serialNumber/mac/onuIndex/ponInterface/onuType/rxPowerDbm/
