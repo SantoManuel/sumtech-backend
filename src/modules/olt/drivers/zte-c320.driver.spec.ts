@@ -111,6 +111,13 @@ describe('ZteC320Driver', () => {
       expect(commands).toContain('flow 2 pri 0 vlan 46');
       expect(commands).toContain('gemport 2 flow 2');
       expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
+      // CONFIRMADO EN VIVO (2026-10-22) contra un running-config real y
+      // FUNCIONANDO de otra ONU en la misma OLT (SmartOLT, ONU
+      // HWTCDE64BA7C): sin este segundo bind (el del propio VEIP, no solo el
+      // de iphost), "tr069-mgmt ... acs ..." queda rechazado con "%Code
+      // 63990-GPONRM" -- causa real del bug, no "Max VEIP" (que era necesario
+      // pero no suficiente).
+      expect(commands).toContain('switchport-bind switch_0/1 veip 1');
       expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
       expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
       expect(commands).toContain('vlan-filter iphost 2 pri 0 vlan 46');
@@ -129,6 +136,12 @@ describe('ZteC320Driver', () => {
       const unlockIdx = commands.indexOf('tr069-mgmt 1 state unlock');
       const acsIdx = commands.indexOf('tr069-mgmt 1 acs http://10.46.0.1:7547/');
       expect(unlockIdx).toBeLessThan(acsIdx);
+
+      // "switchport-bind switch_0/1 veip 1" debe ir ANTES de "veip 1 port udp
+      // 1232 host 2" -- mismo orden que el running-config real de SmartOLT.
+      const bindVeipIdx = commands.indexOf('switchport-bind switch_0/1 veip 1');
+      const veipPortIdx = commands.indexOf('veip 1 port udp 1232 host 2');
+      expect(bindVeipIdx).toBeLessThan(veipPortIdx);
 
       // Los SET de OMCI de este ONT no son idempotentes -- un reinicio
       // obligatorio (vía el sentinel que `applyTr069Management()` intercepta,

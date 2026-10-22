@@ -757,6 +757,16 @@ export class ZteC320Driver implements IOltDriver {
       `flow 2 pri 0 vlan ${config.tr069Vlan}`,
       'gemport 2 flow 2',
       'switchport-bind switch_0/1 iphost 2',
+      // CONFIRMADO EN VIVO (2026-10-22): faltaba este bind -- un running-config
+      // real y funcionando de otra ONU en la misma OLT (ONU HWTCDE64BA7C,
+      // aprovisionada por SmartOLT) tiene "switchport-bind switch_0/1 veip 1"
+      // ADEMÁS del bind de iphost, justo antes de "veip 1 port udp 1232 host
+      // 2". Sin este bind, el VEIP (donde vive el ME de ManagementServer)
+      // nunca queda conectado al switch fabric interno del ONT -- causa real,
+      // confirmada, del rechazo "%Code 63990-GPONRM" en "tr069-mgmt ... acs
+      // ..." en TODOS los intentos anteriores, incluso con "Max VEIP"
+      // corregido (ese fix era necesario pero no suficiente).
+      'switchport-bind switch_0/1 veip 1',
       // "ping-response"/"traceroute-response" dejan que un técnico haga
       // ping/traceroute a la IP de gestión del ONT directamente --
       // confirmado en el config real de un ONU Villar Pando (SmartOLT).
