@@ -70,8 +70,24 @@ export class CpeConfiguratorService {
     // por su cuenta el caso "TR-098 con NumberOfEntries contaminado por
     // intentos previos fallidos" (ver nota ahí) -- este método no necesita
     // saber los detalles.
+    //
+    // `refreshObject()` ANTES del primer chequeo -- CONFIRMADO EN VIVO
+    // (2026-10-22, segundo reintento sobre la misma ONU): sin esto, el
+    // documento de GenieACS puede tener "...NumberOfEntries" todavía sin
+    // ningún `_value` confirmado (nunca se leyó en vivo), y el chequeo cae de
+    // vuelta al nodo del objeto -- que sigue "fantasma" por los intentos
+    // previos a estos fixes. Sin forzar una sesión CWMP real contra el CPE
+    // antes de decidir, el chequeo queda a merced de lo que GenieACS tenga
+    // cacheado, que puede estar desactualizado o nunca haberse leído.
     const wanObject = this.getWanObjectPaths(input, isTR181);
     if (wanObject) {
+      try {
+        await client.refreshObject(deviceId, wanObject.parentPath);
+      } catch (err: any) {
+        this.logger.warn(
+          `[CPE-CONFIG] No se pudo refrescar "${wanObject.parentPath}" en ${deviceId} antes de verificar si existe: ${err.message}`,
+        );
+      }
       const exists = await client.objectInstanceExists(deviceId, wanObject.instancePath);
       if (!exists) {
         this.logger.log(
