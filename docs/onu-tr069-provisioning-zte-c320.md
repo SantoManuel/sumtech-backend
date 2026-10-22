@@ -274,3 +274,348 @@ asumir que el único error visible (`%Code 63990` en `tr069-mgmt ... acs
 ...`) venía de la pieza que se acababa de tocar (`veip 1 port udp ...`,
 afectada por Max VEIP) sin verificarlo línea por línea costó una iteración
 completa de diagnóstico equivocado.
+
+## Actualización 2026-10-22 (tarde) — TR-069/gestión funciona de punta a
+## punta; el WAN/PPPoE de Internet nunca activa, y no es la OLT
+
+Con el fix de `switchport-bind switch_0/1 veip 1` ya en producción, la ONU
+`CMDCDD4D131E` (onu-type `HUAWEY-HG8145V5-TR069`, OLT `OLT_Tabara_Abajo`,
+`gpon-onu_1/2/15:1`) quedó **informando correctamente a nuestro GenieACS**
+(`ManagementServer.URL = http://10.254.0.1:7547`, `_lastInform` actualizado
+cada pocos segundos, confirmado en vivo repetidas veces). La capa de gestión
+TR-069 está resuelta. El problema que queda es exclusivamente el WAN de
+Internet: `WANPPPConnection.1` se queda para siempre en
+`ConnectionStatus: Connecting` / `LastConnectionError: ERROR_NO_ANSWER`.
+
+Esta sección documenta todo lo que se verificó HOY en vivo (no son teorías)
+para que la próxima persona que retome esto no repita el trabajo.
+
+### Hallazgo 1 (bug real, corregido en vivo pero NO fue la causa) — `CpeParameterMapper` nunca conoce el modelo de datos CMCC de esta ONU
+
+El fabricante real de este hardware, reportado por el propio dispositivo vía
+TR-069, es **CMDC** (`Vendor ID: CMDC`, `Detected ONU type: HG8546M-XPON`) --
+es un clon/rebranding de un Huawei HG8145V5, no un Huawei genuino. Su modelo
+de datos TR-098 usa la extensión **CMCC** (China Mobile), con parámetros como
+`X_CMCC_VLANIDMark`, `X_CMCC_VLANMode`, `X_CMCC_ServiceList` en vez de los que
+`CpeParameterMapper.buildTR098Params()` conoce (`X_HW_VLAN` para Huawei,
+`X_ZTE-COM_VLAN` para ZTE, `X_BROADCOM_COM_VLANID` como fallback genérico).
+
+Confirmado en vivo con `getParameterValues`/`setParameterValues` directos
+contra GenieACS: el dispositivo **no tiene** `X_HW_VLAN` en su árbol de
+parámetros (la escritura a esa ruta nunca pudo haber tenido efecto), y sí
+tiene `X_CMCC_VLANIDMark` real y escribible. Se encontró que este campo
+llevaba atascado en **404** mientras la OLT tiene cableada la ONU para la
+VLAN **400** (confirmado contra `service-port 1 vport 1 user-vlan 400 vlan
+400` real y contra `OnuServiceConfigEntity.serviceVlanId` resuelto a VLAN
+400) -- un valor huérfano de algún intento anterior de esta sesión de
+pruebas, nunca corregido porque nuestro código nunca apunta a ese parámetro.
+
+**Corregido en vivo (manual, vía script, no vía código todavía):**
+`X_CMCC_VLANIDMark` se puso en 400, confirmado persistente tras releer y
+tras forzar un re-init de la conexión (`Enable` false→true). **El
+`ConnectionStatus` no cambió** -- sigue en `Connecting`/`ERROR_NO_ANSWER`
+exactamente igual. Es decir: este bug es real y vale la pena corregirlo en
+`CpeParameterMapper` (agregar una rama CMCC, o mejor, detectar en runtime qué
+parámetro de VLAN existe realmente en el dispositivo antes de escribir), pero
+**no es la causa del problema actual** -- se descarta como causa raíz, no
+como bug.
+
+### Hallazgo 2 (bug real, afecta a cualquier cliente) — cambiar solo la IP de un acceso ya ACTIVE nunca re-sincroniza a RouterOS
+
+Al editar manualmente la IP del secret de `test3` desde "Editar Secret
+PPPoE" (de `192.168.114.5` a `100.66.11.235`, dentro del rango con salida a
+Internet), el cambio se guardó en `network_access.ip_address` pero **nunca
+llegó al secret real en el MikroTik** -- confirmado leyendo el secret en vivo
+(`remoteAddress` seguía en el valor viejo). Causa: en
+`NetworkProvisioningService.upsertConfiguration()`, el re-aprovisionamiento
+hacia RouterOS (`transition(...)`) solo se dispara en dos casos: cuando el
+acceso pasa de `PENDING` a tener nodo/usuario (alta inicial), o cuando
+**cambia la contraseña** de un acceso ya `ACTIVE`. Cambiar la IP (o el nodo,
+o la VLAN, o el alias) de un acceso ya `ACTIVE` se persiste en Sumtech pero
+jamás dispara un push real al router. Esto afecta a cualquier cliente real,
+no solo a esta ONU de prueba.
+
+**Corregido en vivo (manual):** se llamó directo a
+`RouterOsProvisioningAdapter.provision(access)` con el acceso ya guardado,
+reusando el mismo código de producción. **Pendiente corregir en código:**
+`upsertConfiguration()` debería re-sincronizar también ante cambios de IP/
+nodo/VLAN/alias en un acceso ya activo, no solo ante cambio de contraseña.
+
+### Hallazgo 3 (bug de UX real) — "Alias de Servicio" se usa tal cual como perfil PPP de RouterOS, sin validación ni aviso
+
+El primer intento de re-sincronizar el secret de `test3` falló con
+`400: input does not match any value of profile` porque el campo "Alias de
+Servicio" del modal "Editar Secret PPPoE" tenía el valor `t3`, y
+`RouterOsProvisioningAdapter.provision()` usa `access.serviceAlias` tal cual
+como el nombre del perfil PPP (`/ppp/profile`) a aplicar en el secret --
+campo que en el router solo tiene `default` creado. El modal no indica en
+ningún lado que ese campo deba coincidir EXACTO con un perfil ya existente en
+RouterOS; se ve como una etiqueta libre. Se corrigió manualmente a `default`
+para esta prueba. **Pendiente:** el modal debería listar los perfiles reales
+del nodo (ya existe `getNodeProfiles()` en `PppManagementService`) en vez de
+un campo de texto libre, o al menos validar/avisar contra esa lista antes de
+guardar.
+
+### Comparación exhaustiva de la OLT (OMCI) contra una ONU real y funcionando -- se descarta la OLT como causa
+
+Se comparó, línea por línea, el bloque `pon-onu-mng` COMPLETO y EN VIVO de
+`CMDCDD4D131E` contra el de `HWTCDE64BA7C` (M0761, cliente real con Internet
+funcionando, mismo OLT, aprovisionado por SmartOLT), ambos sacados del mismo
+volcado para que la comparación sea del mismo instante:
+
+```
+# Nuestra ONU (gpon-onu_1/2/15:1) -- canal Internet (vport 1 / VLAN 400)
+flow mode 1 tag-filter vlan-filter untag-filter discard
+flow 1 pri 0 vlan 400
+gemport 1 flow 1
+switchport-bind switch_0/1 iphost 1
+vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard
+vlan-filter iphost 1 pri 0 vlan 400
+
+# M0761 (gpon-onu_1/2/7:5) -- canal Internet (vport 1 / VLAN 400)
+flow mode 1 tag-filter vlan-filter untag-filter discard
+flow 1 pri 0 vlan 400
+gemport 1 flow 1
+switchport-bind switch_0/1 iphost 1
+vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard
+vlan-filter iphost 1 pri 0 vlan 400
+```
+
+**Idénticos, comando por comando.** El VEIP, en ambas ONUs, está enlazado
+SOLO al canal de gestión (`veip 1 port udp 1232 host 2`) -- ninguna de las
+dos lo enlaza al canal de Internet, así que la teoría de "falta enlazar el
+VEIP al host 1" (barajada durante esta sesión) queda descartada: la ONU que
+sí funciona tampoco lo tiene así.
+
+Las únicas diferencias reales encontradas son del lado LAN/VoIP, no del WAN:
+`voip protocol sip` (M0761 tiene puerto de voz en uso), 4 líneas
+`dhcp-ip ethuni eth_0/1..4 from-onu` (comportamiento DHCP de los puertos LAN
+de la ONU) y `security-mgmt 998/999` (reglas de acceso remoto LAN). Se
+revisó también `show gpon onu detail-info` de ambas: `Line Profile` y
+`Service Profile` están en `N/A` en las dos (no es un diferenciador), y
+`Config state` está en `fail` en M0761 (¡la que SÍ funciona!) -- ese campo
+tampoco es una señal de salud confiable para este modelo de ONT.
+
+**Conclusión: la configuración de la OLT para el canal de Internet es
+indistinguible de la de un cliente real que funciona.** No hay nada más que
+corregir ahí.
+
+### Evidencia definitiva -- la ONU nunca generó tráfico real en VLAN 400
+
+La tabla de aprendizaje de MACs de la propia OLT (`MACs on OLT from this
+ONU`, SmartOLT) es el dato más concluyente de toda la investigación:
+
+```
+# Nuestra ONU (CMDCDD4D131E) -- UNA sola MAC, solo en VLAN 46:
+98:7d:dd:4d:13:18   46    gpon-onu_1/2/15:1   vport 2
+
+# M0761 (HWTCDE64BA7C) -- DOS MACs, una por canal:
+24:16:6d:de:64:bb   400   gpon-onu_1/2/7:5    vport 1   (Internet)
+24:16:6d:de:64:bc   46    gpon-onu_1/2/7:5    vport 2   (Gestión)
+```
+
+M0761 usa una MAC distinta por cada interfaz WAN de su router interno (normal
+en un HGU) y la OLT aprendió tráfico real en AMBAS. Nuestra ONU **jamás ha
+generado ni un solo paquete en VLAN 400/vport1** -- ni ARP, ni el PADI de
+PPPoE, nada. Esto es tráfico real observado por la OLT, no una
+configuración: confirma que el bloqueo no es la OLT, no es el MikroTik (ya
+verificado con VLAN 400 + servidor PPPoE "service5" + secret "test3" todos
+correctos), y no es GenieACS en el sentido de "no llega la orden" (sí llega:
+`Username`, `Enable`, `X_CMCC_VLANIDMark` se escriben y persisten con
+éxito). El router interno de esta ONU específica simplemente nunca activa su
+interfaz WAN de Internet (`WAN ID 1` en la terminología de SmartOLT), pese a
+que el objeto TR-069 `WANPPPConnection.1` reporta `Enable: TRUE`.
+
+### Hipótesis de trabajo para retomar -- GenieACS puede estar fallando en ACTIVAR la WAN, no solo en configurarla
+
+El usuario señala, con buena razón, que toda la evidencia apunta a GenieACS:
+tenemos conexión de gestión perfecta con la ONU (prueba de que la ruta
+GenieACS↔ONU funciona), pero la WAN de Internet nunca se activa a nivel de
+firmware, pese a que `Enable: true` está puesto. Esto sugiere que
+`Enable: true` en `WANPPPConnection.1` **no es, por sí solo, suficiente para
+que este firmware CMCC "encienda" esa interfaz WAN** -- probablemente haga
+falta algún otro parámetro (de la familia `X_CMCC_*`, ver el volcado completo
+de 116 parámetros capturado hoy) que actúe como el verdadero "switch" de
+activación, o un orden de escritura específico (ej. crear el objeto, escribir
+`Enable` primero y luego el resto, o viceversa), que no estamos replicando.
+
+**Qué falta probar, en orden de costo/beneficio:**
+1. Revisar el volcado completo de 116 parámetros `*VLAN*`/`*CMCC*` ya
+   capturado hoy (`X_CMCC_PPPOE_EMULATOR`, `X_CMCC_DHCPOPTION60`, etc.) en
+   busca de algún flag de activación que hoy no se toca.
+2. Probar el diagnóstico embebido `InternetGatewayDevice.X_CMCC_PPPOE_EMULATOR`
+   (WANInterface/Username/Password/DiagnosticsState) -- es una prueba de
+   marcado aislada que el propio firmware CMCC expone para testear PPPoE sin
+   tocar la conexión WAN real; nunca se ha usado. Puede revelar un mensaje de
+   error más específico que `ERROR_NO_ANSWER`.
+3. Recrear `WANPPPConnection.1` desde cero (borrar el objeto vía
+   `DeleteObject` si GenieACS lo soporta, o renumerar, y volver a aplicar
+   `AddObject` + `SetParameterValues` en un solo flujo limpio) por si quedó
+   en un estado parcialmente corrupto de los múltiples intentos manuales de
+   hoy.
+4. Reiniciar la ONU por OMCI (reboot real, no solo `Enable` false→true) --
+   **intentado hoy, falló por un problema de sesión Telnet contra la OLT**
+   (`pon-onu-mng gpon-onu_1/2/15:1` rechazado con "Invalid input" 3 veces
+   seguidas, con la sesión ya dentro de `(config-if)#` de esa misma interfaz
+   -- no reproducido antes en esta misma sesión con la misma secuencia
+   exacta). Pendiente reintentar con más cuidado o hacerlo manual desde
+   SmartOLT.
+
+### Pendiente (no resuelto hoy)
+
+- La causa raíz de por qué el WAN de Internet nunca activa sigue sin
+  confirmarse -- se descartaron OLT, MikroTik y "GenieACS no manda la
+  orden", pero no se ha probado la hipótesis de que falte un parámetro de
+  activación específico del modelo de datos CMCC.
+- Corregir `CpeParameterMapper` para el modelo de datos CMCC (Hallazgo 1).
+- Corregir `NetworkProvisioningService.upsertConfiguration()` para
+  re-sincronizar RouterOS ante cambios de IP/nodo/VLAN en accesos ya
+  `ACTIVE`, no solo cambio de contraseña (Hallazgo 2).
+- Mejorar el modal "Editar Secret PPPoE" para que "Alias de Servicio" valide
+  contra los perfiles reales del nodo en vez de aceptar texto libre
+  (Hallazgo 3).
+- Reintentar el reinicio OMCI de la ONU de prueba (bloqueado hoy por un
+  fallo de sesión Telnet, no confirmado si es reproducible).
+
+### Dos hipótesis más descartadas en vivo, con evidencia -- `TransportType` y "objeto corrupto"
+
+**`TransportType: "L2TP"` es de solo lectura, confirmado escribiendo en
+vivo.** Se intentó `setParameterValues` sobre
+`WANPPPConnection.1.TransportType = "PPPoE"`: GenieACS reportó la tarea como
+exitosa (el CPE no devolvió fault), pero al releer el parámetro inmediatamente
+después seguía en `"L2TP"` -- el CPE acepta la orden sin aplicarla de verdad.
+Coincide con el estándar TR-098, que define `TransportType` como informativo,
+no configurable. **Se descarta como causa posible para cualquiera, no solo
+para Sumtech** -- ningún ACS puede cambiar ese valor en este firmware.
+
+**Borrar y recrear `WANPPPConnection.1` desde cero tampoco cambió nada.** Se
+hizo vía el mecanismo real de GenieACS NBI 1.2.x (tareas `deleteObject` /
+`addObject` contra `/devices/:id/tasks` -- la NBI de esta versión NO expone
+`DELETE /objects/...` ni `PUT /objects/N` como API REST directa, a diferencia
+de lo que sugería una recomendación externa): se borró la instancia, se
+recreó con `addObject`, GenieACS la renumeró de nuevo como `.1`, se
+re-aplicaron todos los parámetros (`Enable`, `ConnectionType`, `Username`,
+`Password` real del access, `X_CMCC_VLANIDMark=400`, `X_CMCC_VLANMode`,
+`X_CMCC_ServiceList`, `NATEnabled`) sin ningún fault. Entre medio la ONU tuvo
+una reconexión real (confirmada por `show gpon onu detail-info`: nueva
+entrada de `Online Duration` de apenas minutos). Resultado: exactamente
+igual, `ConnectionStatus` pasó a `"Disconnecting"` (antes `"Connecting"`,
+variación menor sin significado aparente) con el mismo
+`LastConnectionError: ERROR_NO_ANSWER`. Se descarta "objeto TR-069 en estado
+corrupto" como causa.
+
+### Verificación campo-por-campo: ¿puede GenieACS configurar todo lo que ofrece la página web local de la ONU?
+
+Se comparó el formulario completo de "Configuración WAN" de la interfaz web
+local del equipo (Encapsulation Mode, VLAN ID, 802.1p, MRU, Enable LCP
+Detection, Binding Options LAN/SSID, NAT, NAT type, DNS Override, Dialing
+Method, Multicast VLAN ID) contra el árbol real de parámetros TR-069 del
+dispositivo (183 parámetros capturados). **Casi todos existen y son
+escribibles por TR-069**, confirmados con sus valores reales actuales:
+
+| Campo de la página web          | Parámetro TR-069 real                          | Estado |
+|----------------------------------|-------------------------------------------------|--------|
+| Enable WAN                       | `WANPPPConnection.1.Enable`                     | ✅ TRUE |
+| Protocol Type (IPv4)             | `X_CMCC_IPMode`                                 | ✅ = 1 |
+| WAN Mode (Route)                 | `ConnectionType`                                | ✅ PPPoE_Routed |
+| Service Type                     | `X_CMCC_ServiceList`                            | ✅ INTERNET |
+| VLAN ID / Enable VLAN            | `X_CMCC_VLANIDMark` / `X_CMCC_VLANMode`         | ✅ 400 / 1 |
+| 802.1p                           | `X_CMCC_802-1pMark`                             | ✅ existe |
+| MRU                              | `MaxMRUSize` / `CurrentMRUSize`                 | ✅ 1500 / 1492 |
+| Usuario/Contraseña               | `Username` / `Password`                         | ✅ test3 / (oculto) |
+| Enable LCP Detection             | `PPPLCPEcho` / `PPPLCPEchoRetry`                | ✅ 30 / 3 |
+| Binding Options (LAN1-4/SSID1-4) | `X_CMCC_LanInterface`                           | ✅ las 4 LAN + SSID1 |
+| Enable NAT                       | `NATEnabled`                                    | ✅ TRUE |
+| Enable DNS Override              | `DNSOverrideAllowed` / `DNSEnabled`             | ✅ existen |
+| Dialing Method (Automatic)       | `ConnectionTrigger`                             | ✅ AlwaysOn |
+| Multicast VLAN ID                | `X_CMCC_MulticastVlan`                          | ✅ existe (-1, fuera del rango 0-4094 documentado en la UI, revisar) |
+| **NAT type** (Port-restricted cone) | **no encontrado** en el árbol de parámetros  | ❓ posible brecha, sin confirmar |
+
+**Conclusión: GenieACS sí puede configurar prácticamente todo este
+formulario para este dispositivo.** La única duda real es "NAT type", que no
+apareció en el árbol de parámetros explorado (podría no ser configurable vía
+TR-069 en este firmware, o vivir bajo un nombre no contemplado en la
+búsqueda). Esto descarta la hipótesis de "faltan parámetros por exponer" --
+todo lo que de verdad importa para WAN/PPPoE ya se manda correctamente.
+
+### Actualización 2026-10-22 (noche) — CAUSA RAÍZ REAL ENCONTRADA: catálogo de Sumtech con `vendorTypeName` equivocado
+
+Todo lo anterior en esta sección (comparaciones OMCI, parámetros TR-069, VLAN,
+MikroTik, `TransportType`, borrar/recrear el objeto WAN) **era correcto, pero
+no era la causa**. La causa real es mucho más simple y estaba en nuestro
+propio catálogo, no en la ONU ni en GenieACS ni en la OLT.
+
+**Hallazgo:** el usuario autorizó y aprovisionó esta misma ONU directamente
+desde SmartOLT (fuera de Sumtech) y, por primera vez en todo el día, la OLT
+aprendió una MAC real en VLAN 400/vport1 (`987d.dd4d.1318`) y el MikroTik
+mostró una sesión PPPoE activa y funcionando (`tt3`, IP `100.66.11.237`,
+23+ minutos de uptime). Comparando el bloque OMCI que usó SmartOLT contra el
+que generaba nuestro propio driver, los comandos eran **sustancialmente los
+mismos** (mismo flow/gemport/switchport-bind/veip/tr069-mgmt) -- la única
+diferencia real era el **nombre del onu-type**: SmartOLT usó `HUAWEY-HG8546M`
+(el modelo real del equipo, confirmado por `Vendor ID: CMDC`, `Detected ONU
+type: HG8546M-XPON`); Sumtech llevaba todo el día usando `HUAWEY-HG8145V5` /
+`HUAWEY-HG8145V5-TR069` -- un modelo DISTINTO.
+
+Verificado en la base de datos (`net.onu_types`):
+
+```
+vendor=HUAWEI, model=HG8546M, vendorTypeName="HUAWEY-HG8145V5"   ← BUG
+```
+
+El campo `model` del catálogo decía correctamente "HG8546M", pero
+`vendorTypeName` (el nombre real que se manda a la OLT en
+`onu <id> type <X> sn <Y>`) apuntaba al onu-type de OTRO modelo. La OLT
+aplicaba entonces la plantilla de capacidades de hardware equivocada --
+mismos comandos CLI en apariencia, pero interpretados contra un perfil de
+chip/firmware distinto, lo que impedía que el router interno de la ONU
+activara de verdad su interfaz WAN, sin importar qué tan "correcta" se viera
+la configuración de OLT/MikroTik/GenieACS (que, de hecho, sí lo estaban).
+
+**Impacto real, no solo de laboratorio:** este mismo catálogo mal mapeado
+estaba siendo usado por 2 ONUs reales ya `ACTIVE` (`HWTC486A3493` y
+`ZTEGCC6E3E37`, mismo contrato), ambas atrapadas en el mismo bucle de fallo
+("Reintento automático de push a GenieACS falló... aún no ha enviado
+Inform.") cada 2 minutos.
+
+**Fix aplicado (2026-10-22, con aprobación explícita del usuario):**
+
+```sql
+UPDATE net.onu_types SET vendor_type_name = 'HUAWEY-HG8546M'
+WHERE vendor_type_name = 'HUAWEY-HG8145V5';
+```
+
+Nota aparte: también se confirmó en vivo que `Max VEIP: 0(default: 1 VEIP)`
+en `show onu-type gpon <nombre>` es un dato engañoso -- el sufijo
+"(default: 1 VEIP)" indica que la OLT ya trata 0 como "usa el default de 1"
+cuando el ONT lo requiere. Esto es consistente con el hallazgo de la
+actualización anterior ("Max VEIP era necesario pero NO la causa raíz real")
+y cierra definitivamente esa pista como irrelevante.
+
+**Lección de proceso, la más cara de todo el día:** nunca se verificó que el
+`vendorTypeName` del catálogo de Sumtech coincidiera con el modelo real del
+equipo -- se asumió que, como el campo `model` decía "HG8546M", el onu-type
+usado en la OLT también correspondía a ese modelo. Para una entidad con dos
+campos que DEBERÍAN estar sincronizados (`model` descriptivo vs
+`vendorTypeName` operativo) pero que el código nunca valida entre sí, un
+error de tipeo al crear el catálogo puede pasar desapercibido indefinidamente
+-- la ONU se autoriza "con éxito", la OLT no rechaza nada, y el síntoma
+(WAN que nunca activa) apunta hacia GenieACS/TR-069, no hacia el catálogo.
+
+### Conclusión final (resuelto)
+
+La sesión de hoy agotó, con evidencia en vivo, todas las hipótesis del lado
+GenieACS/OLT/MikroTik antes de encontrar la causa real: configuración OMCI
+verificada idéntica a un cliente real, parámetros TR-069 correctos y
+persistentes, secret PPPoE y VLAN correctos en el MikroTik, objeto TR-069
+recreado desde cero, `TransportType` confirmado de solo lectura -- todo eso
+era, en efecto, intachable. La hipótesis de "limitación de firmware de este
+clon CMDC" que se sostuvo por varias horas **quedó descartada**: la causa
+real era un `vendorTypeName` equivocado en el catálogo de Sumtech
+(`HUAWEY-HG8145V5` en vez de `HUAWEY-HG8546M`, el modelo real del equipo),
+que hacía que la OLT aplicara la plantilla de capacidades de hardware de un
+modelo distinto. Corregido el catálogo, el mismo equipo físico que llevaba
+todo el día sin transmitir un solo paquete en VLAN 400 autenticó PPPoE con
+éxito (confirmado con sesión activa real en el MikroTik). Fix aplicado y
+documentado arriba, afecta también a 2 ONUs reales que tenían el mismo
+catálogo mal mapeado.
