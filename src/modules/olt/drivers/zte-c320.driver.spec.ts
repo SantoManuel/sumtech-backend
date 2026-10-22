@@ -27,7 +27,7 @@ describe('ZteC320Driver', () => {
     expect(result.error).toBeDefined();
   });
 
-  it('genera correctamente los comandos CLI de autorización y provisión -- SOLO ópticos, ya no incluye el bloque TR-069 (Etapa 1 del flujo de 3 etapas, RF-OLT-016 / RF-OLT-018)', () => {
+  it('genera correctamente los comandos CLI de autorización y provisión, incluido el cableado OMCI del canal de INTERNET (iphost 1/flow 1) -- Etapa 1 del flujo de 3 etapas, RF-OLT-016 / RF-OLT-018 -- NO incluye el bloque TR-069/ACS (eso es generateTr069ManagementScript, Etapa 2)', () => {
     const commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
@@ -37,8 +37,10 @@ describe('ZteC320Driver', () => {
       description: 'zone_Tabara Abajo_lat_18.65_long_-71.03_authd_20261020',
       serviceVlan: 200,
       // Aunque venga managementMethod/tr069Url/tr069Vlan, este generador los
-      // ignora por completo -- ese bloque ahora es `generateTr069ManagementScript`
-      // (Etapa 2, operación separada e independientemente reintentable).
+      // ignora por completo -- el bloque de ACS/TR-069-mgmt ahora es
+      // `generateTr069ManagementScript` (Etapa 2, operación separada e
+      // independientemente reintentable). El cableado iphost/flow del canal
+      // de INTERNET sí vive acá, sin importar managementMethod.
       tr069Vlan: 46,
       tr069Url: 'http://10.46.0.1:7547/',
       tcontProfile: 'UP-50M',
@@ -64,22 +66,34 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
     expect(commands).toContain('write');
 
-    // Nada de TR-069/OMCI acá, sin importar que managementMethod/tr069Url/
-    // tr069Vlan hayan venido en el config de entrada.
-    expect(commands.some((c) => c.includes('pon-onu-mng'))).toBe(false);
+    // Cableado OMCI del canal de INTERNET -- tomado de un running-config real
+    // y FUNCIONANDO de otra ONU en la misma OLT (M0761/HWTCDE64BA7C,
+    // 2026-10-22): antes el gemport 1 (internet) solo existía a nivel OLT
+    // (tcont/gemport/service-port), sin ningún puente OMCI hacia un iphost --
+    // espejo exacto de lo que ya se hacía para el canal de gestión.
+    expect(commands).toContain('pon-onu-mng gpon-onu_1/1/1:5');
+    expect(commands).toContain('flow 1 switch switch_0/1');
+    expect(commands).toContain('flow mode 1 tag-filter vlan-filter untag-filter discard');
+    expect(commands).toContain('flow 1 pri 0 vlan 200');
+    expect(commands).toContain('gemport 1 flow 1');
+    expect(commands).toContain('switchport-bind switch_0/1 iphost 1');
+    expect(commands).toContain('vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard');
+    expect(commands).toContain('vlan-filter iphost 1 pri 0 vlan 200');
+
+    // Sigue sin tener NADA del bloque TR-069/ACS -- eso sigue siendo
+    // exclusivo de generateTr069ManagementScript (Etapa 2).
     expect(commands.some((c) => c.includes('tr069-mgmt'))).toBe(false);
     expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
     expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
     expect(commands.some((c) => c.includes('veip 1'))).toBe(false);
+    expect(commands.some((c) => c.includes('iphost 2'))).toBe(false);
     expect(commands).not.toContain(REBOOT_ONU_SENTINEL);
 
-    // Siempre cierra con DOS "exit" (nunca "end") + "write" -- el primero
-    // cierra "interface <onuInterface>", el segundo "configure terminal":
-    // "write" exige estar en el prompt top-level "#", no en "(config)#"
-    // (bug real confirmado en producción 2026-10-21, ONU
-    // 8f84c4ce-04ec-443b-9f9b-32b5a6d3c733 -- un solo "exit" dejaba la
-    // sesión en "(config)#" y la OLT rechazaba "write").
-    expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
+    // Ahora SÍ entra a "(gpon-onu-mng)#" (para el cableado de internet), así
+    // que cierra con "end" (nunca "exit" ahí, ver bloque TR-069) + "write" --
+    // ya NO son dos "exit" seguidos, porque "end" ya deja la sesión en el
+    // prompt top-level "#" de un solo golpe.
+    expect(commands.slice(-2)).toEqual(['end', 'write']);
   });
 
   describe('generateTr069ManagementScript (Etapa 2: apuntar la ONU al ACS)', () => {
@@ -194,7 +208,7 @@ describe('ZteC320Driver', () => {
     expect(withoutTraffic.some((c) => c.startsWith('traffic-profile'))).toBe(false);
   });
 
-  it('generateAuthorizationScript siempre cierra con DOS "exit" + "write" (prompt top-level "#") -- bug real confirmado en producción (2026-10-21, ONU 8f84c4ce-04ec-443b-9f9b-32b5a6d3c733): un solo "exit" deja la sesión en "(config)#" y la OLT rechaza "write" con "%Error 20200", sin importar managementMethod (este generador ya no entra nunca a "(gpon-onu-mng)#", que es donde "end" sí basta por sí solo)', () => {
+  it('generateAuthorizationScript siempre cierra con "end" + "write" (prompt top-level "#"), sin importar managementMethod -- desde que entra a "(gpon-onu-mng)#" para el cableado iphost 1/flow 1 del canal de internet (2026-10-22), "end" es lo que deja la sesión en el prompt top-level de un solo golpe (nunca "exit" ahí, ver bloque TR-069 para el bug real de por qué)', () => {
     const omciCommands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
@@ -204,7 +218,7 @@ describe('ZteC320Driver', () => {
       managementMethod: 'OMCI',
       operationMode: 'ROUTER',
     });
-    expect(omciCommands.slice(-3)).toEqual(['exit', 'exit', 'write']);
+    expect(omciCommands.slice(-2)).toEqual(['end', 'write']);
 
     const tr069Commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
@@ -216,7 +230,7 @@ describe('ZteC320Driver', () => {
       managementMethod: 'TR069',
       operationMode: 'ROUTER',
     });
-    expect(tr069Commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
+    expect(tr069Commands.slice(-2)).toEqual(['end', 'write']);
   });
 
   it('parsea correctamente las ONUs no configuradas y extrae serial y fabricante (RF-OLT-014)', async () => {

@@ -702,19 +702,34 @@ export class ZteC320Driver implements IOltDriver {
       commands.push(`traffic-profile ${config.trafficProfile} vport 1 direction egress`);
     }
 
-    // Hacen falta DOS "exit": el primero cierra "interface <onuInterface>"
-    // (-> vuelve a "(config)#"), el segundo cierra "configure terminal" (->
-    // vuelve al prompt top-level "#"). "write" EXIGE estar en el prompt
-    // top-level, confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19):
-    // con un solo "exit" el script se queda en "(config)#" y "write" falla
-    // con "%Error 20200: Invalid input detected" -- BUG REAL reintroducido
-    // al separar este script del bloque TR-069 (que usa "end" y sale de un
-    // solo golpe, por eso antes parecía bastar un "exit") y confirmado en
-    // producción (2026-10-21, ONU 8f84c4ce-04ec-443b-9f9b-32b5a6d3c733).
-    // Este script es SOLO óptico (Etapa 1 del flujo de 3 etapas) -- ver
-    // `generateTr069ManagementScript` para el bloque OMCI que apunta al ACS,
-    // que ahora corre como operación separada (`applyTr069Management`).
-    commands.push('exit', 'exit', 'write');
+    // PRUEBA (2026-10-22): cableado OMCI del canal de INTERNET (gemport 1,
+    // flow 1, iphost 1), espejo exacto del que `generateTr069ManagementScript`
+    // ya hace para el canal de gestión (gemport 2/flow 2/iphost 2) -- tomado
+    // de un running-config real y FUNCIONANDO de otra ONU en la misma OLT
+    // (M0761/HWTCDE64BA7C), que SÍ tiene esto para su VLAN de internet.
+    // Nuestro script nunca lo hacía: el gemport 1 solo existía a nivel OLT
+    // (service-port/vport), sin ningún puente OMCI interno hacia un iphost.
+    // AÚN NO CONFIRMADO si esto es la causa real de que el PPPoE nunca
+    // complete ("ERROR_NO_ANSWER") -- es la pieza estructural que faltaba
+    // comparado con la única referencia real que tenemos, no una certeza.
+    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
+    commands.push(
+      'exit',
+      `pon-onu-mng ${onuInterface}`,
+      'flow 1 switch switch_0/1',
+      'flow mode 1 tag-filter vlan-filter untag-filter discard',
+      `flow 1 pri 0 vlan ${config.serviceVlan}`,
+      'gemport 1 flow 1',
+      'switchport-bind switch_0/1 iphost 1',
+      'vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard',
+      `vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`,
+      // "end", NO "exit": mismo criterio ya confirmado para el bloque TR-069
+      // -- sale de "(gpon-onu-mng)#" directo al prompt top-level "#", donde
+      // "write" exige estar. Con "exit" ahí la OLT pregunta "Confirm to
+      // logout without saving? [yes/no]:" y la sesión se cuelga.
+      'end',
+      'write',
+    );
     return commands;
   }
 
