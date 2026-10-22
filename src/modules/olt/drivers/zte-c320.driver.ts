@@ -876,9 +876,15 @@ export class ZteC320Driver implements IOltDriver {
    * criterio que `cpeConfigWarning` del lado del servicio. Confirmado en
    * vivo contra OLT_Tabara_Abajo (2026-10-20) que la OLT puede aceptar el
    * comando pero el ONT lo rechace a nivel OMCI ("%Code 63990-GPONRM : ONT
-   * return error: command processing error.", posiblemente por "Max VEIP: 0"
-   * en el onu-type -- ver nota en `ensureOnuTypeProfile`). Un rechazo acá
-   * nunca debe impedir que el admin vea el resultado -- se reporta como
+   * return error: command processing error."). CAUSA RAÍZ CONFIRMADA
+   * (2026-10-22): el onu-type del ONT tenía "Max VEIP: 0" -- `veip 1 port
+   * udp 1232 host 2` exige que el onu-type soporte al menos 1 VEIP.
+   * `ensureOnuTypeProfileWithSession` ya incluye "max-veip 1" para
+   * onu-types NUEVOS (ver esa nota), pero esto solo arregla casos futuros:
+   * un onu-type que ya existía en la OLT (ej. HUAWEY-HG8145V5 en
+   * OLT_Tabara_Abajo) sigue con "Max VEIP: 0" hasta corregirse a mano. Por
+   * eso este bloque se mantiene como mejor esfuerzo -- un rechazo acá nunca
+   * debe impedir que el admin vea el resultado -- se reporta como
    * `warning`, no como `error` duro, igual que antes hacía `authorizeOnu()`
    * con este mismo bloque.
    */
@@ -1122,6 +1128,18 @@ export class ZteC320Driver implements IOltDriver {
    * un solo token SIN espacios ni comillas -- por eso ahora se genera como
    * "<ethPorts>ETH,<potsPorts>POTS", replicando la misma convención que usa
    * el propio fabricante en sus tipos nativos (ZTEG-F620, etc.).
+   *
+   * "max-veip 1" agregado (2026-10-22) -- sin esto el onu-type queda con
+   * "Max VEIP: 0" (keyword real, confirmado vía ayuda contextual de la OLT),
+   * lo que bloquea a nivel OMCI el bloque TR-069 de
+   * `generateTr069ManagementScript` para CUALQUIER ONU que use un onu-type
+   * creado por este método. OJO: este fix solo aplica a onu-types NUEVOS --
+   * si el onu-type YA EXISTE (`alreadyExists`, ver abajo) este método no lo
+   * toca, así que un onu-type preexistente con "Max VEIP: 0" (confirmado en
+   * vivo: HUAWEY-HG8145V5 en OLT_Tabara_Abajo) sigue roto hasta corregirlo
+   * a mano con "onu-type <nombre> gpon max-veip 1" (sin confirmar aún si
+   * esto actualiza solo ese campo o si hace falta repetir el resto de los
+   * parámetros -- ver docs/onu-tr069-provisioning-zte-c320.md).
    */
   async ensureOnuTypeProfile(params: OltConnectionParams, profile: OnuTypeProfile): Promise<{ ok: boolean; error?: string }> {
     const session = this.createSession(params);
@@ -1149,8 +1167,17 @@ export class ZteC320Driver implements IOltDriver {
     await session.executeCommand('configure terminal');
     await session.executeCommand('pon');
     const description = `${profile.ethPorts ?? 0}ETH,${profile.potsPorts ?? 0}POTS`;
+    // "max-veip 1" -- CONFIRMADO EN VIVO (2026-10-22) contra OLT_Tabara_Abajo:
+    // sin este parámetro, el onu-type queda con "Max VEIP: 0" (confirmado vía
+    // "show onu-type gpon <nombre>"), lo que hace que el ONT rechace a nivel
+    // OMCI el comando "veip 1 port udp 1232 host 2" del bloque TR-069
+    // (generateTr069ManagementScript) con "%Code 63990-GPONRM : ONT return
+    // error: command processing error." -- la Etapa 2 del flujo de 3 etapas
+    // (applyTr069Profile) nunca llega a apuntar el ONT al ACS para ningún
+    // onu-type creado por este método. "max-veip" confirmado como keyword
+    // real vía ayuda contextual ("onu-type <nombre> gpon ... ?").
     const createOutput = await session.executeCommand(
-      `onu-type ${profile.name} gpon description ${description} max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8`,
+      `onu-type ${profile.name} gpon description ${description} max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8 max-veip 1`,
     );
     if (this.isOltErrorResponse(createOutput)) {
       await session.executeCommand('exit');
@@ -1395,10 +1422,14 @@ export class ZteC320Driver implements IOltDriver {
       // Se deja en `false` todavía porque este código no se reconfirmó en
       // vivo contra una ONU recién autorizada por Sumtech (la prueba del
       // 2026-10-20 reutilizó un "onu-type" ya existente en la OLT, creado por
-      // SmartOLT) -- en particular, `ensureOnuTypeProfileWithSession()` crea
-      // los "onu-type" nuevos sin ningún parámetro de capacidad VEIP, así que
-      // no se sabe si un "onu-type" creado por este driver soporta "veip 1
-      // port udp ...". Ver OnuTypeProfileProvisioning.
+      // SmartOLT) -- en particular, `ensureOnuTypeProfileWithSession()`
+      // creaba los "onu-type" nuevos sin ningún parámetro de capacidad VEIP.
+      // CONFIRMADO EN VIVO (2026-10-22): esa era justo la causa de que
+      // "tr069-mgmt ... acs ..." siguiera siendo rechazado ("Max VEIP: 0" en
+      // el onu-type) -- ya se agregó "max-veip 1" a ese método. Falta
+      // reconfirmar en vivo contra un onu-type NUEVO (creado por este
+      // driver, no uno preexistente) antes de pasar esta capacidad a `true`.
+      // Ver OnuTypeProfileProvisioning.
       tr069AutoProvisioning: false,
       onuPassiveImport: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show vlan

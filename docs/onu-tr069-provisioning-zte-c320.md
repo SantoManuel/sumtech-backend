@@ -196,3 +196,45 @@ TR-069 real requiere repetir manualmente los pasos de este documento.
 - El bug de "scan-unconfigured" que parece sobreescribir/borrar el vínculo
   contrato/tipo/servicio de una ONU existente si el OLT la reporta como
   no-configurada de nuevo (visto de pasada hoy, no reproducido a fondo ni corregido).
+
+## Actualización 2026-10-22 — causa raíz real de "%Code 63990" encontrada: "Max VEIP: 0"
+
+El datapath/cableado OMCI de la sección anterior (confirmado 2026-10-20) resultó
+NO ser la causa completa. Tras dividir `authorizeOnu()` en 3 etapas (OLT/TR-069/WAN,
+ver `generateTr069ManagementScript`/`applyTr069Management`), la Etapa 2 seguía
+fallando en producción para la ONU `CMDCDD4D131E` (onu-type `HUAWEY-HG8145V5` en
+`OLT_Tabara_Abajo`) con el mismo `%Code 63990-GPONRM`.
+
+Verificado en vivo (`show onu-type gpon HUAWEY-HG8145V5`, solo lectura): ese
+onu-type tiene **`Max VEIP: 0`**. El comando `veip 1 port udp 1232 host 2` del
+bloque TR-069 exige que el onu-type soporte al menos 1 VEIP -- con `Max VEIP: 0`
+la OLT acepta el comando pero el ONT lo rechaza a nivel OMCI, exactamente el
+síntoma observado.
+
+Sintaxis real de `max-veip` confirmada vía ayuda contextual de la propia OLT
+(`onu-type <nombre> gpon ?` dentro de `pon`, en modo config): es un keyword más,
+sibling de `max-tcont`/`max-gemport`/etc., sin orden obligatorio.
+
+**Fix aplicado:** `ensureOnuTypeProfileWithSession()` en `zte-c320.driver.ts` ahora
+agrega `max-veip 1` al crear un onu-type nuevo. **Esto NO corrige onu-types que ya
+existían antes del fix** (como `HUAWEY-HG8145V5`, que claramente ya existía en la
+OLT desde antes -- `ensureOnuTypeProfileWithSession` lo detectó como
+`alreadyExists` y nunca lo tocó) -- esos quedan con `Max VEIP: 0` hasta corregirse
+a mano con `onu-type <nombre> gpon max-veip 1` (sintaxis no reprobada aún en vivo
+para el caso de ACTUALIZAR un onu-type existente, solo para crearlo).
+
+**Pendiente:**
+- Corregir a mano `max-veip` en los onu-types ya existentes que necesiten TR-069
+  (al menos `HUAWEY-HG8145V5` en `OLT_Tabara_Abajo`; posiblemente también
+  `HUAWEY-BT546XG`, mencionado en el mismo comentario de `ensureOnuTypeProfile`).
+- Reconfirmar en vivo el flujo de 3 etapas completo contra un onu-type NUEVO
+  (creado por este driver con el fix, no uno preexistente) antes de subir
+  `tr069AutoProvisioning`/`onuTypeProfileProvisioning` a `true`.
+- Durante la investigación se probó por error la ayuda contextual `?` sobre
+  `onu-type <nombre> gpon <params...> ?` de forma incremental -- a diferencia de
+  `tr069-mgmt 1 ?` (que SÍ es seguro porque `tr069-mgmt 1` solo nunca es una
+  acción completa), aquí el `?` SÍ llegó a crear un onu-type de prueba real
+  (`PROBEVEIPCHK`) porque `onu-type <nombre> gpon` por sí solo ya es un comando
+  completo con `<cr>` disponible. Lección: en este CLI, el riesgo de "`?` ejecuta
+  el comando" depende de si el PREFIJO antes del `?` ya es una acción válida por
+  sí sola, no es una propiedad general segura de todo el CLI ZTE.

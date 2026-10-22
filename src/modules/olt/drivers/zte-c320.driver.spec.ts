@@ -738,7 +738,7 @@ describe('ZteC320Driver', () => {
     });
   });
 
-  describe('ensureOnuTypeProfile (perfil de capacidades OMCI -- diseñado por analogía, AÚN NO verificado en vivo)', () => {
+  describe('ensureOnuTypeProfile (perfil de capacidades OMCI -- max-tcont/max-gemport/etc. diseñados por analogía, AÚN NO verificados en vivo; "max-veip 1" sí confirmado en vivo, 2026-10-22, ver zte-c320.driver.ts)', () => {
     it('no crea nada si "show onu-type gpon <nombre>" ya reporta el perfil existente', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd === 'show onu-type gpon HUAWEY-HG8546M') {
@@ -779,7 +779,7 @@ describe('ZteC320Driver', () => {
         'show onu-type gpon HUAWEY-HG8546M',
         'configure terminal',
         'pon',
-        'onu-type HUAWEY-HG8546M gpon description 4ETH,2POTS max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8',
+        'onu-type HUAWEY-HG8546M gpon description 4ETH,2POTS max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8 max-veip 1',
         'onu-type-if HUAWEY-HG8546M eth_0/1-4',
         'onu-type-if HUAWEY-HG8546M pots_0/1-2',
         'exit',
