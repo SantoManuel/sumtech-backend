@@ -1265,7 +1265,20 @@ export class OnuManagementService {
       const profile = await this.speedProfileRepository.findOneBy({ id: dto.speedProfileId });
       if (profile) {
         tcontProfile = profile.vendorTcontProfile || undefined;
-        trafficProfile = profile.vendorTrafficProfile || undefined;
+        // Fallback con la MISMA convención que `OltCatalogsService.createSpeedProfile()`
+        // genera para un perfil nuevo ("TRAFFIC-<Mbps>M") -- sin esto, cualquier
+        // perfil dado de alta por el importador de TCONT reales
+        // (`importDiscoveredSpeedProfile`, que NUNCA asigna vendorTrafficProfile
+        // -- confirmado: así quedaron los ~40 perfiles "SMARTOLT-*-UP" reales de
+        // producción) se queda sin traffic-profile para siempre, y
+        // `generateAuthorizationScript()` nunca manda "traffic-profile ... vport
+        // 1 direction egress" -- el cliente queda con el UPLOAD limitado por el
+        // TCONT pero el DOWNLOAD sin gestionar en la OLT. `ensureTrafficProfile`
+        // crea este nombre en caliente si no existe todavía (es idempotente), así
+        // que generarlo aquí basta para que quede resuelto en la próxima
+        // autorización, sin necesitar editar cada perfil del catálogo a mano.
+        trafficProfile =
+          profile.vendorTrafficProfile || `TRAFFIC-${Math.round(profile.downKbps / 1024)}M`;
         downKbps = profile.downKbps;
         upKbps = profile.upKbps;
       }

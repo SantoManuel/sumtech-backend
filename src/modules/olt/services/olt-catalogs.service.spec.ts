@@ -350,7 +350,7 @@ describe('OltCatalogsService', () => {
       await expect(service.scanRealSpeedProfiles('olt-x')).rejects.toThrow(NotFoundException);
     });
 
-    it('importDiscoveredSpeedProfile crea el perfil con downKbps=upKbps=speedKbps y un code derivado del nombre real', async () => {
+    it('importDiscoveredSpeedProfile crea el perfil con downKbps=upKbps=speedKbps, un code derivado del nombre real, y un vendorTrafficProfile autogenerado', async () => {
       speedProfileRepo.findOneBy.mockResolvedValue(null);
 
       const result = await service.importDiscoveredSpeedProfile({ name: 'SMARTOLT-500M-UP', speedKbps: 524032 });
@@ -361,6 +361,10 @@ describe('OltCatalogsService', () => {
           vendorTcontProfile: 'SMARTOLT-500M-UP',
           downKbps: 524032,
           upKbps: 524032,
+          // Bug real confirmado en producción (2026-10-22): sin esto, los ~40
+          // perfiles reales importados así nunca tenían traffic-profile, y la
+          // bajada del cliente quedaba sin gestionar en la OLT.
+          vendorTrafficProfile: 'TRAFFIC-512M',
         }),
       );
       expect(result.vendorTcontProfile).toBe('SMARTOLT-500M-UP');

@@ -703,6 +703,36 @@ describe('OnuManagementService', () => {
       );
     });
 
+    it('genera trafficProfile con la convención "TRAFFIC-<Mbps>M" si el perfil NO tiene vendorTrafficProfile configurado -- bug real confirmado en producción (2026-10-22): los ~40 perfiles "SMARTOLT-*-UP" importados por descubrimiento TCONT nunca lo traían, así que el cliente quedaba con la bajada sin gestionar en la OLT', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+      speedProfileRepo.findOneBy.mockResolvedValueOnce({
+        id: 'profile-1',
+        code: 'SMARTOLT-100M-UP',
+        downKbps: 102400,
+        upKbps: 102400,
+        vendorTcontProfile: 'SMARTOLT-100M-UP',
+        // vendorTrafficProfile deliberadamente ausente -- caso real de un
+        // perfil importado por "Ver Perfiles TCONT Reales de una OLT".
+      });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        onuTypeId: 'type-1',
+        speedProfileId: 'profile-1',
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+      });
+
+      expect(zteDriver.authorizeOnu).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          trafficProfile: 'TRAFFIC-100M',
+          downKbps: 102400,
+        }),
+      );
+    });
+
     it('NUNCA llama a CpeConfiguratorService ni toca GenieACS -- eso es ahora applyTr069Profile/pushWanConfig (Etapas 2/3), sin importar qué venga en el dto', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
       zteDriver.authorizeOnu.mockResolvedValue({ ok: true });

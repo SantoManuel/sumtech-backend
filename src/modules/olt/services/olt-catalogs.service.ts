@@ -485,6 +485,14 @@ export class OltCatalogsService {
       downKbps: discovered.speedKbps,
       upKbps: discovered.speedKbps,
       vendorTcontProfile: discovered.name,
+      // Mismo fallback que `createSpeedProfile()` para un perfil creado a mano
+      // -- sin esto, un perfil importado por descubrimiento TCONT se queda SIN
+      // traffic-profile para siempre (nadie lo escribe a mano en la práctica),
+      // así que la autorización nunca manda "traffic-profile ... direction
+      // egress" y el cliente queda con el download sin gestionar en la OLT
+      // (bug real confirmado en producción, 2026-10-22: los ~40 perfiles
+      // "SMARTOLT-*-UP" importados así nunca tuvieron traffic-profile).
+      vendorTrafficProfile: `TRAFFIC-${Math.round(discovered.speedKbps / 1024)}M`,
     });
     return this.speedProfileRepository.save(profile);
   }
