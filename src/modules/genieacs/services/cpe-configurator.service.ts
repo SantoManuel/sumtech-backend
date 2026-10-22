@@ -60,34 +60,23 @@ export class CpeConfiguratorService {
 
     // 2.5. Asegurar que la instancia de objeto WAN exista ANTES de escribirle
     // parámetros -- "SetParameterValues" nunca puede crear una instancia
-    // nueva (solo "AddObject" puede). Confirmado en vivo (2026-10-22) contra
-    // la ONU CMDCDD4D131E: su árbol TR-098 tenía
-    // "WANConnectionDevice.1.WANPPPConnection" como tabla VACÍA (sin ninguna
-    // instancia ".1") -- escribir directo sobre "WANPPPConnection.1.*" (como
-    // hacía este método antes) el CPE lo rechaza con un fault TR-069
-    // ("Invalid parameter name") que antes nadie verificaba (ver fix en
-    // `GenieAcsClient.setParameterValues`). `objectInstanceExists` ya resuelve
-    // por su cuenta el caso "TR-098 con NumberOfEntries contaminado por
-    // intentos previos fallidos" (ver nota ahí) -- este método no necesita
-    // saber los detalles.
+    // nueva (solo "AddObject" puede). `objectInstanceExists` ya resuelve el
+    // chequeo leyendo el documento real de GenieACS (node + "NumberOfEntries"
+    // si aplica, ver esa nota) -- esta rama solo se activa cuando el objeto
+    // GENUINAMENTE no existe todavía.
     //
-    // `refreshObject()` ANTES del primer chequeo -- CONFIRMADO EN VIVO
-    // (2026-10-22, segundo reintento sobre la misma ONU): sin esto, el
-    // documento de GenieACS puede tener "...NumberOfEntries" todavía sin
-    // ningún `_value` confirmado (nunca se leyó en vivo), y el chequeo cae de
-    // vuelta al nodo del objeto -- que sigue "fantasma" por los intentos
-    // previos a estos fixes. Sin forzar una sesión CWMP real contra el CPE
-    // antes de decidir, el chequeo queda a merced de lo que GenieACS tenga
-    // cacheado, que puede estar desactualizado o nunca haberse leído.
+    // NO se usa `refreshObject()` acá -- CONFIRMADO EN VIVO (2026-10-22)
+    // contra la ONU CMDCDD4D131E: la función interna "refresh" de GenieACS
+    // rechaza con "script.Error: Invalid parameter path" cualquier ruta
+    // terminada en punto (notación recursiva) contra este dispositivo, sin
+    // importar el nivel de profundidad -- confirmado probando 4 variantes de
+    // ruta distintas, todas fallaron igual. `refreshObject()` nunca revisa
+    // `/faults` (ver GenieAcsClient.refreshObject), así que esta falla era
+    // silenciosa y el refresh nunca hacía nada útil -- solo ensuciaba el log
+    // de faults del dispositivo en GenieACS, generando ruido confuso para
+    // cualquiera que revise esa pestaña después. Se quita por completo.
     const wanObject = this.getWanObjectPaths(input, isTR181);
     if (wanObject) {
-      try {
-        await client.refreshObject(deviceId, wanObject.parentPath);
-      } catch (err: any) {
-        this.logger.warn(
-          `[CPE-CONFIG] No se pudo refrescar "${wanObject.parentPath}" en ${deviceId} antes de verificar si existe: ${err.message}`,
-        );
-      }
       const exists = await client.objectInstanceExists(deviceId, wanObject.instancePath);
       if (!exists) {
         this.logger.log(
@@ -95,12 +84,6 @@ export class CpeConfiguratorService {
         );
         try {
           await client.addObject(deviceId, wanObject.parentPath);
-          // Refresca el subárbol ANTES de volver a chequear -- "addObject" ya
-          // esperó a que la sesión CWMP terminara (assertTaskSucceeded), pero
-          // eso no garantiza que GenieACS haya vuelto a leer "NumberOfEntries"
-          // como parte de esa misma sesión. Sin este refresh, la segunda
-          // llamada a objectInstanceExists() podría seguir viendo el valor viejo.
-          await client.refreshObject(deviceId, wanObject.parentPath);
         } catch (err: any) {
           throw new BadRequestException(
             `No se pudo crear el objeto WAN "${wanObject.parentPath}" en el CPE: ${err.message}`,

@@ -166,36 +166,16 @@ describe('CpeConfiguratorService', () => {
     );
   });
 
-  it('refresca el objeto WAN en vivo (refreshObject) ANTES del primer chequeo de existencia', async () => {
+  it('NO llama a refreshObject en el flujo de configureCpe -- GenieACS rechaza rutas recursivas para este tipo de chequeo (ver nota en el servicio)', async () => {
     mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
     mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-ONT123', isTR181: false, tags: [] });
-    mockClient.refreshObject.mockResolvedValue(undefined);
     mockClient.objectInstanceExists.mockResolvedValue(true);
     mockClient.setParameterValues.mockResolvedValue(undefined);
     mockClient.getParameterValues.mockResolvedValue({});
 
     await service.configureCpe({ serialNumber: 'ONT123', wanMode: 'PPPOE' });
 
-    expect(mockClient.refreshObject).toHaveBeenCalledWith(
-      '00259E-ONT123',
-      'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.',
-    );
-    expect(mockClient.refreshObject.mock.invocationCallOrder[0]).toBeLessThan(
-      mockClient.objectInstanceExists.mock.invocationCallOrder[0],
-    );
-  });
-
-  it('no revienta si refreshObject falla -- sigue con el chequeo normal (best-effort)', async () => {
-    mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
-    mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-ONT123', isTR181: false, tags: [] });
-    mockClient.refreshObject.mockRejectedValue(new Error('timeout de GenieACS'));
-    mockClient.objectInstanceExists.mockResolvedValue(true);
-    mockClient.setParameterValues.mockResolvedValue(undefined);
-    mockClient.getParameterValues.mockResolvedValue({});
-
-    const result = await service.configureCpe({ serialNumber: 'ONT123', wanMode: 'PPPOE' });
-
-    expect(result.success).toBe(true);
+    expect(mockClient.refreshObject).not.toHaveBeenCalled();
   });
 
   it('NO llama a AddObject si el objeto WAN ya existe en el CPE', async () => {
