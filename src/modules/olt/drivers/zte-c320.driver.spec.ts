@@ -1157,6 +1157,29 @@ describe('ZteC320Driver', () => {
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
+    it('tolera "%Code 63869-GPONRM : Record already exists." en "flow <n> switch switch_0/1" (y comandos similares del cableado OMCI) -- bug real confirmado en producción (2026-10-22): un reintento de autorización que ya había cableado el canal de internet (ver generateAuthorizationScript) abortaba aquí mismo en vez de tolerarlo, pese a ser el mismo significado que "is existed"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'flow 1 switch switch_0/1') {
+          return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
     it('un "%Code" que NO menciona "existed" sigue tratándose como rechazo fatal, sin importar el comando', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');

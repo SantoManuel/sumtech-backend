@@ -73,6 +73,14 @@ export class ZteC320Driver implements IOltDriver {
    *   operation." (en "onu <id> type ... sn ...")
    *   "%Code 66661: The service is already existed." (en
    *   "service-port 1 vport 1 user-vlan ... vlan ...")
+   *   "%Code 63869-GPONRM : Record already exists." (en "flow <n> switch
+   *   switch_0/1" y comandos similares del bloque OMCI -- bug real
+   *   confirmado en producción 2026-10-22: reintentar una autorización que ya
+   *   había aplicado el cableado OMCI del canal de internet -- ver
+   *   `generateAuthorizationScript` -- abortaba en el primer "flow" ya
+   *   aplicado en vez de tolerarlo como los demás pasos, porque esta frase
+   *   nunca estaba cubierta por el patrón de abajo, pese a ya haberse visto
+   *   antes en `applyTr069Management` como advertencia).
    * Ambos aparecen cuando una autorización previa de la MISMA ONU falló
    * DESPUÉS de ese paso (ej. por los bugs reales de "gpon-olt_" vs
    * "gpon-onu_" y de "tr069-mgmt" ya corregidos), dejando ese paso concreto
@@ -84,7 +92,7 @@ export class ZteC320Driver implements IOltDriver {
    * cualquier otro texto de error como rechazo real.
    */
   private isAlreadyAppliedResponse(output: string): boolean {
-    return /\bis\s+(?:already\s+)?existed\b/i.test(output);
+    return /\bis\s+(?:already\s+)?existed\b/i.test(output) || /\brecord\s+already\s+exists\b/i.test(output);
   }
 
   /**
