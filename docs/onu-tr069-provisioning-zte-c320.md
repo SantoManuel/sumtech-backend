@@ -238,3 +238,39 @@ para el caso de ACTUALIZAR un onu-type existente, solo para crearlo).
   completo con `<cr>` disponible. Lección: en este CLI, el riesgo de "`?` ejecuta
   el comando" depende de si el PREFIJO antes del `?` ya es una acción válida por
   sí sola, no es una propiedad general segura de todo el CLI ZTE.
+
+## Actualización 2026-10-22 (más tarde, mismo día) — "Max VEIP" era necesario pero NO la causa raíz real
+
+Tras corregir `Max VEIP` (sección anterior) y probarlo contra un onu-type
+**nuevo y dedicado** (`HUAWEY-HG8145V5-TR069`, creado desde cero con
+`max-veip 1` incluido, sin el problema de "Profile is being used" de un
+onu-type compartido), `tr069-mgmt 1 acs <url>` **siguió siendo rechazado**
+con el mismo `%Code 63990-GPONRM`. Revisando el log línea por línea: el
+comando `veip 1 port udp 1232 host 2` **siempre se había aceptado sin
+rechazo**, en TODOS los intentos de esta investigación, con o sin el fix de
+Max VEIP -- la atribución de la causa raíz a "Max VEIP: 0" nunca se verificó
+contra cuál comando específico fallaba, y era incorrecta.
+
+**Causa raíz real**, encontrada comparando contra un running-config real y
+**funcionando** de otra ONU en la misma OLT (ONU `HWTCDE64BA7C`, modelo
+Huawei BT546XG, aprovisionada por SmartOLT, con `tr069-mgmt ... acs ...`
+realmente aplicado): a `generateTr069ManagementScript()` le faltaba
+`switchport-bind switch_0/1 veip 1` -- solo se hacía el bind del `iphost 2`,
+nunca el del propio VEIP. Sin ese bind, el VEIP (donde vive el ME de
+`ManagementServer` que atiende TR-069) nunca queda conectado a ningún camino
+de datos real dentro del switch fabric interno del ONT, así que el ONT
+rechaza cualquier intento de configurar su `ManagementServer` con
+`%Code 63990-GPONRM : ONT return error: command processing error.`
+
+**Fix aplicado:** se agrega `switchport-bind switch_0/1 veip 1` justo antes
+de `veip 1 port udp 1232 host 2`, mismo orden que el ejemplo real. El fix de
+`Max VEIP` del día (sección anterior) se mantiene -- sigue siendo un
+prerequisito real documentado por la propia OLT, solo que no era la pieza
+que estaba causando el rechazo del ACS en este caso concreto.
+
+**Lección de proceso:** nunca declarar una causa raíz "confirmada" sin
+revisar, en el log real, CUÁL comando específico produjo el rechazo --
+asumir que el único error visible (`%Code 63990` en `tr069-mgmt ... acs
+...`) venía de la pieza que se acababa de tocar (`veip 1 port udp ...`,
+afectada por Max VEIP) sin verificarlo línea por línea costó una iteración
+completa de diagnóstico equivocado.
