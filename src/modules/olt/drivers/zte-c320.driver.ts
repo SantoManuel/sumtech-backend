@@ -1133,13 +1133,11 @@ export class ZteC320Driver implements IOltDriver {
    * "Max VEIP: 0" (keyword real, confirmado vía ayuda contextual de la OLT),
    * lo que bloquea a nivel OMCI el bloque TR-069 de
    * `generateTr069ManagementScript` para CUALQUIER ONU que use un onu-type
-   * creado por este método. OJO: este fix solo aplica a onu-types NUEVOS --
-   * si el onu-type YA EXISTE (`alreadyExists`, ver abajo) este método no lo
-   * toca, así que un onu-type preexistente con "Max VEIP: 0" (confirmado en
-   * vivo: HUAWEY-HG8145V5 en OLT_Tabara_Abajo) sigue roto hasta corregirlo
-   * a mano con "onu-type <nombre> gpon max-veip 1" (sin confirmar aún si
-   * esto actualiza solo ese campo o si hace falta repetir el resto de los
-   * parámetros -- ver docs/onu-tr069-provisioning-zte-c320.md).
+   * creado por este método. Se aplica tanto a onu-types NUEVOS (en la
+   * creación) como a onu-types que YA EXISTÍAN de antes con "Max VEIP: 0"
+   * (ej. HUAWEY-HG8145V5 en OLT_Tabara_Abajo) -- ver el chequeo de
+   * `alreadyExists` más abajo, que ahora repara ese campo en caliente en vez
+   * de salir sin tocar nada.
    */
   async ensureOnuTypeProfile(params: OltConnectionParams, profile: OnuTypeProfile): Promise<{ ok: boolean; error?: string }> {
     const session = this.createSession(params);
@@ -1161,6 +1159,34 @@ export class ZteC320Driver implements IOltDriver {
     const checkOutput = await session.executeCommand(`show onu-type gpon ${profile.name}`);
     const alreadyExists = !this.isOltErrorResponse(checkOutput) && checkOutput.includes(profile.name);
     if (alreadyExists) {
+      // CONFIRMADO EN VIVO (2026-10-22) contra OLT_Tabara_Abajo: un onu-type
+      // PREEXISTENTE (creado antes de que este método supiera de "max-veip",
+      // ej. HUAWEY-HG8145V5) puede quedar con "Max VEIP: 0" -- esto bloquea a
+      // nivel OMCI el comando "veip 1 port udp 1232 host 2" del bloque TR-069
+      // con "%Code 63990-GPONRM : ONT return error: command processing
+      // error.", sin importar cuántas veces se reautorice la ONU, porque
+      // antes este método se salía aquí sin tocar un onu-type ya existente.
+      // "show onu-type gpon <nombre>" reporta "Max VEIP:   0(default: 1
+      // VEIP)" -- se repara en caliente con "onu-type <nombre> gpon max-veip
+      // 1". Según la gramática real de este comando (confirmada vía ayuda
+      // contextual: todos los parámetros de "onu-type <nombre> gpon ..." son
+      // opcionales e independientes entre sí), esto debería actualizar SOLO
+      // "max-veip" sin tocar el resto -- AÚN NO reconfirmado en vivo (el
+      // sandbox bloqueó el intento de probarlo manualmente), así que sigue
+      // sin ser 100% seguro hasta la próxima autorización real.
+      const maxVeipMatch = checkOutput.match(/Max VEIP:\s*(\d+)/i);
+      const maxVeip = maxVeipMatch ? parseInt(maxVeipMatch[1], 10) : undefined;
+      if (maxVeip !== undefined && maxVeip < 1) {
+        await session.executeCommand('configure terminal');
+        await session.executeCommand('pon');
+        const fixOutput = await session.executeCommand(`onu-type ${profile.name} gpon max-veip 1`);
+        await session.executeCommand('exit');
+        await session.executeCommand('exit');
+        if (this.isOltErrorResponse(fixOutput)) {
+          throw new Error(`La OLT rechazó corregir "max-veip" del onu-type "${profile.name}": ${fixOutput.trim()}`);
+        }
+        await session.executeCommand('write');
+      }
       return;
     }
 

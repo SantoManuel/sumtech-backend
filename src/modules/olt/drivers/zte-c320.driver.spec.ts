@@ -761,6 +761,87 @@ describe('ZteC320Driver', () => {
       expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
     });
 
+    it('repara "max-veip" en caliente si el onu-type YA EXISTE con "Max VEIP: 0" (caso real: HUAWEY-HG8145V5 preexistente)', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-HG8145V5') {
+          return Promise.resolve(
+            'ONU type name:          HUAWEY-HG8145V5\r\nPON type:               gpon\r\nMax VEIP:               0(default: 1 VEIP)\r\n',
+          );
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.ensureOnuTypeProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'HUAWEY-HG8145V5' },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'show onu-type gpon HUAWEY-HG8145V5',
+        'configure terminal',
+        'pon',
+        'onu-type HUAWEY-HG8145V5 gpon max-veip 1',
+        'exit',
+        'exit',
+        'write',
+      ]);
+    });
+
+    it('NO toca nada si el onu-type ya existe y ya tiene "Max VEIP: 1" o más', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon ZTEG-F660') {
+          return Promise.resolve('ONU type name:          ZTEG-F660\r\nMax VEIP:               1\r\n');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      await driver.ensureOnuTypeProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'ZTEG-F660' },
+      );
+
+      expect(executeCommand).toHaveBeenCalledTimes(1);
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
+    });
+
+    it('responde ok:false si la OLT rechaza la reparación de "max-veip" sobre un onu-type existente', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-HG8145V5') {
+          return Promise.resolve('ONU type name:          HUAWEY-HG8145V5\r\nMax VEIP:               0(default: 1 VEIP)\r\n');
+        }
+        if (cmd === 'onu-type HUAWEY-HG8145V5 gpon max-veip 1') {
+          return Promise.resolve('%Error 20200: Invalid input detected');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.ensureOnuTypeProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'HUAWEY-HG8145V5' },
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('Invalid input detected');
+      // No debe mandar "write" si la corrección fue rechazada.
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+
     it('crea el perfil entrando a "configure terminal"/"pon" y declarando max-tcont/max-gemport/etc. + puertos eth/pots si no existe', async () => {
       const executeCommand = jest.fn().mockResolvedValue('');
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
