@@ -32,6 +32,16 @@ export interface EnrichedRouterOsProfile {
   isProtected: boolean;
 }
 
+export interface EnrichedPppSecret extends RouterOsPppSecret {
+  isConnected: boolean;
+  liveAddress?: string;
+  liveUptime?: string;
+  accessId?: string;
+  contractId?: string;
+  clientId?: string;
+  clientName?: string;
+}
+
 export interface PppSessionDetails {
   isConnected: boolean;
   username?: string;
@@ -205,6 +215,69 @@ export class PppManagementService {
         `El nodo "${node.name}" (${node.wireguardIp || node.managementIp || 'desconocido'}) no respondio a tiempo: ${err.message}`,
       );
     }
+  }
+
+  /**
+   * Lista los secrets PPPoE configurados de verdad en el router (/ppp/secret),
+   * cruzados contra las sesiones activas (¿está conectado ahora?) y contra
+   * `network_access` (¿de qué cliente/contrato es este secret, si Sumtech lo
+   * conoce?). Antes de esto no existía ninguna vista de los secrets
+   * configurados -- solo de sesiones activas -- así que un secret correctamente
+   * creado pero nunca conectado (ONT con falla propia) era indistinguible de
+   * uno que nunca se creó.
+   */
+  async getNodeConfiguredSecrets(nodeId: string) {
+    const node = await this.nodeRepository.findOneBy({ id: nodeId });
+    if (!node) {
+      throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
+    }
+
+    const client = await this.resolveClient(node);
+    let secrets: RouterOsPppSecret[];
+    let activeSessions: RouterOsActivePppSession[];
+    try {
+      [secrets, activeSessions] = await Promise.all([
+        client.getPppSecrets(),
+        client.getActiveSessions().catch((): RouterOsActivePppSession[] => []),
+      ]);
+    } catch (err: any) {
+      this.logger.warn(`Error listando secrets PPP en nodo "${node.name}": ${err.message}`);
+      throw new GatewayTimeoutException(
+        `El nodo "${node.name}" (${node.wireguardIp || node.managementIp || 'desconocido'}) no respondio a tiempo: ${err.message}`,
+      );
+    }
+
+    const activeByName = new Map(activeSessions.map((s) => [s.name, s]));
+
+    const accesses = await this.accessRepository.find({
+      where: { nodeId: node.id },
+      relations: ['contract', 'contract.client'],
+    });
+    const accessByUsername = new Map(
+      accesses.filter((a) => a.username).map((a) => [a.username as string, a]),
+    );
+
+    const enrichedSecrets: EnrichedPppSecret[] = secrets.map((secret) => {
+      const active = activeByName.get(secret.name);
+      const access = accessByUsername.get(secret.name);
+      return {
+        ...secret,
+        isConnected: Boolean(active),
+        liveAddress: active?.address,
+        liveUptime: active?.uptime,
+        accessId: access?.id,
+        contractId: access?.contractId,
+        clientId: access?.contract?.clientId,
+        clientName: access?.contract?.client?.name,
+      };
+    });
+
+    return {
+      nodeId: node.id,
+      nodeName: node.name,
+      total: enrichedSecrets.length,
+      secrets: enrichedSecrets,
+    };
   }
 
   /**

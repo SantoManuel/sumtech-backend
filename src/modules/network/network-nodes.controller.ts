@@ -144,6 +144,12 @@ export class NetworkNodesController {
     return this.pppManagementService.getNodeActiveSessions(id);
   }
 
+  @Get(':id/ppp/secrets')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getNodeConfiguredSecrets(@Param('id') id: string) {
+    return this.pppManagementService.getNodeConfiguredSecrets(id);
+  }
+
   @Delete(':id/ppp/active/:username')
   @Roles(Role.ADMIN, Role.GERENTE)
   async disconnectNodeActiveSession(
