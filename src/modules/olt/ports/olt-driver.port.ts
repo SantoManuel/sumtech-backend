@@ -172,6 +172,14 @@ export interface AuthorizeOnuParams {
   operationMode: 'ROUTER' | 'BRIDGE';
   tr069Url?: string;
   tr069Vlan?: number;
+  /** Credenciales HTTP Basic que el propio ONT debe usar para validar al ACS
+   * (comando OMCI "tr069-mgmt ... validate basic username/password") --
+   * confirmado en vivo (2026-10-22) en el running-config real de un cliente
+   * funcionando (X2251/HWTCBC05BF9C, provisionado por SmartOLT). Opcional:
+   * si la red TR-069 no tiene credenciales configuradas, se omite la
+   * cláusula "validate" por completo (mismo comportamiento de antes). */
+  tr069AcsUsername?: string;
+  tr069AcsPassword?: string;
 }
 
 /**

@@ -788,6 +788,17 @@ describe('OnuManagementService', () => {
       await expect(service.applyTr069Profile('onu-uuid-1', {} as any)).rejects.toThrow(BadRequestException);
     });
 
+    it('lanza BadRequestException SIN llamar al driver si la Red TR-069 tiene "acsUrl" vacío -- nunca debe generarse "tr069-mgmt 1 acs " en blanco', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      tr069Repo.findOne.mockResolvedValue({ id: 'tr069-1', vlanId: 46, acsUrl: '', vlan: { vlanId: 46 } });
+
+      await expect(
+        service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(zteDriver.applyTr069Management).not.toHaveBeenCalled();
+    });
+
     it('llama a driver.applyTr069Management() con los parámetros resueltos y persiste managementMethod/tr069NetworkId', async () => {
       onuRepo.findOne.mockResolvedValue(mockOnu);
       configRepo.findOneBy.mockResolvedValue({ ...mockConfig });

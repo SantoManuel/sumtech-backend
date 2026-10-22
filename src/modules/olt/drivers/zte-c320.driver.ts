@@ -749,6 +749,18 @@ export class ZteC320Driver implements IOltDriver {
    * (responsabilidad del caller, ver `OnuManagementService.applyTr069Profile`).
    */
   generateTr069ManagementScript(config: import('../ports/olt-driver.port').AuthorizeOnuParams): string[] {
+    // Sin esta guarda, una Red TR-069 con "acsUrl" vacío (fila mal cargada,
+    // o un bug futuro que la resuelva mal) generaría silenciosamente
+    // "tr069-mgmt 1 acs " en blanco -- la OLT lo aceptaría igual (es solo
+    // texto para ella) y la ONU quedaría "configurada" apuntando a ningún
+    // lado, exactamente el tipo de fallo silencioso que costó la
+    // investigación de hoy (2026-10-22). Fallar aquí, alto y claro, en vez
+    // de generar un comando inválido.
+    if (!config.tr069Url) {
+      throw new Error(
+        'No se puede generar el bloque TR-069/ACS: falta la URL del ACS (tr069Url). Revisa que la Red TR-069 seleccionada tenga "acsUrl" configurado.',
+      );
+    }
     const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
     const commands: string[] = [
       'configure terminal',
@@ -763,9 +775,22 @@ export class ZteC320Driver implements IOltDriver {
     // OLT pero el ONT lo rechaza a nivel OMCI, o directamente nunca intenta
     // DHCP en la VLAN de gestión. Ver docs/onu-tr069-provisioning-zte-c320.md
     // para el diagnóstico completo.
+    // Perfil de TCONT/tráfico dedicado para el canal de gestión -- NUNCA el
+    // mismo perfil del plan comercial del cliente (ese es para el canal de
+    // Internet). Confirmado en vivo (2026-10-22) en el running-config real
+    // de X2251/HWTCBC05BF9C (cliente real, aprovisionado por SmartOLT, OLT
+    // OLT_Tabara_Abajo): usa "SMARTOLT-VOIPMNG-10M" para tcont 2 Y como
+    // traffic-limit de gemport 2, ya existente en esta OLT -- antes este
+    // driver reusaba `config.tcontProfile` (el del plan del cliente) también
+    // para el canal de gestión, sin necesidad real de ese ancho de banda ahí.
+    const mgmtProfile = 'SMARTOLT-VOIPMNG-10M';
+
     commands.push(
-      `tcont 2 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
+      `tcont 2 profile ${mgmtProfile}`,
       'gemport 2 tcont 2',
+      // Confirmado en vivo (2026-10-22): el running-config real también fija
+      // un traffic-limit explícito en gemport 2, no solo el tcont.
+      `gemport 2 traffic-limit downstream ${mgmtProfile}`,
       'switchport mode hybrid vport 2',
       `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
       'exit',
@@ -777,7 +802,12 @@ export class ZteC320Driver implements IOltDriver {
       // "tr069-mgmt ... acs ..." (orden importa).
       'flow 2 switch switch_0/1',
       'flow mode 2 tag-filter vlan-filter untag-filter discard',
-      `flow 2 pri 0 vlan ${config.tr069Vlan}`,
+      // pri 2 (no 0): confirmado en vivo (2026-10-22) contra dos ONUs reales
+      // y funcionando (X2251/HWTCBC05BF9C y M0761/HWTCDE64BA7C) que el canal
+      // de gestión siempre usa prioridad 2, igual que "tr069-mgmt 1 tag pri
+      // 2 vlan ..." más abajo -- antes este driver mandaba "pri 0" aquí,
+      // inconsistente con el resto del bloque.
+      `flow 2 pri 2 vlan ${config.tr069Vlan}`,
       'gemport 2 flow 2',
       'switchport-bind switch_0/1 iphost 2',
       // CONFIRMADO EN VIVO (2026-10-22): faltaba este bind -- un running-config
@@ -795,7 +825,16 @@ export class ZteC320Driver implements IOltDriver {
       // confirmado en el config real de un ONU Villar Pando (SmartOLT).
       'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
       'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
-      `vlan-filter iphost 2 pri 0 vlan ${config.tr069Vlan}`,
+      // pri 2, mismo motivo que "flow 2 pri 2" arriba.
+      `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
+      // Confirmado en vivo (2026-10-22) en ambas referencias reales -- rige
+      // cómo la ONU asigna IP a sus 4 puertos LAN (independiente del canal
+      // de gestión en sí), presente en todo running-config real que
+      // revisamos hoy. Nunca lo mandábamos.
+      'dhcp-ip ethuni eth_0/1 from-onu',
+      'dhcp-ip ethuni eth_0/2 from-onu',
+      'dhcp-ip ethuni eth_0/3 from-onu',
+      'dhcp-ip ethuni eth_0/4 from-onu',
       'veip 1 port udp 1232 host 2',
       // Sin esto el ME de ManagementServer puede quedar administrativamente
       // bloqueado -- confirmado como parte de la secuencia real que
@@ -808,9 +847,19 @@ export class ZteC320Driver implements IOltDriver {
       // mandaban juntos como "tr069-mgmt 1 acs <url> tag pri 2 vlan <vlan>",
       // que la OLT rechazaba con "%Error 20201: Invalid input detected ...
       // Invalid command key word" porque "tag" nunca es un parámetro válido
-      // después de la URL del ACS.
-      `tr069-mgmt 1 acs ${config.tr069Url}`,
+      // después de la URL del ACS. "validate basic username/password" es
+      // opcional y solo se agrega si la Red TR-069 tiene credenciales de ACS
+      // configuradas -- confirmado en vivo (2026-10-22) que el running-config
+      // real de un cliente funcionando (X2251/HWTCBC05BF9C) lo incluye.
+      config.tr069AcsUsername && config.tr069AcsPassword
+        ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
+        : `tr069-mgmt 1 acs ${config.tr069Url}`,
       `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
+      // Habilita el forwarding de gestión LAN (web/ssh/telnet/snmp/tr069) --
+      // confirmado en vivo (2026-10-22) presente en todo running-config real
+      // de cliente funcionando que revisamos hoy; nunca lo mandábamos.
+      'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
+      'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
       // Los SET de OMCI de este ONT no son idempotentes y cualquier cambio
       // puede dejar "Config state" en "fail" (ver `show gpon onu
       // detail-info <iface>`) hasta que el ONT se reinicia -- CONFIRMADO EN

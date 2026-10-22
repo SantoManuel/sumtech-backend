@@ -110,19 +110,38 @@ describe('ZteC320Driver', () => {
       operationMode: 'ROUTER' as const,
     };
 
+    it('nunca genera "tr069-mgmt 1 acs" en blanco -- falla alto y claro si falta tr069Url, en vez de mandarle a la OLT un comando inválido', () => {
+      expect(() => driver.generateTr069ManagementScript({ ...baseConfig, tr069Url: undefined })).toThrow(
+        /falta la URL del ACS/i,
+      );
+      expect(() => driver.generateTr069ManagementScript({ ...baseConfig, tr069Url: '' })).toThrow(
+        /falta la URL del ACS/i,
+      );
+    });
+
     it('genera el bloque OMCI completo que apunta la ONU al ACS, con el segundo camino de datos GPON para la VLAN de gestión', () => {
       const commands = driver.generateTr069ManagementScript(baseConfig);
 
       expect(commands).toContain('configure terminal');
       expect(commands).toContain('interface gpon-onu_1/1/1:5');
-      expect(commands).toContain('tcont 2 profile UP-50M');
+      // Perfil DEDICADO de gestión ("SMARTOLT-VOIPMNG-10M"), NUNCA el
+      // tcontProfile del plan del cliente ("UP-50M" en baseConfig) --
+      // confirmado en vivo (2026-10-22) contra dos running-config reales y
+      // funcionando (X2251/HWTCBC05BF9C, M0761/HWTCDE64BA7C): el canal de
+      // gestión siempre usa este perfil fijo, sin relación con el ancho de
+      // banda contratado por el cliente.
+      expect(commands).toContain('tcont 2 profile SMARTOLT-VOIPMNG-10M');
       expect(commands).toContain('gemport 2 tcont 2');
+      expect(commands).toContain('gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M');
       expect(commands).toContain('switchport mode hybrid vport 2');
       expect(commands).toContain('service-port 2 vport 2 user-vlan 46 vlan 46');
       expect(commands).toContain('pon-onu-mng gpon-onu_1/1/1:5');
       expect(commands).toContain('flow 2 switch switch_0/1');
       expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
-      expect(commands).toContain('flow 2 pri 0 vlan 46');
+      // pri 2 (no 0) -- confirmado en vivo (2026-10-22) contra las mismas dos
+      // referencias reales de arriba, consistente con "tr069-mgmt 1 tag pri
+      // 2 vlan ...".
+      expect(commands).toContain('flow 2 pri 2 vlan 46');
       expect(commands).toContain('gemport 2 flow 2');
       expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
       // CONFIRMADO EN VIVO (2026-10-22) contra un running-config real y
@@ -134,7 +153,13 @@ describe('ZteC320Driver', () => {
       expect(commands).toContain('switchport-bind switch_0/1 veip 1');
       expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
       expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
-      expect(commands).toContain('vlan-filter iphost 2 pri 0 vlan 46');
+      expect(commands).toContain('vlan-filter iphost 2 pri 2 vlan 46');
+      // Confirmado en vivo (2026-10-22) presente en ambas referencias reales
+      // -- rige la asignación de IP de los 4 puertos LAN de la ONU.
+      expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
+      expect(commands).toContain('dhcp-ip ethuni eth_0/2 from-onu');
+      expect(commands).toContain('dhcp-ip ethuni eth_0/3 from-onu');
+      expect(commands).toContain('dhcp-ip ethuni eth_0/4 from-onu');
       expect(commands).toContain('veip 1 port udp 1232 host 2');
       expect(commands).toContain('tr069-mgmt 1 state unlock');
       // "acs <url>" y "tag pri <n> vlan <n>" son DOS comandos separados --
@@ -142,8 +167,12 @@ describe('ZteC320Driver', () => {
       // contextual ("tr069-mgmt 1 ?"): antes se mandaban como uno solo
       // ("tr069-mgmt 1 acs <url> tag pri 2 vlan 46"), rechazado con "%Error
       // 20201: Invalid input detected ... Invalid command key word".
+      // Sin tr069AcsUsername/Password en baseConfig, "validate" se omite.
       expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
       expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
+      // Confirmado en vivo (2026-10-22) presente en ambas referencias reales.
+      expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
+      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
 
       // El cableado OMCI (flow/iphost/veip/state unlock) va ANTES de "acs" --
       // orden confirmado en vivo, cambiarlo rompería la secuencia real.
@@ -165,6 +194,21 @@ describe('ZteC320Driver', () => {
       // 2026-10-19, ver también los ejemplos del manual ZXA10 C300 §2.11-2.13,
       // todos usan "end" ahí).
       expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
+    });
+
+    it('agrega "validate basic username/password" solo si la Red TR-069 tiene credenciales de ACS -- confirmado en vivo (2026-10-22) en el running-config real de X2251/HWTCBC05BF9C', () => {
+      const withCreds = driver.generateTr069ManagementScript({
+        ...baseConfig,
+        tr069AcsUsername: 'soltcpe',
+        tr069AcsPassword: 'FiEpcY4srQj6',
+      });
+      expect(withCreds).toContain(
+        'tr069-mgmt 1 acs http://10.46.0.1:7547/ validate basic username soltcpe password FiEpcY4srQj6',
+      );
+      expect(withCreds).not.toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
+
+      const withoutCreds = driver.generateTr069ManagementScript(baseConfig);
+      expect(withoutCreds).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
     });
   });
 

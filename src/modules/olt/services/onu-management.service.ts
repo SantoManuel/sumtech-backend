@@ -762,6 +762,16 @@ export class OnuManagementService {
       operationMode: config.operationMode,
     });
 
+    // Falla aquí, ANTES de conectarse a la OLT, en vez de dejar que el
+    // driver genere "tr069-mgmt 1 acs " en blanco (la OLT lo aceptaría sin
+    // quejarse -- es solo texto para ella -- y la ONU quedaría "configurada"
+    // sin apuntar a ningún lado). Señal de una Red TR-069 con "acsUrl" vacío.
+    if (!authParams.tr069Url) {
+      throw new BadRequestException(
+        `La Red TR-069 seleccionada no tiene una URL de ACS configurada (acsUrl vacío). Corrígela en "Redes TR-069" antes de aplicar el perfil.`,
+      );
+    }
+
     const result = await this.callDriver(() => driver.applyTr069Management(connParams, authParams));
     if (!result.ok) {
       throw new BadRequestException(`Fallo aplicando el Perfil TR-069 en la OLT: ${result.error}`);
@@ -1254,6 +1264,8 @@ export class OnuManagementService {
     // TR-069
     let tr069Url: string | undefined;
     let tr069Vlan: number | undefined;
+    let tr069AcsUsername: string | undefined;
+    let tr069AcsPassword: string | undefined;
     if (dto.tr069NetworkId) {
       const net = await this.tr069Repository.findOne({
         where: { id: dto.tr069NetworkId },
@@ -1262,6 +1274,8 @@ export class OnuManagementService {
       if (net) {
         tr069Url = net.acsUrl;
         if (net.vlan) tr069Vlan = net.vlan.vlanId;
+        tr069AcsUsername = net.acsUsername || undefined;
+        tr069AcsPassword = net.acsPasswordEnc ? decryptCredential(net.acsPasswordEnc) : undefined;
       }
     }
 
@@ -1318,6 +1332,8 @@ export class OnuManagementService {
       operationMode: dto.operationMode || 'ROUTER',
       tr069Url,
       tr069Vlan,
+      tr069AcsUsername,
+      tr069AcsPassword,
     };
   }
 }
