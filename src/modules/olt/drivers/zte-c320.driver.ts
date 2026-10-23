@@ -643,24 +643,50 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
       const output = await session.executeCommand(`show pon power attenuation ${onuTarget}`);
 
-      // Parser para ZTE C320:
-      // down Rx :-19.80(dbm)      Tx:2.50(dbm)
-      // up   Rx :-21.45(dbm)      Tx:2.15(dbm)
-      const downMatch = output.match(/down\s+Rx\s*:\s*([-\d.]+)\s*\(dbm\)\s+Tx\s*:\s*([-\d.]+)\s*\(dbm\)/i);
-      const upMatch = output.match(/up\s+Rx\s*:\s*([-\d.]+)\s*\(dbm\)\s+Tx\s*:\s*([-\d.]+)\s*\(dbm\)/i);
-      const attMatch = output.match(/attenuation\s*:\s*([-\d.]+)\s*\(dB\)/i);
+      // Parser para ZTE C320 -- CORREGIDO 2026-10-23 tras comparar contra la
+      // salida real del equipo de laboratorio (el formato documentado/asumido
+      // antes no coincidía y dejaba rxDbm/txDbm/attenuationDb SIEMPRE
+      // undefined, para CUALQUIER ONU, no solo una puntual):
+      //   OLT                  ONU              Attenuation
+      //   up      Rx :-13.404(dbm)      Tx:1.376(dbm)        14.780(dB)
+      //   down    Tx :6.719(dbm)        Rx:-21.250(dbm)      27.969(dB)
+      // Dos diferencias clave frente al parser anterior:
+      // 1) El orden de "Rx"/"Tx" DENTRO de la línea cambia según la fila
+      //    ("up" trae Rx primero, "down" trae Tx primero) -- el regex viejo
+      //    asumía "Rx" siempre inmediatamente después de "down"/"up".
+      // 2) No existe la palabra literal "attenuation:" -- es un número suelto
+      //    en "(dB)" al final de cada línea, una atenuación POR DIRECCIÓN.
+      // Por eso ahora se busca Rx/Tx dentro de cada línea sin asumir orden, y
+      // se toma el "(dB)" final de esa misma línea como su atenuación.
+      const lines = output.split(/\r?\n/);
+      const downLine = lines.find((l) => /^\s*down\b/i.test(l));
+      const upLine = lines.find((l) => /^\s*up\b/i.test(l));
 
-      const downRx = downMatch ? parseFloat(downMatch[1]) : undefined;
-      const upRx = upMatch ? parseFloat(upMatch[1]) : undefined;
-      const tx = downMatch ? parseFloat(downMatch[2]) : undefined;
-      const att = attMatch ? parseFloat(attMatch[1]) : undefined;
+      const parseDirLine = (line?: string) => {
+        if (!line) return { rx: undefined, tx: undefined, attenuation: undefined };
+        const rxMatch = line.match(/Rx\s*:\s*([-\d.]+)\s*\(dbm\)/i);
+        const txMatch = line.match(/Tx\s*:\s*([-\d.]+)\s*\(dbm\)/i);
+        const attMatch = line.match(/([-\d.]+)\s*\(dB\)\s*$/i);
+        return {
+          rx: rxMatch ? parseFloat(rxMatch[1]) : undefined,
+          tx: txMatch ? parseFloat(txMatch[1]) : undefined,
+          attenuation: attMatch ? parseFloat(attMatch[1]) : undefined,
+        };
+      };
+
+      // "down Rx" = potencia que la ONU RECIBE de la OLT (Potencia RX (ONU)).
+      // "up Tx"   = potencia que la ONU EMITE con su propio láser.
+      // La atenuación real OLT->ONU es la de la fila "down" (Tx del OLT vs
+      // Rx de la ONU); la de "up" es la del tramo inverso.
+      const down = parseDirLine(downLine);
+      const up = parseDirLine(upLine);
 
       return {
-        rxDbm: downRx,
-        txDbm: tx,
-        downRxDbm: downRx,
-        upRxDbm: upRx,
-        attenuationDb: att,
+        rxDbm: down.rx,
+        txDbm: up.tx,
+        downRxDbm: down.rx,
+        upRxDbm: up.rx,
+        attenuationDb: down.attenuation,
         raw: output.slice(0, 300),
       };
     } finally {

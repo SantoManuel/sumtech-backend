@@ -639,11 +639,18 @@ describe('ZteC320Driver', () => {
       'gpon-onu_1/1/1:1',
     );
 
-    expect(result.upRxDbm).toBe(-21.45);
-    expect(result.txDbm).toBe(2.50);
-    expect(result.downRxDbm).toBe(-19.80);
-    expect(result.rxDbm).toBe(-19.80); // Potencia recibida en la ONU
-    expect(result.attenuationDb).toBe(23.60);
+    // Fixture CONFIRMADA EN VIVO (2026-10-23, CMDCDD4D131E / OLT_Tabara_Abajo):
+    // en la fila "down" el orden real es Tx antes que Rx (al revés que en la
+    // fila "up"), y la atenuación es un número suelto en "(dB)" al final de
+    // cada línea, no la palabra literal "attenuation:". El parser viejo
+    // asumía el mismo orden Rx/Tx en ambas filas y la palabra "attenuation:",
+    // por lo que rxDbm/txDbm/attenuationDb -- los 3 campos que muestra el
+    // modal "Ficha 360" -- quedaban SIEMPRE undefined para cualquier ONU.
+    expect(result.upRxDbm).toBe(-13.404);
+    expect(result.txDbm).toBe(1.376); // Potencia TX = láser propio de la ONU (fila "up")
+    expect(result.downRxDbm).toBe(-21.25);
+    expect(result.rxDbm).toBe(-21.25); // Potencia recibida en la ONU (fila "down")
+    expect(result.attenuationDb).toBe(27.969); // Atenuación real OLT->ONU (fila "down")
   });
 
   it.each([
