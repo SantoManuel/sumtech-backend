@@ -1231,6 +1231,29 @@ describe('ZteC320Driver', () => {
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
+    it('tolera "%Code 63873-GPONRM : GEM port already exists." en "gemport 1 flow 1" (y comandos similares) sin abortar', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'gemport 1 flow 1') {
+          return Promise.resolve('\r\n%Code 63873-GPONRM : GEM port already exists.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
     it('un "%Code" que NO menciona "existed" sigue tratándose como rechazo fatal, sin importar el comando', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
@@ -1336,6 +1359,33 @@ describe('ZteC320Driver', () => {
       // El sentinel nunca debe llegar a executeCommand -- applyTr069Management()
       // lo intercepta y llama a session.rebootOnu() en su lugar.
       expect(executeCommand).not.toHaveBeenCalledWith(REBOOT_ONU_SENTINEL);
+    });
+
+    it('tolera "%Code 63873-GPONRM : GEM port already exists." en "gemport 2 flow 2" sin generar warning (paso ya aplicado previamente)', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'gemport 2 flow 2') {
+          return Promise.resolve('\r\n%Code 63873-GPONRM : GEM port already exists.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      expect(executeCommand).toHaveBeenCalledWith('tr069-mgmt 1 tag pri 2 vlan 46');
+      expect(executeCommand).toHaveBeenCalledWith('write');
+      expect(rebootOnu).toHaveBeenCalled();
     });
 
     it('si "rebootOnu()" rechaza (ej. el ONT no confirma el "[yes/no]:" a tiempo), el resultado sigue siendo ok:true con "warning" -- mismo criterio de mejor esfuerzo', async () => {

@@ -81,6 +81,12 @@ export class ZteC320Driver implements IOltDriver {
    *   aplicado en vez de tolerarlo como los demás pasos, porque esta frase
    *   nunca estaba cubierta por el patrón de abajo, pese a ya haberse visto
    *   antes en `applyTr069Management` como advertencia).
+   *   "%Code 63873-GPONRM : GEM port already exists." (en "gemport <n> flow <n>"
+   *   y "gemport <n> tcont <n>" -- bug real confirmado en producción 2026-10-22:
+   *   reintentar la configuración TR-069 o una autorización previa reportaba
+   *   una advertencia falsa de fallo de TR-069 ("La OLT rechazó la
+   *   configuración TR-069/ACS ('gemport 2 flow 2'): %Code 63873-GPONRM : GEM
+   *   port already exists.") o abortaba la autorización).
    * Ambos aparecen cuando una autorización previa de la MISMA ONU falló
    * DESPUÉS de ese paso (ej. por los bugs reales de "gpon-olt_" vs
    * "gpon-onu_" y de "tr069-mgmt" ya corregidos), dejando ese paso concreto
@@ -92,7 +98,7 @@ export class ZteC320Driver implements IOltDriver {
    * cualquier otro texto de error como rechazo real.
    */
   private isAlreadyAppliedResponse(output: string): boolean {
-    return /\bis\s+(?:already\s+)?existed\b/i.test(output) || /\brecord\s+already\s+exists\b/i.test(output);
+    return /\bis\s+(?:already\s+)?existed\b/i.test(output) || /\balready\s+exist(?:s|ed)?\b/i.test(output);
   }
 
   /**
