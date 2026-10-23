@@ -68,12 +68,18 @@ describe('OnuManagementService', () => {
 
   beforeEach(async () => {
     onuRepo = {
-      find: jest.fn(),
+      // Default []: scanUnconfiguredOnus() usa find() para la reconciliación
+      // inversa (limpiar filas "UNCONFIGURED" obsoletas) -- sin este default
+      // los tests que no la mockean explícitamente truenan con
+      // "cannot read property 'filter' of undefined" en vez de simplemente
+      // no encontrar nada que limpiar.
+      find: jest.fn().mockResolvedValue([]),
       findOne: jest.fn(),
       findOneBy: jest.fn(),
       save: jest.fn((entity) => Promise.resolve({ ...entity, id: entity.id || 'saved-onu-id' })),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
       delete: jest.fn().mockResolvedValue({ affected: 1 }),
+      remove: jest.fn((entities) => Promise.resolve(entities)),
       create: jest.fn((dto) => ({ ...dto })),
       findAndCount: jest.fn().mockResolvedValue([[mockOnu], 1]),
       createQueryBuilder: jest.fn(),
@@ -364,6 +370,39 @@ describe('OnuManagementService', () => {
       expect(updatePayload).not.toHaveProperty('status');
       expect(onuRepo.save).not.toHaveBeenCalled();
       expect(result[0].status).toBe('ACTIVE');
+    });
+
+    it('limpia una fila "UNCONFIGURED" que la OLT YA NO reporta -- bug real confirmado (2026-10-23): una ONU autorizada por fuera de la app (ej. directo por Telnet) se quedaba para siempre en la Bandeja Sin Configurar', async () => {
+      // La OLT ya no reporta NADA sin configurar en este escaneo.
+      zteDriver.getUnconfiguredOnus.mockResolvedValue([]);
+      const staleRow = { id: 'onu-stale-1', oltId: 'olt-uuid-1', status: 'UNCONFIGURED', serialNumber: 'CMDCDD4D131E' };
+      onuRepo.find.mockResolvedValue([staleRow]);
+
+      await service.scanUnconfiguredOnus('olt-uuid-1', 'admin-id');
+
+      expect(onuRepo.find).toHaveBeenCalledWith({ where: { oltId: 'olt-uuid-1', status: 'UNCONFIGURED' } });
+      expect(onuRepo.remove).toHaveBeenCalledWith([staleRow]);
+    });
+
+    it('NO limpia una fila "UNCONFIGURED" que la OLT SIGUE reportando en este mismo escaneo', async () => {
+      zteDriver.getUnconfiguredOnus.mockResolvedValue([
+        { onuIndex: 'gpon-onu_1/1/1:1', serialNumber: 'ZTEGC0123456', vendor: 'ZTE', ponInterface: 'gpon-olt_1/1/1' },
+      ]);
+      const stillUnconfigured = { id: 'onu-uuid-1', oltId: 'olt-uuid-1', status: 'UNCONFIGURED', serialNumber: 'ZTEGC0123456' };
+      onuRepo.findOneBy.mockResolvedValue(stillUnconfigured);
+      onuRepo.find.mockResolvedValue([stillUnconfigured]);
+
+      await service.scanUnconfiguredOnus('olt-uuid-1', 'admin-id');
+
+      expect(onuRepo.remove).not.toHaveBeenCalled();
+    });
+
+    it('no revienta el escaneo si falla la limpieza de filas obsoletas -- mejor esfuerzo, el resto del resultado del escaneo ya es válido', async () => {
+      zteDriver.getUnconfiguredOnus.mockResolvedValue([]);
+      onuRepo.find.mockResolvedValue([{ id: 'onu-stale-1', oltId: 'olt-uuid-1', status: 'UNCONFIGURED', serialNumber: 'CMDCDD4D131E' }]);
+      onuRepo.remove.mockRejectedValue(new Error('FK constraint violation'));
+
+      await expect(service.scanUnconfiguredOnus('olt-uuid-1', 'admin-id')).resolves.toEqual([]);
     });
   });
 

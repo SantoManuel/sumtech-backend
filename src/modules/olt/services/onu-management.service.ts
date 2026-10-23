@@ -277,11 +277,41 @@ export class OnuManagementService {
       savedOnus.push(existing);
     }
 
+    // Reconciliación inversa -- bug real confirmado (2026-10-23): hasta acá
+    // este método era puramente aditivo (solo inserta/actualiza lo que la
+    // OLT SÍ reporta ahora mismo como sin configurar), pero nunca limpiaba
+    // lo contrario -- una fila "UNCONFIGURED" se quedaba así PARA SIEMPRE en
+    // la Bandeja Sin Configurar aunque la OLT ya no la reportara (ONU
+    // autorizada por fuera de la app, ej. directo por Telnet, o
+    // simplemente desconectada físicamente). Se filtra por
+    // `status: 'UNCONFIGURED'` EN ESTE MOMENTO (no con el snapshot de
+    // `discovered` leído arriba) para no pisar una autorización concurrente
+    // que ya haya promovido la fila a ACTIVE mientras corría este escaneo --
+    // mismo cuidado que ya tiene el UPDATE dirigido de arriba. Solo borra
+    // filas nunca autorizadas por la app (ACTIVE/BLOCKED/OFFLINE no se tocan
+    // jamás acá); eliminar en vez de reescribir evita inventar un estado
+    // que esta función, que solo sabe de "sin configurar", no puede inferir.
+    const discoveredSerials = new Set(discovered.map((item) => item.serialNumber));
+    const staleUnconfigured = (
+      await this.onuRepository.find({ where: { oltId: olt.id, status: 'UNCONFIGURED' } })
+    ).filter((onu) => !discoveredSerials.has(onu.serialNumber));
+    if (staleUnconfigured.length > 0) {
+      try {
+        await this.onuRepository.remove(staleUnconfigured);
+      } catch (err: any) {
+        this.logger.warn(
+          `[diag] scanUnconfiguredOnus: no se pudieron limpiar ${staleUnconfigured.length} fila(s) "UNCONFIGURED" obsoleta(s) de la OLT "${olt.name}": ${err.message}`,
+        );
+      }
+    }
+
     await this.deviceOperationLogger.logEvent({
       nodeId: olt.viaNodeId || olt.id,
       eventType: 'COMMAND',
       status: 'SUCCESS',
-      message: `[${olt.vendor}] Escaneo de ONUs sin configurar en OLT "${olt.name}": ${discovered.length} detectadas.`,
+      message:
+        `[${olt.vendor}] Escaneo de ONUs sin configurar en OLT "${olt.name}": ${discovered.length} detectadas` +
+        `${staleUnconfigured.length > 0 ? `, ${staleUnconfigured.length} obsoleta(s) limpiada(s)` : ''}.`,
       actorUserId,
       rawDetails: { oltId: olt.id, vendor: olt.vendor, driverName: driver.constructor.name, operation: 'scanUnconfiguredOnus' },
     });
