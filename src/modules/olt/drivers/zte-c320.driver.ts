@@ -827,6 +827,19 @@ export class ZteC320Driver implements IOltDriver {
       `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
       'exit',
       `pon-onu-mng ${onuInterface}`,
+      // Confirmado por comparación directa (2026-10-23) contra DOS
+      // running-config reales y funcionando de SmartOLT en la misma OLT
+      // (incluida la ONU CMDCDD4D131E, que SÍ consiguió IP de gestión y WAN
+      // una vez aprovisionada por SmartOLT): ambas mandan "voip protocol sip"
+      // como el PRIMER comando dentro de "pon-onu-mng", antes de tocar
+      // flow/gemport/iphost -- nunca lo mandábamos. El tcont del canal de
+      // gestión se llama "SMARTOLT-VOIPMNG-10M" (VOIP + ManaGement
+      // combinados); la hipótesis es que el ONT necesita inicializar su
+      // subsistema SIP antes de que el resto de ese mismo canal (iphost
+      // 2/veip 1) realmente levante tráfico -- AÚN NO reconfirmado en vivo
+      // con este cambio aplicado por Sumtech (solo con evidencia de que
+      // SmartOLT sí lo manda en sus configs reales).
+      'voip protocol sip',
       // Cableado interno OMCI que conecta el service-port 2 (arriba) con el
       // VEIP (interfaz virtual que usa el ONT para TR-069) -- CONFIRMADO EN
       // VIVO contra OLT_Tabara_Abajo (2026-10-20): esta es la pieza que
@@ -888,7 +901,15 @@ export class ZteC320Driver implements IOltDriver {
       config.tr069AcsUsername && config.tr069AcsPassword
         ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
         : `tr069-mgmt 1 acs ${config.tr069Url}`,
-      `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
+      // "tr069-mgmt 1 tag pri <n> vlan <id>" SE QUITÓ (2026-10-23): comparado
+      // directamente contra DOS running-config reales y funcionando de
+      // SmartOLT en esta misma OLT, NINGUNO de los dos lo tiene -- la VLAN de
+      // gestión ya queda fijada por "flow 2 pri 2 vlan <id>" y "vlan-filter
+      // iphost 2 pri 2 vlan <id>" arriba. Se había agregado el 2026-10-20
+      // tras leer "tr069-mgmt 1 ?" en la ayuda contextual de la OLT (existe
+      // como comando válido), pero su presencia nunca se correlacionó con
+      // ningún caso realmente funcionando -- se mantiene como dato histórico
+      // acá en vez de en el código.
       // Habilita el forwarding de gestión LAN (web/ssh/telnet/snmp/tr069) --
       // confirmado en vivo (2026-10-22) presente en todo running-config real
       // de cliente funcionando que revisamos hoy; nunca lo mandábamos.

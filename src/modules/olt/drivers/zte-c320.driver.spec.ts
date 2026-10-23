@@ -169,7 +169,14 @@ describe('ZteC320Driver', () => {
       // 20201: Invalid input detected ... Invalid command key word".
       // Sin tr069AcsUsername/Password en baseConfig, "validate" se omite.
       expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
-      expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
+      // "tr069-mgmt 1 tag pri <n> vlan <n>" se QUITÓ (2026-10-23): comparado
+      // contra dos running-config reales y funcionando de SmartOLT, ninguno
+      // lo tiene -- nunca debe volver a generarse.
+      expect(commands.some((c) => c.startsWith('tr069-mgmt 1 tag'))).toBe(false);
+      // Confirmado por comparación directa (2026-10-23) contra running-config
+      // reales y funcionando de SmartOLT en la misma OLT -- debe ser el
+      // PRIMER comando dentro de "pon-onu-mng" (antes de flow/gemport/iphost).
+      expect(commands).toContain('voip protocol sip');
       // Confirmado en vivo (2026-10-22) presente en ambas referencias reales.
       expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
       expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
@@ -1331,8 +1338,8 @@ describe('ZteC320Driver', () => {
       expect(result.ok).toBe(true);
       expect(result.warning).toContain('TR-069/ACS');
       expect(result.warning).toContain('ONT return error');
-      // El resto del script (tag/reboot/end/write) debe seguir ejecutándose.
-      expect(executeCommand).toHaveBeenCalledWith('tr069-mgmt 1 tag pri 2 vlan 46');
+      // El resto del script (security-mgmt/reboot/end/write) debe seguir ejecutándose.
+      expect(executeCommand).toHaveBeenCalledWith('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
       expect(rebootOnu).toHaveBeenCalled();
       expect(executeCommand).toHaveBeenCalledWith('end');
       expect(executeCommand).toHaveBeenCalledWith('write');
@@ -1383,7 +1390,7 @@ describe('ZteC320Driver', () => {
 
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
-      expect(executeCommand).toHaveBeenCalledWith('tr069-mgmt 1 tag pri 2 vlan 46');
+      expect(executeCommand).toHaveBeenCalledWith('voip protocol sip');
       expect(executeCommand).toHaveBeenCalledWith('write');
       expect(rebootOnu).toHaveBeenCalled();
     });
