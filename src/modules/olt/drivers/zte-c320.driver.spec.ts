@@ -50,6 +50,14 @@ describe('ZteC320Driver', () => {
 
     expect(commands).toContain('configure terminal');
     expect(commands).toContain('interface gpon-olt_1/1/1');
+    // "no onu 5" ANTES de crearla -- confirmado en vivo (2026-10-23) que
+    // autorizar sobre un registro parcial/corrupto de un intento anterior
+    // causaba rechazos intermitentes o un bloque OMCI incompleto sin ningún
+    // error visible. Debe ir justo antes de "onu <id> type ... sn ...".
+    const noOnuIdx = commands.indexOf('no onu 5');
+    const createOnuIdx = commands.indexOf('onu 5 type ZTE-F660 sn ZTEGC0123456');
+    expect(noOnuIdx).toBeGreaterThanOrEqual(0);
+    expect(createOnuIdx).toBeGreaterThan(noOnuIdx);
     expect(commands).toContain('onu 5 type ZTE-F660 sn ZTEGC0123456');
     // La sub-interfaz lógica de la ONU usa el prefijo "gpon-onu_", DISTINTO
     // del puerto físico "gpon-olt_" -- bug real confirmado en vivo contra
@@ -1299,6 +1307,52 @@ describe('ZteC320Driver', () => {
 
       expect(result.ok).toBe(true);
       expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('tolera que la OLT rechace "no onu <id>" (ej. "does not exist" si la ONU nunca existió) sin abortar la autorización -- mejor esfuerzo a propósito: nada que borrar no es un error', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('no onu ')) {
+          return Promise.resolve('\r\n%Code 63905-GPONRM : ONU does not exist.\r\nOLT#');
+        }
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { ...baseConfig, modelTypeName: 'ZTE-F660' },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('no onu 2');
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('borra la ONU antes de recrearla -- "no onu <id>" se manda ANTES de "onu <id> type ... sn ..." dentro de la misma sesión', async () => {
+      const callOrder: string[] = [];
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        callOrder.push(cmd);
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { ...baseConfig, modelTypeName: 'ZTE-F660' },
+      );
+
+      const noOnuIdx = callOrder.indexOf('no onu 2');
+      const createOnuIdx = callOrder.indexOf('onu 2 type ZTE-F660 sn TEST0000FA11');
+      expect(noOnuIdx).toBeGreaterThanOrEqual(0);
+      expect(createOnuIdx).toBeGreaterThan(noOnuIdx);
     });
   });
 

@@ -723,6 +723,20 @@ export class ZteC320Driver implements IOltDriver {
     const commands: string[] = [
       'configure terminal',
       `interface ${config.ponInterface}`,
+      // "no onu <id>" ANTES de crearla -- CONFIRMADO EN VIVO (2026-10-23):
+      // autorizar sobre una ONU que ya existía con estado parcial/corrupto de
+      // un intento anterior dejaba bindings (switchport-bind/flow) huérfanos
+      // que causaban rechazos intermitentes "already exists" en el bloque
+      // TR-069, o peor -- un bloque OMCI incompleto sin NINGÚN error visible
+      // (ver el chequeo de "Config state" en applyTr069Management, agregado
+      // tras encontrar justo este caso real). Borrar primero y recrear de
+      // cero en la MISMA llamada dio, en una prueba real contra
+      // OLT_Tabara_Abajo, 29 comandos aceptados sin UN SOLO rechazo -- algo
+      // que nunca había pasado en ningún intento anterior del mismo día.
+      // Mejor esfuerzo (ver el manejo especial en authorizeOnu()): si la ONU
+      // no existía todavía, la OLT puede rechazar este comando -- se ignora,
+      // es justo lo que se quiere (nada que borrar).
+      `no onu ${config.onuId}`,
       `onu ${config.onuId} type ${config.modelTypeName} sn ${config.serialNumber}`,
       'exit',
       `interface ${this.toOnuInterfaceName(config.ponInterface, config.onuId)}`,
@@ -999,6 +1013,14 @@ export class ZteC320Driver implements IOltDriver {
       const commands = this.generateAuthorizationScript(config);
 
       for (const cmd of commands) {
+        if (cmd.startsWith('no onu ')) {
+          // Mejor esfuerzo a propósito -- ver el comentario en
+          // generateAuthorizationScript(). Si la ONU no existía todavía, la
+          // OLT puede rechazar este comando con algo como "does not exist";
+          // nunca debe abortar la autorización completa por esto.
+          await session.executeCommand(cmd);
+          continue;
+        }
         const output = await session.executeCommand(cmd);
         if (this.isOltErrorResponse(output) && !this.isAlreadyAppliedResponse(output)) {
           throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
