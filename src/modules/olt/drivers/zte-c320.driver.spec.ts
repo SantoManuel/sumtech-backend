@@ -1315,6 +1315,13 @@ describe('ZteC320Driver', () => {
       operationMode: 'ROUTER' as const,
     };
 
+    beforeEach(() => {
+      // applyAcsUrlWithRetries() espera delayMs (20s por defecto) entre
+      // reintentos -- sin este stub, el test que rechaza el ACS en todos los
+      // intentos dormiría de verdad ~100s (6 intentos x ~20s).
+      jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
+    });
+
     it('si el ONT rechaza "tr069-mgmt ... acs ..." a nivel OMCI, el resto del script (incluido "write") igual se ejecuta y el resultado es ok:true con "warning"', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ')) {
@@ -1442,6 +1449,66 @@ describe('ZteC320Driver', () => {
       // que el resto del bloque TR-069.
       expect(executeCommand).toHaveBeenCalledWith('write');
       expect(rebootOnu).toHaveBeenCalled();
+    });
+
+    it('reintenta "tr069-mgmt ... acs ..." con reinicio entre cada intento -- si la OLT lo acepta en el 4to intento, no hay warning y se reinició 4 veces (bug real: antes era un intento único, mejor esfuerzo, que dependía de un job externo lento para reintentar)', async () => {
+      let acsAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ')) {
+          acsAttempts++;
+          if (acsAttempts < 4) {
+            return Promise.resolve('\r\n%Code 63990-GPONRM : ONT return error:command processing error.\r\nOLT#');
+          }
+          return Promise.resolve('');
+        }
+        return Promise.resolve('');
+      });
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      expect(acsAttempts).toBe(4);
+      // 4 reinicios por los reintentos del ACS -- ninguno extra del
+      // REBOOT_ONU_SENTINEL (acsRebootHandled evita ese reinicio duplicado).
+      expect(rebootOnu).toHaveBeenCalledTimes(4);
+    });
+
+    it('agota los 6 intentos y reporta el warning final con el último rechazo, si la OLT nunca acepta el ACS', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ')) {
+          return Promise.resolve('\r\n%Code 63990-GPONRM : ONT return error:command processing error.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('6 intentos');
+      expect(rebootOnu).toHaveBeenCalledTimes(6);
+      const acsCalls = executeCommand.mock.calls.filter((c: any[]) => c[0].startsWith('tr069-mgmt') && c[0].includes(' acs '));
+      expect(acsCalls).toHaveLength(6);
     });
   });
 

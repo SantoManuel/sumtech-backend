@@ -1052,9 +1052,17 @@ export class ZteC320Driver implements IOltDriver {
       // Etapa 2 sin reportar un warning reintentable (bug real confirmado
       // por revisión de código, 2026-10-23).
       const inTr069Block = true;
+      // Se pone en `true` dentro de `applyAcsUrlWithRetries()` -- evita que
+      // el REBOOT_ONU_SENTINEL de más abajo dispare un reinicio EXTRA e
+      // innecesario cuando el reintento del ACS ya reinició el ONT una o
+      // varias veces por su cuenta (ver esa nota).
+      let acsRebootHandled = false;
 
       for (const cmd of commands) {
         if (cmd === REBOOT_ONU_SENTINEL) {
+          if (acsRebootHandled) {
+            continue;
+          }
           // No es un comando CLI -- ver REBOOT_ONU_SENTINEL. Mismo criterio
           // de mejor esfuerzo que el resto del bloque TR-069: si el ONT no
           // confirma el reinicio a tiempo, no debe tumbar el resultado
@@ -1066,6 +1074,27 @@ export class ZteC320Driver implements IOltDriver {
               warning = `No se pudo confirmar el reinicio OMCI del ONT tras configurar TR-069: ${err.message}. La configuración sí se aplicó en la OLT.`;
               this.logger.warn(`[diag] applyTr069Management: rebootOnu() best-effort falló, continuando: ${warning}`);
             }
+          }
+          continue;
+        }
+
+        // Confirmado en vivo (2026-10-23): el rechazo real de este comando
+        // ("%Code 63990-GPONRM") no es un problema de sintaxis -- es que el
+        // ONT necesita, en algunos casos, varios ciclos de reinicio OMCI
+        // antes de aceptar el puntero del ACS, incluso con la secuencia de
+        // comandos ya confirmada idéntica a la de un proveedor externo
+        // (SmartOLT) que sí funciona. Antes este comando se trataba como un
+        // intento único (mejor esfuerzo); ahora se reintenta con reinicio
+        // varias veces dentro de la MISMA llamada, en vez de depender de que
+        // un job externo (GenieAcsReconciliationService) lo reintente solo
+        // cada 10-30 minutos -- confirmado que eso tardó casi una hora sin
+        // éxito en producción (2026-10-23) hasta una intervención manual.
+        const isAcsCommand = cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ');
+        if (isAcsCommand) {
+          const acsResult = await this.applyAcsUrlWithRetries(session, cmd);
+          acsRebootHandled = true;
+          if (acsResult.warningMessage && !warning) {
+            warning = acsResult.warningMessage;
           }
           continue;
         }
@@ -1096,6 +1125,78 @@ export class ZteC320Driver implements IOltDriver {
     } finally {
       session.close();
     }
+  }
+
+  /**
+   * Reintenta "tr069-mgmt 1 acs <url>" con reinicio OMCI entre cada intento
+   * -- construido tras confirmar en vivo (2026-10-23) que ni la secuencia de
+   * comandos ni el orden son el problema (son idénticos a los de SmartOLT,
+   * que sí funciona): lo que distingue un intento exitoso de uno rechazado
+   * es, simplemente, cuántas veces se reintentó con reinicio de por medio.
+   * `maxAttempts`/`delayMs` son conservadores a propósito -- cada intento
+   * rechazado cuesta un reinicio OMCI (~20-30s hasta volver a "working") más
+   * el delay; con los valores por defecto (6 intentos, 20s) el peor caso
+   * ronda los 2-2.5 minutos dentro de esta misma llamada HTTP. Si el proxy
+   * balanceador delante del backend tiene un timeout más corto que eso,
+   * hay que bajar `maxAttempts` o mover este reintento a un job asíncrono.
+   */
+  private async applyAcsUrlWithRetries(
+    session: ReturnType<ZteC320Driver['createSession']>,
+    acsCmd: string,
+    maxAttempts = 6,
+    delayMs = 20000,
+  ): Promise<{ accepted: boolean; warningMessage?: string }> {
+    let lastRejection: string | undefined;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const output = await session.executeCommand(acsCmd);
+      const accepted = !this.isOltErrorResponse(output) || this.isAlreadyAppliedResponse(output);
+
+      if (accepted) {
+        this.logger.log(`[diag] applyAcsUrlWithRetries: ACS aceptado en el intento ${attempt}/${maxAttempts}.`);
+      } else {
+        lastRejection = output.trim();
+        this.logger.warn(
+          `[diag] applyAcsUrlWithRetries: intento ${attempt}/${maxAttempts} rechazado ("${acsCmd}"): ${lastRejection}`,
+        );
+      }
+
+      // Reinicio obligatorio tras CADA intento -- aceptado o no. Los SET de
+      // OMCI de este ONT no son idempotentes y no toman efecto real sin
+      // reiniciar (mismo motivo por el que REBOOT_ONU_SENTINEL siempre lo
+      // hacía antes de este cambio) -- un intento "aceptado" en la OLT
+      // igual necesita este reinicio para que el ONT lo aplique de verdad.
+      // Mejor esfuerzo: un timeout confirmando el reinicio no debe tumbar un
+      // resultado ya aceptado, pero sí se reporta como warning.
+      let rebootWarning: string | undefined;
+      try {
+        await session.rebootOnu();
+      } catch (err: any) {
+        rebootWarning = `No se pudo confirmar el reinicio OMCI del ONT: ${err.message}.`;
+        this.logger.warn(
+          `[diag] applyAcsUrlWithRetries: rebootOnu() best-effort falló en el intento ${attempt}: ${err.message}`,
+        );
+      }
+
+      if (accepted) {
+        return { accepted: true, warningMessage: rebootWarning };
+      }
+
+      if (attempt < maxAttempts) {
+        await this.delay(delayMs);
+      }
+    }
+
+    return {
+      accepted: false,
+      warningMessage:
+        `La OLT rechazó la configuración TR-069/ACS ("${acsCmd}") tras ${maxAttempts} intentos con reinicio: ` +
+        `${lastRejection}. Probablemente debas configurar el WAN manualmente en la ONU.`,
+    };
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
