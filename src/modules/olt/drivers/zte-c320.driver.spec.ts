@@ -1410,7 +1410,7 @@ describe('ZteC320Driver', () => {
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
-    it('un rechazo ANTES de entrar al bloque TR-069 (ej. "service-port 2" inválido) sigue siendo fatal -- el mejor esfuerzo solo aplica dentro de "pon-onu-mng"', async () => {
+    it('un rechazo ANTES de "pon-onu-mng" (ej. "service-port 2" inválido) también es mejor esfuerzo -- el script completo generado por generateTr069ManagementScript() ES el bloque TR-069 (bug real corregido 2026-10-23: antes esto abortaba toda la Etapa 2 sin reportar warning)', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('service-port 2')) return Promise.resolve('\r\n%Code 10: Invalid parameter!\r\nOLT#');
         return Promise.resolve('');
@@ -1428,9 +1428,13 @@ describe('ZteC320Driver', () => {
         tr069Config,
       );
 
-      expect(result.ok).toBe(false);
-      expect(executeCommand).not.toHaveBeenCalledWith('write');
-      expect(rebootOnu).not.toHaveBeenCalled();
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('service-port 2');
+      // El resto del script (incluido el reinicio OMCI y el write final) debe
+      // seguir corriendo pese al rechazo -- mismo criterio de mejor esfuerzo
+      // que el resto del bloque TR-069.
+      expect(executeCommand).toHaveBeenCalledWith('write');
+      expect(rebootOnu).toHaveBeenCalled();
     });
   });
 

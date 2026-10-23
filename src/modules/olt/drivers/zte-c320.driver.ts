@@ -860,13 +860,15 @@ export class ZteC320Driver implements IOltDriver {
       // pri 2, mismo motivo que "flow 2 pri 2" arriba.
       `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
       // Confirmado en vivo (2026-10-22) en ambas referencias reales -- rige
-      // cómo la ONU asigna IP a sus 4 puertos LAN (independiente del canal
-      // de gestión en sí), presente en todo running-config real que
-      // revisamos hoy. Nunca lo mandábamos.
-      'dhcp-ip ethuni eth_0/1 from-onu',
-      'dhcp-ip ethuni eth_0/2 from-onu',
-      'dhcp-ip ethuni eth_0/3 from-onu',
-      'dhcp-ip ethuni eth_0/4 from-onu',
+      // cómo la ONU asigna IP a sus puertos LAN (independiente del canal de
+      // gestión en sí), presente en todo running-config real que revisamos
+      // hoy. Nunca lo mandábamos. Usa `config.ethPorts` real en vez de un 4
+      // fijo -- una ONU con menos puertos (ej. 1 ETH) rechazaba con
+      // "%Error ..." los puertos inexistentes eth_0/2..4 (bug real
+      // confirmado por revisión de código, 2026-10-23); como fallback,
+      // conserva el valor histórico de 4 solo si el modelo no declara
+      // `ethPorts`.
+      ...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`),
       'veip 1 port udp 1232 host 2',
       // Sin esto el ME de ManagementServer puede quedar administrativamente
       // bloqueado -- confirmado como parte de la secuencia real que
@@ -955,8 +957,17 @@ export class ZteC320Driver implements IOltDriver {
         potsPorts: config.potsPorts,
       });
 
-      if (config.tcontProfile && config.upKbps) {
-        await this.ensureTcontProfileWithSession(session, { name: config.tcontProfile, fixedKbps: config.upKbps });
+      if (config.upKbps) {
+        // `generateAuthorizationScript()` SIEMPRE referencia un nombre de
+        // perfil TCONT (con este mismo fallback si `config.tcontProfile`
+        // viene vacío) -- antes solo se llamaba a `ensureTcontProfileWithSession`
+        // cuando AMBOS `tcontProfile` y `upKbps` estaban definidos, así que un
+        // caller que mandara `upKbps` sin `tcontProfile` terminaba con
+        // "tcont 1 profile SMARTOLT-100M-UP" sin garantizar que ese perfil
+        // existiera en la OLT (bug real confirmado por revisión de código,
+        // 2026-10-23).
+        const effectiveTcontProfile = config.tcontProfile || 'SMARTOLT-100M-UP';
+        await this.ensureTcontProfileWithSession(session, { name: effectiveTcontProfile, fixedKbps: config.upKbps });
       }
 
       if (config.trafficProfile && config.downKbps) {
@@ -1012,13 +1023,16 @@ export class ZteC320Driver implements IOltDriver {
 
       const commands = this.generateTr069ManagementScript(config);
       let warning: string | undefined;
-      let inTr069Block = false;
+      // TODO el script generado por generateTr069ManagementScript() es el
+      // bloque TR-069 (así lo documenta este método) -- antes el flag solo se
+      // activaba al llegar a "pon-onu-mng", así que un rechazo en los
+      // comandos previos (tcont 2/gemport 2/service-port 2, el segundo
+      // camino de datos GPON) era tratado como fatal y abortaba toda la
+      // Etapa 2 sin reportar un warning reintentable (bug real confirmado
+      // por revisión de código, 2026-10-23).
+      const inTr069Block = true;
 
       for (const cmd of commands) {
-        if (cmd.startsWith('pon-onu-mng ')) {
-          inTr069Block = true;
-        }
-
         if (cmd === REBOOT_ONU_SENTINEL) {
           // No es un comando CLI -- ver REBOOT_ONU_SENTINEL. Mismo criterio
           // de mejor esfuerzo que el resto del bloque TR-069: si el ONT no
@@ -1212,6 +1226,17 @@ export class ZteC320Driver implements IOltDriver {
       `traffic-profile ${profile.name} ip cir ${profile.downKbps} cbs 1000 pir ${profile.downKbps} pbs 1000`,
     );
     if (this.isOltErrorResponse(createOutput)) {
+      // Salir de "(config)#" antes de lanzar -- sin esto, un rechazo dejaba
+      // la sesión a medio salir del modo de configuración (inconsistente con
+      // `ensureOnuTypeProfileWithSession`, que sí hace "exit" en su propio
+      // camino de error; bug real confirmado por revisión de código,
+      // 2026-10-23). Best-effort: si el socket ya está en mal estado, no
+      // debe enmascarar el error original.
+      try {
+        await session.executeCommand('exit');
+      } catch {
+        /* best-effort */
+      }
       throw new Error(`La OLT rechazó el traffic-profile "${profile.name}": ${createOutput.trim()}`);
     }
     await session.executeCommand('exit');
@@ -1316,15 +1341,40 @@ export class ZteC320Driver implements IOltDriver {
           } else {
             fixSucceeded = true;
           }
+        } catch (err: any) {
+          // De verdad "mejor esfuerzo": antes, una excepción acá (timeout,
+          // socket cerrado) se propagaba sin ningún catch y abortaba TODA la
+          // autorización óptica, contradiciendo este mismo comentario (bug
+          // real confirmado por revisión de código, 2026-10-23).
+          this.logger.warn(
+            `[diag] ensureOnuTypeProfileWithSession: excepción corrigiendo "max-veip" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${err.message}`,
+          );
         } finally {
           // "write" EXIGE estar en el prompt top-level "#" (mismo criterio
           // que el resto de este archivo) -- nunca dentro de "configure
           // terminal"/"pon", por eso corre DESPUÉS de los dos "exit", no antes.
-          await session.executeCommand('exit');
-          await session.executeCommand('exit');
+          // Cada "exit" también es best-effort: si el socket ya quedó en mal
+          // estado por la excepción de arriba, no debe enmascararla ni
+          // lanzar una nueva.
+          try {
+            await session.executeCommand('exit');
+          } catch {
+            /* best-effort */
+          }
+          try {
+            await session.executeCommand('exit');
+          } catch {
+            /* best-effort */
+          }
         }
         if (fixSucceeded) {
-          await session.executeCommand('write');
+          try {
+            await session.executeCommand('write');
+          } catch (err: any) {
+            this.logger.warn(
+              `[diag] ensureOnuTypeProfileWithSession: no se pudo guardar "write" tras corregir max-veip (mejor esfuerzo): ${err.message}`,
+            );
+          }
         }
       }
       return;
@@ -1665,6 +1715,7 @@ export class ZteTelnetSession {
         if (!resolved) {
           resolved = true;
           this.logger.warn(`[diag] connectAndLogin TIMEOUT a los ${Date.now() - t0}ms en etapa ${loginStep} contra ${this.params.host}:${this.params.port}`);
+          socket.removeListener('data', onData);
           socket.destroy();
           reject(new Error(`Timeout de conexión Telnet (${timeoutMs}ms) contra ${this.params.host}:${this.params.port}`));
         }
@@ -1676,7 +1727,16 @@ export class ZteTelnetSession {
 
       let loginStep: 'WAIT_USER' | 'WAIT_PASS' | 'WAIT_PROMPT' = 'WAIT_USER';
 
-      socket.on('data', (raw: Buffer) => {
+      // Este handler DEBE removerse al terminar el login (éxito o fallo): el
+      // socket se reutiliza después para executeCommand()/rebootOnu(), que
+      // registran sus propios handlers 'data'. Sin remover este, ambos
+      // procesan cada chunk -- cada "--More--" recibía DOS espacios (uno de
+      // este handler zombie, otro del handler real), avanzando dos páginas
+      // de paginación por cada una y perdiendo la intermedia (bug real
+      // confirmado por revisión de código, 2026-10-23).
+      const cleanup = () => socket.removeListener('data', onData);
+
+      const onData = (raw: Buffer) => {
         const cleaned = this.handleIac(raw);
         this.buffer += cleaned.toString('ascii');
 
@@ -1712,18 +1772,22 @@ export class ZteTelnetSession {
                 resolved = true;
                 this.logger.log(`[diag] connectAndLogin OK a los ${Date.now() - t0}ms, prompt="${this.prompt}"`);
                 clearTimeout(timer);
+                cleanup();
                 resolve();
               }
               return;
             }
           }
         }
-      });
+      };
+
+      socket.on('data', onData);
 
       socket.on('error', (err) => {
         if (!resolved) {
           resolved = true;
           clearTimeout(timer);
+          cleanup();
           reject(err);
         }
       });
@@ -1732,6 +1796,7 @@ export class ZteTelnetSession {
         if (!resolved) {
           resolved = true;
           clearTimeout(timer);
+          cleanup();
           reject(new Error('Conexión cerrada por el host remoto durante el handshake Telnet.'));
         }
       });
