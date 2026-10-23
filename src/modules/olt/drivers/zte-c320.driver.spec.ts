@@ -169,10 +169,10 @@ describe('ZteC320Driver', () => {
       // 20201: Invalid input detected ... Invalid command key word".
       // Sin tr069AcsUsername/Password en baseConfig, "validate" se omite.
       expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
-      // "tr069-mgmt 1 tag pri <n> vlan <n>" se QUITÓ (2026-10-23): comparado
-      // contra dos running-config reales y funcionando de SmartOLT, ninguno
-      // lo tiene -- nunca debe volver a generarse.
-      expect(commands.some((c) => c.startsWith('tr069-mgmt 1 tag'))).toBe(false);
+      // "tr069-mgmt 1 tag pri <n> vlan <n>" -- confirmado presente en los
+      // running-config reales y funcionando de SmartOLT (X2251, M1382); usa
+      // tr069Vlan (46 en baseConfig), nunca un valor fijo.
+      expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
       // Confirmado por comparación directa (2026-10-23) contra running-config
       // reales y funcionando de SmartOLT en la misma OLT -- debe ser el
       // PRIMER comando dentro de "pon-onu-mng" (antes de flow/gemport/iphost).

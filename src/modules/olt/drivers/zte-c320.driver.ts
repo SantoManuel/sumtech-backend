@@ -901,15 +901,16 @@ export class ZteC320Driver implements IOltDriver {
       config.tr069AcsUsername && config.tr069AcsPassword
         ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
         : `tr069-mgmt 1 acs ${config.tr069Url}`,
-      // "tr069-mgmt 1 tag pri <n> vlan <id>" SE QUITÓ (2026-10-23): comparado
-      // directamente contra DOS running-config reales y funcionando de
-      // SmartOLT en esta misma OLT, NINGUNO de los dos lo tiene -- la VLAN de
-      // gestión ya queda fijada por "flow 2 pri 2 vlan <id>" y "vlan-filter
-      // iphost 2 pri 2 vlan <id>" arriba. Se había agregado el 2026-10-20
-      // tras leer "tr069-mgmt 1 ?" en la ayuda contextual de la OLT (existe
-      // como comando válido), pero su presencia nunca se correlacionó con
-      // ningún caso realmente funcionando -- se mantiene como dato histórico
-      // acá en vez de en el código.
+      // "tr069-mgmt 1 tag pri <n> vlan <id>" -- se había quitado el
+      // 2026-10-23 tras comparar contra UN solo running-config de SmartOLT
+      // que no lo tenía. CORRECCIÓN (mismo día, horas después): se revisaron
+      // DOS running-config más, ambos de ONUs realmente funcionando con
+      // internet (X2251/HWTCBC05BF9C y M1382/HWTCC3FBC69F), y los DOS SÍ
+      // tienen esta línea -- la ausencia en el primer caso era la excepción,
+      // no la regla. Se repone. Usa `config.tr069Vlan` (la VLAN real de la
+      // Red TR-069 elegida para ESTA ONU) con fallback a `serviceVlan` --
+      // nunca un valor fijo, cada ONU puede tener una Red TR-069 distinta.
+      `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
       // Habilita el forwarding de gestión LAN (web/ssh/telnet/snmp/tr069) --
       // confirmado en vivo (2026-10-22) presente en todo running-config real
       // de cliente funcionando que revisamos hoy; nunca lo mandábamos.
