@@ -779,6 +779,15 @@ export class OnuManagementService {
 
     config.managementMethod = 'TR069';
     config.tr069NetworkId = dto.tr069NetworkId;
+    // Bug real confirmado (2026-10-23): esto nunca se asignaba, así que
+    // "VLAN TR-069" en la Ficha 360 siempre salía vacío ("VLAN —") pese a
+    // que la ONU SÍ tenía una Red TR-069 aplicada -- findById() ya carga la
+    // relación "serviceConfig.tr069Vlan", pero con la FK en null nunca
+    // resuelve nada. authParams.tr069Vlan solo trae el ID numérico de VLAN
+    // (802.1Q, ej. 46) para generar el CLI -- acá hace falta el UUID real
+    // del VlanEntity, que vive en "tr069Network.vlanId".
+    const tr069Network = await this.tr069Repository.findOneBy({ id: dto.tr069NetworkId });
+    config.tr069VlanId = tr069Network?.vlanId;
     await this.configRepository.save(config);
 
     await this.deviceOperationLogger.logEvent({

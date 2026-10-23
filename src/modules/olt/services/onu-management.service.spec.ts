@@ -817,11 +817,27 @@ describe('OnuManagementService', () => {
         }),
       );
       expect(configRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ managementMethod: 'TR069', tr069NetworkId: 'tr069-1' }),
+        // tr069VlanId: bug real confirmado (2026-10-23) -- nunca se asignaba,
+        // así que "VLAN TR-069" en la Ficha 360 siempre salía vacía pese a
+        // que findById() ya carga la relación "serviceConfig.tr069Vlan".
+        expect.objectContaining({ managementMethod: 'TR069', tr069NetworkId: 'tr069-1', tr069VlanId: 46 }),
       );
       expect((result as any).tr069Warning).toBeUndefined();
       expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
         expect.objectContaining({ eventType: 'PROVISION', status: 'SUCCESS' }),
+      );
+    });
+
+    it('deja tr069VlanId undefined (no truena) si la Red TR-069 no tiene VLAN vinculada', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      tr069Repo.findOneBy.mockResolvedValue({ id: 'tr069-1', vlanId: undefined, acsUrl: 'http://10.46.0.1:7547/' });
+      zteDriver.applyTr069Management.mockResolvedValue({ ok: true });
+
+      await service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' });
+
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ tr069VlanId: undefined }),
       );
     });
 
