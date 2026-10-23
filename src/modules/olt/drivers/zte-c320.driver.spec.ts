@@ -1510,6 +1510,78 @@ describe('ZteC320Driver', () => {
       const acsCalls = executeCommand.mock.calls.filter((c: any[]) => c[0].startsWith('tr069-mgmt') && c[0].includes(' acs '));
       expect(acsCalls).toHaveLength(6);
     });
+
+    it('reporta un warning real si "Config state" queda en "fail" tras aplicar, aunque NINGÚN comando individual haya sido rechazado -- bug real confirmado (2026-10-23) comparando running-config reales: una ONU terminó con "tr069-mgmt"/"veip ... host 2" apuntando a un iphost 2 que nunca se creó, sin ningún %Error/%Code visible', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show gpon onu detail-info')) {
+          return Promise.resolve('\r\nONU interface: gpon-onu_1/2/15:1\r\n  Config state:        fail\r\n  Phase state:         working\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('Config state');
+      expect(result.warning).toContain('fail');
+      expect(executeCommand).toHaveBeenCalledWith('show gpon onu detail-info gpon-onu_1/2/15:1');
+    });
+
+    it('NO agrega ningún warning si "Config state" queda en "success" y nada fue rechazado', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show gpon onu detail-info')) {
+          return Promise.resolve('\r\nONU interface: gpon-onu_1/2/15:1\r\n  Config state:        success\r\n  Phase state:         working\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+    });
+
+    it('no tumba el resultado si "show gpon onu detail-info" falla al verificar -- mejor esfuerzo, igual que el resto de la verificación', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show gpon onu detail-info')) {
+          return Promise.reject(new Error('Timeout de Telnet'));
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+    });
   });
 
   describe('updateTr069AcsUrl() -- a diferencia de applyTr069Management(), un rechazo de "tr069-mgmt ... acs ..." es un error DURO, no un warning (solo toca el ACS, no re-cablea el resto del canal de gestión)', () => {
