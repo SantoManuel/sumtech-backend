@@ -1438,6 +1438,129 @@ describe('ZteC320Driver', () => {
     });
   });
 
+  describe('updateTr069AcsUrl() -- a diferencia de applyTr069Management(), un rechazo de "tr069-mgmt ... acs ..." es un error DURO, no un warning (solo toca el ACS, no re-cablea el resto del canal de gestión)', () => {
+    const acsConfig = {
+      ponInterface: 'gpon-olt_1/2/15',
+      onuId: 1,
+      tr069Url: 'http://10.254.0.1:7547',
+    };
+
+    it('si la OLT rechaza "tr069-mgmt 1 acs ..." el resultado es ok:false con el error real, y nunca llega a "write"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ')) {
+          return Promise.resolve('\r\n%Code 63990-GPONRM : ONT return error:command processing error.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.updateTr069AcsUrl(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        acsConfig,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('ONT return error');
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+      expect(rebootOnu).not.toHaveBeenCalled();
+    });
+
+    it('si la OLT acepta el cambio, manda solo "configure terminal"/"pon-onu-mng"/"tr069-mgmt 1 acs ..."/"end"/"write" -- sin re-tocar tcont/gemport/service-port/flow/vlan-filter/veip', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.updateTr069AcsUrl(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        acsConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'configure terminal',
+        'pon-onu-mng gpon-onu_1/2/15:1',
+        'tr069-mgmt 1 acs http://10.254.0.1:7547',
+        'end',
+        'write',
+      ]);
+      expect(rebootOnu).toHaveBeenCalled();
+    });
+
+    it('agrega "validate basic username/password" en el mismo comando cuando la Red TR-069 tiene credenciales de ACS', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      await driver.updateTr069AcsUrl(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { ...acsConfig, tr069AcsUsername: 'soltcpe', tr069AcsPassword: 'FiEpcY4srQj6' },
+      );
+
+      expect(executeCommand).toHaveBeenCalledWith(
+        'tr069-mgmt 1 acs http://10.254.0.1:7547 validate basic username soltcpe password FiEpcY4srQj6',
+      );
+    });
+
+    it('si "rebootOnu()" rechaza, el resultado sigue siendo ok:true con "warning" -- el ACS sí quedó configurado, solo falló confirmar el reinicio (problema de temporización ya conocido, no evidencia de que la OLT haya rechazado el ACS)', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      const rebootOnu = jest.fn().mockRejectedValue(new Error('Timeout esperando confirmación de reinicio OMCI del ONT.'));
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.updateTr069AcsUrl(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        acsConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('reinicio OMCI');
+      expect(executeCommand).toHaveBeenCalledWith('end');
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('si la OLT rechaza entrar a "pon-onu-mng" (ej. ONU inexistente), el resultado es ok:false y nunca intenta el comando del ACS', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('pon-onu-mng')) return Promise.resolve('\r\n%Error 20202: Invalid input detected.\r\nOLT#');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.updateTr069AcsUrl(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        acsConfig,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('pon-onu-mng');
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('tr069-mgmt'));
+    });
+  });
+
   it('configureVlanTranslation() sigue señalando DRIVER_NOT_IMPLEMENTED: solo se confirmó el nombre del comando, no la sintaxis completa', async () => {
     const result = await driver.configureVlanTranslation(
       { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },

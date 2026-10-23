@@ -1078,6 +1078,74 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * Versión aislada de `applyTr069Management` que SOLO toca el puntero del
+   * ACS -- no vuelve a tocar tcont 2/gemport 2/service-port 2/flow 2/
+   * vlan-filter iphost 2/veip 1 (eso lo deja intacto; debe haberse aplicado
+   * antes vía `applyTr069Management`). Nace porque tratar un rechazo de
+   * "tr069-mgmt ... acs ..." como mejor esfuerzo (ver esa nota) hacía que
+   * ESTA acción puntual -- "solo quiero cambiar a qué ACS apunta" -- nunca
+   * reportara un fallo real, incluso cuando la OLT lo rechazaba de plano.
+   */
+  async updateTr069AcsUrl(
+    params: OltConnectionParams,
+    config: {
+      ponInterface: string;
+      onuId: number;
+      tr069Url: string;
+      tr069AcsUsername?: string;
+      tr069AcsPassword?: string;
+    },
+  ): Promise<{ ok: boolean; error?: string; warning?: string }> {
+    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+
+      await session.executeCommand('configure terminal');
+      const pomOutput = await session.executeCommand(`pon-onu-mng ${onuInterface}`);
+      if (this.isOltErrorResponse(pomOutput)) {
+        throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${pomOutput.trim()}`);
+      }
+
+      // Mismo formato que `generateTr069ManagementScript` -- "acs <url>" y
+      // "validate basic username/password" van en un solo comando (eso sí es
+      // correcto; lo separado de "tag pri ... vlan ..." es otro comando
+      // aparte, que este método no toca).
+      const acsCmd =
+        config.tr069AcsUsername && config.tr069AcsPassword
+          ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
+          : `tr069-mgmt 1 acs ${config.tr069Url}`;
+      const acsOutput = await session.executeCommand(acsCmd);
+      if (this.isOltErrorResponse(acsOutput) && !this.isAlreadyAppliedResponse(acsOutput)) {
+        // Error DURO a propósito -- ver el comentario de la interfaz
+        // (`updateTr069AcsUrl` en olt-driver.port.ts) sobre por qué esta
+        // única pieza no se trata como mejor esfuerzo.
+        throw new Error(`La OLT rechazó "tr069-mgmt 1 acs": ${acsOutput.trim()}`);
+      }
+
+      // El reinicio SÍ sigue siendo mejor esfuerzo: un timeout esperando
+      // "[yes/no]:" es un problema de temporización/sesión ya documentado
+      // (ver rebootOnu()), no evidencia de que la OLT haya rechazado el ACS.
+      let warning: string | undefined;
+      try {
+        await session.rebootOnu();
+      } catch (err: any) {
+        warning = `El ACS se configuró en la OLT, pero no se pudo confirmar el reinicio OMCI del ONT: ${err.message}. El cambio puede no tomar efecto hasta reiniciar manualmente.`;
+        this.logger.warn(`[diag] updateTr069AcsUrl: rebootOnu() best-effort falló, continuando: ${warning}`);
+      }
+
+      await session.executeCommand('end');
+      await session.executeCommand('write');
+
+      return { ok: true, warning };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
    * Busca un perfil TCONT por nombre vía `show gpon profile tcont`.
    * Reutiliza el mismo parser que `getTcontProfiles()` (confirmado en vivo
    * contra OLT_Tabara_Abajo, 2026-10-19) en vez del viejo heurístico

@@ -172,6 +172,7 @@ describe('OnuManagementService', () => {
       generateTr069ManagementScript: jest.fn(),
       authorizeOnu: jest.fn(),
       applyTr069Management: jest.fn(),
+      updateTr069AcsUrl: jest.fn(),
       setOnuAdminState: jest.fn(),
       deleteOnu: jest.fn(),
       constructor: { name: 'ZteC320Driver' },
@@ -841,6 +842,87 @@ describe('OnuManagementService', () => {
 
       await expect(
         service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(configRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateTr069AcsUrl (acción aislada: solo cambia el ACS, un rechazo de la OLT SIEMPRE es error duro)', () => {
+    const mockConfig = {
+      onuId: 'onu-uuid-1',
+      serviceVlanId: 'vlan-1',
+      managementMethod: 'TR069',
+      operationMode: 'ROUTER',
+      wanMode: 'PPPOE',
+      appliedVersion: 1,
+      desiredVersion: 1,
+    };
+
+    it('lanza BadRequestException si el driver del fabricante no implementa updateTr069AcsUrl (método opcional de IOltDriver)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      delete (zteDriver as any).updateTr069AcsUrl;
+
+      await expect(
+        service.updateTr069AcsUrl('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza BadRequestException si la ONU no tiene config previa', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(
+        service.updateTr069AcsUrl('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza BadRequestException si no se selecciona Red TR-069', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+
+      await expect(service.updateTr069AcsUrl('onu-uuid-1', {} as any)).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza BadRequestException SIN llamar al driver si la Red TR-069 tiene "acsUrl" vacío', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      tr069Repo.findOne.mockResolvedValue({ id: 'tr069-1', vlanId: 46, acsUrl: '', vlan: { vlanId: 46 } });
+
+      await expect(
+        service.updateTr069AcsUrl('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(zteDriver.updateTr069AcsUrl).not.toHaveBeenCalled();
+    });
+
+    it('llama a driver.updateTr069AcsUrl() con los parámetros resueltos y persiste tr069NetworkId', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      zteDriver.updateTr069AcsUrl.mockResolvedValue({ ok: true });
+
+      const result = await service.updateTr069AcsUrl('onu-uuid-1', { tr069NetworkId: 'tr069-1' }, 'admin-id');
+
+      expect(zteDriver.updateTr069AcsUrl).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          tr069Url: 'http://10.46.0.1:7547/',
+        }),
+      );
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ tr069NetworkId: 'tr069-1' }),
+      );
+      expect((result as any).tr069Warning).toBeUndefined();
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'PROVISION', status: 'SUCCESS' }),
+      );
+    });
+
+    it('lanza BadRequestException si el driver falla (ok:false) -- a diferencia de applyTr069Profile, acá un rechazo de la OLT SIEMPRE es error duro, nunca un warning silencioso', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      zteDriver.updateTr069AcsUrl.mockResolvedValue({ ok: false, error: 'La OLT rechazó tr069-mgmt 1 acs' });
+
+      await expect(
+        service.updateTr069AcsUrl('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
       ).rejects.toThrow(BadRequestException);
       expect(configRepo.save).not.toHaveBeenCalled();
     });

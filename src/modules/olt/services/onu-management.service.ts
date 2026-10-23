@@ -795,6 +795,82 @@ export class OnuManagementService {
   }
 
   /**
+   * Acción aislada: cambia SOLO el ACS al que apunta la ONU, sin re-cablear
+   * el resto del canal de gestión TR-069 (eso lo hace `applyTr069Profile`,
+   * que asume que ya corrió aquí antes). A diferencia de `applyTr069Profile`
+   * -- que reporta un rechazo de la OLT como `warning` porque el resto del
+   * cableado igual se aplicó -- aquí un rechazo es SIEMPRE un error duro: es
+   * la única pieza que esta acción toca, no hay "igual se aplicó algo" que
+   * justifique ocultarlo. Pensada para reintentar/cambiar solo el puntero del
+   * ACS sin el riesgo de un "éxito" que en realidad no cambió nada.
+   */
+  async updateTr069AcsUrl(id: string, dto: { tr069NetworkId: string }, actorUserId?: string) {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+    const driver = this.resolveDriver(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
+
+    if (!driver.updateTr069AcsUrl) {
+      throw new BadRequestException(
+        `[${olt.vendor}] esta operación (actualizar solo el ACS) todavía no está implementada para este fabricante.`,
+      );
+    }
+
+    const config = await this.configRepository.findOneBy({ onuId: onu.id });
+    if (!config) {
+      throw new BadRequestException(
+        'Esta ONU no tiene configuración de servicio previa -- autorízala en la OLT primero.',
+      );
+    }
+    if (!dto.tr069NetworkId) {
+      throw new BadRequestException('Selecciona una Red TR-069.');
+    }
+
+    const authParams = await this.buildAuthorizeParams(onu, {
+      onuTypeId: onu.onuTypeId,
+      serviceVlanId: config.serviceVlanId,
+      speedProfileId: config.speedProfileId,
+      tr069NetworkId: dto.tr069NetworkId,
+      managementMethod: 'TR069',
+      operationMode: config.operationMode,
+    });
+
+    if (!authParams.tr069Url) {
+      throw new BadRequestException(
+        `La Red TR-069 seleccionada no tiene una URL de ACS configurada (acsUrl vacío). Corrígela en "Redes TR-069" antes de aplicar el cambio.`,
+      );
+    }
+
+    const result = await this.callDriver(() =>
+      driver.updateTr069AcsUrl!(connParams, {
+        ponInterface: authParams.ponInterface,
+        onuId: authParams.onuId,
+        tr069Url: authParams.tr069Url!,
+        tr069AcsUsername: authParams.tr069AcsUsername,
+        tr069AcsPassword: authParams.tr069AcsPassword,
+      }),
+    );
+    if (!result.ok) {
+      throw new BadRequestException(`La OLT rechazó el cambio de ACS: ${result.error}`);
+    }
+
+    config.tr069NetworkId = dto.tr069NetworkId;
+    await this.configRepository.save(config);
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'PROVISION',
+      status: 'SUCCESS',
+      message: `[${olt.vendor}] ACS actualizado para ONU ${onu.serialNumber}.${result.warning ? ` Aviso: ${result.warning}` : ''}`,
+      actorUserId,
+      rawDetails: { onuId: onu.id, oltId: olt.id, operation: 'updateTr069AcsUrl' },
+    });
+
+    const saved = await this.findById(onu.id);
+    return { ...saved, tr069Warning: result.warning };
+  }
+
+  /**
    * Etapa 3 del flujo de 3 etapas: empuja WAN/PPPoE/WiFi + tags reales al
    * CPE vía GenieACS (`pushCpeConfiguration`, sin cambios) -- exige que la
    * Etapa 2 (`applyTr069Profile`) ya se haya aplicado. Expuesta como acción

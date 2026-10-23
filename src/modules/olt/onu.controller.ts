@@ -162,6 +162,24 @@ export class OnuController {
   }
 
   /**
+   * Acción aislada de la Etapa 2: cambia SOLO el ACS al que apunta la ONU
+   * (sin re-cablear tcont/gemport/service-port/flow/veip de la VLAN de
+   * gestión) -- a diferencia de "tr069-profile", un rechazo de la OLT acá
+   * SIEMPRE es un error duro (400), nunca un éxito silencioso con warning.
+   */
+  @Post(':id/tr069-acs')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async updateTr069AcsUrl(
+    @Param('id') id: string,
+    @Body() dto: any,
+    @Req() req: any,
+  ) {
+    return this.onuService.updateTr069AcsUrl(id, dto, req.user?.id);
+  }
+
+  /**
    * Etapa 3 (flujo de 3 etapas): empuja WAN/PPPoE/WiFi al CPE vía GenieACS --
    * exige que la Etapa 2 (tr069-profile) ya se haya aplicado.
    */
