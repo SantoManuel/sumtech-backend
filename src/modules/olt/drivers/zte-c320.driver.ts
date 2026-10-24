@@ -775,6 +775,18 @@ export class ZteC320Driver implements IOltDriver {
       `flow 1 pri 0 vlan ${config.serviceVlan}`,
       'gemport 1 flow 1',
       'switchport-bind switch_0/1 iphost 1',
+      // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-24, ONU
+      // CMDCDD4D131E / Huawei HG8546M): la sesión real que terminó
+      // registrándose en GenieACS aplicó "dhcp-enable" también en iphost 1
+      // (canal de Internet), espejo exacto del que ya se manda para iphost 2
+      // en `generateTr069ManagementScript`. Antes este driver solo lo hacía
+      // para el canal de gestión -- se agrega aquí por paridad con la
+      // secuencia confirmada funcionando, aunque no se verificó de forma
+      // aislada si es estrictamente necesario para el canal de Internet en
+      // sí (la ONU de esa prueba ya tenía además corregida la URL del ACS,
+      // que era la causa real de que TR-069 no registrara -- ver Causa raíz
+      // en docs/onu-tr069-provisioning-zte-c320.md).
+      'ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable',
       'vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard',
       `vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`,
       // "end", NO "exit": mismo criterio ya confirmado para el bloque TR-069

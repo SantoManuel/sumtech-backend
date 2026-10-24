@@ -30,6 +30,7 @@ const VENDOR = 'HIOSO';
  * test/fixtures/hioso/cli_command_tree.txt) están implementadas:
  * testConnection, getSystemInfo, getSystemHealth, discoverInterfaces,
  * configureVlanOnInterface (trunk uplink/PON con switchport allowed vlan add),
+ * getVlanConfigForInterface (descubrimiento brownfield vía show running-config),
  * getOnuOpticalPower, getUnconfiguredOnus, authorizeOnu, setOnuAdminState,
  * deleteOnu, setInterfaceAdminState. Solo getCards() lanza DriverNotImplementedError
  * porque este hardware no tiene chasis modular (no hay comando equivalente
@@ -351,6 +352,58 @@ export class HiosoDriver implements IOltDriver {
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * Descubrimiento brownfield (RF-OLT, ver `vlanDiscovery` en OltDriverCapabilities):
+   * VLANs ya aplicadas de verdad en una interfaz, sin que Sumtech las haya
+   * puesto ahí. Usa `show running-config` (ver test/fixtures/hioso/show_running-config.txt)
+   * en vez de `show vlan` a propósito: `show vlan` lista membresía de
+   * puertos con un formato de nombre distinto por tipo de interfaz
+   * ("Pon1/1", "Ten-GE1/1", "GE1/1" -- sin espacio, mayúsculas propias,
+   * "Pon" en vez de "Epon"), inconsistente con el formato que ya usa este
+   * driver en todos lados ("epon 1/1", "ten-gigabitethernet 1/1",
+   * "gigabitethernet 1/1") -- ver nota 3 de cli_command_tree.txt. El bloque
+   * "interface <nombre>" de `show running-config` en cambio repite el mismo
+   * nombre que ya emite `discoverInterfaces()`/`configureVlanOnInterface()`,
+   * así que no hace falta ningún traductor de nombres entre comandos.
+   *
+   * El nombre de interfaz aparece repetido varias veces en el dump completo
+   * (el bloque real de `switchport`, y más abajo los bloques de "Epon
+   * interface onu configuration"/"White list"/"Black list"/"Pon auth" que
+   * solo repiten la cabecera `interface <nombre>` sin ninguna línea
+   * `switchport`) -- por eso se usa el PRIMER bloque que matchee el nombre,
+   * que es siempre el real de configuración de puerto.
+   */
+  async getVlanConfigForInterface(
+    params: OltConnectionParams,
+    interfaceName: string,
+  ): Promise<import('../ports/olt-driver.port').DiscoveredInterfaceVlan[]> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand('show running-config');
+
+      const target = interfaceName.trim().toLowerCase();
+      const blocks = output.split(/^interface /im).slice(1);
+      const block = blocks.find((b) => b.split('\n')[0].trim().toLowerCase() === target);
+      if (!block) {
+        return [];
+      }
+
+      const result: import('../ports/olt-driver.port').DiscoveredInterfaceVlan[] = [];
+      const vlanLineRegex = /switchport allowed vlan add (\d+)\s+(tagged|untagged)/gi;
+      let match: RegExpExecArray | null;
+      while ((match = vlanLineRegex.exec(block)) !== null) {
+        result.push({
+          vlanId: parseInt(match[1], 10),
+          mode: match[2].toLowerCase() === 'tagged' ? 'TAG' : 'UNTAG',
+        });
+      }
+      return result;
     } finally {
       session.close();
     }
@@ -788,6 +841,7 @@ export class HiosoDriver implements IOltDriver {
       systemHealth: true,
       discoverInterfaces: true,
       configureVlan: true,
+      vlanDiscovery: true,
       onuOpticalPower: true,
       onuDiscovery: true,
       onuAuthorize: true,

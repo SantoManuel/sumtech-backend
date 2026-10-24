@@ -36,7 +36,7 @@ describe('HiosoDriver', () => {
       alarms: true,
       tr069AutoProvisioning: false,
       onuPassiveImport: false,
-      vlanDiscovery: false,
+      vlanDiscovery: true,
       tcontDiscovery: false,
       downstreamTrafficProfile: false,
       onuTypeProfileProvisioning: false,
@@ -332,6 +332,71 @@ describe('HiosoDriver', () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toBe('% Unknown command');
+  });
+
+  it('getVlanConfigForInterface() lee el bloque real "interface epon 1/1" del dump de show running-config (VLAN 400 tagged)', async () => {
+    const executeCommand = jest.fn().mockResolvedValue(fixture('show_running-config.txt'));
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.getVlanConfigForInterface(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 1/1',
+    );
+
+    expect(executeCommand).toHaveBeenCalledWith('show running-config');
+    expect(result).toEqual([{ vlanId: 400, mode: 'TAG' }]);
+  });
+
+  it('getVlanConfigForInterface() devuelve [] para una interfaz sin ninguna VLAN permitida (ten-gigabitethernet 1/2 en el dump real)', async () => {
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(fixture('show_running-config.txt')),
+      close: jest.fn(),
+    });
+
+    const result = await driver.getVlanConfigForInterface(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'ten-gigabitethernet 1/2',
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it('getVlanConfigForInterface() devuelve [] si el nombre de interfaz no aparece en el running-config (no inventa datos)', async () => {
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(fixture('show_running-config.txt')),
+      close: jest.fn(),
+    });
+
+    const result = await driver.getVlanConfigForInterface(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 9/9',
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it('getVlanConfigForInterface() no se confunde con los bloques repetidos "interface epon 1/1" de las secciones ONU/White list/Black list más abajo en el dump', async () => {
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand: jest.fn().mockResolvedValue(fixture('show_running-config.txt')),
+      close: jest.fn(),
+    });
+
+    // Si tomara el bloque equivocado (ej. "Epon interface onu configuration",
+    // que también repite "interface epon 1/1" pero solo con líneas "onu X
+    // vlan port Y ..."), el resultado sería [] en vez de la VLAN real 400.
+    const result = await driver.getVlanConfigForInterface(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 1/1',
+    );
+
+    expect(result).toEqual([{ vlanId: 400, mode: 'TAG' }]);
   });
 
   it('generateAuthorizationScript() produce la secuencia real confirmada: add onu <id> <mac> <type> + VLAN en los 4 puertos LAN', () => {

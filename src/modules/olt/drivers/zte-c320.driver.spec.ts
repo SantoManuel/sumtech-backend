@@ -85,6 +85,11 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('flow 1 pri 0 vlan 200');
     expect(commands).toContain('gemport 1 flow 1');
     expect(commands).toContain('switchport-bind switch_0/1 iphost 1');
+    // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-24, ONU
+    // CMDCDD4D131E): la sesión real que terminó registrándose en GenieACS
+    // aplicó "dhcp-enable" también en iphost 1, espejo del que ya se manda
+    // para iphost 2 (canal de gestión) en generateTr069ManagementScript.
+    expect(commands).toContain('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
     expect(commands).toContain('vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('vlan-filter iphost 1 pri 0 vlan 200');
 
