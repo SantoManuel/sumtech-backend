@@ -34,6 +34,20 @@ export interface WifiCredentialsInput {
 }
 
 /**
+ * Fault real de TR-069 `SetParameterValues` (GenieACS `/faults`), con el
+ * nombre de CADA parámetro rechazado -- no solo el primero. Permite al
+ * llamador (ver `setWifiCredentials`) decidir si un fault puntual admite
+ * reintento (ej. el equipo rechaza el PSK precalculado pero el resto del
+ * lote era válido) en vez de tratar cualquier fault como fatal.
+ */
+export class SetParameterValuesFaultError extends Error {
+  constructor(public readonly faultedParameters: string[], message: string) {
+    super(message);
+    this.name = 'SetParameterValuesFaultError';
+  }
+}
+
+/**
  * Cliente contra la NBI REST de GenieACS (v1.2.x), siempre a través del
  * nginx del propio servidor (nunca directo al puerto 7557) — así se respeta
  * la validación de API Key y TLS que ya trae ese stack. Verificado
@@ -284,57 +298,45 @@ export class GenieAcsClient {
     // reinicia -- un simple Enable=false/true del radio NO alcanza, hace
     // falta el reboot completo (probado: la clave hex sola bastó, no fue
     // necesario repetir con ambos cambios en requests separados).
-    const parameterValues: Array<[string, string, string]> = isTR181
-      ? [
-          ['Device.WiFi.SSID.1.SSID', credentials.ssid, 'xsd:string'],
-          ['Device.WiFi.AccessPoint.1.Security.KeyPassphrase', credentials.password, 'xsd:string'],
-        ]
-      : [
-          ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID', credentials.ssid, 'xsd:string'],
-          [
-            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase',
-            credentials.password,
-            'xsd:string',
-          ],
-          [
-            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
-            computeWpaPsk(credentials.ssid, credentials.password),
-            'xsd:string',
-          ],
-        ];
+    //
+    // CORRECCIÓN (2026-10-25): ese hallazgo NO generaliza a todo TR-098 --
+    // CONFIRMADO EN VIVO contra GenieACS de producción (deviceId
+    // "987DDD-HG8546M%2DXPON-CMDCDD4D131E", fault real capturado en
+    // /faults): este Huawei HG8546M-XPON rechaza el PSK precalculado con
+    // "%Code 9007: Invalid parameter value" en AMBAS bandas
+    // (WLANConfiguration.1 y .2), tumbando el lote completo de
+    // SetParameterValues (incluido el SSID y el KeyPassphrase, que sí eran
+    // válidos -- confirmado que el cliente SÍ pudo guardar el KeyPassphrase
+    // a mano desde la UI de GenieACS, sin tocar el PSK). Este equipo deriva
+    // el PSK internamente a partir del passphrase -- comportamiento WPA2
+    // estándar -- y tratar el PSK precalculado como obligatorio para TODO
+    // TR-098 rompía exactamente a los equipos que SÍ lo soportan bien.
+    // Mitigación: primer intento con el PSK precalculado (preserva el
+    // comportamiento ya verificado para los EchoLife/EPON viejos); si el
+    // único fault reportado es sobre "PreSharedKey.1.PreSharedKey", se
+    // reintenta sin ese parámetro -- ver buildWifiParameterValues() y el
+    // catch de abajo.
+    const parameterValues = this.buildWifiParameterValues(isTR181, credentials, true);
 
-    if (credentials.ssid5g) {
-      parameterValues.push(
-        isTR181
-          ? ['Device.WiFi.SSID.2.SSID', credentials.ssid5g, 'xsd:string']
-          : ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.SSID', credentials.ssid5g, 'xsd:string'],
-      );
-      parameterValues.push(
-        isTR181
-          ? ['Device.WiFi.AccessPoint.2.Security.KeyPassphrase', credentials.password, 'xsd:string']
-          : [
-              'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.KeyPassphrase',
-              credentials.password,
-              'xsd:string',
-            ],
-      );
-      if (!isTR181) {
-        parameterValues.push([
-          'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.PreSharedKey',
-          computeWpaPsk(credentials.ssid5g, credentials.password),
-          'xsd:string',
-        ]);
+    try {
+      await this.sendSetParameterValues(deviceId, parameterValues);
+    } catch (error) {
+      if (error instanceof SetParameterValuesFaultError && !isTR181 && this.isOnlyPreSharedKeyFault(error)) {
+        this.logger.warn(
+          `${deviceId}: el equipo rechazó el PSK WPA precalculado (${error.faultedParameters.join(', ')}) -- reintentando sin él, el equipo lo derivará internamente del passphrase.`,
+        );
+        const fallbackParameterValues = this.buildWifiParameterValues(isTR181, credentials, false);
+        try {
+          await this.sendSetParameterValues(deviceId, fallbackParameterValues);
+        } catch (retryError) {
+          throw new Error(this.describeError(retryError));
+        }
+      } else {
+        throw new Error(this.describeError(error));
       }
     }
 
     try {
-      const taskResponse = await this.http.post(
-        `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
-        { name: 'setParameterValues', parameterValues },
-        this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
-      );
-      await this.assertTaskSucceeded(deviceId, (taskResponse as any).data?._id);
-
       await this.http.post(
         this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tags/WIFI_CUSTOMIZED`),
         {},
@@ -358,6 +360,83 @@ export class GenieAcsClient {
     } catch (error) {
       throw new Error(this.describeError(error));
     }
+  }
+
+  /**
+   * Arma el lote de parámetros TR-069 para el cambio de WiFi.
+   * `includePrecomputedPsk=false` omite "PreSharedKey.1.PreSharedKey" --
+   * usado en el reintento cuando el equipo ya demostró que lo rechaza (ver
+   * setWifiCredentials()).
+   */
+  private buildWifiParameterValues(
+    isTR181: boolean,
+    credentials: WifiCredentialsInput,
+    includePrecomputedPsk: boolean,
+  ): Array<[string, string, string]> {
+    const parameterValues: Array<[string, string, string]> = isTR181
+      ? [
+          ['Device.WiFi.SSID.1.SSID', credentials.ssid, 'xsd:string'],
+          ['Device.WiFi.AccessPoint.1.Security.KeyPassphrase', credentials.password, 'xsd:string'],
+        ]
+      : [
+          ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID', credentials.ssid, 'xsd:string'],
+          [
+            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase',
+            credentials.password,
+            'xsd:string',
+          ],
+        ];
+
+    if (!isTR181 && includePrecomputedPsk) {
+      parameterValues.push([
+        'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
+        computeWpaPsk(credentials.ssid, credentials.password),
+        'xsd:string',
+      ]);
+    }
+
+    if (credentials.ssid5g) {
+      parameterValues.push(
+        isTR181
+          ? ['Device.WiFi.SSID.2.SSID', credentials.ssid5g, 'xsd:string']
+          : ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.SSID', credentials.ssid5g, 'xsd:string'],
+      );
+      parameterValues.push(
+        isTR181
+          ? ['Device.WiFi.AccessPoint.2.Security.KeyPassphrase', credentials.password, 'xsd:string']
+          : [
+              'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.KeyPassphrase',
+              credentials.password,
+              'xsd:string',
+            ],
+      );
+      if (!isTR181 && includePrecomputedPsk) {
+        parameterValues.push([
+          'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.PreSharedKey',
+          computeWpaPsk(credentials.ssid5g, credentials.password),
+          'xsd:string',
+        ]);
+      }
+    }
+
+    return parameterValues;
+  }
+
+  /** `true` solo si TODOS los parámetros rechazados son el PSK precalculado (1ra y/o 2da banda) -- cualquier otro fault (ej. SSID inválido) no debe reintentarse a ciegas. */
+  private isOnlyPreSharedKeyFault(error: SetParameterValuesFaultError): boolean {
+    return (
+      error.faultedParameters.length > 0 &&
+      error.faultedParameters.every((name) => name.endsWith('.PreSharedKey.1.PreSharedKey'))
+    );
+  }
+
+  private async sendSetParameterValues(deviceId: string, parameterValues: Array<[string, string, string]>): Promise<void> {
+    const taskResponse = await this.http.post(
+      `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
+      { name: 'setParameterValues', parameterValues },
+      this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
+    );
+    await this.assertTaskSucceeded(deviceId, (taskResponse as any).data?._id);
   }
 
   /**
@@ -385,9 +464,26 @@ export class GenieAcsClient {
       return;
     }
     const fault = faults[0];
-    const paramFault = fault?.detail?.setParameterValuesFault?.[0];
-    const reason = paramFault?.faultString || fault?.message || 'el equipo rechazó el cambio';
-    throw new Error(`El equipo rechazó el cambio (${reason}).`);
+    // BUG REAL corregido (2026-10-25): leía solo `setParameterValuesFault[0]`
+    // -- cuando el equipo rechaza el MISMO parámetro en ambas bandas WiFi
+    // (ej. "PreSharedKey.1.PreSharedKey" en WLANConfiguration.1 Y .2),
+    // GenieACS reporta 2 entradas en el arreglo y la segunda se descartaba en
+    // silencio. Confirmado contra el fault real de producción (deviceId
+    // "987DDD-HG8546M%2DXPON-CMDCDD4D131E"): ambas entradas son necesarias
+    // para que setWifiCredentials() pueda decidir si el reintento sin PSK
+    // precalculado aplica (ver isOnlyPreSharedKeyFault()).
+    const paramFaults: Array<{ parameterName?: string; faultString?: string }> = Array.isArray(
+      fault?.detail?.setParameterValuesFault,
+    )
+      ? fault.detail.setParameterValuesFault
+      : [];
+    if (paramFaults.length === 0) {
+      const reason = fault?.message || 'el equipo rechazó el cambio';
+      throw new Error(`El equipo rechazó el cambio (${reason}).`);
+    }
+    const faultedParameters = paramFaults.map((p) => p.parameterName).filter((name): name is string => Boolean(name));
+    const reason = paramFaults.map((p) => `${p.parameterName}: ${p.faultString || 'rechazado'}`).join('; ');
+    throw new SetParameterValuesFaultError(faultedParameters, `El equipo rechazó el cambio (${reason}).`);
   }
 
   /**

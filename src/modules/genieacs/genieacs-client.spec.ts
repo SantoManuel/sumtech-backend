@@ -450,6 +450,187 @@ describe('GenieAcsClient', () => {
         client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'X', password: 'ClaveSegura123' }),
       ).resolves.toBeUndefined();
     });
+
+    // CONFIRMADO EN VIVO (2026-10-25) contra el fault real de GenieACS de
+    // producción (deviceId "987DDD-HG8546M%2DXPON-CMDCDD4D131E"): este
+    // equipo rechaza el PSK precalculado con fault 9007 en AMBAS bandas,
+    // tumbando el lote completo -- pese a que el SSID y el KeyPassphrase eran
+    // válidos (confirmado que el cliente SÍ pudo guardar el KeyPassphrase a
+    // mano desde la UI de GenieACS, sin el PSK). Ver SetParameterValuesFaultError.
+    it('si el único fault es sobre "PreSharedKey.1.PreSharedKey", reintenta SIN el PSK precalculado y logra aplicar el cambio', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-fail-psk' } }); // 1er intento: setParameterValues CON PSK
+      http.get.mockResolvedValueOnce({
+        data: [
+          {
+            _id: '00259E-ONT-16:task_task-fail-psk',
+            message: 'Invalid arguments',
+            detail: {
+              faultCode: '9003',
+              faultString: 'Invalid arguments',
+              setParameterValuesFault: [
+                {
+                  parameterName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
+                  faultCode: '9007',
+                  faultString: 'Invalid parameter value',
+                },
+              ],
+            },
+          },
+        ],
+      });
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-retry-ok' } }); // 2do intento: setParameterValues SIN PSK
+      http.get.mockResolvedValueOnce({ data: [] }); // el reintento no tiene fault
+      http.post.mockResolvedValue({ data: {} }); // tag WIFI_CUSTOMIZED + reboot
+
+      await expect(
+        client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'MiCasa', password: 'c12345678' }),
+      ).resolves.toBeUndefined();
+
+      // 1er intento SÍ incluye el PSK precalculado.
+      expect(http.post.mock.calls[0][1].parameterValues).toEqual(
+        expect.arrayContaining([
+          [
+            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
+            wpaPsk('MiCasa', 'c12345678'),
+            'xsd:string',
+          ],
+        ]),
+      );
+      // 2do intento (reintento) NO debe incluir el PSK precalculado, pero sí el SSID y el KeyPassphrase.
+      const retryParams = http.post.mock.calls[1][1].parameterValues;
+      expect(retryParams).toEqual([
+        ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID', 'MiCasa', 'xsd:string'],
+        ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase', 'c12345678', 'xsd:string'],
+      ]);
+      // Tras el éxito del reintento, sigue marcando WIFI_CUSTOMIZED y reiniciando.
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tags/WIFI_CUSTOMIZED/',
+        {},
+        expect.anything(),
+      );
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
+        { name: 'reboot' },
+        expect.anything(),
+      );
+    });
+
+    it('captura AMBOS parámetros rechazados cuando el fault ocurre en las 2 bandas (2.4GHz y 5GHz) -- bug real: antes solo se leía setParameterValuesFault[0]', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-fail-both' } });
+      http.get.mockResolvedValueOnce({
+        data: [
+          {
+            _id: '00259E-ONT-16:task_task-fail-both',
+            message: 'Invalid arguments',
+            detail: {
+              setParameterValuesFault: [
+                {
+                  parameterName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
+                  faultCode: '9007',
+                  faultString: 'Invalid parameter value',
+                },
+                {
+                  parameterName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.PreSharedKey.1.PreSharedKey',
+                  faultCode: '9007',
+                  faultString: 'Invalid parameter value',
+                },
+              ],
+            },
+          },
+        ],
+      });
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-retry-ok' } });
+      http.get.mockResolvedValueOnce({ data: [] });
+      http.post.mockResolvedValue({ data: {} });
+
+      await expect(
+        client.setWifiCredentials('00259E-ONT-16', false, {
+          ssid: 'MiCasa',
+          ssid5g: 'MiCasa_5G',
+          password: 'c12345678',
+        }),
+      ).resolves.toBeUndefined();
+
+      // El reintento omite el PSK precalculado en AMBAS bandas.
+      const retryParams = http.post.mock.calls[1][1].parameterValues;
+      expect(retryParams.some((p: string[]) => p[0].endsWith('.PreSharedKey.1.PreSharedKey'))).toBe(false);
+    });
+
+    it('si el fault incluye un parámetro distinto al PSK (ej. SSID inválido), NO reintenta y reporta el fault real completo', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-fail-ssid' } });
+      http.get.mockResolvedValueOnce({
+        data: [
+          {
+            _id: '00259E-ONT-16:task_task-fail-ssid',
+            message: 'Invalid arguments',
+            detail: {
+              setParameterValuesFault: [
+                {
+                  parameterName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID',
+                  faultCode: '9007',
+                  faultString: 'Invalid parameter value',
+                },
+                {
+                  parameterName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
+                  faultCode: '9007',
+                  faultString: 'Invalid parameter value',
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      await expect(
+        client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'X', password: 'c12345678' }),
+      ).rejects.toThrow(/WLANConfiguration\.1\.SSID.*WLANConfiguration\.1\.PreSharedKey\.1\.PreSharedKey/s);
+
+      // Nunca reintenta -- solo el intento original.
+      expect(http.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('si el reintento sin PSK TAMBIÉN falla, reporta ese segundo error (el equipo está rechazando algo más)', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-fail-psk' } });
+      http.get.mockResolvedValueOnce({
+        data: [
+          {
+            _id: '00259E-ONT-16:task_task-fail-psk',
+            detail: {
+              setParameterValuesFault: [
+                {
+                  parameterName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
+                  faultCode: '9007',
+                  faultString: 'Invalid parameter value',
+                },
+              ],
+            },
+          },
+        ],
+      });
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-fail-again' } });
+      http.get.mockResolvedValueOnce({
+        data: [
+          {
+            _id: '00259E-ONT-16:task_task-fail-again',
+            detail: {
+              setParameterValuesFault: [
+                {
+                  parameterName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase',
+                  faultCode: '9007',
+                  faultString: 'Invalid parameter value',
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      await expect(
+        client.setWifiCredentials('00259E-ONT-16', false, { ssid: 'X', password: 'c12345678' }),
+      ).rejects.toThrow(/KeyPassphrase/);
+
+      expect(http.post).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('setParameterValues', () => {
