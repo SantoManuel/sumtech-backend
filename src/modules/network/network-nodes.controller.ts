@@ -35,6 +35,8 @@ import { EnsureAcsAutoProvisioningDto } from './dto/ensure-acs-auto-provisioning
 import { CreateRouterOsProfileDto, UpdateRouterOsProfileDto } from './dto/routeros-profile.dto';
 import { SyncCatalogProfilesDto } from './dto/sync-catalog-profiles.dto';
 import { SetNodeVlanPppPoolDto } from './dto/set-node-vlan-ppp-pool.dto';
+import { RunConsoleCommandDto } from './dto/run-console-command.dto';
+import { RouterConsoleService } from '../network-connectivity/services/router-console.service';
 
 /** Protegido por SaasFeatureGuard: el tenant debe tener contratado el módulo MIKROTIK. */
 @Controller('network/nodes')
@@ -47,6 +49,7 @@ export class NetworkNodesController {
     private readonly pppManagementService: PppManagementService,
     private readonly infrastructureService: NetworkNodeInfrastructureService,
     private readonly portalManagerService: SuspensionPortalManagerService,
+    private readonly routerConsoleService: RouterConsoleService,
   ) {}
 
   @Get()
@@ -114,6 +117,24 @@ export class NetworkNodesController {
   @Roles(Role.ADMIN, Role.GERENTE)
   async triggerHealthCheck(@Param('id') id: string, @CurrentUser('sub') userId?: string) {
     return this.networkNodesService.triggerHealthCheck(id, userId);
+  }
+
+  /**
+   * Consola RouterOS -- acceso de shell real y SIN restricciones al router
+   * core (ej. `/ip firewall filter remove [find]` o `/system reset-
+   * configuration` son comandos válidos que esto ejecutaría tal cual).
+   * SOLO ADMIN a propósito, a diferencia de casi todo lo demás en este
+   * controller -- el resto de las acciones son operaciones acotadas e
+   * idempotentes, esto no tiene ninguna barrera más que el rol.
+   */
+  @Post(':id/console')
+  @Roles(Role.ADMIN)
+  async runConsoleCommand(
+    @Param('id') id: string,
+    @Body() dto: RunConsoleCommandDto,
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.routerConsoleService.runCommand(id, dto.command, userId);
   }
 
   @Get(':id/wireguard-script')

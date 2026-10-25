@@ -9,6 +9,7 @@ import { NetworkNodesExportService } from './services/network-nodes-export.servi
 import { PppManagementService } from './services/ppp-management.service';
 import { NetworkNodeInfrastructureService } from './services/network-node-infrastructure.service';
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
+import { RouterConsoleService } from '../network-connectivity/services/router-console.service';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
 import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
 import { Role } from '../../common/enums/role.enum';
@@ -18,6 +19,7 @@ describe('NetworkNodesController', () => {
   let service: any;
   let exportService: any;
   let infrastructureService: any;
+  let routerConsoleService: any;
   const reflector = new Reflector();
 
   beforeEach(async () => {
@@ -46,6 +48,10 @@ describe('NetworkNodesController', () => {
     const suspensionPortalService = {
       installPortalRules: jest.fn().mockResolvedValue({ success: true, message: 'Portal instalado' }),
       getPortalStatus: jest.fn().mockResolvedValue({ portalInstalled: true, portalRulesStatus: 'INSTALLED' }),
+    };
+
+    routerConsoleService = {
+      runCommand: jest.fn().mockResolvedValue({ output: 'flags: X - disabled\n 0   ;;; comentario\n' }),
     };
 
     infrastructureService = {
@@ -89,6 +95,7 @@ describe('NetworkNodesController', () => {
         { provide: PppManagementService, useValue: pppManagementService },
         { provide: NetworkNodeInfrastructureService, useValue: infrastructureService },
         { provide: SuspensionPortalManagerService, useValue: suspensionPortalService },
+        { provide: RouterConsoleService, useValue: routerConsoleService },
         { provide: JwtService, useValue: { verify: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: TenantContextService, useValue: { hasContext: jest.fn().mockReturnValue(false), getTenantId: jest.fn(), getSlug: jest.fn() } },
@@ -338,9 +345,32 @@ describe('NetworkNodesController', () => {
       expect(reflector.get(ROLES_KEY, controller.getNodeRouterOsLogs)).toEqual([Role.ADMIN, Role.GERENTE]);
     });
 
+    // Consola RouterOS = acceso de shell real sin restricciones -- a
+    // diferencia de TODO lo demás en este controller, esto es SOLO ADMIN.
+    it('runConsoleCommand es SOLO ADMIN (acceso de shell real, sin restricciones, al router core)', () => {
+      expect(reflector.get(ROLES_KEY, controller.runConsoleCommand)).toEqual([Role.ADMIN]);
+    });
+
     it('ningún endpoint es público: este catálogo es interno, no de cara al cliente', () => {
       expect(reflector.get(IS_PUBLIC_KEY, controller.findAll)).toBeUndefined();
       expect(reflector.get(IS_PUBLIC_KEY, controller.findById)).toBeUndefined();
+    });
+  });
+
+  describe('runConsoleCommand (consola RouterOS)', () => {
+    it('delega el comando y el actor al servicio, y devuelve la salida tal cual', async () => {
+      const result = await controller.runConsoleCommand('node-1', { command: '/ip address print' } as any, 'user-1');
+
+      expect(routerConsoleService.runCommand).toHaveBeenCalledWith('node-1', '/ip address print', 'user-1');
+      expect(result).toEqual({ output: 'flags: X - disabled\n 0   ;;; comentario\n' });
+    });
+
+    it('propaga el error del servicio tal cual (ej. comando rechazado por el router)', async () => {
+      routerConsoleService.runCommand.mockRejectedValue(new Error('syntax error (line 1 column 5)'));
+
+      await expect(
+        controller.runConsoleCommand('node-1', { command: '/invalid-command' } as any, 'user-1'),
+      ).rejects.toThrow('syntax error (line 1 column 5)');
     });
   });
 });

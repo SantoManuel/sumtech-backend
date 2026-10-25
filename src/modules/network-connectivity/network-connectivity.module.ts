@@ -11,6 +11,7 @@ import { WireGuardHubClient } from './services/wireguard-hub-client.service';
 import { ConnectionTestService } from './services/connection-test.service';
 import { DeviceHealthService } from './services/device-health.service';
 import { DeviceOperationLogger } from './services/device-operation-logger.service';
+import { RouterConsoleService } from './services/router-console.service';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { DeviceOperationLogger } from './services/device-operation-logger.servic
     ConnectionTestService,
     DeviceHealthService,
     DeviceOperationLogger,
+    RouterConsoleService,
   ],
   exports: [
     RouterOsRestTransport,
@@ -37,6 +39,7 @@ import { DeviceOperationLogger } from './services/device-operation-logger.servic
     ConnectionTestService,
     DeviceHealthService,
     DeviceOperationLogger,
+    RouterConsoleService,
   ],
 })
 export class NetworkConnectivityModule {}
