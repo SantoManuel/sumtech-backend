@@ -17,6 +17,7 @@ import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
+import { GenieAcsDeviceResolverService } from '../../genieacs/genieacs-device-resolver.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { UnknownOltVendorError, DriverNotImplementedError } from '../ports/olt-driver.port';
 import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
@@ -41,6 +42,7 @@ describe('OnuManagementService', () => {
   let connectionResolver: any;
   let deviceOperationLogger: any;
   let cpeConfiguratorService: any;
+  let genieAcsDeviceResolver: any;
   let tenantContext: any;
   let onuQueryBuilder: any;
 
@@ -206,6 +208,10 @@ describe('OnuManagementService', () => {
       configureCpe: jest.fn().mockResolvedValue({ success: true, deviceId: 'dev-1', appliedParametersCount: 3, verification: {}, message: 'ok' }),
     };
 
+    genieAcsDeviceResolver = {
+      findByContractId: jest.fn().mockResolvedValue(null),
+    };
+
     tenantContext = {
       getSlug: jest.fn().mockReturnValue('sumtech'),
     };
@@ -229,6 +235,7 @@ describe('OnuManagementService', () => {
         { provide: OltConnectionResolverService, useValue: connectionResolver },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
         { provide: CpeConfiguratorService, useValue: cpeConfiguratorService },
+        { provide: GenieAcsDeviceResolverService, useValue: genieAcsDeviceResolver },
         { provide: TenantContextService, useValue: tenantContext },
       ],
     }).compile();
@@ -1304,6 +1311,42 @@ describe('OnuManagementService', () => {
       onuRepo.findOne.mockResolvedValue(null);
 
       await expect(service.findById('inexistente')).rejects.toThrow(NotFoundException);
+    });
+
+    // BUG REAL corregido (2026-10-25): onu.genieacsDeviceId (columna propia de
+    // net.onus) nunca se escribe en ningún lugar del backend -- el vínculo
+    // real vive en net.genieacs_devices por contractId. Confirmado en vivo
+    // contra un ONU real (CMDCDD4D131E) que GenieACS reportaba ONLINE pero la
+    // Ficha 360 mostraba "CPE SIN CONECTAR" por leer la columna muerta.
+    it('resuelve genieacsDeviceId desde GenieAcsDeviceResolverService cuando la ONU tiene contrato vinculado', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contract: { id: 'contract-1' } });
+      genieAcsDeviceResolver.findByContractId.mockResolvedValue({
+        contractId: 'contract-1',
+        genieacsDeviceId: '987DDD-HG8546M%2DXPON-CMDCDD4D131E',
+      });
+
+      const result = await service.findById('onu-uuid-1');
+
+      expect(genieAcsDeviceResolver.findByContractId).toHaveBeenCalledWith('contract-1');
+      expect(result.genieacsDeviceId).toBe('987DDD-HG8546M%2DXPON-CMDCDD4D131E');
+    });
+
+    it('sin contrato vinculado, no intenta resolver GenieACS y genieacsDeviceId queda undefined', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contract: null });
+
+      const result = await service.findById('onu-uuid-1');
+
+      expect(genieAcsDeviceResolver.findByContractId).not.toHaveBeenCalled();
+      expect(result.genieacsDeviceId).toBeUndefined();
+    });
+
+    it('con contrato pero sin dispositivo GenieACS resuelto todavía, deja genieacsDeviceId undefined (CPE realmente sin conectar)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contract: { id: 'contract-1' } });
+      genieAcsDeviceResolver.findByContractId.mockResolvedValue({ contractId: 'contract-1', genieacsDeviceId: null });
+
+      const result = await service.findById('onu-uuid-1');
+
+      expect(result.genieacsDeviceId).toBeFalsy();
     });
   });
 

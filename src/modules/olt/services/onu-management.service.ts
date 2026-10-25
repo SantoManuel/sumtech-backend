@@ -20,6 +20,7 @@ import { OltConnectionResolverService } from './olt-connection-resolver.service'
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
+import { GenieAcsDeviceResolverService } from '../../genieacs/genieacs-device-resolver.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import {
   IOltDriver,
@@ -62,6 +63,7 @@ export class OnuManagementService {
     private readonly connectionResolver: OltConnectionResolverService,
     private readonly deviceOperationLogger: DeviceOperationLogger,
     private readonly cpeConfiguratorService: CpeConfiguratorService,
+    private readonly genieAcsDeviceResolver: GenieAcsDeviceResolverService,
     private readonly tenantContext: TenantContextService,
   ) {}
 
@@ -211,6 +213,23 @@ export class OnuManagementService {
     if (onu.olt) {
       this.driverRegistry.attachCapabilities(onu.olt);
     }
+
+    // BUG REAL corregido (2026-10-25): `onu.genieacsDeviceId` (columna propia
+    // de net.onus) nunca se escribe en ningún lugar del backend -- el
+    // vínculo real con GenieACS vive en net.genieacs_devices, indexado por
+    // contractId (ver GenieAcsDeviceResolverService, que SÍ se mantiene
+    // sincronizado vía GenieAcsReconciliationService). Sin esto, la Ficha 360
+    // mostraba "CPE SIN CONECTAR" para equipos que llevaban horas reportando
+    // con éxito a GenieACS -- confirmado en vivo contra un ONU real
+    // (CMDCDD4D131E / contrato CTR-394574) cuyo genieacs_devices.genieacs_
+    // device_id SÍ estaba poblado mientras onus.genieacs_device_id seguía NULL.
+    if (onu.contract?.id) {
+      const genieAcsDevice = await this.genieAcsDeviceResolver.findByContractId(onu.contract.id);
+      if (genieAcsDevice?.genieacsDeviceId) {
+        onu.genieacsDeviceId = genieAcsDevice.genieacsDeviceId;
+      }
+    }
+
     return onu;
   }
 
