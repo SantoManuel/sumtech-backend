@@ -139,6 +139,60 @@ describe('ZteC320Driver', () => {
     expect(commands.slice(-2)).toEqual(['end', 'write']);
   });
 
+  it('sin managementMethod TR069 (ej. ONU gestionado por OMCI puro, sin Red TR-069 asignada) NO genera el canal de gestión ni el bloque tr069-mgmt -- bug real evitado: antes esto mandaba literalmente "tr069-mgmt 1 acs undefined" a la OLT porque OnuAuthorizeModal.tsx (Etapa 1 del frontend) no recolecta tr069NetworkId', () => {
+    const commands = driver.generateAuthorizationScript({
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'ZTE-F660',
+      serialNumber: 'ZTEGC0123456',
+      serviceVlan: 200,
+      tcontProfile: 'UP-50M',
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+      // tr069Vlan/tr069Url deliberadamente ausentes -- escenario real cuando
+      // el frontend todavía no manda una Red TR-069 en Etapa 1.
+    } as any);
+
+    // El canal de internet sigue intacto.
+    expect(commands).toContain('tcont 1 profile UP-50M');
+    expect(commands).toContain('gemport 1 tcont 1');
+    expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
+    expect(commands).toContain('flow 1 switch switch_0/1');
+    expect(commands).toContain('switchport-bind switch_0/1 iphost 1');
+
+    // Nada del canal de gestión ni del bloque TR-069/ACS/security-mgmt.
+    expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
+    expect(commands.some((c) => c.includes('gemport 2'))).toBe(false);
+    expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
+    expect(commands.some((c) => c.includes('flow 2'))).toBe(false);
+    expect(commands.some((c) => c.includes('iphost 2'))).toBe(false);
+    expect(commands.some((c) => c.includes('veip'))).toBe(false);
+    expect(commands.some((c) => c.includes('tr069-mgmt'))).toBe(false);
+    expect(commands.some((c) => c.includes('security-mgmt'))).toBe(false);
+    // Clave: jamás "undefined" en ningún comando generado.
+    expect(commands.some((c) => c.includes('undefined'))).toBe(false);
+
+    expect(commands.slice(-2)).toEqual(['end', 'write']);
+  });
+
+  it('con managementMethod TR069 pero SIN tr069Url (Red TR-069 sin acsUrl configurado) tampoco genera el canal de gestión -- misma guardia, otro disparador', () => {
+    const commands = driver.generateAuthorizationScript({
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'ZTE-F660',
+      serialNumber: 'ZTEGC0123456',
+      serviceVlan: 200,
+      tcontProfile: 'UP-50M',
+      managementMethod: 'TR069',
+      operationMode: 'ROUTER',
+      tr069Vlan: 46,
+      // tr069Url ausente a propósito.
+    } as any);
+
+    expect(commands.some((c) => c.includes('tr069-mgmt'))).toBe(false);
+    expect(commands.some((c) => c.includes('undefined'))).toBe(false);
+  });
+
   describe('generateTr069ManagementScript (Etapa 2: RE-apuntar la ONU al ACS, reintento aislado -- asume que tcont 2/gemport 2/service-port 2 ya existen de generateAuthorizationScript, Etapa 1)', () => {
     const baseConfig = {
       ponInterface: 'gpon-olt_1/1/1',

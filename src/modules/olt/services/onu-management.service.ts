@@ -567,12 +567,21 @@ export class OnuManagementService {
     const oltWarning = result.warning;
 
     // 2. Persistir configuración de servicio en net.onu_service_config --
-    // SOLO campos ópticos (Etapa 1 del flujo de 3 etapas: Autorizar en OLT /
-    // Aplicar Perfil TR-069 / Configurar WAN-PPPoE). `managementMethod`/
-    // `tr069NetworkId`/`wanMode` ya NO se deciden acá -- se quedan en
-    // 'OMCI'/null/default hasta que `applyTr069Profile()` (Etapa 2) los
-    // aplique explícitamente. Si `config` ya existía (re-autorizar), no se
-    // pisan esos campos: preservan lo que las etapas 2/3 ya hayan aplicado.
+    // SOLO campos ópticos. NOTA (2026-10-24): esto describe lo que hace HOY
+    // `OnuAuthorizeModal.tsx` (Etapa 1 del frontend), que todavía no manda
+    // `tr069NetworkId` -- `dto.tr069NetworkId` llega undefined, así que
+    // `buildAuthorizeParams()` nunca resuelve `tr069Url`/`tr069Vlan` y el
+    // driver (`generateAuthorizationScript`, guardia `hasTr069`) se salta
+    // por completo el canal de gestión/TR-069 en este punto. PERO el driver
+    // en sí YA SOPORTA aplicar todo en una sola llamada si el dto trajera
+    // `tr069NetworkId` -- si el frontend cambia a mandarlo en Etapa 1 (para
+    // replicar la sesión real de un solo tiro que funcionó el 2026-10-24),
+    // esta llamada a `driver.authorizeOnu()` de arriba YA dejaría la ONU con
+    // TR-069 funcionando sin necesitar `applyTr069Profile()` (Etapa 2) --
+    // esa pasaría a ser solo un reintento aislado, no el único camino para
+    // configurar TR-069 por primera vez. Si `config` ya existía
+    // (re-autorizar), no se pisan `managementMethod`/`tr069NetworkId`/
+    // `wanMode`: preservan lo que las etapas 2/3 ya hayan aplicado.
     const speedProfileId = dto.speedProfileId || undefined;
 
     let config = await this.configRepository.findOneBy({ onuId: onu.id });

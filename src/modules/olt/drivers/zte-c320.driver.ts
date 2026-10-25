@@ -720,6 +720,18 @@ export class ZteC320Driver implements IOltDriver {
    * Genera la lista de comandos Telnet de autorización y aprovisionamiento (RF-OLT-016 / RF-ONU-001..007).
    */
   generateAuthorizationScript(config: import('../ports/olt-driver.port').AuthorizeOnuParams): string[] {
+    // El segundo camino de datos GPON (tcont 2/gemport 2/service-port 2) y el
+    // bloque tr069-mgmt/security-mgmt SOLO existen para apuntar la ONU a un
+    // ACS -- si managementMethod no es 'TR069' o no hay tr069Url (ej. un ONU
+    // gestionado por OMCI puro, sin ACS), no hay nada que direccionar ahí.
+    // SIN esta guardia, una ONU sin Red TR-069 asignada generaba literalmente
+    // "tr069-mgmt 1 acs undefined" contra la OLT real -- bug encontrado al
+    // revisar que `OnuAuthorizeModal.tsx` (Etapa 1 del frontend) todavía no
+    // recolecta tr069NetworkId, a diferencia de `generateTr069ManagementScript()`,
+    // que ya fallaba alto y claro ante esta misma situación.
+    const hasTr069 = config.managementMethod === 'TR069' && Boolean(config.tr069Url);
+    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
+
     const commands: string[] = [
       'configure terminal',
       `interface ${config.ponInterface}`,
@@ -739,24 +751,27 @@ export class ZteC320Driver implements IOltDriver {
       `no onu ${config.onuId}`,
       `onu ${config.onuId} type ${config.modelTypeName} sn ${config.serialNumber}`,
       'exit',
-      `interface ${this.toOnuInterfaceName(config.ponInterface, config.onuId)}`,
+      `interface ${onuInterface}`,
       `name ${config.clientName ? config.clientName.replace(/\s+/g, '_') : `ONU-${config.onuId}`}`,
       ...(config.description ? [`description ${config.description.replace(/\s+/g, '_')}`] : []),
       `tcont 1 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
-      // Canal de gestión TR-069: tcont 2 / gemport 2 -- CONFIRMADO EN VIVO
-      // (2026-10-24, sesión real ONU CMDCDD4D131E / Huawei HG8546M que SÍ
-      // obtuvo IP, internet y se registró en GenieACS): deben estar AQUÍ,
-      // junto a tcont 1, en el mismo bloque "interface gpon-onu_X:Y". La
-      // separación anterior en Etapa 2 (sesión Telnet separada) dejaba
-      // gemport 2 sin existir cuando pon-onu-mng intentaba enlazar "flow 2"
-      // a él -- causa raíz real de que la ONU no obtuviera IP de gestión
-      // ni contactara GenieACS.
-      `tcont 2 profile SMARTOLT-VOIPMNG-10M`,
-      'gemport 1 tcont 1',
-      'gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN',
-      'gemport 2 tcont 2',
-      `gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M`,
     ];
+
+    // Canal de gestión TR-069: tcont 2 / gemport 2 -- CONFIRMADO EN VIVO
+    // (2026-10-24, sesión real ONU CMDCDD4D131E / Huawei HG8546M que SÍ
+    // obtuvo IP, internet y se registró en GenieACS): deben estar AQUÍ,
+    // junto a tcont 1, en el mismo bloque "interface gpon-onu_X:Y". La
+    // separación anterior en Etapa 2 (sesión Telnet separada) dejaba
+    // gemport 2 sin existir cuando pon-onu-mng intentaba enlazar "flow 2"
+    // a él -- causa raíz real de que la ONU no obtuviera IP de gestión
+    // ni contactara GenieACS.
+    if (hasTr069) {
+      commands.push(`tcont 2 profile SMARTOLT-VOIPMNG-10M`);
+    }
+    commands.push('gemport 1 tcont 1', 'gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN');
+    if (hasTr069) {
+      commands.push('gemport 2 tcont 2', `gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M`);
+    }
 
     // Traffic profile de bajada del plan del cliente (canal de internet).
     if (config.trafficProfile) {
@@ -768,10 +783,11 @@ export class ZteC320Driver implements IOltDriver {
     // (internet), en la misma sesión. NO se usa "switchport mode hybrid vport
     // N" -- ese comando no aparece en la sesión real que funcionó y puede
     // causar rechazo en este firmware.
-    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
+    commands.push(`service-port 1 vport 1 user-vlan ${config.serviceVlan} vlan ${config.serviceVlan}`);
+    if (hasTr069) {
+      commands.push(`service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`);
+    }
     commands.push(
-      `service-port 1 vport 1 user-vlan ${config.serviceVlan} vlan ${config.serviceVlan}`,
-      `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
       'exit',
       // Bloque OMCI completo -- UNA SOLA llamada a pon-onu-mng, idéntica a
       // la sesión real que funcionó (2026-10-24, ONU CMDCDD4D131E). Antes
@@ -785,51 +801,74 @@ export class ZteC320Driver implements IOltDriver {
       'voip protocol sip',
       // Canal de internet (flow 1 / gemport 1 / iphost 1)
       'flow 1 switch switch_0/1',
-      // Canal de gestión (flow 2 / gemport 2 / iphost 2) -- junto a flow 1
-      'flow 2 switch switch_0/1',
-      'flow mode 1 tag-filter vlan-filter untag-filter discard',
-      'flow mode 2 tag-filter vlan-filter untag-filter discard',
-      `flow 1 pri 0 vlan ${config.serviceVlan}`,
-      // pri 2 para el canal de gestión -- confirmado en vivo (2026-10-22/24)
-      `flow 2 pri 2 vlan ${config.tr069Vlan}`,
-      'gemport 1 flow 1',
-      'gemport 2 flow 2',
-      'switchport-bind switch_0/1 iphost 1',
-      'switchport-bind switch_0/1 iphost 2',
-      // switchport-bind veip 1 -- CONFIRMADO EN VIVO (2026-10-22): necesario
-      // para conectar el VEIP al switch fabric interno del ONT.
-      'switchport-bind switch_0/1 veip 1',
-      'ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable',
-      'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
-      'vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard',
-      'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
-      `vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`,
-      // pri 2, mismo motivo que "flow 2 pri 2" -- confirmado en vivo
-      `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
-      // dhcp-ip por puerto ETH -- usa ethPorts real del modelo, fallback 4.
-      // Un modelo con menos puertos (ej. 1 ETH) rechazaba eth_0/2..4 con
-      // "%Error" -- bug real confirmado por revisión de código (2026-10-23).
-      ...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`),
-      'veip 1 port udp 1232 host 2',
-      // Bloque TR-069 / ACS -- CONFIRMADO EN VIVO (2026-10-24, sesión real
-      // ONU CMDCDD4D131E): van en el mismo bloque pon-onu-mng, no en sesión
-      // separada. authorizeOnu() los trata como mejor esfuerzo: un rechazo
-      // del ONT no aborta la autorización óptica (el cliente ya tiene
-      // internet). applyTr069Management() puede reintentarlos de forma
-      // aislada si fuera necesario.
-      'tr069-mgmt 1 state unlock',
-      config.tr069AcsUsername && config.tr069AcsPassword
-        ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
-        : `tr069-mgmt 1 acs ${config.tr069Url}`,
-      `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
-      'security-mgmt 5 state enable mode forward protocol web https',
-      'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
-      'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
-      // "end", NO "exit": sale de "(gpon-onu-mng)#" directo al prompt
-      // top-level "#", donde "write" exige estar.
-      'end',
-      'write',
     );
+    // Canal de gestión (flow 2 / gemport 2 / iphost 2) -- junto a flow 1
+    if (hasTr069) {
+      commands.push('flow 2 switch switch_0/1');
+    }
+    commands.push('flow mode 1 tag-filter vlan-filter untag-filter discard');
+    if (hasTr069) {
+      commands.push('flow mode 2 tag-filter vlan-filter untag-filter discard');
+    }
+    commands.push(`flow 1 pri 0 vlan ${config.serviceVlan}`);
+    // pri 2 para el canal de gestión -- confirmado en vivo (2026-10-22/24)
+    if (hasTr069) {
+      commands.push(`flow 2 pri 2 vlan ${config.tr069Vlan}`);
+    }
+    commands.push('gemport 1 flow 1');
+    if (hasTr069) {
+      commands.push('gemport 2 flow 2');
+    }
+    commands.push('switchport-bind switch_0/1 iphost 1');
+    if (hasTr069) {
+      commands.push(
+        'switchport-bind switch_0/1 iphost 2',
+        // switchport-bind veip 1 -- CONFIRMADO EN VIVO (2026-10-22): necesario
+        // para conectar el VEIP al switch fabric interno del ONT.
+        'switchport-bind switch_0/1 veip 1',
+      );
+    }
+    commands.push('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
+    if (hasTr069) {
+      commands.push('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
+    }
+    commands.push('vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard');
+    if (hasTr069) {
+      commands.push('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
+    }
+    commands.push(`vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`);
+    // pri 2, mismo motivo que "flow 2 pri 2" -- confirmado en vivo
+    if (hasTr069) {
+      commands.push(`vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`);
+    }
+    // dhcp-ip por puerto ETH -- usa ethPorts real del modelo, fallback 4.
+    // Un modelo con menos puertos (ej. 1 ETH) rechazaba eth_0/2..4 con
+    // "%Error" -- bug real confirmado por revisión de código (2026-10-23).
+    commands.push(...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`));
+
+    if (hasTr069) {
+      commands.push(
+        'veip 1 port udp 1232 host 2',
+        // Bloque TR-069 / ACS -- CONFIRMADO EN VIVO (2026-10-24, sesión real
+        // ONU CMDCDD4D131E): van en el mismo bloque pon-onu-mng, no en sesión
+        // separada. authorizeOnu() los trata como mejor esfuerzo: un rechazo
+        // del ONT no aborta la autorización óptica (el cliente ya tiene
+        // internet). applyTr069Management() puede reintentarlos de forma
+        // aislada si fuera necesario.
+        'tr069-mgmt 1 state unlock',
+        config.tr069AcsUsername && config.tr069AcsPassword
+          ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
+          : `tr069-mgmt 1 acs ${config.tr069Url}`,
+        `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
+        'security-mgmt 5 state enable mode forward protocol web https',
+        'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
+        'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
+      );
+    }
+
+    // "end", NO "exit": sale de "(gpon-onu-mng)#" directo al prompt
+    // top-level "#", donde "write" exige estar.
+    commands.push('end', 'write');
     return commands;
   }
 
