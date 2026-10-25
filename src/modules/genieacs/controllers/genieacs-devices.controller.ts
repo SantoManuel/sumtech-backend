@@ -2,13 +2,17 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
+  Delete,
   Body,
   Param,
+  ParseIntPipe,
   Query,
   UseGuards,
   Inject,
   Optional,
   ServiceUnavailableException,
+  BadRequestException,
   Logger,
 } from '@nestjs/common';
 import { AuthGuard } from '../../../common/guards/auth.guard';
@@ -17,10 +21,27 @@ import { SaasFeatureGuard } from '../../../common/guards/saas-feature.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { RequireFeature } from '../../../common/decorators/require-feature.decorator';
 import { Role } from '../../../common/enums/role.enum';
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { GENIEACS_CLIENT } from '../genieacs-client-factory';
 import { GenieAcsClient } from '../genieacs-client';
 import { CpeConfiguratorService } from '../services/cpe-configurator.service';
 import { CpeConfigurationInput } from '../services/cpe-parameter-mapper';
+import { GenieAcsSnapshotService } from '../services/genieacs-snapshot.service';
+import { GenieAcsActivityLogService } from '../services/genieacs-activity-log.service';
+import { GenieAcsSectionWriteService } from '../services/genieacs-section-write.service';
+import { GenieAcsPortForwardingService } from '../services/genieacs-port-forwarding.service';
+import { AddPortMappingDto } from '../dto/add-port-mapping.dto';
+import { GenieAcsDiagnosticsService } from '../services/genieacs-diagnostics.service';
+import { TriggerDiagnosticDto } from '../dto/trigger-diagnostic.dto';
+import { DiagnosticType } from '../dto/diagnostics.dto';
+import { GenieAcsVendorParameterService } from '../services/genieacs-vendor-parameter.service';
+import { SetVendorToggleDto } from '../dto/vendor-parameter.dto';
+import { GenieAcsFirmwareService } from '../services/genieacs-firmware.service';
+import { PushFirmwareDto } from '../dto/firmware.dto';
+import { UpdatePppInterfaceDto } from '../dto/update-ppp-interface.dto';
+import { UpdateLanDhcpServerDto } from '../dto/update-lan-dhcp-server.dto';
+import { ToggleLanPortDto } from '../dto/toggle-lan-port.dto';
+import { UpdateWirelessLanDto } from '../dto/update-wireless-lan.dto';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 
 @Controller('genieacs/devices')
@@ -34,8 +55,26 @@ export class GenieAcsDevicesController {
     @Inject(GENIEACS_CLIENT)
     private readonly client: GenieAcsClient | null,
     private readonly cpeConfigurator: CpeConfiguratorService,
+    private readonly snapshotService: GenieAcsSnapshotService,
+    private readonly activityLogService: GenieAcsActivityLogService,
+    private readonly sectionWriteService: GenieAcsSectionWriteService,
+    private readonly portForwardingService: GenieAcsPortForwardingService,
+    private readonly diagnosticsService: GenieAcsDiagnosticsService,
+    private readonly vendorParameterService: GenieAcsVendorParameterService,
+    private readonly firmwareService: GenieAcsFirmwareService,
     private readonly tenantContext: TenantContextService,
   ) {}
+
+  private static readonly DIAGNOSTIC_TYPES: DiagnosticType[] = ['PING', 'TRACEROUTE', 'DOWNLOAD', 'UPLOAD', 'SITE_SURVEY'];
+
+  private parseDiagnosticType(type: string): DiagnosticType {
+    if (!GenieAcsDevicesController.DIAGNOSTIC_TYPES.includes(type as DiagnosticType)) {
+      throw new BadRequestException(
+        `Tipo de diagnóstico inválido "${type}" -- debe ser uno de: ${GenieAcsDevicesController.DIAGNOSTIC_TYPES.join(', ')}.`,
+      );
+    }
+    return type as DiagnosticType;
+  }
 
   private getClient(): GenieAcsClient {
     if (!this.client) {
@@ -137,6 +176,201 @@ export class GenieAcsDevicesController {
         tags,
       };
     });
+  }
+
+  /**
+   * Pestaña "TR-069 / GenieACS" de la Ficha 360 de ONU -- snapshot normalizado
+   * del árbol TR-069 real del CPE (ver
+   * Plan_Implementacion_Pestana_TR069_Avanzada_ONU.md). Se agregan más
+   * secciones al DTO en fases posteriores; hoy solo trae "General".
+   */
+  @Get(':id/tr069-snapshot')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async getTr069Snapshot(@Param('id') id: string) {
+    try {
+      return await this.snapshotService.getFullSnapshot(id);
+    } catch (err: any) {
+      if (err instanceof ServiceUnavailableException) {
+        throw err;
+      }
+      throw new ServiceUnavailableException(err.message);
+    }
+  }
+
+  /**
+   * "Historial de actividad TR-069" (§3.16 del plan) -- tareas+faults reales
+   * de GenieACS para este CPE, no un log del equipo (TR-069 no estandariza
+   * eso).
+   */
+  @Get(':id/activity-log')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async getActivityLog(@Param('id') id: string) {
+    try {
+      return await this.activityLogService.getActivityLog(id);
+    } catch (err: any) {
+      if (err instanceof ServiceUnavailableException) {
+        throw err;
+      }
+      throw new ServiceUnavailableException(err.message);
+    }
+  }
+
+  /**
+   * Edición de la interfaz PPP (WAN PPPoE) -- §3.2 del plan. Riesgo alto: un
+   * error aquí puede cortar el internet del cliente.
+   */
+  @Patch(':id/ppp-interface')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async updatePppInterface(
+    @Param('id') id: string,
+    @Body() dto: UpdatePppInterfaceDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    const result = await this.sectionWriteService.updatePppInterface(id, dto, userId);
+    return { success: true, ...result };
+  }
+
+  /**
+   * Edición del servidor DHCP de la LAN -- §3.5 del plan. Riesgo alto: un
+   * rango mal puesto desconecta todo el LAN del cliente, no solo internet.
+   */
+  @Patch(':id/lan-dhcp-server')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async updateLanDhcpServer(
+    @Param('id') id: string,
+    @Body() dto: UpdateLanDhcpServerDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    const result = await this.sectionWriteService.updateLanDhcpServer(id, dto, userId);
+    return { success: true, ...result };
+  }
+
+  /**
+   * Habilita/deshabilita un puerto Ethernet físico -- §3.6 del plan.
+   */
+  @Patch(':id/lan-ports/:portIndex')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async toggleLanPort(
+    @Param('id') id: string,
+    @Param('portIndex', ParseIntPipe) portIndex: number,
+    @Body() dto: ToggleLanPortDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    await this.sectionWriteService.toggleLanPort(id, portIndex, dto.enabled, userId);
+    return { success: true };
+  }
+
+  /**
+   * Edición avanzada de una radio WiFi (más allá de SSID/clave) -- §3.8 del plan.
+   */
+  @Patch(':id/wireless-lan/:ssidIndex')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async updateWirelessLan(
+    @Param('id') id: string,
+    @Param('ssidIndex', ParseIntPipe) ssidIndex: number,
+    @Body() dto: UpdateWirelessLanDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    const result = await this.sectionWriteService.updateWirelessLan(id, ssidIndex, dto, userId);
+    return { success: true, ...result };
+  }
+
+  /**
+   * Agrega una regla de Port Forward -- §3.3 del plan.
+   */
+  @Post(':id/port-mappings')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async addPortMapping(@Param('id') id: string, @Body() dto: AddPortMappingDto, @CurrentUser('sub') userId: string) {
+    const result = await this.portForwardingService.addPortMapping(id, dto, userId);
+    return { success: true, ...result };
+  }
+
+  /**
+   * Elimina una regla de Port Forward existente -- §3.3 del plan.
+   */
+  @Delete(':id/port-mappings/:index')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async deletePortMapping(
+    @Param('id') id: string,
+    @Param('index', ParseIntPipe) index: number,
+    @CurrentUser('sub') userId: string,
+  ) {
+    await this.portForwardingService.deletePortMapping(id, index, userId);
+    return { success: true };
+  }
+
+  /**
+   * Dispara un diagnóstico TR-143 (Ping/Traceroute/Download/Upload/Site
+   * Survey) -- §3.15/§3.10 del plan. No espera el resultado; el frontend
+   * hace polling contra el endpoint de abajo.
+   */
+  @Post(':id/diagnostics/:type/trigger')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async triggerDiagnostic(
+    @Param('id') id: string,
+    @Param('type') type: string,
+    @Body() dto: TriggerDiagnosticDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    await this.diagnosticsService.triggerDiagnostic(id, this.parseDiagnosticType(type), dto, userId);
+    return { success: true, message: 'Diagnóstico encolado -- consulta el estado con GET .../status.' };
+  }
+
+  /**
+   * Estado/resultado de un diagnóstico ya disparado -- el frontend llama
+   * esto en loop (poll) hasta ver status COMPLETE/ERROR.
+   */
+  @Get(':id/diagnostics/:type/status')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async getDiagnosticStatus(@Param('id') id: string, @Param('type') type: string) {
+    return this.diagnosticsService.getDiagnosticStatus(id, this.parseDiagnosticType(type));
+  }
+
+  /**
+   * Toggles de Security (§3.12) / Miscellaneous (§3.14) -- SOLO los que
+   * existen en el catálogo verificado para el vendor/modelo real de este
+   * equipo (ver GenieAcsVendorParameterService). Sin filas = arreglo vacío,
+   * nunca un toggle inventado.
+   */
+  @Get(':id/vendor-toggles')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async getVendorToggles(@Param('id') id: string, @Query('category') category: string) {
+    const normalized = category === 'MISCELLANEOUS' ? 'MISCELLANEOUS' : 'SECURITY';
+    return this.vendorParameterService.getTogglesForDevice(id, normalized);
+  }
+
+  @Patch(':id/vendor-toggles/:parameterKey')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async setVendorToggle(
+    @Param('id') id: string,
+    @Param('parameterKey') parameterKey: string,
+    @Body() dto: SetVendorToggleDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    await this.vendorParameterService.setToggle(id, parameterKey, dto.value, userId);
+    return { success: true };
+  }
+
+  /**
+   * Empuja un firmware del catálogo al equipo -- §3.17 del plan, la sección
+   * de mayor riesgo de toda la pestaña. SOLO ADMIN, y exige reescribir la
+   * versión destino exacta como confirmación (ver PushFirmwareDto).
+   */
+  @Post(':id/firmware/:firmwareId/push')
+  @Roles(Role.ADMIN)
+  async pushFirmware(
+    @Param('id') id: string,
+    @Param('firmwareId') firmwareId: string,
+    @Body() dto: PushFirmwareDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    const result = await this.firmwareService.pushFirmware(id, firmwareId, dto.confirmVersion, userId);
+    return {
+      success: true,
+      ...result,
+      message:
+        'Orden de actualización de firmware enviada. No hay confirmación automática de "transferencia completa" -- revisa la Versión de Software en la sección General en unos minutos.',
+    };
   }
 
   /**

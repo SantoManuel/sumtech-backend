@@ -626,6 +626,26 @@ export class GenieAcsClient {
     }
   }
 
+  /**
+   * Elimina una instancia dentro de una tabla de objetos TR-069 (ej.
+   * "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1",
+   * SIN el punto final -- a diferencia de `addObject`, DeleteObject apunta a
+   * la instancia concreta a borrar, no al contenedor de la tabla). Verifica
+   * el resultado real con `assertTaskSucceeded`, igual que `addObject`.
+   */
+  async deleteObject(deviceId: string, objectPath: string): Promise<void> {
+    try {
+      const taskResponse = await this.http.post(
+        `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
+        { name: 'deleteObject', objectName: objectPath },
+        this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
+      );
+      await this.assertTaskSucceeded(deviceId, (taskResponse as any).data?._id);
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
   /** Consulta y verifica valores de parámetros TR-069 del CPE */
   async getParameterValues(deviceId: string, parameterNames: string[]): Promise<Record<string, string | undefined>> {
     try {
@@ -671,6 +691,81 @@ export class GenieAcsClient {
         { name: 'factoryReset' },
         this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Últimas tareas que GenieACS encoló para este CPE -- usado para el
+   * "Historial de actividad TR-069" (ver GenieAcsActivityLogService; §2.3/§3.16
+   * del plan: TR-069 no tiene un RPC estándar para bajar el log interno del
+   * equipo, así que se usa la actividad real del lado del ACS).
+   *
+   * 📘 Query por el campo "device" sobre la colección `/tasks` de la NBI --
+   * documentado en el esquema de GenieACS 1.2.x, pero NO confirmado en vivo
+   * contra esta instancia (a diferencia de la consulta por `_id` que ya usa
+   * `assertTaskSucceeded`). Validar contra la instancia real de producción
+   * antes de depender de esto para una decisión operativa crítica.
+   */
+  async getDeviceTasks(deviceId: string, limit = 50): Promise<any[]> {
+    try {
+      const response = await this.http.get(this.buildUrl('tasks'), {
+        ...this.buildRequestConfig(),
+        params: {
+          query: JSON.stringify({ device: deviceId }),
+          limit,
+          sort: JSON.stringify({ timestamp: -1 }),
+        },
+      });
+      return Array.isArray(response.data) ? response.data : [];
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /** Últimos faults (rechazos reales del CPE) registrados para este dispositivo -- misma salvedad 📘 que `getDeviceTasks`. */
+  async getDeviceFaults(deviceId: string, limit = 50): Promise<any[]> {
+    try {
+      const response = await this.http.get(this.buildUrl('faults'), {
+        ...this.buildRequestConfig(),
+        params: {
+          query: JSON.stringify({ device: deviceId }),
+          limit,
+          sort: JSON.stringify({ timestamp: -1 }),
+        },
+      });
+      return Array.isArray(response.data) ? response.data : [];
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * RPC `Download` de TR-069 -- usado para firmware (§3.17/§2.4 del plan).
+   * Sección de mayor riesgo de toda la pestaña: un firmware incorrecto puede
+   * dejar el equipo inoperable. `url` debe ser alcanzable por el CPE del
+   * cliente (ver GenieAcsFirmwareService, que la genera como URL prefirmada
+   * de MinIO con expiración corta). Verifica el resultado real igual que
+   * `addObject`/`deleteObject`.
+   */
+  async downloadFile(
+    deviceId: string,
+    params: { fileType: string; url: string; fileSize?: number; targetFileName?: string },
+  ): Promise<void> {
+    try {
+      const taskResponse = await this.http.post(
+        `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
+        {
+          name: 'download',
+          fileType: params.fileType,
+          url: params.url,
+          fileSize: params.fileSize,
+          targetFileName: params.targetFileName,
+        },
+        this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
+      );
+      await this.assertTaskSucceeded(deviceId, (taskResponse as any).data?._id);
     } catch (error) {
       throw new Error(this.describeError(error));
     }

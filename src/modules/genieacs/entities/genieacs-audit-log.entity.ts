@@ -14,14 +14,41 @@ export class GenieAcsAuditLogEntity {
 
   // Denormalizado a propósito, igual que en provisioning_audit_log: permite
   // auditar por contrato incluso si el vínculo con GenieACS se borra o cambia.
-  @Column({ name: 'contract_id', type: 'uuid' })
-  contractId: string;
+  // NULLABLE desde la migración 095: los endpoints genéricos de la pestaña
+  // TR-069 (ver Plan_Implementacion_Pestana_TR069_Avanzada_ONU.md §4) actúan
+  // sobre genieacsDeviceId, y una ONU puede no tener contrato vinculado
+  // todavía -- genieacsDeviceId ya alcanza para auditar "qué se le cambió a
+  // este equipo y cuándo".
+  @Column({ name: 'contract_id', type: 'uuid', nullable: true })
+  contractId?: string | null;
 
   @Column({ name: 'genieacs_device_id', type: 'varchar', length: 255, nullable: true })
   genieacsDeviceId?: string | null;
 
-  @Column({ type: 'enum', enum: ['WIFI_CHANGE', 'REBOOT', 'FACTORY_RESET'] })
-  action: 'WIFI_CHANGE' | 'REBOOT' | 'FACTORY_RESET';
+  @Column({
+    type: 'enum',
+    enum: [
+      'WIFI_CHANGE',
+      'REBOOT',
+      'FACTORY_RESET',
+      'TR069_PARAMETER_CHANGE',
+      'PORT_FORWARD_ADD',
+      'PORT_FORWARD_DELETE',
+      'LAN_PORT_TOGGLE',
+      'DIAGNOSTIC_RUN',
+      'FIRMWARE_PUSH',
+    ],
+  })
+  action:
+    | 'WIFI_CHANGE'
+    | 'REBOOT'
+    | 'FACTORY_RESET'
+    | 'TR069_PARAMETER_CHANGE'
+    | 'PORT_FORWARD_ADD'
+    | 'PORT_FORWARD_DELETE'
+    | 'LAN_PORT_TOGGLE'
+    | 'DIAGNOSTIC_RUN'
+    | 'FIRMWARE_PUSH';
 
   @Column({ type: 'varchar', length: 100, default: 'CLIENTE' })
   actor: string;
@@ -37,6 +64,16 @@ export class GenieAcsAuditLogEntity {
 
   @Column({ name: 'new_ssid', type: 'varchar', length: 32, nullable: true })
   newSsid?: string;
+
+  /** Ruta TR-069 afectada (ej. "Device.PPP.Interface.1.Username") -- genérico para cualquier sección editable de la pestaña TR-069. */
+  @Column({ name: 'parameter_path', type: 'varchar', length: 500, nullable: true })
+  parameterPath?: string | null;
+
+  @Column({ name: 'old_value', type: 'text', nullable: true })
+  oldValue?: string | null;
+
+  @Column({ name: 'new_value', type: 'text', nullable: true })
+  newValue?: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamp with time zone' })
   createdAt: Date;

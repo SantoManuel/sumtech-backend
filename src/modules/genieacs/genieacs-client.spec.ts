@@ -754,6 +754,133 @@ describe('GenieAcsClient', () => {
     });
   });
 
+  describe('deleteObject', () => {
+    it('manda la tarea "deleteObject" con el objectName dado y verifica el resultado real', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-111' } });
+      http.get.mockResolvedValue({ data: [] });
+
+      await client.deleteObject(
+        '00259E-ONT-16',
+        'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1',
+      );
+
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
+        {
+          name: 'deleteObject',
+          objectName: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1',
+        },
+        expect.anything(),
+      );
+    });
+
+    it('lanza error si el CPE rechaza el DeleteObject (fault real)', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-111' } });
+      http.get.mockResolvedValue({
+        data: [{ _id: '00259E-ONT-16:task_task-111', message: 'No se pudo eliminar el objeto' }],
+      });
+
+      await expect(
+        client.deleteObject('00259E-ONT-16', 'InternetGatewayDevice...WANPPPConnection.1'),
+      ).rejects.toThrow(/No se pudo eliminar el objeto/);
+    });
+
+    it('propaga un error legible si la NBI no responde', async () => {
+      http.post.mockRejectedValue({ request: {} });
+
+      await expect(
+        client.deleteObject('00259E-ONT-16', 'InternetGatewayDevice...WANPPPConnection.1'),
+      ).rejects.toThrow(/No se pudo contactar al servidor GenieACS/);
+    });
+  });
+
+  describe('getDeviceTasks', () => {
+    it('consulta /tasks filtrando por "device" con el límite y orden dados', async () => {
+      http.get.mockResolvedValue({ data: [{ _id: 'task-1', name: 'reboot', timestamp: '2026-10-25T10:00:00Z' }] });
+
+      const tasks = await client.getDeviceTasks('00259E-ONT-16', 20);
+
+      expect(tasks).toEqual([{ _id: 'task-1', name: 'reboot', timestamp: '2026-10-25T10:00:00Z' }]);
+      expect(http.get).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/tasks/',
+        expect.objectContaining({
+          params: {
+            query: JSON.stringify({ device: '00259E-ONT-16' }),
+            limit: 20,
+            sort: JSON.stringify({ timestamp: -1 }),
+          },
+        }),
+      );
+    });
+
+    it('devuelve arreglo vacío si la NBI no responde un arreglo', async () => {
+      http.get.mockResolvedValue({ data: null });
+
+      await expect(client.getDeviceTasks('00259E-ONT-16')).resolves.toEqual([]);
+    });
+
+    it('lanza un error legible si la NBI falla', async () => {
+      http.get.mockRejectedValue({ response: { status: 500, data: {} } });
+
+      await expect(client.getDeviceTasks('00259E-ONT-16')).rejects.toThrow(/500/);
+    });
+  });
+
+  describe('getDeviceFaults', () => {
+    it('consulta /faults filtrando por "device"', async () => {
+      http.get.mockResolvedValue({
+        data: [{ _id: '00259E-ONT-16:task_task-1', message: 'Invalid parameter value' }],
+      });
+
+      const faults = await client.getDeviceFaults('00259E-ONT-16');
+
+      expect(faults).toEqual([{ _id: '00259E-ONT-16:task_task-1', message: 'Invalid parameter value' }]);
+      expect(http.get).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/faults/',
+        expect.objectContaining({
+          params: expect.objectContaining({ query: JSON.stringify({ device: '00259E-ONT-16' }) }),
+        }),
+      );
+    });
+  });
+
+  describe('downloadFile', () => {
+    it('manda la tarea "download" con los campos dados y verifica el resultado real', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-fw-1' } });
+      http.get.mockResolvedValue({ data: [] });
+
+      await client.downloadFile('00259E-ONT-16', {
+        fileType: '1 Firmware Upgrade Image',
+        url: 'https://minio.sumtech.local/firmware/x.bin?sig=abc',
+        fileSize: 12345,
+        targetFileName: 'V8.0.10P2',
+      });
+
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
+        {
+          name: 'download',
+          fileType: '1 Firmware Upgrade Image',
+          url: 'https://minio.sumtech.local/firmware/x.bin?sig=abc',
+          fileSize: 12345,
+          targetFileName: 'V8.0.10P2',
+        },
+        expect.anything(),
+      );
+    });
+
+    it('lanza error si el CPE rechaza la descarga (fault real)', async () => {
+      http.post.mockResolvedValueOnce({ data: { _id: 'task-fw-1' } });
+      http.get.mockResolvedValue({
+        data: [{ _id: '00259E-ONT-16:task_task-fw-1', message: 'Download rejected' }],
+      });
+
+      await expect(
+        client.downloadFile('00259E-ONT-16', { fileType: '1 Firmware Upgrade Image', url: 'https://x/f.bin' }),
+      ).rejects.toThrow(/Download rejected/);
+    });
+  });
+
   describe('clearWifiCustomization', () => {
     it('borra el tag WIFI_CUSTOMIZED', async () => {
       http.delete.mockResolvedValue({ data: {} });

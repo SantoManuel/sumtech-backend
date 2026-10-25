@@ -68,6 +68,8 @@ import { DeviceLogEntity } from '../modules/network/entities/device-log.entity';
 import { WireguardPeerEntity } from '../modules/network/entities/wireguard-peer.entity';
 import { GenieAcsDeviceEntity } from '../modules/genieacs/entities/genieacs-device.entity';
 import { GenieAcsAuditLogEntity } from '../modules/genieacs/entities/genieacs-audit-log.entity';
+import { CpeVendorParameterEntity } from '../modules/genieacs/entities/cpe-vendor-parameter.entity';
+import { CpeFirmwareEntity } from '../modules/genieacs/entities/cpe-firmware.entity';
 import { ContractSignatureEntity } from '../modules/contract-signatures/entities/contract-signature.entity';
 import { CompanyProfileEntity } from '../modules/company/entities/company-profile.entity';
 import { MailSettingsEntity } from '../modules/mail/entities/mail-settings.entity';
@@ -168,6 +170,8 @@ export const entities = [
   // net
   GenieAcsDeviceEntity,
   GenieAcsAuditLogEntity,
+  CpeVendorParameterEntity,
+  CpeFirmwareEntity,
   DeviceLogEntity,
   WireguardPeerEntity,
   // olt & onu
