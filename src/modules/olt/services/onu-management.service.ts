@@ -821,10 +821,17 @@ export class OnuManagementService {
     const driver = this.resolveDriver(olt);
     const connParams = await this.connectionResolver.resolve(olt);
 
+    // A diferencia de "Solo actualizar ACS" (updateTr069AcsUrl), esta acción SÍ
+    // re-cablea tcont/gemport/service-port/flow/veip con el serviceVlanId/
+    // speedProfileId de `config` -- auto-crear la fila acá con valores
+    // adivinados arriesgaría empujarle a un equipo de producción ya cableado
+    // (ej. detectedBy=OLT_IMPORT) una VLAN distinta a la real. Por eso este
+    // camino se queda bloqueado sin una fila real, a diferencia del otro.
     const config = await this.configRepository.findOneBy({ onuId: onu.id });
     if (!config) {
       throw new BadRequestException(
-        'Esta ONU no tiene configuración de servicio previa -- autorízala en la OLT primero.',
+        'Esta ONU no tiene configuración de servicio previa en el sistema. Si es un equipo nuevo, autorízalo en la OLT primero. ' +
+          'Si es un equipo de producción que YA está cableado en la OLT (ej. importado por escaneo) y solo necesitas apuntarlo a un ACS distinto, usa el botón "Solo actualizar ACS" de este mismo modal -- esa acción no re-cablea VLAN/tcont y no requiere conocer la configuración previa.',
       );
     }
     if (!dto.tr069NetworkId) {
@@ -903,11 +910,24 @@ export class OnuManagementService {
       );
     }
 
-    const config = await this.configRepository.findOneBy({ onuId: onu.id });
+    // A diferencia de "Aplicar Perfil TR-069" (applyTr069Profile), esta acción
+    // NUNCA toca VLAN/tcont/gemport/service-port -- el driver solo entra a
+    // "pon-onu-mng" y corre "tr069-mgmt 1 acs" + reboot (ver
+    // ZteC320Driver.updateTr069AcsUrl, confirmado leyendo su implementación
+    // real). serviceVlanId/speedProfileId/operationMode de `config` ni
+    // siquiera llegan al payload final del driver. Por eso, si la ONU no
+    // tiene fila de servicio todavía (típico de equipos detectedBy=
+    // OLT_IMPORT: producción real, ya cableados en la OLT por fuera de este
+    // sistema -- NO hay que re-autorizarlos), se crea una fila mínima acá en
+    // vez de bloquear: no hay ningún dato de VLAN/perfil que adivinar para
+    // esta operación puntual.
+    let config = await this.configRepository.findOneBy({ onuId: onu.id });
     if (!config) {
-      throw new BadRequestException(
-        'Esta ONU no tiene configuración de servicio previa -- autorízala en la OLT primero.',
-      );
+      config = this.configRepository.create({
+        onuId: onu.id,
+        managementMethod: 'TR069',
+        operationMode: 'ROUTER',
+      });
     }
     if (!dto.tr069NetworkId) {
       throw new BadRequestException('Selecciona una Red TR-069.');

@@ -873,13 +873,18 @@ describe('OnuManagementService', () => {
       desiredVersion: 1,
     };
 
-    it('lanza BadRequestException si la ONU no tiene config previa (no se autorizó en la OLT todavía)', async () => {
+    // A diferencia de updateTr069AcsUrl, ESTA acción sí re-cablea VLAN/tcont
+    // con serviceVlanId/speedProfileId -- auto-crear la fila acá arriesgaría
+    // empujar una VLAN adivinada a un equipo de producción ya cableado, así
+    // que se queda bloqueada sin una fila real (el mensaje ahora guía hacia
+    // "Solo actualizar ACS" para ese caso, ver updateTr069AcsUrl).
+    it('lanza BadRequestException si la ONU no tiene config previa (no se autorizó en la OLT todavía), y sugiere "Solo actualizar ACS" para equipos ya cableados', async () => {
       onuRepo.findOne.mockResolvedValue(mockOnu);
       configRepo.findOneBy.mockResolvedValue(null);
 
       await expect(
         service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(/Solo actualizar ACS/);
     });
 
     it('lanza BadRequestException si no se selecciona Red TR-069', async () => {
@@ -983,13 +988,40 @@ describe('OnuManagementService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('lanza BadRequestException si la ONU no tiene config previa', async () => {
+    // BUG REAL corregido (2026-10-25): equipos detectedBy='OLT_IMPORT' (ej.
+    // ECOM0EF0CF9B, confirmado en producción) son producción real ya cableada
+    // en la OLT por fuera de este sistema -- NO hay que re-autorizarlos. Esta
+    // acción puntual nunca toca VLAN/tcont/gemport (confirmado leyendo
+    // ZteC320Driver.updateTr069AcsUrl: solo entra a "pon-onu-mng" y corre
+    // "tr069-mgmt 1 acs" + reboot), así que bloquearla por falta de una fila
+    // de servicio que de todos modos no se usa era un bloqueo innecesario.
+    it('sin fila de servicio previa (ej. ONU detectedBy=OLT_IMPORT), crea una mínima en vez de bloquear -- esta acción no necesita VLAN/perfil', async () => {
       onuRepo.findOne.mockResolvedValue(mockOnu);
       configRepo.findOneBy.mockResolvedValue(null);
+      zteDriver.updateTr069AcsUrl.mockResolvedValue({ ok: true });
+
+      const result = await service.updateTr069AcsUrl('onu-uuid-1', { tr069NetworkId: 'tr069-1' }, 'admin-id');
+
+      expect(zteDriver.updateTr069AcsUrl).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ tr069Url: 'http://10.46.0.1:7547/' }),
+      );
+      expect(configRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ onuId: 'onu-uuid-1', managementMethod: 'TR069', operationMode: 'ROUTER' }),
+      );
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({ tr069NetworkId: 'tr069-1' }));
+      expect((result as any).tr069Warning).toBeUndefined();
+    });
+
+    it('si la OLT rechaza el ACS en una ONU sin fila de servicio previa, NO persiste la fila recién creada (igual que con una fila existente)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue(null);
+      zteDriver.updateTr069AcsUrl.mockResolvedValue({ ok: false, error: 'La OLT rechazó tr069-mgmt 1 acs' });
 
       await expect(
         service.updateTr069AcsUrl('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
       ).rejects.toThrow(BadRequestException);
+      expect(configRepo.save).not.toHaveBeenCalled();
     });
 
     it('lanza BadRequestException si no se selecciona Red TR-069', async () => {

@@ -30,12 +30,16 @@ export class OnuServiceConfigEntity {
   @Column({ name: 'operation_mode', type: 'varchar', length: 20, default: 'ROUTER' })
   operationMode: 'BRIDGE' | 'ROUTER';
 
-  @Column({ name: 'service_vlan_id', type: 'uuid' })
-  serviceVlanId: string;
+  // Nullable desde la migración 098: equipos detectedBy='OLT_IMPORT' (producción
+  // real, cableados en la OLT por fuera de este sistema) pueden necesitar una
+  // fila de servicio mínima (ver updateTr069AcsUrl) sin que Sumtech conozca
+  // todavía su VLAN real -- todo lo que lee este campo ya lo trata como opcional.
+  @Column({ name: 'service_vlan_id', type: 'uuid', nullable: true })
+  serviceVlanId?: string;
 
-  @ManyToOne(() => VlanEntity, { onDelete: 'RESTRICT' })
+  @ManyToOne(() => VlanEntity, { nullable: true, onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'service_vlan_id' })
-  serviceVlan: VlanEntity;
+  serviceVlan?: VlanEntity;
 
   @Column({ name: 'mgmt_vlan_id', type: 'uuid', nullable: true })
   mgmtVlanId?: string;
