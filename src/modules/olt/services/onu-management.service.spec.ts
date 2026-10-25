@@ -617,7 +617,7 @@ describe('OnuManagementService', () => {
       );
     });
 
-    it('crea onu_service_config SOLO con campos ópticos (Etapa 1) -- managementMethod/tr069NetworkId/wanMode ya NO se deciden acá, quedan para applyTr069Profile/pushWanConfig (Etapas 2/3)', async () => {
+    it('sin tr069NetworkId en el dto, crea onu_service_config con managementMethod "OMCI" y nada de TR-069 -- wanMode sigue siendo exclusivo de pushWanConfig (Etapa 3)', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
       zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
 
@@ -633,6 +633,7 @@ describe('OnuManagementService', () => {
           serviceVlanId: 'vlan-1',
           operationMode: 'ROUTER',
           managementMethod: 'OMCI',
+          tr069NetworkId: undefined,
           speedProfileId: undefined,
         }),
       );
@@ -640,6 +641,59 @@ describe('OnuManagementService', () => {
       expect(zteDriver.authorizeOnu).toHaveBeenCalledWith(
         expect.anything(),
         expect.not.objectContaining({ tr069Url: expect.anything() }),
+      );
+    });
+
+    it('CON tr069NetworkId en el dto (Etapa 1 fusionada), crea onu_service_config con managementMethod "TR069" + tr069NetworkId + tr069VlanId -- sin esto la Ficha 360 mostraba "OMCI"/"VLAN —" pese a que el driver YA aplicó TR-069 en la OLT', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+      tr069Repo.findOneBy.mockResolvedValue({ id: 'tr069-1', vlanId: 'vlan-uuid-46', acsUrl: 'http://10.254.0.1:7547' });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        onuTypeId: 'type-1',
+        operationMode: 'ROUTER',
+        tr069NetworkId: 'tr069-1',
+        managementMethod: 'TR069',
+      });
+
+      expect(tr069Repo.findOneBy).toHaveBeenCalledWith({ id: 'tr069-1' });
+      expect(configRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          managementMethod: 'TR069',
+          tr069NetworkId: 'tr069-1',
+          tr069VlanId: 'vlan-uuid-46',
+        }),
+      );
+    });
+
+    it('re-autorizar una ONU existente SIN tr069NetworkId en el dto no toca managementMethod/tr069NetworkId -- pero si esta vez SÍ trae una Red TR-069, la actualiza (igual que applyTr069Profile)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({
+        onuId: 'onu-uuid-1',
+        serviceVlanId: 'vlan-old',
+        managementMethod: 'OMCI',
+        tr069NetworkId: undefined,
+        operationMode: 'ROUTER',
+        appliedVersion: 1,
+        desiredVersion: 1,
+      });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+      tr069Repo.findOneBy.mockResolvedValue({ id: 'tr069-2', vlanId: 'vlan-uuid-99', acsUrl: 'http://10.254.0.1:7547' });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-2',
+        tr069NetworkId: 'tr069-2',
+        managementMethod: 'TR069',
+      });
+
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serviceVlanId: 'vlan-2',
+          managementMethod: 'TR069',
+          tr069NetworkId: 'tr069-2',
+          tr069VlanId: 'vlan-uuid-99',
+        }),
       );
     });
 

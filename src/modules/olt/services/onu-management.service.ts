@@ -566,30 +566,45 @@ export class OnuManagementService {
     // abortar el resto -- se surte igual que `cpeConfigWarning` más abajo.
     const oltWarning = result.warning;
 
-    // 2. Persistir configuración de servicio en net.onu_service_config --
-    // SOLO campos ópticos. NOTA (2026-10-24): esto describe lo que hace HOY
-    // `OnuAuthorizeModal.tsx` (Etapa 1 del frontend), que todavía no manda
-    // `tr069NetworkId` -- `dto.tr069NetworkId` llega undefined, así que
-    // `buildAuthorizeParams()` nunca resuelve `tr069Url`/`tr069Vlan` y el
-    // driver (`generateAuthorizationScript`, guardia `hasTr069`) se salta
-    // por completo el canal de gestión/TR-069 en este punto. PERO el driver
-    // en sí YA SOPORTA aplicar todo en una sola llamada si el dto trajera
-    // `tr069NetworkId` -- si el frontend cambia a mandarlo en Etapa 1 (para
-    // replicar la sesión real de un solo tiro que funcionó el 2026-10-24),
-    // esta llamada a `driver.authorizeOnu()` de arriba YA dejaría la ONU con
-    // TR-069 funcionando sin necesitar `applyTr069Profile()` (Etapa 2) --
-    // esa pasaría a ser solo un reintento aislado, no el único camino para
-    // configurar TR-069 por primera vez. Si `config` ya existía
-    // (re-autorizar), no se pisan `managementMethod`/`tr069NetworkId`/
-    // `wanMode`: preservan lo que las etapas 2/3 ya hayan aplicado.
+    // 2. Persistir configuración de servicio en net.onu_service_config.
+    // `OnuAuthorizeModal.tsx` (Etapa 1 del frontend, 2026-10-24) ya puede
+    // mandar `tr069NetworkId`: si lo trae, el driver (`generateAuthorizationScript`,
+    // guardia `hasTr069`) aplicó TODO -- internet + canal de gestión +
+    // bloque TR-069/ACS -- en la MISMA llamada de arriba, sin necesitar
+    // `applyTr069Profile()` (Etapa 2, que pasa a ser solo un reintento
+    // aislado). Por eso managementMethod/tr069NetworkId/tr069VlanId SÍ se
+    // actualizan aquí cuando `dto.tr069NetworkId` viene presente -- de lo
+    // contrario la Ficha 360 seguía mostrando "Gestión Remota: OMCI" /
+    // "VLAN TR-069: —" aunque la OLT ya tuviera el ONT apuntando al ACS
+    // (bug real encontrado revisando la Ficha 360 de CMDCDD4D131E). Sin
+    // `tr069NetworkId` en el dto (caso histórico, o una ONU que no usa
+    // TR-069), esos 3 campos no se tocan -- preservan lo que las etapas 2/3
+    // ya hayan aplicado antes. `wanMode` sigue siendo exclusivo de la Etapa 3.
     const speedProfileId = dto.speedProfileId || undefined;
+
+    // Si este dto YA trae una Red TR-069 (Etapa 1 fusionada, ver `hasTr069`
+    // en el driver), hay que persistir managementMethod/tr069NetworkId/
+    // tr069VlanId igual que ya hace `applyTr069Profile()` -- sin esto, el
+    // driver aplicaba TR-069 de verdad en la OLT pero la Ficha 360 seguía
+    // mostrando "Gestión Remota: OMCI" / "VLAN TR-069: —" porque nada acá
+    // escribía esos campos (bug real encontrado revisando la Ficha 360 de
+    // CMDCDD4D131E, 2026-10-24). `tr069VlanId` es el UUID del VlanEntity
+    // (no el ID numérico 802.1Q) -- mismo campo, mismo motivo que ya
+    // documenta `applyTr069Profile()`.
+    let tr069VlanId: string | undefined;
+    if (dto.tr069NetworkId) {
+      const tr069Network = await this.tr069Repository.findOneBy({ id: dto.tr069NetworkId });
+      tr069VlanId = tr069Network?.vlanId;
+    }
 
     let config = await this.configRepository.findOneBy({ onuId: onu.id });
     if (!config) {
       config = this.configRepository.create({
         onuId: onu.id,
         serviceVlanId: dto.serviceVlanId,
-        managementMethod: 'OMCI',
+        managementMethod: dto.tr069NetworkId ? 'TR069' : 'OMCI',
+        tr069NetworkId: dto.tr069NetworkId || undefined,
+        tr069VlanId,
         operationMode: dto.operationMode || 'ROUTER',
         speedProfileId,
         desiredVersion: 1,
@@ -600,6 +615,11 @@ export class OnuManagementService {
       config.serviceVlanId = dto.serviceVlanId;
       config.operationMode = dto.operationMode || config.operationMode;
       config.speedProfileId = speedProfileId;
+      if (dto.tr069NetworkId) {
+        config.managementMethod = 'TR069';
+        config.tr069NetworkId = dto.tr069NetworkId;
+        config.tr069VlanId = tr069VlanId;
+      }
       config.appliedVersion += 1;
       config.desiredVersion = config.appliedVersion;
       config.applyStatus = 'APPLIED';
