@@ -27,7 +27,7 @@ describe('ZteC320Driver', () => {
     expect(result.error).toBeDefined();
   });
 
-  it('genera correctamente los comandos CLI de autorización y provisión, incluido el cableado OMCI del canal de INTERNET (iphost 1/flow 1) -- Etapa 1 del flujo de 3 etapas, RF-OLT-016 / RF-OLT-018 -- NO incluye el bloque TR-069/ACS (eso es generateTr069ManagementScript, Etapa 2)', () => {
+  it('genera correctamente los comandos CLI de autorización y provisión, incluido TODO el bloque TR-069/ACS en la misma sesión atómica (canal de internet + canal de gestión) -- CONFIRMADO EN VIVO (2026-10-24, ONU CMDCDD4D131E) que dividir esto en 2 sesiones Telnet separadas dejaba gemport 2 sin existir cuando pon-onu-mng intentaba enlazar "flow 2" a él, causa raíz real de que la ONU no obtuviera IP de gestión ni contactara GenieACS', () => {
     const commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
@@ -36,11 +36,6 @@ describe('ZteC320Driver', () => {
       clientName: 'CLI-001-JuanPerez',
       description: 'zone_Tabara Abajo_lat_18.65_long_-71.03_authd_20261020',
       serviceVlan: 200,
-      // Aunque venga managementMethod/tr069Url/tr069Vlan, este generador los
-      // ignora por completo -- el bloque de ACS/TR-069-mgmt ahora es
-      // `generateTr069ManagementScript` (Etapa 2, operación separada e
-      // independientemente reintentable). El cableado iphost/flow del canal
-      // de INTERNET sí vive acá, sin importar managementMethod.
       tr069Vlan: 46,
       tr069Url: 'http://10.46.0.1:7547/',
       tcontProfile: 'UP-50M',
@@ -71,6 +66,11 @@ describe('ZteC320Driver', () => {
     expect(commands[nameIdx + 1]).toBe('description zone_Tabara_Abajo_lat_18.65_long_-71.03_authd_20261020');
     expect(commands).toContain('tcont 1 profile UP-50M');
     expect(commands).toContain('gemport 1 tcont 1');
+    // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-24, ONU
+    // CMDCDD4D131E): techo genérico de GEM port del canal de Internet, mismo
+    // patrón que "gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M"
+    // del canal de gestión -- faltaba su equivalente acá.
+    expect(commands).toContain('gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN');
     expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
     expect(commands).toContain('write');
 
@@ -93,13 +93,43 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('vlan-filter iphost 1 pri 0 vlan 200');
 
-    // Sigue sin tener NADA del bloque TR-069/ACS -- eso sigue siendo
-    // exclusivo de generateTr069ManagementScript (Etapa 2).
-    expect(commands.some((c) => c.includes('tr069-mgmt'))).toBe(false);
-    expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
-    expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
-    expect(commands.some((c) => c.includes('veip 1'))).toBe(false);
-    expect(commands.some((c) => c.includes('iphost 2'))).toBe(false);
+    // Canal de gestión TR-069 (tcont 2 / gemport 2 / service-port 2) -- va
+    // junto al canal de internet en la MISMA interfaz "interface gpon-onu_X:Y"
+    // y la MISMA llamada a "pon-onu-mng", no en una sesión separada.
+    expect(commands).toContain('tcont 2 profile SMARTOLT-VOIPMNG-10M');
+    expect(commands).toContain('gemport 2 tcont 2');
+    expect(commands).toContain('gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M');
+    expect(commands).toContain('service-port 2 vport 2 user-vlan 46 vlan 46');
+    // NO se usa "switchport mode hybrid vport N" -- ese comando no aparece en
+    // la sesión real que funcionó y puede causar rechazo en este firmware.
+    expect(commands.some((c) => c.includes('switchport mode hybrid'))).toBe(false);
+
+    // Cableado OMCI del canal de gestión -- mismo bloque pon-onu-mng que el
+    // canal de internet (flow 1/iphost 1 verificados arriba).
+    expect(commands).toContain('voip protocol sip');
+    expect(commands).toContain('flow 2 switch switch_0/1');
+    expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
+    expect(commands).toContain('flow 2 pri 2 vlan 46');
+    expect(commands).toContain('gemport 2 flow 2');
+    expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
+    expect(commands).toContain('switchport-bind switch_0/1 veip 1');
+    expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
+    expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
+    expect(commands).toContain('vlan-filter iphost 2 pri 2 vlan 46');
+    expect(commands).toContain('veip 1 port udp 1232 host 2');
+
+    // Bloque TR-069/ACS -- ahora en la misma sesión atómica, tratado como
+    // mejor esfuerzo por authorizeOnu() (ver inTr069Block ahí).
+    expect(commands).toContain('tr069-mgmt 1 state unlock');
+    // Sin tr069AcsUsername/Password en este config, "validate" se omite.
+    expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
+    expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
+    expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
+    expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
+    expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
+
+    // El reinicio OMCI sigue siendo exclusivo de generateTr069ManagementScript
+    // (Etapa 2, reintentable) -- authorizeOnu() nunca reinicia el ONT.
     expect(commands).not.toContain(REBOOT_ONU_SENTINEL);
 
     // Ahora SÍ entra a "(gpon-onu-mng)#" (para el cableado de internet), así
@@ -109,7 +139,7 @@ describe('ZteC320Driver', () => {
     expect(commands.slice(-2)).toEqual(['end', 'write']);
   });
 
-  describe('generateTr069ManagementScript (Etapa 2: apuntar la ONU al ACS)', () => {
+  describe('generateTr069ManagementScript (Etapa 2: RE-apuntar la ONU al ACS, reintento aislado -- asume que tcont 2/gemport 2/service-port 2 ya existen de generateAuthorizationScript, Etapa 1)', () => {
     const baseConfig = {
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
@@ -132,23 +162,18 @@ describe('ZteC320Driver', () => {
       );
     });
 
-    it('genera el bloque OMCI completo que apunta la ONU al ACS, con el segundo camino de datos GPON para la VLAN de gestión', () => {
+    it('genera el bloque OMCI de RE-apuntado al ACS (reintento) -- ya NO crea tcont 2/gemport 2/service-port 2 (eso ahora vive en generateAuthorizationScript, Etapa 1); asume que ya existen de una autorización previa', () => {
       const commands = driver.generateTr069ManagementScript(baseConfig);
 
       expect(commands).toContain('configure terminal');
-      expect(commands).toContain('interface gpon-onu_1/1/1:5');
-      // Perfil DEDICADO de gestión ("SMARTOLT-VOIPMNG-10M"), NUNCA el
-      // tcontProfile del plan del cliente ("UP-50M" en baseConfig) --
-      // confirmado en vivo (2026-10-22) contra dos running-config reales y
-      // funcionando (X2251/HWTCBC05BF9C, M0761/HWTCDE64BA7C): el canal de
-      // gestión siempre usa este perfil fijo, sin relación con el ancho de
-      // banda contratado por el cliente.
-      expect(commands).toContain('tcont 2 profile SMARTOLT-VOIPMNG-10M');
-      expect(commands).toContain('gemport 2 tcont 2');
-      expect(commands).toContain('gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M');
-      expect(commands).toContain('switchport mode hybrid vport 2');
-      expect(commands).toContain('service-port 2 vport 2 user-vlan 46 vlan 46');
       expect(commands).toContain('pon-onu-mng gpon-onu_1/1/1:5');
+      // Ya NO crea el segundo camino de datos GPON -- eso se movió a
+      // generateAuthorizationScript() tras confirmar en vivo (2026-10-24) que
+      // crearlo en una sesión Telnet separada dejaba gemport 2 sin existir
+      // cuando este bloque intentaba enlazar "flow 2" a él.
+      expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
+      expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
+      expect(commands.some((c) => c.includes('switchport mode hybrid'))).toBe(false);
       expect(commands).toContain('flow 2 switch switch_0/1');
       expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
       // pri 2 (no 0) -- confirmado en vivo (2026-10-22) contra las mismas dos
@@ -190,6 +215,10 @@ describe('ZteC320Driver', () => {
       // reales y funcionando de SmartOLT en la misma OLT -- debe ser el
       // PRIMER comando dentro de "pon-onu-mng" (antes de flow/gemport/iphost).
       expect(commands).toContain('voip protocol sip');
+      // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-24, ONU
+      // CMDCDD4D131E) como parte de la secuencia real que terminó
+      // registrándose en GenieACS.
+      expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
       // Confirmado en vivo (2026-10-22) presente en ambas referencias reales.
       expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
       expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
@@ -1483,9 +1512,9 @@ describe('ZteC320Driver', () => {
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
-    it('un rechazo ANTES de "pon-onu-mng" (ej. "service-port 2" inválido) también es mejor esfuerzo -- el script completo generado por generateTr069ManagementScript() ES el bloque TR-069 (bug real corregido 2026-10-23: antes esto abortaba toda la Etapa 2 sin reportar warning)', async () => {
+    it('un rechazo en el PRIMER comando real del bloque (ej. "voip protocol sip" inválido) también es mejor esfuerzo -- el script completo generado por generateTr069ManagementScript() ES el bloque TR-069 (bug real corregido 2026-10-23: antes esto abortaba toda la Etapa 2 sin reportar warning)', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('service-port 2')) return Promise.resolve('\r\n%Code 10: Invalid parameter!\r\nOLT#');
+        if (cmd === 'voip protocol sip') return Promise.resolve('\r\n%Code 10: Invalid parameter!\r\nOLT#');
         return Promise.resolve('');
       });
       const rebootOnu = jest.fn().mockResolvedValue(undefined);
@@ -1502,7 +1531,7 @@ describe('ZteC320Driver', () => {
       );
 
       expect(result.ok).toBe(true);
-      expect(result.warning).toContain('service-port 2');
+      expect(result.warning).toContain('voip protocol sip');
       // El resto del script (incluido el reinicio OMCI y el write final) debe
       // seguir corriendo pese al rechazo -- mismo criterio de mejor esfuerzo
       // que el resto del bloque TR-069.
@@ -1783,9 +1812,8 @@ describe('ZteC320Driver', () => {
     expect(driver.getCapabilities().alarms).toBe(false);
   });
 
-  it('tr069AutoProvisioning se mantiene en false pese a tener código real (mismo criterio que vlanTranslation), con nota que lo distingue de "no implementado"', () => {
-    expect(driver.getCapabilities().tr069AutoProvisioning).toBe(false);
-    expect(driver.getCapabilityNotes().tr069AutoProvisioning).toMatch(/veip/i);
+  it('tr069AutoProvisioning ya está en true -- CONFIRMADO EN VIVO (2026-10-24, ONU CMDCDD4D131E): el bloque completo (canal de gestión + TR-069) en una sola sesión atómica terminó registrándose en GenieACS', () => {
+    expect(driver.getCapabilities().tr069AutoProvisioning).toBe(true);
   });
 
   it('dbaProfile (TCONT) ya está en true -- confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19)', () => {
@@ -1796,9 +1824,8 @@ describe('ZteC320Driver', () => {
     expect(driver.getCapabilities().downstreamTrafficProfile).toBe(true);
   });
 
-  it('onuTypeProfileProvisioning se mantiene en false pese a tener código real (crear un onu-type nuevo aún no se probó en vivo)', () => {
-    expect(driver.getCapabilities().onuTypeProfileProvisioning).toBe(false);
-    expect(driver.getCapabilityNotes().onuTypeProfileProvisioning).toMatch(/onu-type/i);
+  it('onuTypeProfileProvisioning ya está en true -- sintaxis confirmada contra el manual oficial y corregida en vivo', () => {
+    expect(driver.getCapabilities().onuTypeProfileProvisioning).toBe(true);
   });
 
   it('authorizeOnu() asegura el onu-type (modelTypeName + ethPorts/potsPorts) antes de correr el script de autorización', async () => {
