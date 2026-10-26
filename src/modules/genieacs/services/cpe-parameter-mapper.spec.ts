@@ -119,4 +119,28 @@ describe('CpeParameterMapper', () => {
       expect(paramMap.get(`${base}.DefaultGateway`)).toBe('192.168.10.1');
     });
   });
+
+  describe('getIpv6Warning (Fase 1 -- aviso honesto de Dual-Stack, ver Plan_Implementacion_IPv6_Dual_Stack_WAN.md)', () => {
+    it('avisa cuando se pide DUAL en modo DHCP (no-op real hoy)', () => {
+      const warning = mapper.getIpv6Warning({ serialNumber: 'X', wanMode: 'DHCP', ipProtocol: 'DUAL' });
+      expect(warning).toMatch(/Dual-Stack.*DHCP.*no hay parámetros TR-069/i);
+    });
+
+    it('avisa cuando se pide DUAL en modo STATIC (no-op real hoy)', () => {
+      const warning = mapper.getIpv6Warning({ serialNumber: 'X', wanMode: 'STATIC', ipProtocol: 'DUAL' });
+      expect(warning).toMatch(/Dual-Stack.*STATIC/i);
+    });
+
+    it('no avisa en PPPoE con DUAL -- ese modo sí activa un parámetro real (IPv6CPEnable)', () => {
+      expect(mapper.getIpv6Warning({ serialNumber: 'X', wanMode: 'PPPOE', ipProtocol: 'DUAL' })).toBeUndefined();
+    });
+
+    it('no avisa con ipProtocol IPV4', () => {
+      expect(mapper.getIpv6Warning({ serialNumber: 'X', wanMode: 'DHCP', ipProtocol: 'IPV4' })).toBeUndefined();
+    });
+
+    it('no avisa si no se pidió ningún wanMode', () => {
+      expect(mapper.getIpv6Warning({ serialNumber: 'X', ipProtocol: 'DUAL' })).toBeUndefined();
+    });
+  });
 });

@@ -67,6 +67,33 @@ export class CpeParameterMapper {
   }
 
   /**
+   * Aviso honesto cuando "Dual-Stack IPv4/IPv6" fue solicitado pero este modo
+   * de WAN todavía no tiene ningún parámetro TR-069 de IPv6 implementado --
+   * ver Plan_Implementacion_IPv6_Dual_Stack_WAN.md. Sin esto, `buildTR098Params`/
+   * `buildTR181Params` simplemente ignoran `ipProtocol` en DHCP/STATIC y el
+   * llamador reporta éxito como si el Dual-Stack se hubiera aplicado.
+   *
+   * PPPoE no entra acá a propósito: ese modo SÍ activa un parámetro real
+   * (`IPv6CPEnable`/`X_BROADCOM_COM_IPv6PrefixDelegationEnabled`, ver
+   * `buildTR181Params`/`buildTR098Params`) -- parcial (sin confirmar la
+   * dirección/prefijo asignado todavía, Fase 3.1 del plan), pero no es un
+   * no-op como DHCP/STATIC, así que no amerita el mismo aviso de "no se
+   * aplicó nada".
+   */
+  getIpv6Warning(config: CpeConfigurationInput): string | undefined {
+    if (config.ipProtocol !== 'DUAL' && config.ipProtocol !== 'IPV6') {
+      return undefined;
+    }
+    if (config.wanMode === 'DHCP' || config.wanMode === 'STATIC') {
+      return (
+        `Dual-Stack IPv4/IPv6 solicitado en modo ${config.wanMode}, pero todavía no hay parámetros TR-069 ` +
+        'implementados para esto -- solo se aplicó IPv4. Ver Plan_Implementacion_IPv6_Dual_Stack_WAN.md.'
+      );
+    }
+    return undefined;
+  }
+
+  /**
    * Parámetros clave a verificar tras la aplicación para comprobar que el CPE los aceptó.
    */
   getVerificationParameters(config: CpeConfigurationInput, isTR181: boolean): string[] {

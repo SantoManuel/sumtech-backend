@@ -17,6 +17,8 @@ export interface CpeConfigureResult {
   appliedParametersCount: number;
   verification: Record<string, string | undefined>;
   message: string;
+  /** Aviso no fatal -- ej. "Dual-Stack pedido pero no implementado para este modo" (ver CpeParameterMapper.getIpv6Warning). */
+  warning?: string;
 }
 
 @Injectable()
@@ -100,6 +102,7 @@ export class CpeConfiguratorService {
 
     // 3. Generar parámetros con el mapper técnico
     const parameterValues = this.parameterMapper.buildParameterValues(input, isTR181);
+    const ipv6Warning = this.parameterMapper.getIpv6Warning(input);
 
     if (parameterValues.length === 0) {
       return {
@@ -108,6 +111,7 @@ export class CpeConfiguratorService {
         appliedParametersCount: 0,
         verification: {},
         message: 'No hay parámetros de configuración para aplicar en el CPE.',
+        warning: ipv6Warning,
       };
     }
 
@@ -165,6 +169,7 @@ export class CpeConfiguratorService {
       appliedParametersCount: parameterValues.length,
       verification,
       message: `Configuración TR-069 aplicada y encolada con éxito al CPE ${input.serialNumber}.`,
+      warning: ipv6Warning,
     };
   }
 

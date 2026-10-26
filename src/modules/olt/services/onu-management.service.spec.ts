@@ -1161,6 +1161,25 @@ describe('OnuManagementService', () => {
       );
     });
 
+    it('propaga el aviso de CpeConfiguratorService (ej. Dual-Stack en DHCP, ver Plan_Implementacion_IPv6_Dual_Stack_WAN.md) aunque la config SÍ se haya aplicado', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config, wanMode: 'DHCP' });
+      cpeConfiguratorService.configureCpe.mockResolvedValue({
+        success: true,
+        deviceId: 'dev-1',
+        appliedParametersCount: 3,
+        verification: {},
+        message: 'ok',
+        warning: 'Dual-Stack IPv4/IPv6 solicitado en modo DHCP, pero todavía no hay parámetros TR-069 implementados para esto.',
+      });
+
+      const result = await service.pushWanConfig('onu-uuid-1', { wanMode: 'DHCP', ipProtocol: 'DUAL' });
+
+      expect((result as any).cpeConfigured).toBe(true);
+      expect((result as any).cpeConfigWarning).toContain('Dual-Stack');
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({ cpeConfigStatus: 'APPLIED' }));
+    });
+
     it('si GenieACS todavía no conoce el ONU, no lanza -- agrega cpeConfigWarning (OnuCpeSyncReconciliationService reintenta sola)', async () => {
       onuRepo.findOne.mockResolvedValue(mockOnu);
       configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });

@@ -202,6 +202,29 @@ describe('CpeConfiguratorService', () => {
     expect(mockClient.setParameterValues).not.toHaveBeenCalled();
   });
 
+  it('incluye el aviso de CpeParameterMapper.getIpv6Warning en el resultado cuando aplica (Dual-Stack en DHCP)', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
+    mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-ONT123', isTR181: false, tags: [] });
+    mockClient.setParameterValues.mockResolvedValue(undefined);
+    mockClient.getParameterValues.mockResolvedValue({});
+
+    const result = await service.configureCpe({ serialNumber: 'ONT123', wanMode: 'DHCP', ipProtocol: 'DUAL' });
+
+    expect(result.success).toBe(true);
+    expect(result.warning).toMatch(/Dual-Stack.*DHCP/i);
+  });
+
+  it('no incluye ningún warning cuando no aplica (IPv4 normal)', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
+    mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-ONT123', isTR181: false, tags: [] });
+    mockClient.setParameterValues.mockResolvedValue(undefined);
+    mockClient.getParameterValues.mockResolvedValue({});
+
+    const result = await service.configureCpe({ serialNumber: 'ONT123', wanMode: 'PPPOE', ipProtocol: 'IPV4' });
+
+    expect(result.warning).toBeUndefined();
+  });
+
   it('debe refrescar el dispositivo llamando a refreshObject', async () => {
     mockClient.refreshObject.mockResolvedValue(undefined);
 

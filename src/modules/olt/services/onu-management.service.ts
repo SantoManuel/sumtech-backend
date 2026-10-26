@@ -751,7 +751,7 @@ export class OnuManagementService {
         if (v) serviceVlan = v.vlanId;
       }
 
-      await this.cpeConfiguratorService.configureCpe({
+      const configureResult = await this.cpeConfiguratorService.configureCpe({
         serialNumber: onu.serialNumber,
         vendor: onuType?.vendor,
         model: onuType?.model,
@@ -789,7 +789,10 @@ export class OnuManagementService {
       config.cpeConfigSyncedAt = new Date();
       await this.configRepository.save(config);
 
-      return { cpeConfigured: true };
+      // Aviso no fatal (ej. Dual-Stack pedido en DHCP/STATIC, todavía sin
+      // implementar -- ver CpeParameterMapper.getIpv6Warning). La
+      // configuración SÍ se aplicó; esto solo avisa qué parte se ignoró.
+      return { cpeConfigured: true, cpeConfigWarning: configureResult.warning };
     } catch (err: any) {
       await this.deviceOperationLogger.logEvent({
         nodeId: olt.viaNodeId || olt.id,
