@@ -8,20 +8,34 @@ export class CpeProxyMiddleware implements NestMiddleware {
 
   use(req: Request, res: Response, next: NextFunction) {
     // Si la petición es para una ruta de la API normal o de facturación DGII B2B, no interceptar
+    const pathname = req.path || req.url || '';
     if (
-      req.path.startsWith('/api/') ||
-      req.path.startsWith('/fe/') ||
-      req.path.startsWith('/socket.io')
+      pathname.startsWith('/api/') ||
+      pathname.startsWith('/fe/') ||
+      pathname.startsWith('/socket.io')
     ) {
       return next();
     }
 
     // Verificar si el navegador trae la cookie de sesión CPE activa o token en query
-    const token =
+    let token =
       req.cookies?.['sumtech_cpe_token'] ||
       (req.query?.['sumtech_cpe_token'] as string) ||
       (req.query?.['cpe_token'] as string) ||
       (req.query?.['token'] as string);
+
+    if (!token && req.url && req.url.includes('token=')) {
+      try {
+        const u = new URL(req.url, 'http://localhost');
+        token =
+          u.searchParams.get('sumtech_cpe_token') ||
+          u.searchParams.get('cpe_token') ||
+          u.searchParams.get('token') ||
+          undefined;
+      } catch {
+        // ignore
+      }
+    }
 
     if (!token) {
       return next();
