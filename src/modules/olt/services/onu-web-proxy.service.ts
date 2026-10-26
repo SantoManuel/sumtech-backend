@@ -351,7 +351,12 @@ export class OnuWebProxyService {
       delete responseHeaders['x-frame-options'];
       delete responseHeaders['content-security-policy'];
       delete responseHeaders['X-Frame-Options'];
-      delete responseHeaders['Content-Security-Policy'];
+      // Encabezados CORS para que iframe y peticiones AJAX del navegador pasen la verificación
+      const requestOrigin = (req.headers.origin as string) || 'https://sumtech.sumtech.com.do';
+      responseHeaders['access-control-allow-origin'] = requestOrigin;
+      responseHeaders['access-control-allow-credentials'] = 'true';
+      responseHeaders['access-control-allow-methods'] = 'GET, POST, OPTIONS, PUT, DELETE';
+      responseHeaders['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With, Origin, Accept, X-Tenant-Slug';
 
       // Reescribir Location si la ONU redirige hacia su IP local fija (ej. http://192.168.1.1/...)
       if (responseHeaders['location'] && typeof responseHeaders['location'] === 'string') {

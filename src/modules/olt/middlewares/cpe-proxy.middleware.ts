@@ -7,13 +7,36 @@ export class CpeProxyMiddleware implements NestMiddleware {
   constructor(private readonly proxyService: OnuWebProxyService) {}
 
   use(req: Request, res: Response, next: NextFunction) {
-    // Si la petición es para una ruta de la API normal o de facturación DGII B2B, no interceptar
+    // NUNCA interceptar rutas del ERP (API, auth, facturación, sockets, plataforma, etc.)
     const pathname = req.path || req.url || '';
     if (
       pathname.startsWith('/api/') ||
+      pathname.startsWith('/auth/') ||
       pathname.startsWith('/fe/') ||
-      pathname.startsWith('/socket.io')
+      pathname.startsWith('/platform/') ||
+      pathname.startsWith('/socket.io') ||
+      pathname.startsWith('/public/') ||
+      pathname.startsWith('/users/') ||
+      pathname.startsWith('/clients/') ||
+      pathname.startsWith('/dashboard/') ||
+      pathname.startsWith('/login')
     ) {
+      return next();
+    }
+
+    // Solo interceptar si es una ruta explícita del firmware de la ONU,
+    // o si la petición trae explícitamente el token CPE en la URL,
+    // o si el referer proviene de la interfaz de la ONU (/webcmcc/)
+    const referer = req.headers.referer || '';
+    const isExplicitCpeRoute =
+      pathname.startsWith('/webcmcc/') ||
+      pathname.startsWith('/boaform/') ||
+      pathname.startsWith('/aoaform/') ||
+      referer.includes('/webcmcc/') ||
+      referer.includes('/boaform/') ||
+      (req.url && req.url.includes('token='));
+
+    if (!isExplicitCpeRoute) {
       return next();
     }
 
