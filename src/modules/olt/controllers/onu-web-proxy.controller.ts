@@ -58,14 +58,15 @@ export class OnuWebProxyController {
     // subsiguientes (scripts, estilos, llamadas AJAX de la ONU) viajen autorizadas.
     res.cookie('sumtech_cpe_token', token, {
       path: '/',
-      httpOnly: true,
+      httpOnly: false,
       secure: true,
       sameSite: 'none',
       maxAge: 2 * 60 * 60 * 1000, // 2 horas
     });
 
-    // Reenviar directamente la solicitud raíz a la ONU
-    req.url = '/';
-    return this.proxyService.proxyHttpRequest(req, res, session.targetIp, session.port);
+    // Redirigir a la interfaz web correspondiente con el token adjunto
+    const targetPath = session.defaultPath || '/';
+    const separator = targetPath.includes('?') ? '&' : '?';
+    return res.redirect(302, `${targetPath}${separator}token=${encodeURIComponent(token)}`);
   }
 }

@@ -32,12 +32,24 @@ export class CpeProxyMiddleware implements NestMiddleware {
       return next();
     }
 
+    // Asegurar que la cookie esté fijada en el navegador si el token vino en el query string
+    if (!req.cookies?.['sumtech_cpe_token']) {
+      res.cookie('sumtech_cpe_token', token, {
+        path: '/',
+        httpOnly: false,
+        secure: true,
+        sameSite: 'none',
+        maxAge: 2 * 60 * 60 * 1000,
+      });
+    }
+
     // Interceptar y reenviar la petición (CSS, JS, imágenes, AJAX, páginas HTML de la ONU)
     return this.proxyService.proxyHttpRequest(
       req,
       res,
       session.targetIp,
       session.port,
+      token,
     );
   }
 }

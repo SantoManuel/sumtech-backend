@@ -25,6 +25,7 @@ export interface CpeSessionPayload {
   targetIp: string;
   port: number;
   userId: string;
+  defaultPath?: string;
 }
 
 export interface CpeCredentialsSuggestion {
@@ -240,12 +241,23 @@ export class OnuWebProxyService {
       }
     }
 
+    const vendorStr = (onu.vendor || onu.onuType?.vendor || '').toUpperCase();
+    const serialStr = (onu.serialNumber || '').toUpperCase();
+    const isHuaweiOrCmdc =
+      vendorStr.includes('HUAWEI') ||
+      vendorStr.includes('CMDC') ||
+      serialStr.startsWith('CMDC') ||
+      serialStr.startsWith('HWTC');
+
+    const defaultPath = isHuaweiOrCmdc ? '/webcmcc/index.html' : '/';
+
     const payload: CpeSessionPayload = {
       onuId: onu.id,
       serialNumber: onu.serialNumber,
       targetIp,
       port,
       userId,
+      defaultPath,
     };
 
     const token = this.jwtService.sign(payload, {
@@ -287,12 +299,14 @@ export class OnuWebProxyService {
 
   /**
    * Reenvía una petición HTTP hacia la ONU eliminando headers restrictivos de iframes
+   * y preservando cookies de sesión y tokens en redirecciones.
    */
   proxyHttpRequest(
     req: Request,
     res: Response,
     targetIp: string,
     port: number,
+    sessionToken?: string,
   ) {
     const cleanHeaders: http.OutgoingHttpHeaders = { ...req.headers };
     cleanHeaders['host'] = `${targetIp}:${port}`;
@@ -305,10 +319,24 @@ export class OnuWebProxyService {
         .trim();
     }
 
+    // Limpiar query params de token antes de enviar la ruta a la ONU
+    let targetPath = req.url;
+    if (sessionToken && targetPath.includes('token=')) {
+      try {
+        const dummyUrl = new URL(`http://dummy${req.url}`);
+        dummyUrl.searchParams.delete('token');
+        dummyUrl.searchParams.delete('sumtech_cpe_token');
+        dummyUrl.searchParams.delete('cpe_token');
+        targetPath = dummyUrl.pathname + (dummyUrl.search ? dummyUrl.search : '');
+      } catch {
+        targetPath = req.url;
+      }
+    }
+
     const options: http.RequestOptions = {
       hostname: targetIp,
       port: port,
-      path: req.url,
+      path: targetPath,
       method: req.method,
       headers: cleanHeaders,
       timeout: 15000,
@@ -328,9 +356,37 @@ export class OnuWebProxyService {
         const loc = responseHeaders['location'];
         try {
           const parsed = new URL(loc);
-          responseHeaders['location'] = parsed.pathname + parsed.search;
+          const searchParams = new URLSearchParams(parsed.search);
+          if (sessionToken && !searchParams.has('token') && !searchParams.has('sumtech_cpe_token')) {
+            searchParams.set('token', sessionToken);
+          }
+          const qs = searchParams.toString();
+          responseHeaders['location'] = parsed.pathname + (qs ? `?${qs}` : '');
         } catch {
-          // Ya es relativo, conservar
+          // Si ya era relativo ej: /webcmcc/login.html
+          if (sessionToken && !loc.includes('token=')) {
+            const separator = loc.includes('?') ? '&' : '?';
+            responseHeaders['location'] = `${loc}${separator}token=${encodeURIComponent(sessionToken)}`;
+          }
+        }
+      }
+
+      // Preservar cualquier encabezado previamente fijado en res (ej: Set-Cookie de Express)
+      const existingHeaders = res.getHeaders();
+      for (const [key, value] of Object.entries(existingHeaders)) {
+        if (value !== undefined) {
+          if (key.toLowerCase() === 'set-cookie') {
+            const incoming = responseHeaders['set-cookie'];
+            const currentArr = Array.isArray(value) ? value.map(String) : [String(value)];
+            const incomingArr = incoming
+              ? Array.isArray(incoming)
+                ? incoming.map(String)
+                : [String(incoming)]
+              : [];
+            responseHeaders['set-cookie'] = [...currentArr, ...incomingArr];
+          } else if (!responseHeaders[key]) {
+            responseHeaders[key] = value as any;
+          }
         }
       }
 
@@ -367,6 +423,23 @@ export class OnuWebProxyService {
       }
     });
 
-    req.pipe(proxyReq);
+    if (req.body && Object.keys(req.body).length > 0) {
+      let bodyData: any;
+      const contentType = String(cleanHeaders['content-type'] || '');
+      if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {
+        bodyData = req.body;
+      } else if (contentType.includes('application/json')) {
+        bodyData = JSON.stringify(req.body);
+      } else if (contentType.includes('application/x-www-form-urlencoded')) {
+        bodyData = new URLSearchParams(req.body as any).toString();
+      } else {
+        bodyData = JSON.stringify(req.body);
+      }
+      cleanHeaders['content-length'] = Buffer.byteLength(bodyData);
+      proxyReq.write(bodyData);
+      proxyReq.end();
+    } else {
+      req.pipe(proxyReq);
+    }
   }
 }

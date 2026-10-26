@@ -52,8 +52,16 @@ export class TenantResolutionMiddleware implements NestMiddleware {
     const isSpecialDirectRoute =
       req.path.startsWith('/fe/') ||
       req.path.includes('/web-proxy/') ||
+      req.path.startsWith('/webcmcc/') ||
+      req.path.startsWith('/boaform/') ||
+      req.path.startsWith('/aoaform/') ||
+      req.path.startsWith('/images/') ||
+      req.path.startsWith('/script/') ||
+      req.path.startsWith('/css/') ||
       Boolean(req.cookies?.['sumtech_cpe_token']) ||
-      Boolean(req.query?.['token']);
+      Boolean(req.query?.['token']) ||
+      Boolean(req.query?.['sumtech_cpe_token']) ||
+      Boolean(req.query?.['cpe_token']);
 
     if (isSpecialDirectRoute && (!slug || !(await this.resolveWithCache(slug)))) {
       slug = 'sumtech';
