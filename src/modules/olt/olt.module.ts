@@ -39,9 +39,13 @@ import { OnuManagementService } from './services/onu-management.service';
 import { OnuCpeSyncReconciliationService } from './services/onu-cpe-sync-reconciliation.service';
 import { OltMonitoringService } from './services/olt-monitoring.service';
 import { OltExportService } from './services/olt-export.service';
+import { OnuWebProxyService } from './services/onu-web-proxy.service';
 import { OltPermissionGuard } from './guards/olt-permission.guard';
 import { OltController } from './olt.controller';
 import { OnuController } from './onu.controller';
+import { OnuWebProxyController } from './controllers/onu-web-proxy.controller';
+import { CpeProxyMiddleware } from './middlewares/cpe-proxy.middleware';
+import { MiddlewareConsumer, NestModule } from '@nestjs/common';
 
 @Module({
   imports: [
@@ -70,7 +74,7 @@ import { OnuController } from './onu.controller';
     UsersModule,
     JwtModule.register({}),
   ],
-  controllers: [OltController, OnuController],
+  controllers: [OltController, OnuController, OnuWebProxyController],
   providers: [
     ZteC320Driver,
     HuaweiMa5800Driver,
@@ -85,6 +89,8 @@ import { OnuController } from './onu.controller';
     OnuCpeSyncReconciliationService,
     OltMonitoringService,
     OltExportService,
+    OnuWebProxyService,
+    CpeProxyMiddleware,
     OltPermissionGuard,
     routerOsClientFactoryProvider,
   ],
@@ -93,9 +99,15 @@ import { OnuController } from './onu.controller';
     OltCatalogsService,
     OltNatManagerService,
     OnuManagementService,
+    OnuWebProxyService,
     OltMonitoringService,
     OltDriverRegistry,
     ZteC320Driver,
   ],
 })
-export class OltModule {}
+export class OltModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(CpeProxyMiddleware).forRoutes('*');
+  }
+}
+
