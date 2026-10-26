@@ -323,6 +323,17 @@ export class OnuWebProxyService {
       delete responseHeaders['X-Frame-Options'];
       delete responseHeaders['Content-Security-Policy'];
 
+      // Reescribir Location si la ONU redirige hacia su IP local fija (ej. http://192.168.1.1/...)
+      if (responseHeaders['location'] && typeof responseHeaders['location'] === 'string') {
+        const loc = responseHeaders['location'];
+        try {
+          const parsed = new URL(loc);
+          responseHeaders['location'] = parsed.pathname + parsed.search;
+        } catch {
+          // Ya es relativo, conservar
+        }
+      }
+
       res.writeHead(proxyRes.statusCode || 200, responseHeaders);
       proxyRes.pipe(res);
     });

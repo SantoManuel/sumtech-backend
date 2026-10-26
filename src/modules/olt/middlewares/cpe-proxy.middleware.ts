@@ -16,10 +16,12 @@ export class CpeProxyMiddleware implements NestMiddleware {
       return next();
     }
 
-    // Verificar si el navegador trae la cookie de sesión CPE activa
+    // Verificar si el navegador trae la cookie de sesión CPE activa o token en query
     const token =
       req.cookies?.['sumtech_cpe_token'] ||
-      (req.query?.['sumtech_cpe_token'] as string);
+      (req.query?.['sumtech_cpe_token'] as string) ||
+      (req.query?.['cpe_token'] as string) ||
+      (req.query?.['token'] as string);
 
     if (!token) {
       return next();
