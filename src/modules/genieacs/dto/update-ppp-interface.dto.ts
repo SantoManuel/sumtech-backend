@@ -44,4 +44,8 @@ export class UpdatePppInterfaceDto {
   @IsString()
   @Matches(IPV4_PATTERN, { message: 'DNS 2 debe ser una dirección IPv4 válida.' })
   dns2?: string;
+
+  @IsOptional()
+  @IsString()
+  lanInterface?: string;
 }

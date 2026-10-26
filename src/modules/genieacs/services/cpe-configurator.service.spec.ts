@@ -225,6 +225,26 @@ describe('CpeConfiguratorService', () => {
     expect(result.warning).toBeUndefined();
   });
 
+  it('extrae y retorna ipv6Readback (prefijo delegado y dirección WAN) tras aplicar PPPoE Dual-Stack (Fase 3.1)', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
+    mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-ONT123', isTR181: false, tags: [] });
+    mockClient.setParameterValues.mockResolvedValue(undefined);
+    mockClient.getParameterValues.mockResolvedValue({
+      'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.X_BROADCOM_COM_IPv6PrefixDelegationPrefix':
+        '2001:db8:cafe:1::/56',
+      'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.IPv6Address':
+        '2001:db8:cafe:1::2',
+    });
+
+    const result = await service.configureCpe({ serialNumber: 'ONT123', wanMode: 'PPPOE', ipProtocol: 'DUAL' });
+
+    expect(result.success).toBe(true);
+    expect(result.ipv6Readback).toEqual({
+      prefix: '2001:db8:cafe:1::/56',
+      address: '2001:db8:cafe:1::2',
+    });
+  });
+
   it('debe refrescar el dispositivo llamando a refreshObject', async () => {
     mockClient.refreshObject.mockResolvedValue(undefined);
 

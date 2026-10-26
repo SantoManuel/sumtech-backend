@@ -86,6 +86,27 @@ export class OnuServiceConfigEntity {
   @Column({ name: 'wan_dns2', type: 'varchar', length: 45, nullable: true })
   wanDns2?: string;
 
+  @Column({ name: 'pppoe_ipv6_prefix', type: 'varchar', length: 100, nullable: true })
+  pppoeIpv6Prefix?: string;
+
+  @Column({ name: 'pppoe_ipv6_address', type: 'varchar', length: 100, nullable: true })
+  pppoeIpv6Address?: string;
+
+  @Column({ name: 'wan_static_ipv6', type: 'varchar', length: 100, nullable: true })
+  wanStaticIpv6?: string;
+
+  @Column({ name: 'wan_static_ipv6_prefix_len', type: 'int', nullable: true })
+  wanStaticIpv6PrefixLen?: number;
+
+  @Column({ name: 'wan_static_ipv6_gw', type: 'varchar', length: 100, nullable: true })
+  wanStaticIpv6Gw?: string;
+
+  @Column({ name: 'wan_static_ipv6_dns1', type: 'varchar', length: 100, nullable: true })
+  wanStaticIpv6Dns1?: string;
+
+  @Column({ name: 'wan_static_ipv6_dns2', type: 'varchar', length: 100, nullable: true })
+  wanStaticIpv6Dns2?: string;
+
   @Column({ name: 'pppoe_from_access', type: 'boolean', default: true })
   pppoeFromAccess: boolean;
 

@@ -1180,6 +1180,33 @@ describe('OnuManagementService', () => {
       expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({ cpeConfigStatus: 'APPLIED' }));
     });
 
+    it('persiste pppoeIpv6Prefix y pppoeIpv6Address cuando configureCpe reporta ipv6Readback (Fase 3.1)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config, wanMode: 'PPPOE' });
+      cpeConfiguratorService.configureCpe.mockResolvedValue({
+        success: true,
+        deviceId: 'dev-1',
+        appliedParametersCount: 3,
+        verification: {},
+        ipv6Readback: {
+          prefix: '2001:db8:100::/56',
+          address: '2001:db8:100::2',
+        },
+        message: 'ok',
+      });
+
+      const result = await service.pushWanConfig('onu-uuid-1', { wanMode: 'PPPOE', ipProtocol: 'DUAL' });
+
+      expect((result as any).cpeConfigured).toBe(true);
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pppoeIpv6Prefix: '2001:db8:100::/56',
+          pppoeIpv6Address: '2001:db8:100::2',
+          cpeConfigStatus: 'APPLIED',
+        }),
+      );
+    });
+
     it('si GenieACS todavía no conoce el ONU, no lanza -- agrega cpeConfigWarning (OnuCpeSyncReconciliationService reintenta sola)', async () => {
       onuRepo.findOne.mockResolvedValue(mockOnu);
       configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });

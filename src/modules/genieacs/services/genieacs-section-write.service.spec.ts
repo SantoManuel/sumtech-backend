@@ -61,6 +61,21 @@ describe('GenieAcsSectionWriteService', () => {
       expect(result.skippedFields).toEqual([]);
     });
 
+    it('TR-098: aplica lanInterface (Port Binding)', async () => {
+      mockClient.getDeviceStatus.mockResolvedValue({ isTR181: false });
+      mockClient.objectInstanceExists.mockResolvedValue(true);
+
+      const base = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
+      const binding = 'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1,InternetGatewayDevice.LANDevice.1.WLANConfiguration.1';
+      await makeService().updatePppInterface('00259E-ONT-16', { lanInterface: binding }, 'admin@sumtech.com');
+
+      expect(mockWriteService.applyParameterChanges).toHaveBeenCalledWith(
+        '00259E-ONT-16',
+        [{ path: `${base}.X_CMCC_LanInterface`, value: binding, type: 'xsd:string' }],
+        { actor: 'admin@sumtech.com', action: 'TR069_PARAMETER_CHANGE' },
+      );
+    });
+
     it('TR-181: ignora serviceName/connectionTrigger/dns (no estandarizados) y los reporta en skippedFields', async () => {
       mockClient.getDeviceStatus.mockResolvedValue({ isTR181: true });
       mockClient.objectInstanceExists.mockResolvedValue(true);
@@ -151,6 +166,26 @@ describe('GenieAcsSectionWriteService', () => {
           { path: 'Device.WiFi.Radio.2.Channel', value: '6', type: 'xsd:unsignedInt' },
           { path: 'Device.WiFi.Radio.2.AutoChannelEnable', value: 'false', type: 'xsd:boolean' },
         ],
+        { actor: 'admin', action: 'TR069_PARAMETER_CHANGE' },
+      );
+    });
+
+    it('TR-098: aplica SSID y contraseña (KeyPassphrase + PreSharedKey)', async () => {
+      mockClient.getDeviceStatus.mockResolvedValue({ isTR181: false });
+      mockClient.getParameterValues.mockResolvedValue({
+        'InternetGatewayDevice.LANDevice.1.WLANConfigurationNumberOfEntries': '2',
+      });
+
+      await makeService().updateWirelessLan('00259E-ONT-16', 1, { ssid: 'MiFibra', password: 'password123' }, 'admin');
+
+      const base = 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1';
+      expect(mockWriteService.applyParameterChanges).toHaveBeenCalledWith(
+        '00259E-ONT-16',
+        expect.arrayContaining([
+          { path: `${base}.SSID`, value: 'MiFibra', type: 'xsd:string' },
+          { path: `${base}.KeyPassphrase`, value: 'password123', type: 'xsd:string' },
+          { path: `${base}.PreSharedKey.1.KeyPassphrase`, value: 'password123', type: 'xsd:string' },
+        ]),
         { actor: 'admin', action: 'TR069_PARAMETER_CHANGE' },
       );
     });

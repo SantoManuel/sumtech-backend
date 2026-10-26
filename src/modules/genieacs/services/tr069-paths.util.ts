@@ -12,12 +12,21 @@ export function pppBasePath(isTR181: boolean): string {
     : 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
 }
 
+export function pppLanInterfacePath(isTR181: boolean): string | undefined {
+  return isTR181 ? undefined : 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.X_CMCC_LanInterface';
+}
+
 export interface WirelessLanPaths {
   enabled: string;
   ssidAdvertisement: string;
   channel: string;
   autoChannel: string;
   regulatoryDomain: string;
+  ssid: string;
+  keyPassphrase: string;
+  preSharedKeyPassphrase?: string;
+  beaconType?: string;
+  encryptionModes?: string;
 }
 
 export function wirelessLanPaths(isTR181: boolean, ssidIndex: number): WirelessLanPaths {
@@ -28,6 +37,8 @@ export function wirelessLanPaths(isTR181: boolean, ssidIndex: number): WirelessL
       channel: `Device.WiFi.Radio.${ssidIndex}.Channel`,
       autoChannel: `Device.WiFi.Radio.${ssidIndex}.AutoChannelEnable`,
       regulatoryDomain: `Device.WiFi.Radio.${ssidIndex}.RegulatoryDomain`,
+      ssid: `Device.WiFi.SSID.${ssidIndex}.SSID`,
+      keyPassphrase: `Device.WiFi.AccessPoint.${ssidIndex}.Security.KeyPassphrase`,
     };
   }
   const base = `InternetGatewayDevice.LANDevice.1.WLANConfiguration.${ssidIndex}`;
@@ -37,6 +48,11 @@ export function wirelessLanPaths(isTR181: boolean, ssidIndex: number): WirelessL
     channel: `${base}.Channel`,
     autoChannel: `${base}.AutoChannelEnable`,
     regulatoryDomain: `${base}.RegulatoryDomain`,
+    ssid: `${base}.SSID`,
+    keyPassphrase: `${base}.KeyPassphrase`,
+    preSharedKeyPassphrase: `${base}.PreSharedKey.1.KeyPassphrase`,
+    beaconType: `${base}.BeaconType`,
+    encryptionModes: `${base}.IEEE11iEncryptionModes`,
   };
 }
 

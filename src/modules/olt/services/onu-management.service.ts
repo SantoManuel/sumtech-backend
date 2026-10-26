@@ -20,6 +20,7 @@ import { OltConnectionResolverService } from './olt-connection-resolver.service'
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
+import { resolveCpeIpv6Capabilities } from '../../genieacs/services/cpe-capabilities';
 import { GenieAcsDeviceResolverService } from '../../genieacs/genieacs-device-resolver.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import {
@@ -213,6 +214,10 @@ export class OnuManagementService {
     if (onu.olt) {
       this.driverRegistry.attachCapabilities(onu.olt);
     }
+
+    const cpeCaps = resolveCpeIpv6Capabilities(onu.vendor, onu.onuType?.model);
+    (onu as any).cpeIpv6Capabilities = cpeCaps.capabilities;
+    (onu as any).cpeIpv6CapabilityNotes = cpeCaps.notes;
 
     // BUG REAL corregido (2026-10-25): `onu.genieacsDeviceId` (columna propia
     // de net.onus) nunca se escribe en ningún lugar del backend -- el
@@ -713,7 +718,16 @@ export class OnuManagementService {
     onu: OnuEntity,
     config: OnuServiceConfigEntity,
     olt: OltEntity,
-    wanStatic: { wanStaticIp?: string; wanStaticMask?: string; wanStaticGw?: string },
+    wanStatic: {
+      wanStaticIp?: string;
+      wanStaticMask?: string;
+      wanStaticGw?: string;
+      wanStaticIpv6?: string;
+      wanStaticIpv6PrefixLen?: number;
+      wanStaticIpv6Gw?: string;
+      wanStaticIpv6Dns1?: string;
+      wanStaticIpv6Dns2?: string;
+    },
     options: { warningPrefix: string; failureLogMessagePrefix: string; operation: string; actorUserId?: string },
   ): Promise<{ cpeConfigured?: boolean; cpeConfigWarning?: string }> {
     if (config.managementMethod !== 'TR069' || !config.tr069NetworkId) {
@@ -784,6 +798,12 @@ export class OnuManagementService {
         },
       });
 
+      if (configureResult.ipv6Readback?.prefix) {
+        config.pppoeIpv6Prefix = configureResult.ipv6Readback.prefix;
+      }
+      if (configureResult.ipv6Readback?.address) {
+        config.pppoeIpv6Address = configureResult.ipv6Readback.address;
+      }
       config.cpeConfigStatus = 'APPLIED';
       config.lastCpeConfigError = undefined;
       config.cpeConfigSyncedAt = new Date();
@@ -997,6 +1017,11 @@ export class OnuManagementService {
       ipProtocol?: 'IPV4' | 'IPV6' | 'DUAL';
       wanDns1?: string;
       wanDns2?: string;
+      wanStaticIpv6?: string;
+      wanStaticIpv6PrefixLen?: number;
+      wanStaticIpv6Gw?: string;
+      wanStaticIpv6Dns1?: string;
+      wanStaticIpv6Dns2?: string;
     },
     actorUserId?: string,
   ) {
@@ -1014,13 +1039,27 @@ export class OnuManagementService {
     if (dto.ipProtocol) config.ipProtocol = dto.ipProtocol;
     config.wanDns1 = dto.wanDns1 || undefined;
     config.wanDns2 = dto.wanDns2 || undefined;
+    config.wanStaticIpv6 = dto.wanStaticIpv6 || undefined;
+    config.wanStaticIpv6PrefixLen = dto.wanStaticIpv6PrefixLen ? Number(dto.wanStaticIpv6PrefixLen) : undefined;
+    config.wanStaticIpv6Gw = dto.wanStaticIpv6Gw || undefined;
+    config.wanStaticIpv6Dns1 = dto.wanStaticIpv6Dns1 || undefined;
+    config.wanStaticIpv6Dns2 = dto.wanStaticIpv6Dns2 || undefined;
     await this.configRepository.save(config);
 
     const { cpeConfigured, cpeConfigWarning } = await this.pushCpeConfiguration(
       onu,
       config,
       olt,
-      { wanStaticIp: dto.wanStaticIp, wanStaticMask: dto.wanStaticMask, wanStaticGw: dto.wanStaticGw },
+      {
+        wanStaticIp: dto.wanStaticIp,
+        wanStaticMask: dto.wanStaticMask,
+        wanStaticGw: dto.wanStaticGw,
+        wanStaticIpv6: dto.wanStaticIpv6,
+        wanStaticIpv6PrefixLen: dto.wanStaticIpv6PrefixLen ? Number(dto.wanStaticIpv6PrefixLen) : undefined,
+        wanStaticIpv6Gw: dto.wanStaticIpv6Gw,
+        wanStaticIpv6Dns1: dto.wanStaticIpv6Dns1,
+        wanStaticIpv6Dns2: dto.wanStaticIpv6Dns2,
+      },
       {
         warningPrefix: 'No se pudo confirmar la configuración WAN/PPPoE vía GenieACS',
         failureLogMessagePrefix: `[${olt.vendor}] ONU ${onu.serialNumber}: fallo enviando WAN/PPPoE vía GenieACS`,

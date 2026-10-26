@@ -8,6 +8,16 @@ import { IsBoolean, IsInt, IsOptional, IsString, Length, Max, Min } from 'class-
  */
 export class UpdateWirelessLanDto {
   @IsOptional()
+  @IsString()
+  @Length(1, 32, { message: 'El SSID debe tener entre 1 y 32 caracteres.' })
+  ssid?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(8, 63, { message: 'La contraseña WiFi debe tener entre 8 y 63 caracteres.' })
+  password?: string;
+
+  @IsOptional()
   @IsBoolean()
   enabled?: boolean;
 

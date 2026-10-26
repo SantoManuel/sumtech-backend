@@ -16,6 +16,8 @@ export interface CpeConfigureResult {
   deviceId: string;
   appliedParametersCount: number;
   verification: Record<string, string | undefined>;
+  /** Asignación real de IPv6 obtenida tras la negociación (Fase 3.1). */
+  ipv6Readback?: { prefix?: string; address?: string };
   message: string;
   /** Aviso no fatal -- ej. "Dual-Stack pedido pero no implementado para este modo" (ver CpeParameterMapper.getIpv6Warning). */
   warning?: string;
@@ -102,7 +104,7 @@ export class CpeConfiguratorService {
 
     // 3. Generar parámetros con el mapper técnico
     const parameterValues = this.parameterMapper.buildParameterValues(input, isTR181);
-    const ipv6Warning = this.parameterMapper.getIpv6Warning(input);
+    const ipv6Warning = this.parameterMapper.getIpv6Warning(input, isTR181);
 
     if (parameterValues.length === 0) {
       return {
@@ -163,11 +165,14 @@ export class CpeConfiguratorService {
       }
     }
 
+    const ipv6Readback = this.parameterMapper.extractIpv6Readback(verification, isTR181);
+
     return {
       success: true,
       deviceId,
       appliedParametersCount: parameterValues.length,
       verification,
+      ipv6Readback,
       message: `Configuración TR-069 aplicada y encolada con éxito al CPE ${input.serialNumber}.`,
       warning: ipv6Warning,
     };

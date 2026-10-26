@@ -95,6 +95,13 @@ export class GenieAcsSectionWriteService {
         changes.push({ path: `${base}.DNSServers`, value: servers, type: 'xsd:string' });
       }
     }
+    if (dto.lanInterface !== undefined) {
+      if (status.isTR181) {
+        skippedFields.push('lanInterface');
+      } else {
+        changes.push({ path: `${base}.X_CMCC_LanInterface`, value: dto.lanInterface, type: 'xsd:string' });
+      }
+    }
 
     await this.writeService.applyParameterChanges(deviceId, changes, { actor, action: 'TR069_PARAMETER_CHANGE' });
 
@@ -174,6 +181,17 @@ export class GenieAcsSectionWriteService {
 
     const paths = wirelessLanPaths(status.isTR181, ssidIndex);
     const changes: ParameterChange[] = [];
+    if (dto.ssid !== undefined) changes.push({ path: paths.ssid, value: dto.ssid, type: 'xsd:string' });
+    if (dto.password !== undefined) {
+      if (status.isTR181) {
+        changes.push({ path: paths.keyPassphrase, value: dto.password, type: 'xsd:string' });
+      } else {
+        changes.push({ path: paths.keyPassphrase, value: dto.password, type: 'xsd:string' });
+        if (paths.preSharedKeyPassphrase) {
+          changes.push({ path: paths.preSharedKeyPassphrase, value: dto.password, type: 'xsd:string' });
+        }
+      }
+    }
     if (dto.enabled !== undefined) changes.push({ path: paths.enabled, value: String(dto.enabled), type: 'xsd:boolean' });
     if (dto.ssidAdvertisementEnabled !== undefined)
       changes.push({ path: paths.ssidAdvertisement, value: String(dto.ssidAdvertisementEnabled), type: 'xsd:boolean' });

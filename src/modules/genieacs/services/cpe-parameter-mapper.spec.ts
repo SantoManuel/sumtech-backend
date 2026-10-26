@@ -97,6 +97,32 @@ describe('CpeParameterMapper', () => {
 
       const base = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
       expect(paramMap.get(`${base}.X_HW_VLAN`)).toBe('300');
+      expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toContain('WLANConfiguration.1');
+      expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toContain('LANEthernetInterfaceConfig.1');
+    });
+
+    it('genera Port Binding (X_CMCC_LanInterface) vinculando LAN 1-4 y WLAN 1-2 para CMDC en TR-098 PPPoE', () => {
+      const input: CpeConfigurationInput = {
+        serialNumber: 'CMDCDD4D131E',
+        vendor: 'CMDC',
+        wanMode: 'PPPOE',
+        pppoeUsername: 'test3',
+        pppoePassword: 'password123',
+        serviceVlan: 400,
+      };
+
+      const params = mapper.buildParameterValues(input, false);
+      const paramMap = new Map(params.map(([k, v]) => [k, v]));
+
+      const base = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
+      expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toBe(
+        'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1,' +
+          'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.2,' +
+          'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.3,' +
+          'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.4,' +
+          'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1,' +
+          'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2',
+      );
     });
 
     it('genera parámetros para IP estática en TR-098', () => {
@@ -117,6 +143,7 @@ describe('CpeParameterMapper', () => {
       expect(paramMap.get(`${base}.ExternalIPAddress`)).toBe('192.168.10.50');
       expect(paramMap.get(`${base}.SubnetMask`)).toBe('255.255.255.0');
       expect(paramMap.get(`${base}.DefaultGateway`)).toBe('192.168.10.1');
+      expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toContain('WLANConfiguration.1');
     });
   });
 
@@ -141,6 +168,28 @@ describe('CpeParameterMapper', () => {
 
     it('no avisa si no se pidió ningún wanMode', () => {
       expect(mapper.getIpv6Warning({ serialNumber: 'X', ipProtocol: 'DUAL' })).toBeUndefined();
+    });
+
+    it('incluye la nota específica de hardware en el warning cuando se especifica vendor', () => {
+      const warning = mapper.getIpv6Warning({
+        serialNumber: 'X',
+        vendor: 'HUAWEI',
+        wanMode: 'DHCP',
+        ipProtocol: 'DUAL',
+      });
+      expect(warning).toContain('firmware TR-098 de este fabricante');
+    });
+  });
+
+  describe('getIpv6Capabilities (Fase 2 / 3.0 -- Consulta de capacidades)', () => {
+    it('devuelve las capacidades y notas correspondientes al CPE', () => {
+      const { capabilities, notes } = mapper.getIpv6Capabilities({
+        serialNumber: 'X',
+        vendor: 'ZTE',
+      });
+      expect(capabilities.pppoeDualStack).toBe(true);
+      expect(capabilities.dhcpDualStack).toBe(false);
+      expect(notes.dhcpDualStack).toContain('ZTE');
     });
   });
 });

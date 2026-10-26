@@ -97,6 +97,8 @@ export interface OnuTr069PppInterfaceSnapshot {
   connectionTrigger?: string;
   dns1?: string;
   dns2?: string;
+  /** Enlace de interfaces LAN/WLAN a la WAN (Port Binding, ej. X_CMCC_LanInterface) */
+  lanInterface?: string;
 }
 
 /** §3.5 del plan -- servidor DHCP de la LAN del cliente. */
@@ -133,6 +135,7 @@ export interface OnuTr069AssociatedDeviceEntry {
  */
 export interface OnuTr069WirelessLanEntry {
   ssidIndex: number;
+  ssid?: string;
   enabled?: boolean;
   ssidAdvertisementEnabled?: boolean;
   channel?: number;

@@ -1,4 +1,9 @@
 import { Injectable } from '@nestjs/common';
+import {
+  resolveCpeIpv6Capabilities,
+  CpeIpv6Capabilities,
+  CpeIpv6CapabilityNotes,
+} from './cpe-capabilities';
 
 export interface CpeManagementServerConfig {
   acsUrl: string;
@@ -23,10 +28,16 @@ export interface CpeConfigurationInput {
   // PPPoE
   pppoeUsername?: string;
   pppoePassword?: string;
-  // Static IP
+  // Static IP (IPv4)
   wanStaticIp?: string;
   wanStaticMask?: string;
   wanStaticGw?: string;
+  // Static IP (IPv6) -- Fase 3.3
+  wanStaticIpv6?: string;
+  wanStaticIpv6PrefixLen?: number;
+  wanStaticIpv6Gw?: string;
+  wanStaticIpv6Dns1?: string;
+  wanStaticIpv6Dns2?: string;
   // DNS manual (override) -- aplica a cualquier wanMode, confirmado en vivo
   // como parámetro real (DNSServers/DNSOverrideAllowed) en WANPPPConnection
   // y WANIPConnection para TR-098 (2026-10-22). TR-181 no implementado
@@ -43,6 +54,21 @@ export interface CpeConfigurationInput {
     ssid5g?: string;
   };
 }
+
+/**
+ * Interfaces LAN (puertos Ethernet físicos 1 al 4) y WLAN (radios Wi-Fi 2.4GHz y 5GHz)
+ * para vincular a la conexión WAN en TR-098 (Port Binding / X_CMCC_LanInterface).
+ * Sin esto, la ONU solo asigna los puertos cableados y los dispositivos conectados
+ * por Wi-Fi quedan aislados sin salida a internet.
+ */
+export const DEFAULT_TR098_LAN_WLAN_BINDING = [
+  'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1',
+  'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.2',
+  'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.3',
+  'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.4',
+  'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1',
+  'InternetGatewayDevice.LANDevice.1.WLANConfiguration.2',
+].join(',');
 
 @Injectable()
 export class CpeParameterMapper {
@@ -80,17 +106,77 @@ export class CpeParameterMapper {
    * no-op como DHCP/STATIC, así que no amerita el mismo aviso de "no se
    * aplicó nada".
    */
-  getIpv6Warning(config: CpeConfigurationInput): string | undefined {
+  getIpv6Warning(config: CpeConfigurationInput, isTR181?: boolean): string | undefined {
     if (config.ipProtocol !== 'DUAL' && config.ipProtocol !== 'IPV6') {
       return undefined;
     }
+    // TR-181 implementa tanto DHCPv6 como Static IPv6 formalmente
+    if (isTR181) {
+      return undefined;
+    }
+    // En modo STATIC, si se suministraron parámetros estáticos IPv6, no hay warning
+    if (config.wanMode === 'STATIC' && config.wanStaticIpv6) {
+      return undefined;
+    }
     if (config.wanMode === 'DHCP' || config.wanMode === 'STATIC') {
+      const { notes } = resolveCpeIpv6Capabilities(config.vendor, config.model, isTR181);
+      const capKey = config.wanMode === 'DHCP' ? 'dhcpDualStack' : 'staticIpv6';
+      const specificReason = notes[capKey];
+      const reasonDetail = specificReason ? ` (${specificReason})` : '';
+
       return (
         `Dual-Stack IPv4/IPv6 solicitado en modo ${config.wanMode}, pero todavía no hay parámetros TR-069 ` +
-        'implementados para esto -- solo se aplicó IPv4. Ver Plan_Implementacion_IPv6_Dual_Stack_WAN.md.'
+        `implementados para esto${reasonDetail} -- solo se aplicó IPv4. Ver Plan_Implementacion_IPv6_Dual_Stack_WAN.md.`
       );
     }
     return undefined;
+  }
+
+  /**
+   * Consulta las capacidades IPv6 reales y las notas explicativas para este CPE
+   * según su fabricante, modelo y estándar TR-069 (ver cpe-capabilities.ts).
+   */
+  getIpv6Capabilities(
+    config: CpeConfigurationInput,
+    isTR181?: boolean,
+  ): { capabilities: CpeIpv6Capabilities; notes: CpeIpv6CapabilityNotes } {
+    return resolveCpeIpv6Capabilities(config.vendor, config.model, isTR181);
+  }
+
+  /**
+   * Extrae la dirección IPv6 y/o el prefijo delegado asignado en vivo por el ONT
+   * a partir del objeto de verificación leído tras aplicar la configuración (Fase 3.1).
+   */
+  extractIpv6Readback(
+    verification: Record<string, string | undefined>,
+    isTR181: boolean,
+  ): { prefix?: string; address?: string } {
+    if (!verification) return {};
+
+    if (isTR181) {
+      const prefix = verification['Device.IP.Interface.1.IPv6Prefix.1.Prefix'];
+      const address = verification['Device.IP.Interface.1.IPv6Address.1.IPAddress'];
+      return {
+        prefix: prefix && prefix !== '::/0' && prefix !== '' ? prefix : undefined,
+        address: address && address !== '::' && address !== '' ? address : undefined,
+      };
+    }
+
+    const pppBase = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
+    const prefix =
+      verification[`${pppBase}.X_BROADCOM_COM_IPv6PrefixDelegationPrefix`] ||
+      verification[`${pppBase}.X_CMCC_IPv6Prefix`] ||
+      verification[`${pppBase}.X_HW_IPv6Prefix`];
+
+    const address =
+      verification[`${pppBase}.IPv6Address`] ||
+      verification[`${pppBase}.X_BROADCOM_COM_IPv6Address`] ||
+      verification[`${pppBase}.X_HW_IPv6Address`];
+
+    return {
+      prefix: prefix && prefix !== '::/0' && prefix !== '' ? prefix : undefined,
+      address: address && address !== '::' && address !== '' ? address : undefined,
+    };
   }
 
   /**
@@ -101,21 +187,43 @@ export class CpeParameterMapper {
     if (isTR181) {
       if (config.wanMode === 'PPPOE') {
         verification.push('Device.PPP.Interface.1.Enable', 'Device.PPP.Interface.1.Username');
+        if (config.ipProtocol === 'DUAL' || config.ipProtocol === 'IPV6') {
+          verification.push(
+            'Device.PPP.Interface.1.IPv6CPEnable',
+            'Device.IP.Interface.1.IPv6Prefix.1.Prefix',
+            'Device.IP.Interface.1.IPv6Address.1.IPAddress',
+          );
+        }
       } else if (config.wanMode === 'STATIC') {
         verification.push('Device.IP.Interface.1.IPv4Address.1.IPAddress');
+        if (config.ipProtocol === 'DUAL' || config.ipProtocol === 'IPV6') {
+          verification.push('Device.IP.Interface.1.IPv6Address.1.IPAddress');
+        }
       }
       if (config.managementServer?.acsUrl) {
         verification.push('Device.ManagementServer.URL');
       }
     } else {
+      const pppBase = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
+      const ipBase = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1';
       if (config.wanMode === 'PPPOE') {
         verification.push(
-          'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Enable',
-          'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Username',
+          `${pppBase}.Enable`,
+          `${pppBase}.Username`,
         );
+        if (config.ipProtocol === 'DUAL' || config.ipProtocol === 'IPV6') {
+          verification.push(
+            `${pppBase}.X_BROADCOM_COM_IPv6PrefixDelegationEnabled`,
+            `${pppBase}.X_BROADCOM_COM_IPv6PrefixDelegationPrefix`,
+            `${pppBase}.X_CMCC_IPv6Prefix`,
+            `${pppBase}.X_HW_IPv6Prefix`,
+            `${pppBase}.IPv6Address`,
+            `${pppBase}.X_BROADCOM_COM_IPv6Address`,
+          );
+        }
       } else if (config.wanMode === 'STATIC') {
         verification.push(
-          'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.ExternalIPAddress',
+          `${ipBase}.ExternalIPAddress`,
         );
       }
       if (config.managementServer?.acsUrl) {
@@ -178,12 +286,29 @@ export class CpeParameterMapper {
       if (config.wanStaticGw) {
         params.push(['Device.Routing.Router.1.IPv4Forwarding.1.GatewayIPAddress', config.wanStaticGw, 'xsd:string']);
       }
+      if (config.ipProtocol === 'DUAL' || config.ipProtocol === 'IPV6') {
+        params.push(['Device.IP.Interface.1.IPv6Enable', 'true', 'xsd:boolean']);
+        if (config.wanStaticIpv6) {
+          params.push(['Device.IP.Interface.1.IPv6Address.1.IPAddress', config.wanStaticIpv6, 'xsd:string']);
+          params.push(['Device.IP.Interface.1.IPv6Address.1.Enable', 'true', 'xsd:boolean']);
+        }
+        if (config.wanStaticIpv6PrefixLen) {
+          params.push(['Device.IP.Interface.1.IPv6Prefix.1.Prefix', `/${config.wanStaticIpv6PrefixLen}`, 'xsd:string']);
+        }
+        if (config.wanStaticIpv6Gw) {
+          params.push(['Device.Routing.Router.1.IPv6Forwarding.1.NextHop', config.wanStaticIpv6Gw, 'xsd:string']);
+        }
+      }
       if (config.serviceVlan) {
         params.push(['Device.Ethernet.VLANTermination.1.VLANID', String(config.serviceVlan), 'xsd:unsignedInt']);
       }
     } else if (config.wanMode === 'DHCP') {
       params.push(['Device.IP.Interface.1.Enable', 'true', 'xsd:boolean']);
       params.push(['Device.IP.Interface.1.IPv4Address.1.AddressingType', 'DHCP', 'xsd:string']);
+      if (config.ipProtocol === 'DUAL' || config.ipProtocol === 'IPV6') {
+        params.push(['Device.IP.Interface.1.IPv6Enable', 'true', 'xsd:boolean']);
+        params.push(['Device.DHCPv6.Client.1.Enable', 'true', 'xsd:boolean']);
+      }
       if (config.serviceVlan) {
         params.push(['Device.Ethernet.VLANTermination.1.VLANID', String(config.serviceVlan), 'xsd:unsignedInt']);
       }
@@ -264,6 +389,7 @@ export class CpeParameterMapper {
         params.push([`${pppBase}.X_BROADCOM_COM_IPv6PrefixDelegationEnabled`, 'true', 'xsd:boolean']);
       }
       this.pushDnsOverrideParams(params, pppBase, config);
+      this.pushPortBindingParams(params, pppBase, vendorUpper);
     } else if (config.wanMode === 'STATIC') {
       params.push([`${ipBase}.Enable`, 'true', 'xsd:boolean']);
       params.push([`${ipBase}.ConnectionType`, 'IP_Routed', 'xsd:string']);
@@ -277,6 +403,21 @@ export class CpeParameterMapper {
       if (config.wanStaticGw) {
         params.push([`${ipBase}.DefaultGateway`, config.wanStaticGw, 'xsd:string']);
       }
+      if (config.ipProtocol === 'DUAL' || config.ipProtocol === 'IPV6') {
+        if (vendorUpper.includes('ZTE')) {
+          params.push([`${ipBase}.X_ZTE-COM_IPv6Enable`, 'true', 'xsd:boolean']);
+          if (config.wanStaticIpv6) {
+            params.push([`${ipBase}.X_ZTE-COM_IPv6Address`, config.wanStaticIpv6, 'xsd:string']);
+          }
+        } else if (vendorUpper.includes('HUAWEI') || vendorUpper.includes('CMDC')) {
+          params.push([`${ipBase}.X_HW_IPv6Enable`, 'true', 'xsd:boolean']);
+          if (config.wanStaticIpv6) {
+            params.push([`${ipBase}.X_HW_IPv6Address`, config.wanStaticIpv6, 'xsd:string']);
+          }
+        } else {
+          params.push([`${ipBase}.X_BROADCOM_COM_IPv6Enable`, 'true', 'xsd:boolean']);
+        }
+      }
       if (config.serviceVlan) {
         if (vendorUpper.includes('ZTE')) {
           params.push([`${ipBase}.X_ZTE-COM_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
@@ -285,10 +426,21 @@ export class CpeParameterMapper {
         }
       }
       this.pushDnsOverrideParams(params, ipBase, config);
+      this.pushPortBindingParams(params, ipBase, vendorUpper);
     } else if (config.wanMode === 'DHCP') {
       params.push([`${ipBase}.Enable`, 'true', 'xsd:boolean']);
       params.push([`${ipBase}.ConnectionType`, 'IP_Routed', 'xsd:string']);
       params.push([`${ipBase}.AddressingType`, 'DHCP', 'xsd:string']);
+      if (config.ipProtocol === 'DUAL' || config.ipProtocol === 'IPV6') {
+        if (vendorUpper.includes('ZTE')) {
+          params.push([`${ipBase}.X_ZTE-COM_IPv6Enable`, 'true', 'xsd:boolean']);
+          params.push([`${ipBase}.X_ZTE-COM_IPv6AddressingType`, 'DHCPv6', 'xsd:string']);
+        } else if (vendorUpper.includes('HUAWEI') || vendorUpper.includes('CMDC')) {
+          params.push([`${ipBase}.X_HW_IPv6Enable`, 'true', 'xsd:boolean']);
+        } else {
+          params.push([`${ipBase}.X_BROADCOM_COM_IPv6Enable`, 'true', 'xsd:boolean']);
+        }
+      }
       if (config.serviceVlan) {
         if (vendorUpper.includes('ZTE')) {
           params.push([`${ipBase}.X_ZTE-COM_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
@@ -296,6 +448,7 @@ export class CpeParameterMapper {
           params.push([`${ipBase}.X_HW_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
         }
       }
+      this.pushPortBindingParams(params, ipBase, vendorUpper);
     }
 
     // 3. WiFi
@@ -318,6 +471,26 @@ export class CpeParameterMapper {
           params.push(['InternetGatewayDevice.LANDevice.1.WLANConfiguration.2.IEEE11iEncryptionModes', 'AESEncryption', 'xsd:string']);
         }
       }
+    }
+  }
+
+  /**
+   * Vincula los puertos Ethernet LAN 1-4 y las interfaces WLAN 1-2 a la conexión WAN
+   * en equipos con firmware CMCC / China Mobile / Huawei / ZTE (Port Binding).
+   */
+  private pushPortBindingParams(
+    params: Array<[string, string, string]>,
+    base: string,
+    vendorUpper: string,
+  ): void {
+    if (
+      !vendorUpper ||
+      vendorUpper.includes('CMDC') ||
+      vendorUpper.includes('CMCC') ||
+      vendorUpper.includes('HUAWEI') ||
+      vendorUpper.includes('ZTE')
+    ) {
+      params.push([`${base}.X_CMCC_LanInterface`, DEFAULT_TR098_LAN_WLAN_BINDING, 'xsd:string']);
     }
   }
 

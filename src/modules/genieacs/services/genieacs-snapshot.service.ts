@@ -353,6 +353,7 @@ export class GenieAcsSnapshotService {
       maxMru: `${base}.MaxMRUSize`,
       connectionTrigger: isTR181 ? undefined : `${base}.ConnectionTrigger`,
       dnsServers: isTR181 ? undefined : `${base}.DNSServers`,
+      lanInterface: isTR181 ? undefined : `${base}.X_CMCC_LanInterface`,
     };
     const queryPaths = Object.values(paths).filter((p): p is string => Boolean(p));
     const values = await client.getParameterValues(deviceId, queryPaths);
@@ -371,6 +372,7 @@ export class GenieAcsSnapshotService {
       connectionTrigger: paths.connectionTrigger ? values[paths.connectionTrigger] : undefined,
       dns1,
       dns2,
+      lanInterface: paths.lanInterface ? values[paths.lanInterface] : undefined,
     };
   }
 
@@ -442,6 +444,7 @@ export class GenieAcsSnapshotService {
       const values = await client.getParameterValues(deviceId, Object.values(paths));
       entries.push({
         ssidIndex: i,
+        ssid: values[paths.ssid],
         enabled: parseBoolean(values[paths.enabled]),
         ssidAdvertisementEnabled: parseBoolean(values[paths.ssidAdvertisement]),
         channel: parseNonNegativeInt(values[paths.channel]),
