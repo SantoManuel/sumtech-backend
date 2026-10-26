@@ -31,6 +31,7 @@ import { CreateTr069NetworkDto } from './dto/create-tr069-network.dto';
 import { UpdateTr069NetworkDto } from './dto/update-tr069-network.dto';
 import { ExportOltsDto } from './dto/export-olts.dto';
 import { ListOltsDto } from './dto/list-olts.dto';
+import { RunOltConsoleCommandDto } from './dto/run-olt-console-command.dto';
 
 @Controller('olt')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -131,6 +132,15 @@ export class OltController {
   @RequireOltAction('OPERATE')
   async discoverInterfaces(@Param('id') id: string, @Req() req: any) {
     return this.oltService.discoverInterfaces(id, req.user?.id);
+  }
+
+  // Consola OLT (solo ADMIN) -- shell Telnet real y sin restricciones, mismo
+  // alcance que la Consola RouterOS. Sin @RequireOltAction: ADMIN ya pasa
+  // libre el OltPermissionGuard sin necesidad del decorator (ver exportOlts).
+  @Post('olts/:id/console')
+  @Roles(Role.ADMIN)
+  async runOltConsoleCommand(@Param('id') id: string, @Body() dto: RunOltConsoleCommandDto, @Req() req: any) {
+    return this.oltService.runRawCommand(id, dto.command, req.user?.id);
   }
 
   @Post('olts/:id/nat-rule')

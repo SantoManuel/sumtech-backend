@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { NotFoundException, BadRequestException, HttpException } from '@nestjs/common';
 import { UnknownOltVendorError } from '../ports/olt-driver.port';
 import { OltManagementService } from './olt-management.service';
 import { OltEntity } from '../entities/olt.entity';
@@ -92,6 +92,7 @@ describe('OltManagementService', () => {
       discoverInterfaces: jest.fn().mockResolvedValue([
         { name: 'gpon-olt_1/1/1', type: 'PON', slot: 1, port: 1, adminState: 'UP', operState: 'UP' },
       ]),
+      runRawCommand: jest.fn().mockResolvedValue('salida del comando'),
       getCapabilities: jest.fn().mockReturnValue({
         testConnection: true,
         systemInfo: true,
@@ -266,6 +267,55 @@ describe('OltManagementService', () => {
           status: 'SUCCESS',
         }),
       );
+    });
+  });
+
+  describe('runRawCommand (Consola OLT, solo ADMIN)', () => {
+    it('lanza BadRequestException si el comando está vacío (o solo espacios), sin tocar el driver', async () => {
+      await expect(service.runRawCommand('olt-1', '   ', 'admin-id')).rejects.toThrow(BadRequestException);
+      expect(zteDriver.runRawCommand).not.toHaveBeenCalled();
+    });
+
+    it('lanza HttpException 501 si el driver del fabricante no implementa runRawCommand', async () => {
+      delete zteDriver.runRawCommand;
+
+      await expect(service.runRawCommand('olt-1', 'show version', 'admin-id')).rejects.toThrow(HttpException);
+    });
+
+    it('recorta espacios del comando, lo ejecuta y audita eventType COMMAND con status SUCCESS', async () => {
+      const result = await service.runRawCommand('olt-1', '  show version-running  ', 'admin-id');
+
+      expect(result).toEqual({ output: 'salida del comando' });
+      expect(zteDriver.runRawCommand).toHaveBeenCalledWith(
+        expect.objectContaining({ host: '10.0.0.1', port: 2323 }),
+        'show version-running',
+      );
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: 'COMMAND',
+          status: 'SUCCESS',
+          actorUserId: 'admin-id',
+          rawDetails: expect.objectContaining({ command: 'show version-running' }),
+        }),
+      );
+    });
+
+    it('si la OLT rechaza el comando, lanza BadRequestException y audita status FAILURE (nunca oculta el fallo)', async () => {
+      zteDriver.runRawCommand.mockRejectedValue(new Error('La OLT rechazó el comando "bad-cmd": %Error 20201'));
+
+      await expect(service.runRawCommand('olt-1', 'bad-cmd', 'admin-id')).rejects.toThrow(BadRequestException);
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'COMMAND', status: 'FAILURE', actorUserId: 'admin-id' }),
+      );
+    });
+
+    it('nunca ejecuta runRawCommand del driver si el vendor no es reconocido', async () => {
+      driverRegistry.resolve.mockImplementation(() => {
+        throw new UnknownOltVendorError('MARCA-DESCONOCIDA');
+      });
+
+      await expect(service.runRawCommand('olt-1', 'show version', 'admin-id')).rejects.toThrow(BadRequestException);
+      expect(zteDriver.runRawCommand).not.toHaveBeenCalled();
     });
   });
 

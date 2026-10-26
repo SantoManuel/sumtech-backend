@@ -811,6 +811,16 @@ export class HiosoDriver implements IOltDriver {
     }
   }
 
+  async runRawCommand(params: OltConnectionParams, command: string): Promise<string> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return await session.executeCommand(command, 20000);
+    } finally {
+      session.close();
+    }
+  }
+
   async getInterfaceTraffic(
     params: OltConnectionParams,
     interfaceName: string,

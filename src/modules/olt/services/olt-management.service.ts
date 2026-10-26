@@ -9,6 +9,7 @@ import { OnuEntity } from '../entities/onu.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
+import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
 import { encryptCredential, decryptCredential } from '../../network-connectivity/utils/crypto.util';
 import {
   IOltDriver,
@@ -376,6 +377,77 @@ export class OltManagementService {
     });
 
     return this.ifaceRepository.find({ where: { oltId: olt.id }, order: { name: 'ASC' } });
+  }
+
+  /**
+   * Consola OLT (solo ADMIN): ejecuta un comando Telnet arbitrario tal cual
+   * el operador lo escriba -- sin validación ni allowlist por diseño, mismo
+   * concepto que RouterConsoleService para MikroTik. Serializado con
+   * withOltTelnetLock para no competir por el único canal Telnet del equipo
+   * contra el cron de monitoreo/discovery (ver olt-telnet-mutex.ts).
+   */
+  async runRawCommand(id: string, command: string, actorUserId?: string): Promise<{ output: string }> {
+    const trimmed = (command || '').trim();
+    if (!trimmed) {
+      throw new BadRequestException('El comando no puede estar vacío.');
+    }
+
+    const olt = await this.findById(id);
+    const driver = this.resolveDriver(olt);
+
+    if (typeof driver.runRawCommand !== 'function') {
+      throw new HttpException(
+        {
+          code: 'DRIVER_NOT_IMPLEMENTED',
+          message: `[${olt.vendor}] la Consola OLT todavía no está implementada para este fabricante.`,
+        },
+        HttpStatus.NOT_IMPLEMENTED,
+      );
+    }
+
+    const connParams = await this.connectionResolver.resolve(olt);
+    const start = Date.now();
+
+    try {
+      const output = await withOltTelnetLock(olt.id, () => driver.runRawCommand!(connParams, trimmed));
+
+      await this.deviceOperationLogger.logEvent({
+        nodeId: olt.viaNodeId || olt.id,
+        eventType: 'COMMAND',
+        status: 'SUCCESS',
+        message: `[${olt.vendor}] Comando de consola ejecutado en OLT "${olt.name}": ${trimmed}`,
+        actorUserId,
+        rawDetails: {
+          oltId: olt.id,
+          vendor: olt.vendor,
+          model: olt.model,
+          driverName: driver.constructor.name,
+          operation: 'runRawCommand',
+          command: trimmed,
+          output: output.slice(0, 5000),
+          durationMs: Date.now() - start,
+        },
+      });
+
+      return { output };
+    } catch (err: any) {
+      await this.deviceOperationLogger.logEvent({
+        nodeId: olt.viaNodeId || olt.id,
+        eventType: 'COMMAND',
+        status: 'FAILURE',
+        message: `[${olt.vendor}] Comando de consola falló en OLT "${olt.name}": ${trimmed} -- ${err?.message}`,
+        actorUserId,
+        rawDetails: {
+          oltId: olt.id,
+          vendor: olt.vendor,
+          model: olt.model,
+          operation: 'runRawCommand',
+          command: trimmed,
+          durationMs: Date.now() - start,
+        },
+      });
+      throw new BadRequestException(err?.message || 'Error al ejecutar el comando en la OLT.');
+    }
   }
 
   async generateBackup(

@@ -449,6 +449,16 @@ export interface IOltDriver {
   /** Script CLI del bloque OMCI que apunta la ONU al ACS (TR-069) -- ver `applyTr069Management`. Asume `config.managementMethod==='TR069' && config.tr069Url && config.tr069Vlan`. */
   generateTr069ManagementScript(config: AuthorizeOnuParams): string[];
   getRunningConfig?(params: OltConnectionParams): Promise<string>;
+  /**
+   * Ejecuta un comando CLI arbitrario tal cual el operador lo escriba, por
+   * Telnet -- Consola OLT (solo ADMIN), mismo concepto que la Consola
+   * RouterOS de network-connectivity pero sobre el canal Telnet del OLT en
+   * vez de SSH. Sin validación ni allowlist por diseño: un comando
+   * destructivo (ej. borrar un ONU, apagar un puerto PON) se ejecuta igual.
+   * Opcional porque no todos los fabricantes tienen sesión Telnet genérica
+   * todavía -- el llamador debe responder 501 si el driver no lo implementa.
+   */
+  runRawCommand?(params: OltConnectionParams, command: string): Promise<string>;
   getInterfaceTraffic?(params: OltConnectionParams, interfaceName: string): Promise<{ rxKbps: number; txKbps: number; rawBps?: { inputBps: number; outputBps: number } }>;
   getCapabilities(): OltDriverCapabilities;
   /**
