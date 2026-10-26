@@ -14,5 +14,12 @@
 -- /olt/onu-types + modal de administración), nunca con un .sql nuevo.
 -- ==============================================================================
 
-ALTER TABLE net.onu_types
-  ADD CONSTRAINT onu_types_vendor_model_unique UNIQUE (vendor, model);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'onu_types_vendor_model_unique'
+  ) THEN
+    ALTER TABLE net.onu_types
+      ADD CONSTRAINT onu_types_vendor_model_unique UNIQUE (vendor, model);
+  END IF;
+END $$;
