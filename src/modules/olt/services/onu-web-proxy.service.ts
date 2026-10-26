@@ -309,7 +309,9 @@ export class OnuWebProxyService {
     sessionToken?: string,
   ) {
     const cleanHeaders: http.OutgoingHttpHeaders = { ...req.headers };
-    cleanHeaders['host'] = `${targetIp}:${port}`;
+    // Los firmwares embebidos de CPE (Huawei Boa, ZTE, etc.) requieren que el encabezado Host sea 192.168.1.1
+    // para evitar redirecciones compulsivas de seguridad a su portal cautivo / IP LAN.
+    cleanHeaders['host'] = '192.168.1.1';
     delete cleanHeaders['connection'];
 
     // Si viene la cookie sumtech_cpe_token, no se la enviamos a la ONU para no confundir su firmware
