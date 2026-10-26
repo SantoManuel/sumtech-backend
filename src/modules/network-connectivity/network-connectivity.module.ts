@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { JwtModule } from '@nestjs/jwt';
 import { NetworkNodeEntity } from '../network/entities/network-node.entity';
 import { DeviceLogEntity } from '../network/entities/device-log.entity';
 import { RouterOsRestTransport } from './transports/routeros-rest.transport';
@@ -12,10 +13,12 @@ import { ConnectionTestService } from './services/connection-test.service';
 import { DeviceHealthService } from './services/device-health.service';
 import { DeviceOperationLogger } from './services/device-operation-logger.service';
 import { RouterConsoleService } from './services/router-console.service';
+import { RouterConsoleGateway } from './gateways/router-console.gateway';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([NetworkNodeEntity, DeviceLogEntity]),
+    JwtModule.register({}),
   ],
   providers: [
     RouterOsRestTransport,
@@ -28,6 +31,7 @@ import { RouterConsoleService } from './services/router-console.service';
     DeviceHealthService,
     DeviceOperationLogger,
     RouterConsoleService,
+    RouterConsoleGateway,
   ],
   exports: [
     RouterOsRestTransport,

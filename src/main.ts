@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { assertRequiredEnvVars } from './common/utils/required-env.util';
+import { getConfiguredCorsOrigins, isAllowedCorsOrigin } from './common/utils/cors-origin.util';
 
 async function bootstrap() {
   const logger = new Logger('SumtechBootstrap');
@@ -13,53 +14,18 @@ async function bootstrap() {
   // fallbacks hardcodeados inseguros (ver required-env.util.ts)
   assertRequiredEnvVars(app.get(ConfigService), ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'PLATFORM_JWT_SECRET']);
 
-  const configuredOrigins = (process.env.CORS_ORIGINS?.split(',') || [
-    'http://localhost:3000',
-    'http://localhost:3001',
-  ]).map((o) => o.trim());
+  const configuredOrigins = getConfiguredCorsOrigins();
 
   app.use(cookieParser());
 
   // Habilitar CORS multi-tenant (soporta *.localhost:3000, *.localhost:3001, IPs locales y dominios SaaS)
+  // Política de orígenes en cors-origin.util.ts -- reutilizada también por
+  // RouterConsoleGateway (WebSocket) para no desincronizar la lista.
   app.enableCors({
     origin: (requestOrigin, callback) => {
-      // Permitir peticiones sin origen (curl, server-to-server, Postman)
-      if (!requestOrigin) {
+      if (isAllowedCorsOrigin(requestOrigin, configuredOrigins)) {
         return callback(null, true);
       }
-
-      // 1. Orígenes configurados explícitamente en variables de entorno
-      if (configuredOrigins.includes(requestOrigin)) {
-        return callback(null, true);
-      }
-
-      // 2. Subdominios dinámicos de desarrollo: *.localhost:3000 y *.localhost:3001
-      // Ej: http://sumtech.localhost:3000, http://admin.localhost:3000, http://ispazua.localhost:3001
-      const isLocalhostSubdomain = /^https?:\/\/([a-z0-9-]+\.)*localhost:(3000|3001)$/i.test(requestOrigin);
-      if (isLocalhostSubdomain) {
-        return callback(null, true);
-      }
-
-      // 3. Subdominios de producción: *.app.sumtech.com, *.sumtech.com
-      const isSumtechDomain = /^https:\/\/([a-z0-9-]+\.)*sumtech\.com$/i.test(requestOrigin);
-      if (isSumtechDomain) {
-        return callback(null, true);
-      }
-
-      // 3b. Dominio real de producción (nic.do): *.sumtech.com.do
-      // Ej: https://admin.sumtech.com.do, https://erp-api.sumtech.com.do
-      const isSumtechComDoDomain = /^https:\/\/([a-z0-9-]+\.)*sumtech\.com\.do$/i.test(requestOrigin);
-      if (isSumtechComDoDomain) {
-        return callback(null, true);
-      }
-
-      // 4. Subdominios dinámicos de tenants en VPS (*.sslip.io)
-      // Ej: http://sumtech.66.94.107.219.sslip.io, http://admin.66.94.107.219.sslip.io
-      const isSslipDomain = /^https?:\/\/([a-z0-9-]+\.)+[0-9.]+\.sslip\.io(:\d+)?$/i.test(requestOrigin);
-      if (isSslipDomain) {
-        return callback(null, true);
-      }
-
       logger.warn(`Petición bloqueada por política CORS desde origen no autorizado: ${requestOrigin}`);
       return callback(new Error(`Origen CORS no permitido: ${requestOrigin}`), false);
     },
