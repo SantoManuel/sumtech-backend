@@ -750,144 +750,109 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
-   * Genera la lista de comandos Telnet de autorización y aprovisionamiento (RF-OLT-016 / RF-ONU-001..007).
+   * Genera la lista de comandos Telnet de autorización y aprovisionamiento (RF-OLT-016 / RF-ONU-001..007)
+   * respetando el orden jerárquico estricto de entidades OMCI (Bottom-Up).
    */
   generateAuthorizationScript(config: import('../ports/olt-driver.port').AuthorizeOnuParams): string[] {
-    // El segundo camino de datos GPON (tcont 2/gemport 2/service-port 2) y el
-    // bloque tr069-mgmt/security-mgmt SOLO existen para apuntar la ONU a un
-    // ACS -- si managementMethod no es 'TR069' o no hay tr069Url (ej. un ONU
-    // gestionado por OMCI puro, sin ACS), no hay nada que direccionar ahí.
-    // SIN esta guardia, una ONU sin Red TR-069 asignada generaba literalmente
-    // "tr069-mgmt 1 acs undefined" contra la OLT real -- bug encontrado al
-    // revisar que `OnuAuthorizeModal.tsx` (Etapa 1 del frontend) todavía no
-    // recolecta tr069NetworkId, a diferencia de `generateTr069ManagementScript()`,
-    // que ya fallaba alto y claro ante esta misma situación.
     const hasTr069 = config.managementMethod === 'TR069' && Boolean(config.tr069Url);
     const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
 
     const commands: string[] = [
+      // === FASE 1: Registro Físico en Puerto PON ===
       'configure terminal',
       `interface ${config.ponInterface}`,
-      // "no onu <id>" ANTES de crearla -- CONFIRMADO EN VIVO (2026-10-23):
-      // autorizar sobre una ONU que ya existía con estado parcial/corrupto de
-      // un intento anterior dejaba bindings (switchport-bind/flow) huérfanos
-      // que causaban rechazos intermitentes "already exists" en el bloque
-      // TR-069, o peor -- un bloque OMCI incompleto sin NINGÚN error visible
-      // (ver el chequeo de "Config state" en applyTr069Management, agregado
-      // tras encontrar justo este caso real). Borrar primero y recrear de
-      // cero en la MISMA llamada dio, en una prueba real contra
-      // OLT_Tabara_Abajo, 29 comandos aceptados sin UN SOLO rechazo -- algo
-      // que nunca había pasado en ningún intento anterior del mismo día.
-      // Mejor esfuerzo (ver el manejo especial en authorizeOnu()): si la ONU
-      // no existía todavía, la OLT puede rechazar este comando -- se ignora,
-      // es justo lo que se quiere (nada que borrar).
       `no onu ${config.onuId}`,
       `onu ${config.onuId} type ${config.modelTypeName} sn ${config.serialNumber}`,
       'exit',
+
+      // === FASE 2: Capa de Transporte GPON (T-CONT -> GEM -> Service-Port) ===
       `interface ${onuInterface}`,
       `name ${config.clientName ? config.clientName.replace(/\s+/g, '_') : `ONU-${config.onuId}`}`,
       ...(config.description ? [`description ${config.description.replace(/\s+/g, '_')}`] : []),
       `tcont 1 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
     ];
 
-    // Canal de gestión TR-069: tcont 2 / gemport 2 -- CONFIRMADO EN VIVO
-    // (2026-10-24, sesión real ONU CMDCDD4D131E / Huawei HG8546M que SÍ
-    // obtuvo IP, internet y se registró en GenieACS): deben estar AQUÍ,
-    // junto a tcont 1, en el mismo bloque "interface gpon-onu_X:Y". La
-    // separación anterior en Etapa 2 (sesión Telnet separada) dejaba
-    // gemport 2 sin existir cuando pon-onu-mng intentaba enlazar "flow 2"
-    // a él -- causa raíz real de que la ONU no obtuviera IP de gestión
-    // ni contactara GenieACS.
     if (hasTr069) {
-      commands.push(`tcont 2 profile SMARTOLT-VOIPMNG-10M`);
-    }
-    commands.push('gemport 1 tcont 1', 'gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN');
-    if (hasTr069) {
-      commands.push('gemport 2 tcont 2', `gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M`);
+      commands.push('tcont 2 profile SMARTOLT-VOIPMNG-10M');
     }
 
-    // Traffic profile de bajada del plan del cliente (canal de internet).
+    commands.push(
+      'gemport 1 tcont 1',
+      'gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN',
+    );
+
+    if (hasTr069) {
+      commands.push(
+        'gemport 2 tcont 2',
+        'gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M',
+      );
+    }
+
     if (config.trafficProfile) {
       commands.push(`traffic-profile ${config.trafficProfile} vport 1 direction egress`);
     }
 
-    // service-ports para ambos canales -- CONFIRMADO EN VIVO (2026-10-24):
-    // service-port 2 (gestión VLAN TR-069) va aquí junto a service-port 1
-    // (internet), en la misma sesión. NO se usa "switchport mode hybrid vport
-    // N" -- ese comando no aparece en la sesión real que funcionó y puede
-    // causar rechazo en este firmware.
     commands.push(`service-port 1 vport 1 user-vlan ${config.serviceVlan} vlan ${config.serviceVlan}`);
     if (hasTr069) {
       commands.push(`service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`);
     }
+
     commands.push(
       'exit',
-      // Bloque OMCI completo -- UNA SOLA llamada a pon-onu-mng, idéntica a
-      // la sesión real que funcionó (2026-10-24, ONU CMDCDD4D131E). Antes
-      // este bloque se dividía en 2 sesiones: Etapa 1 solo cubría flow 1 /
-      // iphost 1; Etapa 2 cubría el canal de gestión. La sesión real
-      // confirma que TODO debe ir en una sola transacción atómica.
+
+      // === FASE 3: Inicialización de Flows y Mapeo GEM (pon-onu-mng) ===
+      // Orden estricto por cada Flow: 1° flow mode -> 2° flow pri/vlan -> 3° flow switch -> 4° gemport flow
       `pon-onu-mng ${onuInterface}`,
-      // voip protocol sip -- primer comando del bloque pon-onu-mng en la
-      // sesión real. Inicializa el subsistema SIP/VoIP del ONT antes de
-      // configurar flows y bindings.
-      'voip protocol sip',
-      // Canal de internet (flow 1 / gemport 1 / iphost 1)
+      'flow mode 1 tag-filter vlan-filter untag-filter discard',
+      `flow 1 pri 0 vlan ${config.serviceVlan}`,
       'flow 1 switch switch_0/1',
+      'gemport 1 flow 1',
     );
-    // Canal de gestión (flow 2 / gemport 2 / iphost 2) -- junto a flow 1
+
     if (hasTr069) {
-      commands.push('flow 2 switch switch_0/1');
+      commands.push(
+        'flow mode 2 tag-filter vlan-filter untag-filter discard',
+        `flow 2 pri 2 vlan ${config.tr069Vlan}`,
+        'flow 2 switch switch_0/1',
+        'gemport 2 flow 2',
+      );
     }
-    commands.push('flow mode 1 tag-filter vlan-filter untag-filter discard');
-    if (hasTr069) {
-      commands.push('flow mode 2 tag-filter vlan-filter untag-filter discard');
-    }
-    commands.push(`flow 1 pri 0 vlan ${config.serviceVlan}`);
-    // pri 2 para el canal de gestión -- confirmado en vivo (2026-10-22/24)
-    if (hasTr069) {
-      commands.push(`flow 2 pri 2 vlan ${config.tr069Vlan}`);
-    }
-    commands.push('gemport 1 flow 1');
-    if (hasTr069) {
-      commands.push('gemport 2 flow 2');
-    }
+
+    // === FASE 4: Vinculación del Switch Virtual (switchport-bind) ===
+    // Debe ejecutarse después de los flows y ANTES de configurar ip-host o veip
     commands.push('switchport-bind switch_0/1 iphost 1');
     if (hasTr069) {
       commands.push(
         'switchport-bind switch_0/1 iphost 2',
-        // switchport-bind veip 1 -- CONFIRMADO EN VIVO (2026-10-22): necesario
-        // para conectar el VEIP al switch fabric interno del ONT.
         'switchport-bind switch_0/1 veip 1',
       );
     }
-    commands.push('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
-    if (hasTr069) {
-      commands.push('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
-    }
-    commands.push('vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard');
-    if (hasTr069) {
-      commands.push('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
-    }
-    commands.push(`vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`);
-    // pri 2, mismo motivo que "flow 2 pri 2" -- confirmado en vivo
-    if (hasTr069) {
-      commands.push(`vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`);
-    }
-    // dhcp-ip por puerto ETH -- usa ethPorts real del modelo, fallback 4.
-    // Un modelo con menos puertos (ej. 1 ETH) rechazaba eth_0/2..4 con
-    // "%Error" -- bug real confirmado por revisión de código (2026-10-23).
-    commands.push(...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`));
+
+    // === FASE 5: Configuración de IP-Host y Filtros de VLAN ===
+    // Orden estricto: 1° activar ip-host -> 2° vlan-filter-mode -> 3° vlan-filter
+    commands.push(
+      'ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable',
+      'vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard',
+      `vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`,
+    );
 
     if (hasTr069) {
       commands.push(
+        'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
+        'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
+        `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
+      );
+    }
+
+    // === FASE 6: Capa de Aplicación (Puertos ETH, VoIP, VEIP, TR-069 y Seguridad) ===
+    commands.push(
+      ...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`),
+    );
+
+    if (hasTr069) {
+      commands.push(
+        'voip protocol sip',
         'veip 1 port udp 1232 host 2',
-        // Bloque TR-069 / ACS -- CONFIRMADO EN VIVO (2026-10-24, sesión real
-        // ONU CMDCDD4D131E): van en el mismo bloque pon-onu-mng, no en sesión
-        // separada. authorizeOnu() los trata como mejor esfuerzo: un rechazo
-        // del ONT no aborta la autorización óptica (el cliente ya tiene
-        // internet). applyTr069Management() puede reintentarlos de forma
-        // aislada si fuera necesario.
         'tr069-mgmt 1 state unlock',
         config.tr069AcsUsername && config.tr069AcsPassword
           ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
@@ -899,207 +864,61 @@ export class ZteC320Driver implements IOltDriver {
       );
     }
 
-    // "end", NO "exit": sale de "(gpon-onu-mng)#" directo al prompt
-    // top-level "#", donde "write" exige estar.
     commands.push('end', 'write');
     return commands;
   }
 
   /**
-   * Script CLI del bloque OMCI que apunta la ONU al ACS (TR-069) -- Etapa 2
-   * del flujo de 3 etapas, separado de `generateAuthorizationScript()` para
-   * poder reintentarse sin re-autorizar la ONU ópticamente. Asume
-   * `config.managementMethod==='TR069' && config.tr069Url && config.tr069Vlan`
-   * (responsabilidad del caller, ver `OnuManagementService.applyTr069Profile`).
+   * Script CLI del bloque OMCI que apunta la ONU al ACS (TR-069) -- Etapa 2 (Reintento aislado).
+   * Mantiene el mismo orden jerárquico Bottom-Up para no corromper las entidades ME.
    */
   generateTr069ManagementScript(config: import('../ports/olt-driver.port').AuthorizeOnuParams): string[] {
-    // Sin esta guarda, una Red TR-069 con "acsUrl" vacío (fila mal cargada,
-    // o un bug futuro que la resuelva mal) generaría silenciosamente
-    // "tr069-mgmt 1 acs " en blanco -- la OLT lo aceptaría igual (es solo
-    // texto para ella) y la ONU quedaría "configurada" apuntando a ningún
-    // lado, exactamente el tipo de fallo silencioso que costó la
-    // investigación de hoy (2026-10-22). Fallar aquí, alto y claro, en vez
-    // de generar un comando inválido.
     if (!config.tr069Url) {
       throw new Error(
         'No se puede generar el bloque TR-069/ACS: falta la URL del ACS (tr069Url). Revisa que la Red TR-069 seleccionada tenga "acsUrl" configurado.',
       );
     }
-    // generateTr069ManagementScript() es ahora un script de REINTENTO
-    // minimal: asume que tcont 2 / gemport 2 / service-port 2 / flow 2 /
-    // iphost 2 / veip 1 ya existen de la Etapa 1 (authorizeOnu), y solo
-    // re-aplica el puntero del ACS y los security-mgmt. Si se llama antes
-    // de authorizeOnu(), los bindings OMCI del canal de gestión no existirán
-    // y el ACS seguirá sin funcionar.
+
     const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
     const commands: string[] = [
       'configure terminal',
       `pon-onu-mng ${onuInterface}`,
-    ];
-
-    // Segundo camino de datos GPON, dedicado a la VLAN de gestión TR-069 --
-    // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20, ONU
-    // CMDCDD4D131E / Huawei HG8546M) que sin este segundo tcont/gemport/
-    // service-port (uno por cada VLAN que la ONU deba cargar a través de la
-    // OLT, no solo uno fijo), "tr069-mgmt 1 acs <url>" puede aceptarse en la
-    // OLT pero el ONT lo rechaza a nivel OMCI, o directamente nunca intenta
-    // DHCP en la VLAN de gestión. Ver docs/onu-tr069-provisioning-zte-c320.md
-    // para el diagnóstico completo.
-    // Perfil de TCONT/tráfico dedicado para el canal de gestión -- NUNCA el
-    // mismo perfil del plan comercial del cliente (ese es para el canal de
-    // Internet). Confirmado en vivo (2026-10-22) en el running-config real
-    // de X2251/HWTCBC05BF9C (cliente real, aprovisionado por SmartOLT, OLT
-    // OLT_Tabara_Abajo): usa "SMARTOLT-VOIPMNG-10M" para tcont 2 Y como
-    // traffic-limit de gemport 2, ya existente en esta OLT -- antes este
-    // driver reusaba `config.tcontProfile` (el del plan del cliente) también
-    // para el canal de gestión, sin necesidad real de ese ancho de banda ahí.
-    const mgmtProfile = 'SMARTOLT-VOIPMNG-10M';
-
-    commands.push(
-      // Confirmado por comparación directa (2026-10-23) contra DOS
-      // running-config reales y funcionando de SmartOLT en la misma OLT
-      // (incluida la ONU CMDCDD4D131E, que SÍ consiguió IP de gestión y WAN
-      // una vez aprovisionada por SmartOLT): ambas mandan "voip protocol sip"
-      // como el PRIMER comando dentro de "pon-onu-mng", antes de tocar
-      // flow/gemport/iphost -- nunca lo mandábamos. El tcont del canal de
-      // gestión se llama "SMARTOLT-VOIPMNG-10M" (VOIP + ManaGement
-      // combinados); la hipótesis es que el ONT necesita inicializar su
-      // subsistema SIP antes de que el resto de ese mismo canal (iphost
-      // 2/veip 1) realmente levante tráfico -- AÚN NO reconfirmado en vivo
-      // con este cambio aplicado por Sumtech (solo con evidencia de que
-      // SmartOLT sí lo manda en sus configs reales).
-      'voip protocol sip',
-      // Cableado interno OMCI que conecta el service-port 2 (arriba) con el
-      // VEIP (interfaz virtual que usa el ONT para TR-069) -- CONFIRMADO EN
-      // VIVO contra OLT_Tabara_Abajo (2026-10-20): esta es la pieza que
-      // faltaba, no la sintaxis de "tr069-mgmt". Debe ir ANTES de
-      // "tr069-mgmt ... acs ..." (orden importa).
-      'flow 2 switch switch_0/1',
+      // 1. Inicializar Flow 2 en orden jerárquico
       'flow mode 2 tag-filter vlan-filter untag-filter discard',
-      // pri 2 (no 0): confirmado en vivo (2026-10-22) contra dos ONUs reales
-      // y funcionando (X2251/HWTCBC05BF9C y M0761/HWTCDE64BA7C) que el canal
-      // de gestión siempre usa prioridad 2, igual que "tr069-mgmt 1 tag pri
-      // 2 vlan ..." más abajo -- antes este driver mandaba "pri 0" aquí,
-      // inconsistente con el resto del bloque.
       `flow 2 pri 2 vlan ${config.tr069Vlan}`,
+      'flow 2 switch switch_0/1',
       'gemport 2 flow 2',
+      // 2. Vincular puertos al switch_0/1 antes de filtrarlos
       'switchport-bind switch_0/1 iphost 2',
-      // CONFIRMADO EN VIVO (2026-10-22): faltaba este bind -- un running-config
-      // real y funcionando de otra ONU en la misma OLT (ONU HWTCDE64BA7C,
-      // aprovisionada por SmartOLT) tiene "switchport-bind switch_0/1 veip 1"
-      // ADEMÁS del bind de iphost, justo antes de "veip 1 port udp 1232 host
-      // 2". Sin este bind, el VEIP (donde vive el ME de ManagementServer)
-      // nunca queda conectado al switch fabric interno del ONT -- causa real,
-      // confirmada, del rechazo "%Code 63990-GPONRM" en "tr069-mgmt ... acs
-      // ..." en TODOS los intentos anteriores, incluso con "Max VEIP"
-      // corregido (ese fix era necesario pero no suficiente).
       'switchport-bind switch_0/1 veip 1',
-      // "ping-response"/"traceroute-response" dejan que un técnico haga
-      // ping/traceroute a la IP de gestión del ONT directamente --
-      // confirmado en el config real de un ONU Villar Pando (SmartOLT).
+      // 3. Configurar IP-Host 2 y su filtro de VLAN en orden
       'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
       'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
-      // pri 2, mismo motivo que "flow 2 pri 2" arriba.
       `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
-      // Confirmado en vivo (2026-10-22) en ambas referencias reales -- rige
-      // cómo la ONU asigna IP a sus puertos LAN (independiente del canal de
-      // gestión en sí), presente en todo running-config real que revisamos
-      // hoy. Nunca lo mandábamos. Usa `config.ethPorts` real en vez de un 4
-      // fijo -- una ONU con menos puertos (ej. 1 ETH) rechazaba con
-      // "%Error ..." los puertos inexistentes eth_0/2..4 (bug real
-      // confirmado por revisión de código, 2026-10-23); como fallback,
-      // conserva el valor histórico de 4 solo si el modelo no declara
-      // `ethPorts`.
+      // 4. Puertos LAN, VoIP, VEIP, TR-069 y Firewall al final
       ...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`),
+      'voip protocol sip',
       'veip 1 port udp 1232 host 2',
-      // Sin esto el ME de ManagementServer puede quedar administrativamente
-      // bloqueado -- confirmado como parte de la secuencia real que
-      // finalmente funcionó (2026-10-20).
       'tr069-mgmt 1 state unlock',
-      // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-20) vía ayuda
-      // contextual ("tr069-mgmt 1 ?" en el prompt "(gpon-onu-mng)#"): "acs
-      // <url>" y "tag pri <0-7> vlan <1-4094>" son DOS comandos SEPARADOS
-      // (hermanos en el árbol de sintaxis), no uno encadenado -- antes se
-      // mandaban juntos como "tr069-mgmt 1 acs <url> tag pri 2 vlan <vlan>",
-      // que la OLT rechazaba con "%Error 20201: Invalid input detected ...
-      // Invalid command key word" porque "tag" nunca es un parámetro válido
-      // después de la URL del ACS. "validate basic username/password" es
-      // opcional y solo se agrega si la Red TR-069 tiene credenciales de ACS
-      // configuradas -- confirmado en vivo (2026-10-22) que el running-config
-      // real de un cliente funcionando (X2251/HWTCBC05BF9C) lo incluye.
       config.tr069AcsUsername && config.tr069AcsPassword
         ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
         : `tr069-mgmt 1 acs ${config.tr069Url}`,
-      // "tr069-mgmt 1 tag pri <n> vlan <id>" -- se había quitado el
-      // 2026-10-23 tras comparar contra UN solo running-config de SmartOLT
-      // que no lo tenía. CORRECCIÓN (mismo día, horas después): se revisaron
-      // DOS running-config más, ambos de ONUs realmente funcionando con
-      // internet (X2251/HWTCBC05BF9C y M1382/HWTCC3FBC69F), y los DOS SÍ
-      // tienen esta línea -- la ausencia en el primer caso era la excepción,
-      // no la regla. Se repone. Usa `config.tr069Vlan` (la VLAN real de la
-      // Red TR-069 elegida para ESTA ONU) con fallback a `serviceVlan` --
-      // nunca un valor fijo, cada ONU puede tener una Red TR-069 distinta.
       `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
-      // Forwarding de la UI web (HTTPS) sin restringir el "ingress-type" --
-      // a diferencia de 998 (explícitamente LAN), esta regla 5 habilita el
-      // acceso HTTPS desde el lado de la red/gestión, no solo desde el LAN
-      // del cliente. CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-24,
-      // ONU CMDCDD4D131E) como parte de la secuencia real que terminó
-      // registrándose en GenieACS; nunca lo mandábamos.
       'security-mgmt 5 state enable mode forward protocol web https',
-      // Habilita el forwarding de gestión LAN (web/ssh/telnet/snmp/tr069) --
-      // confirmado en vivo (2026-10-22) presente en todo running-config real
-      // de cliente funcionando que revisamos hoy; nunca lo mandábamos.
       'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
       'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
-      // Los SET de OMCI de este ONT no son idempotentes y cualquier cambio
-      // puede dejar "Config state" en "fail" (ver `show gpon onu
-      // detail-info <iface>`) hasta que el ONT se reinicia -- CONFIRMADO EN
-      // VIVO (2026-10-20) que un reinicio por OMCI es obligatorio para que
-      // el resync realmente tome efecto y el ONT empiece a pedir DHCP /
-      // hablar con el ACS en la VLAN de gestión.
+      // 5. Reinicio OMCI ÚNICAMENTE cuando ya se enviaron tag y security-mgmt
       REBOOT_ONU_SENTINEL,
-      // "end", NO "exit": todos los ejemplos reales del manual (ZXA10 C300
-      // Configuration Manual CLI, ej. §2.11/2.12/2.13) salen de
-      // "(gpon-onu-mng)#" con "end" -- usar "exit" ahí dispara el prompt
-      // interactivo "Confirm to logout without saving? [yes/no]:" que este
-      // driver no sabe responder, y la sesión se cuelga hasta el timeout
-      // (confirmado en producción: ONU CMDCDD4D131E / OLT_Tabara_Abajo,
-      // 2026-10-19).
       'end',
       'write',
-    );
+    ];
 
     return commands;
   }
 
   /**
-   * Ejecuta el aprovisionamiento de la ONU en la OLT. Antes de correr el
-   * script generado:
-   *   1. Asegura que el "onu-type" (`config.modelTypeName`) exista en la OLT
-   *      -- sin esto, "onu <id> type <X> sn <Y>" rechaza con "%Code
-   *      63904-GPONRM : Not support this ONU." si el modelo nunca se registró
-   *      a mano por Telnet (ver `ensureOnuTypeProfile`). Antes de este fix,
-   *      Sumtech exigía crear el onu-type manualmente antes de poder
-   *      autorizar cualquier modelo nuevo.
-   *   2. Asegura que el perfil TCONT referenciado (`config.tcontProfile`)
-   *      exista de verdad en la OLT — antes de esto, `generateAuthorizationScript()`
-   *      solo lo referenciaba por nombre (`tcont 1 profile <nombre>`)
-   *      asumiendo silenciosamente que ya existía; si no existía, la
-   *      autorización fallaba sin explicación clara. Solo aplica si hay
-   *      `tcontProfile` + `upKbps` (TCONT es ancho de banda de SUBIDA en
-   *      GPON — ver `ensureTcontProfile`, el ancho de banda de bajada no se
-   *      gestiona por esta vía).
-   *   3. Tolera "ya existe"/"already existed" en CUALQUIER comando del script
-   *      -- ver `isAlreadyAppliedResponse` -- sin esto, un reintento tras una
-   *      autorización previa que falló a MITAD del script (dejando algunos
-   *      pasos ya aplicados en la OLT, ej. el "onu type sn" o el
-   *      "service-port") abortaba de nuevo en el primer paso ya aplicado,
-   *      sin llegar nunca a los pasos siguientes.
-   *
-   * SOLO óptico (Etapa 1 del flujo de 3 etapas) -- ya no incluye el bloque
-   * OMCI de TR-069/ACS, que ahora es `applyTr069Management()`, una operación
-   * separada e independientemente reintentable (Etapa 2).
+   * Ejecuta el aprovisionamiento de la ONU en la OLT respetando los tiempos de
+   * convergencia OMCI y evitando reiniciar la ONU a mitad del bloque TR-069.
    */
   async authorizeOnu(
     params: OltConnectionParams,
@@ -1116,14 +935,6 @@ export class ZteC320Driver implements IOltDriver {
       });
 
       if (config.upKbps) {
-        // `generateAuthorizationScript()` SIEMPRE referencia un nombre de
-        // perfil TCONT (con este mismo fallback si `config.tcontProfile`
-        // viene vacío) -- antes solo se llamaba a `ensureTcontProfileWithSession`
-        // cuando AMBOS `tcontProfile` y `upKbps` estaban definidos, así que un
-        // caller que mandara `upKbps` sin `tcontProfile` terminaba con
-        // "tcont 1 profile SMARTOLT-100M-UP" sin garantizar que ese perfil
-        // existiera en la OLT (bug real confirmado por revisión de código,
-        // 2026-10-23).
         const effectiveTcontProfile = config.tcontProfile || 'SMARTOLT-100M-UP';
         await this.ensureTcontProfileWithSession(session, { name: effectiveTcontProfile, fixedKbps: config.upKbps });
       }
@@ -1135,39 +946,26 @@ export class ZteC320Driver implements IOltDriver {
       const commands = this.generateAuthorizationScript(config);
 
       let warning: string | undefined;
-      // Los comandos tr069-mgmt y security-mgmt se tratan como mejor
-      // esfuerzo: un rechazo del ONT (ej. "%Code 63990-GPONRM") no debe
-      // abortar la autorización óptica -- el cliente ya quedó con internet.
-      // applyTr069Management() puede reintentarlos de forma aislada.
       let inTr069Block = false;
 
       for (const cmd of commands) {
         if (cmd.startsWith('no onu ')) {
-          // Mejor esfuerzo a propósito -- ver el comentario en
-          // generateAuthorizationScript(). Si la ONU no existía todavía, la
-          // OLT puede rechazar este comando con algo como "does not exist";
-          // nunca debe abortar la autorización completa por esto.
           await session.executeCommand(cmd);
           continue;
         }
 
-        // Detectar inicio del bloque TR-069 para tratarlo como mejor esfuerzo
+        // Pausa de estabilización OMCI al entrar a pon-onu-mng tras haber recreado la ONU
+        if (cmd.startsWith('pon-onu-mng ')) {
+          await this.delay(2000);
+        }
+
         if (cmd.startsWith('tr069-mgmt') || cmd.startsWith('security-mgmt')) {
           inTr069Block = true;
         }
 
-        // El comando de ACS se reintenta con reinicio entre intentos --
-        // igual que applyTr069Management(). Reducido a 3 intentos (vs 6)
-        // para no bloquear el HTTP handler más de ~1 minuto.
-        const isAcsCommand = cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ');
-        if (isAcsCommand) {
-          const acsResult = await this.applyAcsUrlWithRetries(session, cmd, 3, 10000);
-          if (acsResult.warningMessage && !warning) {
-            warning = acsResult.warningMessage;
-          }
-          continue;
-        }
-
+        // IMPORTANTE: No usar applyAcsUrlWithRetries aquí porque reiniciaría la ONT
+        // ANTES de enviar "tr069-mgmt 1 tag..." y los "security-mgmt 5/998/999".
+        // Con el orden jerárquico corregido, la ONT acepta el comando directamente.
         const output = await session.executeCommand(cmd);
         if (this.isOltErrorResponse(output) && !this.isAlreadyAppliedResponse(output)) {
           if (inTr069Block) {

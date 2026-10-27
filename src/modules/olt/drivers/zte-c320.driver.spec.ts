@@ -8,6 +8,7 @@ describe('ZteC320Driver', () => {
 
   beforeEach(() => {
     driver = new ZteC320Driver();
+    jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
   });
 
   it('debe estar definido', () => {
