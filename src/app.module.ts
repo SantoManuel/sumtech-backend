@@ -34,6 +34,7 @@ import { GenieAcsModule } from './modules/genieacs/genieacs.module';
 import { CompanyModule } from './modules/company/company.module';
 import { BranchesModule } from './modules/branches/branches.module';
 import { PlatformModule } from './modules/platform/platform.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 @Module({
   imports: [
@@ -114,6 +115,7 @@ import { PlatformModule } from './modules/platform/platform.module';
     GenieAcsModule,
     CompanyModule,
     PlatformModule,
+    NotificationsModule,
     TenancyModule,
     TenancySmokeTestModule,
   ],

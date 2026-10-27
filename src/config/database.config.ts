@@ -6,6 +6,7 @@ import { DataSource, DataSourceOptions } from 'typeorm';
 import { UserEntity } from '../modules/users/entities/user.entity';
 import { RoleEntity } from '../modules/users/entities/role.entity';
 import { AuditLogEntity } from '../modules/users/entities/audit-log.entity';
+import { StaffNotificationEntity } from '../modules/notifications/entities/staff-notification.entity';
 import { RefreshTokenEntity } from '../modules/auth/entities/refresh-token.entity';
 import { EmployeeEntity } from '../modules/employees/entities/employee.entity';
 import { BranchEntity } from '../modules/branches/entities/branch.entity';
@@ -108,6 +109,7 @@ export const entities = [
   UserEntity,
   RoleEntity,
   AuditLogEntity,
+  StaffNotificationEntity,
   RefreshTokenEntity,
   EmployeeEntity,
   CompanyProfileEntity,
