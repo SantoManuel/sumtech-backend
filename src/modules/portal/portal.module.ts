@@ -21,6 +21,7 @@ import { PosModule } from '../pos/pos.module';
 import { StorageModule } from '../storage/storage.module';
 import { GenieAcsModule } from '../genieacs/genieacs.module';
 import { CompanyModule } from '../company/company.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { InvoiceGeneratedListener } from './listeners/invoice-generated.listener';
 import { ContractStatusListener } from './listeners/contract-status.listener';
 import { PaymentReminderListener } from './listeners/payment-reminder.listener';
@@ -46,6 +47,7 @@ import { PaymentReminderListener } from './listeners/payment-reminder.listener';
     StorageModule,
     GenieAcsModule,
     CompanyModule,
+    NotificationsModule,
     JwtModule.register({}),
     AiChatbotClientModule,
   ],

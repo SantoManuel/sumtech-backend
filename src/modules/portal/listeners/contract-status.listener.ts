@@ -7,6 +7,9 @@ import { ContractSuspendedEvent } from '../../billing/events/contract-suspended.
 import { ContractReactivatedEvent } from '../../billing/events/contract-reactivated.event';
 import { ContractTerminatedEvent } from '../../billing/events/contract-terminated.event';
 import { SystemEvents } from '../../../common/enums/system-events.enum';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
+import { Optional } from '@nestjs/common';
 
 @Injectable()
 export class ContractStatusListener {
@@ -15,12 +18,16 @@ export class ContractStatusListener {
   constructor(
     @InjectRepository(ClientNotificationEntity)
     private readonly notificationRepository: Repository<ClientNotificationEntity>,
+    @Optional()
+    private readonly notificationsGateway?: NotificationsGateway,
+    @Optional()
+    private readonly tenantContext?: TenantContextService,
   ) {}
 
   @OnEvent(SystemEvents.CONTRACT_SUSPENDED)
   async handleContractSuspended(event: ContractSuspendedEvent) {
     try {
-      await this.notificationRepository.save(
+      const saved = await this.notificationRepository.save(
         this.notificationRepository.create({
           clientId: event.clientId,
           title: 'Servicio Suspendido',
@@ -29,7 +36,12 @@ export class ContractStatusListener {
           link: '/portal/facturas',
         }),
       );
-    } catch (error) {
+
+      const tenantId = this.tenantContext?.hasContext() ? this.tenantContext.getTenantId() : 'default';
+      if (this.notificationsGateway) {
+        this.notificationsGateway.emitClientNotification(tenantId, event.clientId, saved);
+      }
+    } catch (error: any) {
       this.logger.error(
         `Error creando notificación de suspensión para el contrato ${event.contractNumber}: ${error.message}`,
         error.stack,
@@ -40,7 +52,7 @@ export class ContractStatusListener {
   @OnEvent(SystemEvents.CONTRACT_REACTIVATED)
   async handleContractReactivated(event: ContractReactivatedEvent) {
     try {
-      await this.notificationRepository.save(
+      const saved = await this.notificationRepository.save(
         this.notificationRepository.create({
           clientId: event.clientId,
           title: 'Servicio Reactivado',
@@ -49,7 +61,12 @@ export class ContractStatusListener {
           link: '/portal/dashboard',
         }),
       );
-    } catch (error) {
+
+      const tenantId = this.tenantContext?.hasContext() ? this.tenantContext.getTenantId() : 'default';
+      if (this.notificationsGateway) {
+        this.notificationsGateway.emitClientNotification(tenantId, event.clientId, saved);
+      }
+    } catch (error: any) {
       this.logger.error(
         `Error creando notificación de reactivación para el contrato ${event.contractNumber}: ${error.message}`,
         error.stack,
@@ -60,7 +77,7 @@ export class ContractStatusListener {
   @OnEvent(SystemEvents.CONTRACT_TERMINATED)
   async handleContractTerminated(event: ContractTerminatedEvent) {
     try {
-      await this.notificationRepository.save(
+      const saved = await this.notificationRepository.save(
         this.notificationRepository.create({
           clientId: event.clientId,
           title: 'Servicio Terminado',
@@ -69,7 +86,12 @@ export class ContractStatusListener {
           link: '/portal/dashboard',
         }),
       );
-    } catch (error) {
+
+      const tenantId = this.tenantContext?.hasContext() ? this.tenantContext.getTenantId() : 'default';
+      if (this.notificationsGateway) {
+        this.notificationsGateway.emitClientNotification(tenantId, event.clientId, saved);
+      }
+    } catch (error: any) {
       this.logger.error(
         `Error creando notificación de terminación para el contrato ${event.contractNumber}: ${error.message}`,
         error.stack,

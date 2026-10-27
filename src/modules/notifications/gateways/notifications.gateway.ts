@@ -11,6 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { getJwtSecret } from '../../../common/utils/required-env.util';
 import { getConfiguredCorsOrigins, isAllowedCorsOrigin } from '../../../common/utils/cors-origin.util';
 import { StaffNotificationEntity } from '../entities/staff-notification.entity';
+import { ClientNotificationEntity } from '../../portal/entities/client-notification.entity';
 
 @Injectable()
 @WebSocketGateway({
@@ -55,11 +56,12 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
 
       const userId = payload.sub || payload.id || payload.userId;
       const tenantId = payload.tenantId || 'default';
+      const clientId = payload.clientId;
       const roles: string[] = Array.isArray(payload.roles) ? payload.roles : [];
 
-      client.data = { userId, tenantId, roles };
+      client.data = { userId, tenantId, clientId, roles };
 
-      // Suscribir a salas operativas
+      // Suscribir a salas operativas con aislamiento multi-tenant estricto
       if (tenantId) {
         client.join(`tenant:${tenantId}`);
         for (const role of roles) {
@@ -69,10 +71,21 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
 
       if (userId) {
         client.join(`user:${userId}`);
+        if (tenantId) {
+          client.join(`tenant:${tenantId}:user:${userId}`);
+        }
       }
 
-      this.logger.log(`Cliente conectado: User ${userId} (Tenant ${tenantId}, Roles: ${roles.join(', ')})`);
-      client.emit('connected', { status: 'ok', userId, tenantId });
+      // Sala específica para el abonado/cliente final dentro de su tenant
+      if (clientId) {
+        client.join(`client:${clientId}`);
+        if (tenantId) {
+          client.join(`tenant:${tenantId}:client:${clientId}`);
+        }
+      }
+
+      this.logger.log(`Cliente conectado: User ${userId} (Tenant ${tenantId}, ClientId: ${clientId || 'N/A'}, Roles: ${roles.join(', ')})`);
+      client.emit('connected', { status: 'ok', userId, tenantId, clientId });
     } catch (err: any) {
       this.logger.error(`Error en handshake WebSocket: ${err.message}`);
       client.disconnect();
@@ -80,8 +93,8 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
   }
 
   handleDisconnect(client: Socket): void {
-    const { userId, tenantId } = client.data || {};
-    this.logger.log(`Cliente desconectado: ${client.id} (User: ${userId || 'N/A'}, Tenant: ${tenantId || 'N/A'})`);
+    const { userId, tenantId, clientId } = client.data || {};
+    this.logger.log(`Cliente desconectado: ${client.id} (User: ${userId || 'N/A'}, Tenant: ${tenantId || 'N/A'}, Client: ${clientId || 'N/A'})`);
   }
 
   /**
@@ -128,6 +141,58 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
       }
     } catch (err: any) {
       this.logger.error(`Error emitiendo contador por WebSocket: ${err.message}`);
+    }
+  }
+
+  /**
+   * Emite una notificación en tiempo real a un cliente/abonado específico en su tenant.
+   */
+  emitClientNotification(tenantId: string, clientId: string, notification: ClientNotificationEntity): void {
+    if (!this.server) {
+      this.logger.warn('WebSocketServer no inicializado aún al emitir notificación de cliente.');
+      return;
+    }
+
+    try {
+      const payload = {
+        notification,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Emite con aislamiento multi-tenant estricto
+      this.server.to(`tenant:${tenantId}:client:${clientId}`).emit('portal:notification:new', payload);
+      // Y también por fallback a la sala de cliente
+      this.server.to(`client:${clientId}`).emit('portal:notification:new', payload);
+      this.logger.log(`Notificación emitida al cliente ${clientId} (Tenant: ${tenantId}): ${notification.title}`);
+    } catch (err: any) {
+      this.logger.error(`Error emitiendo notificación a cliente por WebSocket: ${err.message}`);
+    }
+  }
+
+  /**
+   * Emite evento de actualización de lectura para el cliente en tiempo real.
+   */
+  emitClientNotificationRead(tenantId: string, clientId: string, notificationId: string): void {
+    if (!this.server) return;
+    try {
+      const payload = { id: notificationId, timestamp: new Date().toISOString() };
+      this.server.to(`tenant:${tenantId}:client:${clientId}`).emit('portal:notification:read', payload);
+      this.server.to(`client:${clientId}`).emit('portal:notification:read', payload);
+    } catch (err: any) {
+      this.logger.error(`Error emitiendo notificación leída a cliente por WebSocket: ${err.message}`);
+    }
+  }
+
+  /**
+   * Emite evento de marcado masivo como leído para el cliente.
+   */
+  emitClientAllNotificationsRead(tenantId: string, clientId: string): void {
+    if (!this.server) return;
+    try {
+      this.server.to(`tenant:${tenantId}:client:${clientId}`).emit('portal:notification:read_all', {});
+      this.server.to(`client:${clientId}`).emit('portal:notification:read_all', {});
+    } catch (err: any) {
+      this.logger.error(`Error emitiendo lectura masiva a cliente por WebSocket: ${err.message}`);
     }
   }
 }

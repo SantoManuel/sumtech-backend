@@ -9,6 +9,8 @@ import { SystemEvents } from '../../../common/enums/system-events.enum';
 import { interpolateTemplate } from '../utils/template-interpolator.util';
 import { CompanyService } from '../../company/company.service';
 import { getCurrencySymbolForCurrency } from '../../../common/utils/currency.util';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 
 @Injectable()
 export class InvoiceGeneratedListener {
@@ -22,6 +24,10 @@ export class InvoiceGeneratedListener {
     private readonly templateRepository?: Repository<NotificationTemplateEntity>,
     @Optional()
     private readonly companyService?: CompanyService,
+    @Optional()
+    private readonly notificationsGateway?: NotificationsGateway,
+    @Optional()
+    private readonly tenantContext?: TenantContextService,
   ) {}
 
   /** Ver PaymentReminderListener.getDefaultCurrencySymbol — mismo criterio. */
@@ -71,7 +77,7 @@ export class InvoiceGeneratedListener {
         message = interpolateTemplate(template.bodyTemplate, variables);
       }
 
-      await this.notificationRepository.save(
+      const saved = await this.notificationRepository.save(
         this.notificationRepository.create({
           clientId: event.clientId,
           title,
@@ -80,6 +86,11 @@ export class InvoiceGeneratedListener {
           link: '/portal/facturas',
         }),
       );
+
+      const tenantId = this.tenantContext?.hasContext() ? this.tenantContext.getTenantId() : 'default';
+      if (this.notificationsGateway) {
+        this.notificationsGateway.emitClientNotification(tenantId, event.clientId, saved);
+      }
     } catch (error: any) {
       this.logger.error(
         `Error creando notificación para la factura ${event.invoiceId}: ${error?.message}`,

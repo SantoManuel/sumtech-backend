@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { ClientEntity } from '../clients/entities/client.entity';
@@ -13,6 +13,8 @@ import { InteractionEntity } from '../crm/entities/interaction.entity';
 import { DepositProofEntity } from './entities/deposit-proof.entity';
 import { PlanChangeRequestEntity } from './entities/plan-change-request.entity';
 import { ClientNotificationEntity } from './entities/client-notification.entity';
+import { NotificationsGateway } from '../notifications/gateways/notifications.gateway';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { PosService } from '../pos/pos.service';
 import { MinioStorageService } from '../storage/minio-storage.service';
 import { AiChatbotClientService, AiChatbotResponse } from '../ai-chatbot/ai-chatbot-client.service';
@@ -59,6 +61,10 @@ export class PortalService {
     private readonly aiChatbotClient: AiChatbotClientService,
     private readonly usersService: UsersService,
     private readonly genieAcsWifiService: GenieAcsWifiService,
+    @Optional()
+    private readonly notificationsGateway?: NotificationsGateway,
+    @Optional()
+    private readonly tenantContext?: TenantContextService,
   ) {}
 
   private static readonly ALLOWED_RECEIPT_MIME_TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
@@ -585,6 +591,8 @@ export class PortalService {
       { id: notificationId, clientId: client.id },
       { isRead: true },
     );
+    const tenantId = this.tenantContext?.hasContext() ? this.tenantContext.getTenantId() : 'default';
+    this.notificationsGateway?.emitClientNotificationRead(tenantId, client.id, notificationId);
     return { success: true };
   }
 
@@ -594,6 +602,8 @@ export class PortalService {
       { clientId: client.id, isRead: false },
       { isRead: true },
     );
+    const tenantId = this.tenantContext?.hasContext() ? this.tenantContext.getTenantId() : 'default';
+    this.notificationsGateway?.emitClientAllNotificationsRead(tenantId, client.id);
     return { success: true, updated: result.affected || 0 };
   }
 

@@ -9,6 +9,8 @@ import { SystemEvents } from '../../../common/enums/system-events.enum';
 import { interpolateTemplate } from '../utils/template-interpolator.util';
 import { CompanyService } from '../../company/company.service';
 import { getCurrencySymbolForCurrency } from '../../../common/utils/currency.util';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 
 @Injectable()
 export class PaymentReminderListener {
@@ -22,6 +24,10 @@ export class PaymentReminderListener {
     private readonly templateRepository?: Repository<NotificationTemplateEntity>,
     @Optional()
     private readonly companyService?: CompanyService,
+    @Optional()
+    private readonly notificationsGateway?: NotificationsGateway,
+    @Optional()
+    private readonly tenantContext?: TenantContextService,
   ) {}
 
   /**
@@ -86,7 +92,7 @@ export class PaymentReminderListener {
         message = message.replace('RD$', currencySymbol);
       }
 
-      await this.notificationRepository.save(
+      const saved = await this.notificationRepository.save(
         this.notificationRepository.create({
           clientId: event.clientId,
           title,
@@ -95,6 +101,11 @@ export class PaymentReminderListener {
           link: '/portal/facturas',
         }),
       );
+
+      const tenantId = this.tenantContext?.hasContext() ? this.tenantContext.getTenantId() : 'default';
+      if (this.notificationsGateway) {
+        this.notificationsGateway.emitClientNotification(tenantId, event.clientId, saved);
+      }
     } catch (error: any) {
       this.logger.error(
         `Error creando recordatorio de pago para la factura ${event.invoiceId}: ${error?.message}`,
