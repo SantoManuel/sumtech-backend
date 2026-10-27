@@ -454,6 +454,118 @@ export class OltCatalogsService {
   }
 
   /**
+   * Descubre los perfiles de tráfico de bajada que REALMENTE existen en una OLT
+   * (vía `getTrafficProfiles`, confirmado en vivo contra OLT_Tabara_Abajo),
+   * comparados contra el catálogo global `net.olt_speed_profiles` por `vendorTrafficProfile`.
+   */
+  async scanRealTrafficProfiles(
+    oltId: string,
+  ): Promise<Array<{ name: string; downKbps?: number; alreadyTracked: boolean }>> {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException('OLT no encontrada.');
+
+    const driver = this.driverRegistry.resolve(olt.vendor);
+    if (!driver.getTrafficProfiles) {
+      throw new BadRequestException(
+        `El fabricante "${olt.vendor}" todavía no soporta descubrir perfiles de tráfico reales.`,
+      );
+    }
+
+    const connParams = await this.connectionResolver.resolve(olt);
+    let realProfiles: Awaited<ReturnType<NonNullable<typeof driver.getTrafficProfiles>>>;
+    try {
+      realProfiles = await driver.getTrafficProfiles(connParams);
+    } catch (err: any) {
+      throw new BadRequestException(err.message || 'Error consultando perfiles de tráfico reales de esta OLT.');
+    }
+
+    const trackedTrafficNames = new Set(
+      (await this.speedProfileRepository.find()).map((p) => p.vendorTrafficProfile).filter(Boolean),
+    );
+
+    return realProfiles.map((p) => ({
+      name: p.name,
+      downKbps: p.downKbps,
+      alreadyTracked: trackedTrafficNames.has(p.name),
+    }));
+  }
+
+  /**
+   * Catálogo unificado de perfiles para una OLT específica:
+   * Devuelve perfiles de Subida (TCONTs), perfiles de Bajada (Traffic Profiles)
+   * descubiertos en vivo de la OLT si está accesible, y la lista completa
+   * de perfiles registrados en base de datos.
+   */
+  async getOltProfilesCatalog(oltId: string) {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException('OLT no encontrada.');
+
+    const catalogProfiles = await this.findAllSpeedProfiles();
+
+    let tcontProfiles: Array<{ name: string; type?: number; speedKbps?: number }> = [];
+    let trafficProfiles: Array<{ name: string; downKbps?: number }> = [];
+
+    let driver;
+    try {
+      driver = this.driverRegistry.resolve(olt.vendor);
+    } catch {
+      driver = null;
+    }
+
+    if (driver) {
+      const connParams = await this.connectionResolver.resolve(olt).catch(() => null);
+      if (connParams) {
+        if (driver.getTcontProfiles) {
+          try {
+            const discoveredTconts = await driver.getTcontProfiles(connParams);
+            tcontProfiles = discoveredTconts.map((t) => ({
+              name: t.name,
+              type: t.type,
+              speedKbps: t.speedKbps,
+            }));
+          } catch {
+            /* best-effort */
+          }
+        }
+        if (driver.getTrafficProfiles) {
+          try {
+            const discoveredTraffic = await driver.getTrafficProfiles(connParams);
+            trafficProfiles = discoveredTraffic.map((tr) => ({
+              name: tr.name,
+              downKbps: tr.downKbps,
+            }));
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+    }
+
+    // Si la OLT no respondió o no soporta escaneo en vivo, poblar con perfiles del catálogo
+    if (tcontProfiles.length === 0) {
+      tcontProfiles = catalogProfiles
+        .map((p) => p.vendorTcontProfile)
+        .filter((name): name is string => Boolean(name))
+        .map((name) => ({ name }));
+    }
+
+    if (trafficProfiles.length === 0) {
+      trafficProfiles = catalogProfiles
+        .map((p) => p.vendorTrafficProfile)
+        .filter((name): name is string => Boolean(name))
+        .map((name) => ({ name }));
+    }
+
+    return {
+      oltId,
+      vendor: olt.vendor,
+      tcontProfiles,
+      trafficProfiles,
+      catalogProfiles,
+    };
+  }
+
+  /**
    * Da de alta en Sumtech un perfil TCONT descubierto por
    * `scanRealSpeedProfiles` -- no escribe nada en la OLT, ya existía. El
    * `code` se genera a partir del nombre real, evitando colisión si ya hay

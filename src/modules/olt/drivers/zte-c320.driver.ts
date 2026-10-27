@@ -17,6 +17,7 @@ import {
   OltAlarm,
   DiscoveredAuthorizedOnu,
   DiscoveredTcontProfile,
+  DiscoveredTrafficProfile,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
@@ -1553,28 +1554,14 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
-   * Crea (o redeclara) el traffic-profile de BAJADA (CIR=PIR=downKbps) --
-   * CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-19) con un perfil de
-   * prueba ("SUMTECH-TEST-DELETE-ME"), creado y eliminado limpiamente:
+   * Crea (o comprueba) el traffic-profile de BAJADA (CIR=PIR=downKbps) --
+   * CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-19/2026-10-27):
+   *   "show traffic-profile" lista los perfiles existentes sin entrar a config.
+   * Si el perfil ya existe, retorna inmediatamente sin mandar comandos innecesarios
+   * a la OLT ni escribir a la flash (write).
+   * Si no existe, lo crea con:
    *   configure terminal / traffic-profile <nombre> ip cir <kbps> cbs 1000
    *   pir <kbps> pbs 1000 / exit / write
-   * A diferencia de TCONT, este comando NO entra a un submodo "gpon" -- se
-   * manda directo en "(config)#". CIR=PIR (sin distinguir tasa comprometida
-   * de tasa pico) porque no hay todavía una política de negocio para dar
-   * margen de ráfaga por encima del plan contratado -- si se necesita,
-   * ajustar aquí.
-   *
-   * IMPORTANTE -- por qué NO hay chequeo de existencia previo (a diferencia
-   * de ensureTcontProfileWithSession): "show traffic-profile <nombre>",
-   * documentado en el manual oficial (§7.3.11), NO EXISTE en este firmware
-   * -- confirmado en vivo: responde "%Error 20201: Invalid input detected"
-   * tanto desde "(config)#" como desde "(config-if)#". En su lugar, se
-   * confirmó en vivo que redeclarar el MISMO nombre con los mismos
-   * parámetros es en sí mismo silencioso/idempotente (sin error), así que
-   * el comando de creación DOBLA como "ensure" sin necesitar una consulta
-   * previa. No usar "show running-config" como verificación aquí: se probó
-   * y la salida es demasiado grande/paginada para un timeout razonable
-   * contra esta OLT real (quedó colgado >90s en una prueba).
    */
   async ensureTrafficProfile(params: OltConnectionParams, profile: TrafficProfile): Promise<{ ok: boolean; error?: string }> {
     const session = this.createSession(params);
@@ -1593,17 +1580,18 @@ export class ZteC320Driver implements IOltDriver {
     session: { executeCommand(cmd: string, timeoutMs?: number): Promise<string> },
     profile: TrafficProfile,
   ): Promise<void> {
+    const listOutput = await session.executeCommand('show traffic-profile');
+    const existing = this.parseTrafficProfilesFromOutput(listOutput).find((p) => p.name === profile.name);
+    if (existing) {
+      return;
+    }
+
     await session.executeCommand('configure terminal');
     const createOutput = await session.executeCommand(
       `traffic-profile ${profile.name} ip cir ${profile.downKbps} cbs 1000 pir ${profile.downKbps} pbs 1000`,
     );
     if (this.isOltErrorResponse(createOutput)) {
-      // Salir de "(config)#" antes de lanzar -- sin esto, un rechazo dejaba
-      // la sesión a medio salir del modo de configuración (inconsistente con
-      // `ensureOnuTypeProfileWithSession`, que sí hace "exit" en su propio
-      // camino de error; bug real confirmado por revisión de código,
-      // 2026-10-23). Best-effort: si el socket ya está en mal estado, no
-      // debe enmascarar el error original.
+      // Salir de "(config)#" antes de lanzar
       try {
         await session.executeCommand('exit');
       } catch {
@@ -1613,6 +1601,35 @@ export class ZteC320Driver implements IOltDriver {
     }
     await session.executeCommand('exit');
     await session.executeCommand('write');
+  }
+
+  parseTrafficProfilesFromOutput(output: string): DiscoveredTrafficProfile[] {
+    const regex = /No\.\s*\d+\s+profile\s*:\s*([^\r\n]+)/g;
+    const profiles: DiscoveredTrafficProfile[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(output)) !== null) {
+      const name = match[1].trim();
+      if (!name) continue;
+      const mbMatch = name.match(/TRAFFIC-(\d+)M/i);
+      const downKbps = mbMatch ? parseInt(mbMatch[1], 10) * 1024 : undefined;
+      profiles.push({ name, downKbps });
+    }
+    return profiles;
+  }
+
+  /**
+   * Consulta qué perfiles de tráfico (downstream) REALMENTE existen en la OLT
+   * mediante "show traffic-profile" (confirmado en vivo contra OLT_Tabara_Abajo).
+   */
+  async getTrafficProfiles(params: OltConnectionParams): Promise<DiscoveredTrafficProfile[]> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand('show traffic-profile');
+      return this.parseTrafficProfilesFromOutput(output);
+    } finally {
+      session.close();
+    }
   }
 
   /**
@@ -2039,6 +2056,9 @@ export class ZteC320Driver implements IOltDriver {
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show gpon
       // profile tcont" responde con ~40 perfiles reales ya configurados.
       tcontDiscovery: true,
+      // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-27): "show traffic-profile"
+      // responde con los 15 perfiles de tráfico de bajada existentes.
+      trafficDiscovery: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): se creó y
       // eliminó un traffic-profile de prueba real ("SUMTECH-TEST-DELETE-ME")
       // con el flujo completo configure terminal/traffic-profile/exit/write

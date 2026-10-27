@@ -1504,34 +1504,39 @@ export class OnuManagementService {
       }
     }
 
-    // Perfil de velocidad (TCONT en GPON, kbps crudos para drivers que lo
-    // necesiten así, ej. EPON) — antes de este fix nunca se leía
-    // dto.speedProfileId, así que ningún fabricante recibía el perfil que el
-    // usuario elegía en el modal (ZTE siempre caía en su default hardcodeado).
-    let tcontProfile: string | undefined;
-    let trafficProfile: string | undefined;
+    // Perfil de velocidad (TCONT en GPON para subida, Traffic Profile para bajada)
+    // Permite pasar tcontProfile y trafficProfile explícitamente desde el modal de autorización
+    // (dos dropdowns separados) o resolverlos vía dto.speedProfileId.
+    let tcontProfile: string | undefined = dto.tcontProfile || undefined;
+    let trafficProfile: string | undefined = dto.trafficProfile || undefined;
     let downKbps: number | undefined;
     let upKbps: number | undefined;
+
     if (dto.speedProfileId) {
       const profile = await this.speedProfileRepository.findOneBy({ id: dto.speedProfileId });
       if (profile) {
-        tcontProfile = profile.vendorTcontProfile || undefined;
-        // Fallback con la MISMA convención que `OltCatalogsService.createSpeedProfile()`
-        // genera para un perfil nuevo ("TRAFFIC-<Mbps>M") -- sin esto, cualquier
-        // perfil dado de alta por el importador de TCONT reales
-        // (`importDiscoveredSpeedProfile`, que NUNCA asigna vendorTrafficProfile
-        // -- confirmado: así quedaron los ~40 perfiles "SMARTOLT-*-UP" reales de
-        // producción) se queda sin traffic-profile para siempre, y
-        // `generateAuthorizationScript()` nunca manda "traffic-profile ... vport
-        // 1 direction egress" -- el cliente queda con el UPLOAD limitado por el
-        // TCONT pero el DOWNLOAD sin gestionar en la OLT. `ensureTrafficProfile`
-        // crea este nombre en caliente si no existe todavía (es idempotente), así
-        // que generarlo aquí basta para que quede resuelto en la próxima
-        // autorización, sin necesitar editar cada perfil del catálogo a mano.
-        trafficProfile =
-          profile.vendorTrafficProfile || `TRAFFIC-${Math.round(profile.downKbps / 1024)}M`;
+        if (!tcontProfile) tcontProfile = profile.vendorTcontProfile || undefined;
+        if (!trafficProfile) {
+          trafficProfile =
+            profile.vendorTrafficProfile || `TRAFFIC-${Math.round(profile.downKbps / 1024)}M`;
+        }
         downKbps = profile.downKbps;
         upKbps = profile.upKbps;
+      }
+    }
+
+    // Si trafficProfile vino explícito (ej. "TRAFFIC-108M") pero downKbps no está definido, derivar downKbps
+    if (trafficProfile && !downKbps) {
+      const mbMatch = trafficProfile.match(/TRAFFIC-(\d+)M/i);
+      if (mbMatch) {
+        downKbps = parseInt(mbMatch[1], 10) * 1024;
+      }
+    }
+    // Si tcontProfile vino explícito pero upKbps no está definido, derivar upKbps
+    if (tcontProfile && !upKbps) {
+      const mbMatch = tcontProfile.match(/(?:SMARTOLT-|TCONT-)(\d+)M/i);
+      if (mbMatch) {
+        upKbps = parseInt(mbMatch[1], 10) * 1024;
       }
     }
 

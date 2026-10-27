@@ -753,6 +753,30 @@ describe('OnuManagementService', () => {
       );
     });
 
+    it('prioriza tcontProfile y trafficProfile explícitos pasados desde el modal con dos dropdowns', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      await service.authorizeOnu('onu-uuid-1', {
+        serviceVlanId: 'vlan-1',
+        onuTypeId: 'type-1',
+        tcontProfile: 'SMARTOLT-100M-UP',
+        trafficProfile: 'TRAFFIC-108M',
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+      });
+
+      expect(zteDriver.authorizeOnu).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          tcontProfile: 'SMARTOLT-100M-UP',
+          trafficProfile: 'TRAFFIC-108M',
+          downKbps: 110592,
+          upKbps: 102400,
+        }),
+      );
+    });
+
     it('pasa clientName/description tal cual al driver -- el backend no los recalcula, confía en lo que resolvió el frontend (ver docs/onu-tr069-provisioning-zte-c320.md)', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
       zteDriver.authorizeOnu.mockResolvedValue({ ok: true });

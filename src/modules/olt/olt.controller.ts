@@ -269,6 +269,20 @@ export class OltController {
     return this.catalogsService.scanRealSpeedProfiles(oltId);
   }
 
+  /** Descubrimiento brownfield: perfiles de tráfico de bajada que YA existen en la OLT real. Solo lectura. */
+  @Get('olts/:oltId/traffic-profiles/scan')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async scanOltRealTrafficProfiles(@Param('oltId') oltId: string) {
+    return this.catalogsService.scanRealTrafficProfiles(oltId);
+  }
+
+  /** Catálogo unificado de perfiles para una OLT (TCONT subida + Traffic bajada + Catálogo). */
+  @Get('olts/:oltId/profiles-catalog')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
+  async getOltProfilesCatalog(@Param('oltId') oltId: string) {
+    return this.catalogsService.getOltProfilesCatalog(oltId);
+  }
+
   /** Da de alta en Sumtech un perfil TCONT descubierto por /speed-profiles/scan -- no escribe nada en la OLT, ya existía. */
   @Post('speed-profiles/import')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)

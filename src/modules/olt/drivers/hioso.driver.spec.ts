@@ -38,6 +38,7 @@ describe('HiosoDriver', () => {
       onuPassiveImport: false,
       vlanDiscovery: true,
       tcontDiscovery: false,
+      trafficDiscovery: false,
       downstreamTrafficProfile: false,
       onuTypeProfileProvisioning: false,
     });

@@ -1,0 +1,45 @@
+-- Migración 101: Emparejamiento de perfiles de velocidad OLT con perfiles de tráfico de bajada reales (show traffic-profile)
+-- Resuelve que vendor_traffic_profile quede en NULL para los perfiles descubiertos de la OLT ZTE C320.
+
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-2M', down_kbps = 2048 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-1M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-2M', down_kbps = 2048 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-2M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-4M', down_kbps = 4096 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-3M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-4M', down_kbps = 4096 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-4M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-5M', down_kbps = 5120 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-5M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-10M', down_kbps = 10240 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-10M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-21M', down_kbps = 21504 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-20M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-27M', down_kbps = 27648 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-25M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-31M', down_kbps = 31744 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-30M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-410M', down_kbps = 41984 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-40M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-62M', down_kbps = 63488 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-50M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-62M', down_kbps = 63488 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-60M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-108M', down_kbps = 110592 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-90M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-108M', down_kbps = 110592 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-100M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-153M', down_kbps = 156672 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-125-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-153M', down_kbps = 156672 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-150M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-205M', down_kbps = 209920 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-200M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-410M', down_kbps = 419840 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-300M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-410M', down_kbps = 419840 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-400M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-512M', down_kbps = 524288 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-500M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-977M', down_kbps = 1000448 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-1G-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-977M', down_kbps = 1000448 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-T1-1G-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-977M', down_kbps = 1000448 WHERE vendor_tcont_profile ILIKE 'T1-1G';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-205M', down_kbps = 209920 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-T1-200M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-205M', down_kbps = 209920 WHERE vendor_tcont_profile ILIKE 'T1-200M';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-10M', down_kbps = 10240 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-VOIPMNG-10M';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-10M', down_kbps = 10240 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-VOIPMNG-10M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-10M', down_kbps = 10240 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-IPTV-10M-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-977M', down_kbps = 1000448 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-PLAN-ALTO-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-977M', down_kbps = 1000448 WHERE vendor_tcont_profile ILIKE 'PLAN-ALTO';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-977M', down_kbps = 1000448 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-2M-SHOW-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-108M', down_kbps = 110592 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-IPV6-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-108M', down_kbps = 110592 WHERE vendor_tcont_profile ILIKE 'IPV6';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-108M', down_kbps = 110592 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-IPV6TEST-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-108M', down_kbps = 110592 WHERE vendor_tcont_profile ILIKE 'IPV6TEST';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-108M', down_kbps = 110592 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-INTERNET-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-108M', down_kbps = 110592 WHERE vendor_tcont_profile ILIKE 'INTERNET';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-2M', down_kbps = 2048 WHERE vendor_tcont_profile ILIKE 'VOIP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-2M', down_kbps = 2048 WHERE vendor_tcont_profile ILIKE 'VIDEO';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-2M', down_kbps = 2048 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-video-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-10M', down_kbps = 10496 WHERE vendor_tcont_profile ILIKE 'SMARTOLT-IPTV-IPTV_UP-UP';
+UPDATE net.olt_speed_profiles SET vendor_traffic_profile = 'TRAFFIC-10M', down_kbps = 10000 WHERE vendor_tcont_profile ILIKE 'DEFAULT';

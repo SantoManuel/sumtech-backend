@@ -47,6 +47,16 @@ export interface DiscoveredTcontProfile {
   speedKbps: number;
 }
 
+/**
+ * Perfil de tráfico de bajada (downstream) real encontrado por `getTrafficProfiles` --
+ * ver `trafficDiscovery` en OltDriverCapabilities.
+ */
+export interface DiscoveredTrafficProfile {
+  name: string;
+  downKbps?: number;
+}
+
+
 export interface DiscoveredInterface {
   name: string; // ej: 'gpon-olt_1/1/1', 'gei_1/3/1'
   type: 'PON' | 'UPLINK' | 'DOWNLINK' | 'MGMT';
@@ -270,6 +280,12 @@ export interface OltDriverCapabilities {
    */
   tcontDiscovery: boolean;
   /**
+   * Consultar qué perfiles de tráfico (downstream) REALMENTE existen en la OLT,
+   * vía `getTrafficProfiles` (método opcional de IOltDriver). Permite descubrir e
+   * importar al catálogo de Sumtech lo que la OLT ya tiene configurado.
+   */
+  trafficDiscovery: boolean;
+  /**
    * Crear/asegurar el "traffic-profile" (CIR/PIR) que limita el ancho de
    * banda de BAJADA (downstream) en el vport de la ONU -- distinto de
    * `dbaProfile`/TCONT, que en GPON solo gobierna la SUBIDA (ITU-T G.984).
@@ -316,6 +332,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   onuPassiveImport: false,
   vlanDiscovery: false,
   tcontDiscovery: false,
+  trafficDiscovery: false,
   downstreamTrafficProfile: false,
   onuTypeProfileProvisioning: false,
 };
@@ -375,6 +392,12 @@ export interface IOltDriver {
    * tienen un comando de solo lectura equivalente confirmado.
    */
   getTcontProfiles?(params: OltConnectionParams): Promise<DiscoveredTcontProfile[]>;
+  /**
+   * Perfiles de Tráfico (bajada / downstream) REALES configurados en la OLT
+   * (ver `trafficDiscovery` en OltDriverCapabilities) -- opcional porque no todos
+   * los fabricantes tienen un comando de solo lectura equivalente confirmado.
+   */
+  getTrafficProfiles?(params: OltConnectionParams): Promise<DiscoveredTrafficProfile[]>;
   getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower>;
   /**
    * `warning` (opcional, solo con `ok: true`): la autorización en sí tuvo

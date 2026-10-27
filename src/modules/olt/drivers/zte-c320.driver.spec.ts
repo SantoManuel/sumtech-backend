@@ -876,8 +876,89 @@ describe('ZteC320Driver', () => {
     });
   });
 
-  describe('ensureTrafficProfile (bajada/downstream, confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-19)', () => {
-    it('ensureTrafficProfile declara el perfil con "configure terminal"/"traffic-profile ... ip cir <kbps> cbs 1000 pir <kbps> pbs 1000"/"exit"/"write", sin chequeo de existencia previo', async () => {
+  describe('ensureTrafficProfile y getTrafficProfiles (bajada/downstream, confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-27)', () => {
+    const REAL_TRAFFIC_OUTPUT = `
+-----------------------------------------------------------------
+No. 1 profile : TRAFFIC-2M
+-----------------------------------------------------------------
+No. 2 profile : TRAFFIC-4M
+-----------------------------------------------------------------
+No. 3 profile : TRAFFIC-5M
+-----------------------------------------------------------------
+No. 4 profile : TRAFFIC-10M
+-----------------------------------------------------------------
+No. 5 profile : TRAFFIC-21M
+-----------------------------------------------------------------
+No. 6 profile : TRAFFIC-27M
+-----------------------------------------------------------------
+No. 7 profile : TRAFFIC-31M
+-----------------------------------------------------------------
+No. 8 profile : TRAFFIC-62M
+-----------------------------------------------------------------
+No. 9 profile : TRAFFIC-108M
+-----------------------------------------------------------------
+No.10 profile : TRAFFIC-153M
+-----------------------------------------------------------------
+No.11 profile : TRAFFIC-196M
+-----------------------------------------------------------------
+         No.12 profile : TRAFFIC-205M
+-----------------------------------------------------------------
+No.13 profile : TRAFFIC-410M
+-----------------------------------------------------------------
+No.14 profile : TRAFFIC-512M
+-----------------------------------------------------------------
+No.15 profile : TRAFFIC-977M
+`;
+
+    it('parseTrafficProfilesFromOutput parsea correctamente la salida real de show traffic-profile', () => {
+      const parsed = driver.parseTrafficProfilesFromOutput(REAL_TRAFFIC_OUTPUT);
+      expect(parsed).toHaveLength(15);
+      expect(parsed[0]).toEqual({ name: 'TRAFFIC-2M', downKbps: 2048 });
+      expect(parsed[4]).toEqual({ name: 'TRAFFIC-21M', downKbps: 21504 });
+      expect(parsed[8]).toEqual({ name: 'TRAFFIC-108M', downKbps: 110592 });
+      expect(parsed[14]).toEqual({ name: 'TRAFFIC-977M', downKbps: 1000448 });
+    });
+
+    it('getTrafficProfiles ejecuta "show traffic-profile" y devuelve los perfiles descubiertos', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(REAL_TRAFFIC_OUTPUT);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const profiles = await driver.getTrafficProfiles({
+        host: '10.0.0.10',
+        port: 23,
+        username: 'admin',
+        password: 'password',
+      });
+
+      expect(executeCommand).toHaveBeenCalledWith('show traffic-profile');
+      expect(profiles).toHaveLength(15);
+      expect(profiles.find((p) => p.name === 'TRAFFIC-108M')).toBeDefined();
+    });
+
+    it('ensureTrafficProfile no ejecuta configure terminal ni write si el perfil ya existe en show traffic-profile', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(REAL_TRAFFIC_OUTPUT);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.ensureTrafficProfile(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { name: 'TRAFFIC-108M', downKbps: 110592 },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('show traffic-profile');
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+
+    it('ensureTrafficProfile declara el perfil si no existe en show traffic-profile', async () => {
       const executeCommand = jest.fn().mockResolvedValue('');
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
@@ -892,30 +973,12 @@ describe('ZteC320Driver', () => {
 
       expect(result.ok).toBe(true);
       expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'show traffic-profile',
         'configure terminal',
         'traffic-profile TRAFFIC-NUEVO-5M ip cir 5000 cbs 1000 pir 5000 pbs 1000',
         'exit',
         'write',
       ]);
-    });
-
-    it('redeclarar un perfil que ya existe es en sí mismo idempotente (confirmado en vivo: sin error al repetir el mismo comando)', async () => {
-      const executeCommand = jest.fn().mockResolvedValue('');
-      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
-        connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand,
-        close: jest.fn(),
-      });
-
-      const result = await driver.ensureTrafficProfile(
-        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        { name: 'TRAFFIC-50M', downKbps: 51200 },
-      );
-
-      expect(result.ok).toBe(true);
-      expect(executeCommand).toHaveBeenCalledWith(
-        'traffic-profile TRAFFIC-50M ip cir 51200 cbs 1000 pir 51200 pbs 1000',
-      );
     });
   });
 

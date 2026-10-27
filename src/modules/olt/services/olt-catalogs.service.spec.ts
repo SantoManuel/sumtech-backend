@@ -880,5 +880,54 @@ describe('OltCatalogsService', () => {
       ).rejects.toThrow(NotFoundException);
     });
   });
+
+  describe('scanRealTrafficProfiles y getOltProfilesCatalog', () => {
+    const mockOlt = {
+      id: 'olt-zte-1',
+      name: 'OLT_Tabara_Abajo',
+      vendor: 'ZTE',
+    };
+
+    it('scanRealTrafficProfiles descubre perfiles y marca alreadyTracked si coinciden con vendorTrafficProfile', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      const getTrafficProfiles = jest.fn().mockResolvedValue([
+        { name: 'TRAFFIC-108M', downKbps: 110592 },
+        { name: 'TRAFFIC-NUEVO', downKbps: 51200 },
+      ]);
+      driverRegistry.resolve.mockReturnValue({ getTrafficProfiles });
+      connectionResolver.resolve.mockResolvedValue({ host: '10.0.0.1' });
+      speedProfileRepo.find.mockResolvedValue([
+        { id: 'sp-1', vendorTrafficProfile: 'TRAFFIC-108M' },
+      ]);
+
+      const result = await service.scanRealTrafficProfiles('olt-zte-1');
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toEqual({ name: 'TRAFFIC-108M', downKbps: 110592, alreadyTracked: true });
+      expect(result[1]).toEqual({ name: 'TRAFFIC-NUEVO', downKbps: 51200, alreadyTracked: false });
+    });
+
+    it('getOltProfilesCatalog devuelve catálogo unificado con tcontProfiles, trafficProfiles y catalogProfiles', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      const getTcontProfiles = jest.fn().mockResolvedValue([{ name: 'SMARTOLT-100M-UP', type: 5, speedKbps: 110080 }]);
+      const getTrafficProfiles = jest.fn().mockResolvedValue([{ name: 'TRAFFIC-108M', downKbps: 110592 }]);
+      driverRegistry.resolve.mockReturnValue({ getTcontProfiles, getTrafficProfiles });
+      connectionResolver.resolve.mockResolvedValue({ host: '10.0.0.1' });
+      speedProfileRepo.find.mockResolvedValue([
+        { id: 'sp-1', name: '100M', vendorTcontProfile: 'SMARTOLT-100M-UP', vendorTrafficProfile: 'TRAFFIC-108M' },
+      ]);
+
+      const catalog = await service.getOltProfilesCatalog('olt-zte-1');
+
+      expect(catalog.oltId).toBe('olt-zte-1');
+      expect(catalog.vendor).toBe('ZTE');
+      expect(catalog.tcontProfiles).toHaveLength(1);
+      expect(catalog.tcontProfiles[0].name).toBe('SMARTOLT-100M-UP');
+      expect(catalog.trafficProfiles).toHaveLength(1);
+      expect(catalog.trafficProfiles[0].name).toBe('TRAFFIC-108M');
+      expect(catalog.catalogProfiles).toHaveLength(1);
+    });
+  });
 });
+
 
