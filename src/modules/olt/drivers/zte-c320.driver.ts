@@ -801,19 +801,23 @@ export class ZteC320Driver implements IOltDriver {
       'exit',
 
       // === FASE 3: Inicialización de Flows y Mapeo GEM (pon-onu-mng) ===
-      // Orden estricto por cada Flow: 1° flow mode -> 2° flow pri/vlan -> 3° flow switch -> 4° gemport flow
+      // Orden estricto ZTE GPONRM:
+      // 1° Instanciar flow en el switch: flow <id> switch switch_0/1 (sin esto, OLT rechaza con %Code 63953 "Flow does not exist")
+      // 2° flow mode <id> tag-filter vlan-filter untag-filter discard
+      // 3° flow <id> pri <prio> vlan <vlan>
+      // 4° gemport <id> flow <id>
       `pon-onu-mng ${onuInterface}`,
+      'flow 1 switch switch_0/1',
       'flow mode 1 tag-filter vlan-filter untag-filter discard',
       `flow 1 pri 0 vlan ${config.serviceVlan}`,
-      'flow 1 switch switch_0/1',
       'gemport 1 flow 1',
     );
 
     if (hasTr069) {
       commands.push(
+        'flow 2 switch switch_0/1',
         'flow mode 2 tag-filter vlan-filter untag-filter discard',
         `flow 2 pri 2 vlan ${config.tr069Vlan}`,
-        'flow 2 switch switch_0/1',
         'gemport 2 flow 2',
       );
     }
@@ -864,7 +868,8 @@ export class ZteC320Driver implements IOltDriver {
       );
     }
 
-    commands.push('end', 'write');
+    // Cierre ordenado de sub-vistas (pon-onu-mng -> configure terminal -> EXEC) y persistencia
+    commands.push('exit', 'exit', 'write');
     return commands;
   }
 
@@ -883,10 +888,10 @@ export class ZteC320Driver implements IOltDriver {
     const commands: string[] = [
       'configure terminal',
       `pon-onu-mng ${onuInterface}`,
-      // 1. Inicializar Flow 2 en orden jerárquico
+      // 1. Inicializar Flow 2 en orden jerárquico ZTE GPONRM
+      'flow 2 switch switch_0/1',
       'flow mode 2 tag-filter vlan-filter untag-filter discard',
       `flow 2 pri 2 vlan ${config.tr069Vlan}`,
-      'flow 2 switch switch_0/1',
       'gemport 2 flow 2',
       // 2. Vincular puertos al switch_0/1 antes de filtrarlos
       'switchport-bind switch_0/1 iphost 2',
@@ -918,12 +923,17 @@ export class ZteC320Driver implements IOltDriver {
 
   /**
    * Ejecuta el aprovisionamiento de la ONU en la OLT respetando los tiempos de
-   * convergencia OMCI y evitando reiniciar la ONU a mitad del bloque TR-069.
+   * convergencia OMCI y el orden jerárquico estricto.
    */
   async authorizeOnu(
     params: OltConnectionParams,
     config: import('../ports/olt-driver.port').AuthorizeOnuParams,
-  ): Promise<{ ok: boolean; error?: string; warning?: string }> {
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    warning?: string;
+    verification?: import('../ports/olt-driver.port').OnuProvisioningVerification;
+  }> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
@@ -963,30 +973,128 @@ export class ZteC320Driver implements IOltDriver {
           inTr069Block = true;
         }
 
-        // IMPORTANTE: No usar applyAcsUrlWithRetries aquí porque reiniciaría la ONT
-        // ANTES de enviar "tr069-mgmt 1 tag..." y los "security-mgmt 5/998/999".
-        // Con el orden jerárquico corregido, la ONT acepta el comando directamente.
         const output = await session.executeCommand(cmd);
         if (this.isOltErrorResponse(output) && !this.isAlreadyAppliedResponse(output)) {
+          const errMsg = output.trim();
+          this.logger.warn(`[diag] authorizeOnu: OLT reportó error en comando "${cmd}": ${errMsg}`);
+
           if (inTr069Block) {
             if (!warning) {
               warning =
-                `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${output.trim()}. ` +
+                `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${errMsg}. ` +
                 'El canal de internet sí quedó configurado. Reintenta el TR-069 desde el panel.';
-              this.logger.warn(`[diag] authorizeOnu: TR-069 best-effort falló, continuando: ${warning}`);
             }
           } else {
-            throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
+            throw new Error(`La OLT rechazó el comando "${cmd}": ${errMsg}`);
           }
         }
       }
 
-      return { ok: true, warning };
+      // Verificación opcional post-aprovisionamiento
+      let verification: import('../ports/olt-driver.port').OnuProvisioningVerification | undefined;
+      if (config.verifyPostProvisioning) {
+        await this.delay(3000);
+        verification = await this.verifyOnuProvisioningWithSession(session, config.ponInterface, config.onuId, {
+          expectedVlans: [config.serviceVlan, ...(config.tr069Vlan ? [config.tr069Vlan] : [])],
+        });
+        if (verification.warnings.length > 0) {
+          warning = warning ? `${warning}. ${verification.warnings.join(' ')}` : verification.warnings.join(' ');
+        }
+      }
+
+      return { ok: true, warning, verification };
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
       session.close();
     }
+  }
+
+  /**
+   * Verificación post-aprovisionamiento en la OLT:
+   * 1. show gpon remote-onu ip-host gpon-onu_{port}:{onu_id} (valida IP en Host ID: 2)
+   * 2. show mac gpon onu gpon-onu_{port}:{onu_id} (valida aprendizaje de MACs en VLANs)
+   */
+  async verifyOnuProvisioning(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+    options?: { expectedVlans?: number[]; timeoutMs?: number },
+  ): Promise<import('../ports/olt-driver.port').OnuProvisioningVerification> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return await this.verifyOnuProvisioningWithSession(session, ponInterface, onuId, options);
+    } finally {
+      session.close();
+    }
+  }
+
+  private async verifyOnuProvisioningWithSession(
+    session: ReturnType<ZteC320Driver['createSession']>,
+    ponInterface: string,
+    onuId: number,
+    options?: { expectedVlans?: number[] },
+  ): Promise<import('../ports/olt-driver.port').OnuProvisioningVerification> {
+    const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+    const warnings: string[] = [];
+
+    // 1. show gpon remote-onu ip-host gpon-onu_{port}:{onu_id}
+    const rawIpHost = await session.executeCommand(`show gpon remote-onu ip-host ${onuInterface}`);
+    let mgmtIp: string | undefined;
+    let ipHostFound = false;
+
+    // Buscar Host ID: 2 (gestión TR-069)
+    const host2Match = rawIpHost.match(/Host\s*(?:ID)?\s*:\s*2\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
+    const searchTarget = host2Match ? host2Match[1] : rawIpHost;
+
+    if (host2Match) {
+      ipHostFound = true;
+    }
+
+    const ipMatch = searchTarget.match(/(?:IP(?:\s+address)?|Current\s*IP)\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/i);
+    if (ipMatch) {
+      const parsedIp = ipMatch[1];
+      if (parsedIp !== '0.0.0.0') {
+        mgmtIp = parsedIp;
+      }
+    }
+
+    if (!mgmtIp) {
+      warnings.push('Host ID: 2 no ha obtenido dirección IP (0.0.0.0 o sin asignar).');
+    }
+
+    // 2. show mac gpon onu gpon-onu_{port}:{onu_id}
+    const rawMac = await session.executeCommand(`show mac gpon onu ${onuInterface}`);
+    const learnedMacs: Array<{ mac: string; vlan: number }> = [];
+
+    const macRegex = /([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}|[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s+(?:\S+\s+)?(\d+)/gi;
+    let match: RegExpExecArray | null;
+    while ((match = macRegex.exec(rawMac)) !== null) {
+      learnedMacs.push({
+        mac: match[1],
+        vlan: parseInt(match[2], 10),
+      });
+    }
+
+    if (options?.expectedVlans && options.expectedVlans.length > 0) {
+      for (const expectedVlan of options.expectedVlans) {
+        const found = learnedMacs.some((lm) => lm.vlan === expectedVlan);
+        if (!found) {
+          warnings.push(`No se han aprendido direcciones MAC en la VLAN configurada ${expectedVlan}.`);
+        }
+      }
+    }
+
+    return {
+      ok: warnings.length === 0,
+      mgmtIp,
+      ipHostFound,
+      learnedMacs,
+      warnings,
+      rawIpHost,
+      rawMac,
+    };
   }
 
   /**
@@ -2036,6 +2144,13 @@ export class ZteTelnetSession {
         }
       });
     });
+
+    // Desactivar paginación CLI ZTE para evitar cuelgues por prompts --More--
+    try {
+      await this.executeCommand('terminal length 0', 3000);
+    } catch (err: any) {
+      this.logger.debug?.(`terminal length 0 no soportado o ignorado: ${err.message}`);
+    }
   }
 
   async executeCommand(command: string, timeoutMs = 20000): Promise<string> {

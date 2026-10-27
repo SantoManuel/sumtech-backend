@@ -133,11 +133,7 @@ describe('ZteC320Driver', () => {
     // (Etapa 2, reintentable) -- authorizeOnu() nunca reinicia el ONT.
     expect(commands).not.toContain(REBOOT_ONU_SENTINEL);
 
-    // Ahora SÍ entra a "(gpon-onu-mng)#" (para el cableado de internet), así
-    // que cierra con "end" (nunca "exit" ahí, ver bloque TR-069) + "write" --
-    // ya NO son dos "exit" seguidos, porque "end" ya deja la sesión en el
-    // prompt top-level "#" de un solo golpe.
-    expect(commands.slice(-2)).toEqual(['end', 'write']);
+    expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
   });
 
   it('sin managementMethod TR069 (ej. ONU gestionado por OMCI puro, sin Red TR-069 asignada) NO genera el canal de gestión ni el bloque tr069-mgmt -- bug real evitado: antes esto mandaba literalmente "tr069-mgmt 1 acs undefined" a la OLT porque OnuAuthorizeModal.tsx (Etapa 1 del frontend) no recolecta tr069NetworkId', () => {
@@ -173,7 +169,7 @@ describe('ZteC320Driver', () => {
     // Clave: jamás "undefined" en ningún comando generado.
     expect(commands.some((c) => c.includes('undefined'))).toBe(false);
 
-    expect(commands.slice(-2)).toEqual(['end', 'write']);
+    expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
   });
 
   it('con managementMethod TR069 pero SIN tr069Url (Red TR-069 sin acsUrl configurado) tampoco genera el canal de gestión -- misma guardia, otro disparador', () => {
@@ -290,13 +286,6 @@ describe('ZteC320Driver', () => {
       const veipPortIdx = commands.indexOf('veip 1 port udp 1232 host 2');
       expect(bindVeipIdx).toBeLessThan(veipPortIdx);
 
-      // Los SET de OMCI de este ONT no son idempotentes -- un reinicio
-      // obligatorio (vía el sentinel que `applyTr069Management()` intercepta,
-      // ver REBOOT_ONU_SENTINEL) va justo antes de "end", que NUNCA es "exit"
-      // -- con "exit" la OLT real pregunta "Confirm to logout without
-      // saving? [yes/no]:" y la sesión se cuelga (bug real en producción,
-      // 2026-10-19, ver también los ejemplos del manual ZXA10 C300 §2.11-2.13,
-      // todos usan "end" ahí).
       expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
     });
 
@@ -366,7 +355,7 @@ describe('ZteC320Driver', () => {
       managementMethod: 'OMCI',
       operationMode: 'ROUTER',
     });
-    expect(omciCommands.slice(-2)).toEqual(['end', 'write']);
+    expect(omciCommands.slice(-3)).toEqual(['exit', 'exit', 'write']);
 
     const tr069Commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
@@ -378,7 +367,7 @@ describe('ZteC320Driver', () => {
       managementMethod: 'TR069',
       operationMode: 'ROUTER',
     });
-    expect(tr069Commands.slice(-2)).toEqual(['end', 'write']);
+    expect(tr069Commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
   });
 
   it('parsea correctamente las ONUs no configuradas y extrae serial y fabricante (RF-OLT-014)', async () => {
@@ -2033,6 +2022,153 @@ No.15 profile : TRAFFIC-977M
     expect(calledCommands.indexOf('show onu-type gpon HUAWEY-HG8546M')).toBe(0);
     expect(calledCommands).toContain('onu-type-if HUAWEY-HG8546M eth_0/1-4');
     expect(calledCommands).toContain('onu-type-if HUAWEY-HG8546M pots_0/1-2');
+  });
+
+  describe('verifyOnuProvisioning()', () => {
+    it('valida exitosamente cuando Host ID: 2 tiene IP válida y se aprenden MACs en las VLANs esperadas', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show gpon remote-onu ip-host')) {
+          return Promise.resolve(`
+Onu interface: gpon-onu_1/2/15:1
+Host ID: 1
+  IP: 0.0.0.0
+Host ID: 2
+  IP: 10.46.10.15
+  Mask: 255.255.255.0
+  Gateway: 10.46.10.1
+  MAC: b4:54:59:6f:12:04
+OLT#`);
+        }
+        if (cmd.startsWith('show mac gpon onu')) {
+          return Promise.resolve(`
+Total mac address : 2
+Mac Address       Port                   Vlan  Type
+-----------------------------------------------------
+b454.596f.1204    gpon-onu_1/2/15:1      400   Dynamic
+c850.e912.3456    gpon-onu_1/2/15:1      46    Dynamic
+OLT#`);
+        }
+        return Promise.resolve('');
+      });
+
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const verification = await driver.verifyOnuProvisioning(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/15',
+        1,
+        { expectedVlans: [400, 46] },
+      );
+
+      expect(verification.ok).toBe(true);
+      expect(verification.mgmtIp).toBe('10.46.10.15');
+      expect(verification.ipHostFound).toBe(true);
+      expect(verification.learnedMacs).toHaveLength(2);
+      expect(verification.warnings).toHaveLength(0);
+    });
+
+    it('genera warning si Host ID: 2 tiene IP 0.0.0.0 y falta una de las VLANs esperadas', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show gpon remote-onu ip-host')) {
+          return Promise.resolve(`
+Host ID: 2
+  IP: 0.0.0.0
+OLT#`);
+        }
+        if (cmd.startsWith('show mac gpon onu')) {
+          return Promise.resolve(`
+b454.596f.1204    gpon-onu_1/2/15:1      400   Dynamic
+OLT#`);
+        }
+        return Promise.resolve('');
+      });
+
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const verification = await driver.verifyOnuProvisioning(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/15',
+        1,
+        { expectedVlans: [400, 46] },
+      );
+
+      expect(verification.ok).toBe(false);
+      expect(verification.mgmtIp).toBeUndefined();
+      expect(verification.warnings.some((w) => w.includes('0.0.0.0'))).toBe(true);
+      expect(verification.warnings.some((w) => w.includes('46'))).toBe(true);
+    });
+  });
+
+  describe('Secuencia y plantilla estricta de aprovisionamiento', () => {
+    it('genera exactamente la secuencia de 6 fases y orden jerárquico OMCI según plantilla', () => {
+      const commands = driver.generateAuthorizationScript({
+        ponInterface: 'gpon-olt_1/2/15',
+        onuId: 1,
+        modelTypeName: 'HUAWEY-HG8546M',
+        serialNumber: 'CMDCDD4D131E',
+        clientName: 'Test_3',
+        description: 'zone_Azua_Tabara_Abajo_authd_20261027',
+        serviceVlan: 400,
+        tcontProfile: 'SMARTOLT-100M-UP',
+        trafficProfile: undefined,
+        managementMethod: 'TR069',
+        operationMode: 'ROUTER',
+        tr069Vlan: 46,
+        tr069Url: 'http://10.69.69.1:14501',
+        tr069AcsUsername: 'soltcpe',
+        tr069AcsPassword: 'FiEpcY4srQj6',
+      });
+
+      // Validar fases
+      const p1 = commands.indexOf('interface gpon-olt_1/2/15');
+      const p2 = commands.indexOf('interface gpon-onu_1/2/15:1');
+      const p3 = commands.indexOf('pon-onu-mng gpon-onu_1/2/15:1');
+      expect(p1).toBeGreaterThanOrEqual(0);
+      expect(p2).toBeGreaterThan(p1);
+      expect(p3).toBeGreaterThan(p2);
+
+      // Fase 3 Flows (Instanciación con switch_0/1 ANTES de flow mode)
+      const f1Switch = commands.indexOf('flow 1 switch switch_0/1');
+      const f1Mode = commands.indexOf('flow mode 1 tag-filter vlan-filter untag-filter discard');
+      const f1Pri = commands.indexOf('flow 1 pri 0 vlan 400');
+      const f1Gem = commands.indexOf('gemport 1 flow 1');
+      expect(f1Mode).toBeGreaterThan(f1Switch);
+      expect(f1Pri).toBeGreaterThan(f1Mode);
+      expect(f1Gem).toBeGreaterThan(f1Pri);
+
+      // Fase 4 Switchport bind
+      const bind1 = commands.indexOf('switchport-bind switch_0/1 iphost 1');
+      const bind2 = commands.indexOf('switchport-bind switch_0/1 iphost 2');
+      const bindVeip = commands.indexOf('switchport-bind switch_0/1 veip 1');
+      expect(bind1).toBeGreaterThan(f1Gem);
+      expect(bind2).toBeGreaterThan(bind1);
+      expect(bindVeip).toBeGreaterThan(bind2);
+
+      // Fase 5 IP-Host
+      const iph1 = commands.indexOf('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
+      const iph1Vlan = commands.indexOf('vlan-filter iphost 1 pri 0 vlan 400');
+      expect(iph1).toBeGreaterThan(bindVeip);
+      expect(iph1Vlan).toBeGreaterThan(iph1);
+
+      // Fase 6 App / TR-069
+      const voip = commands.indexOf('voip protocol sip');
+      const acs = commands.indexOf(
+        'tr069-mgmt 1 acs http://10.69.69.1:14501 validate basic username soltcpe password FiEpcY4srQj6',
+      );
+      expect(voip).toBeGreaterThan(iph1Vlan);
+      expect(acs).toBeGreaterThan(voip);
+
+      // Cierre
+      expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
+    });
   });
 });
 

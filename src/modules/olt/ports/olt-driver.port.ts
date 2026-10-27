@@ -192,6 +192,18 @@ export interface AuthorizeOnuParams {
    * cláusula "validate" por completo (mismo comportamiento de antes). */
   tr069AcsUsername?: string;
   tr069AcsPassword?: string;
+  /** Habilita la verificación post-aprovisionamiento de IP-Host y aprendizaje de MACs en la OLT */
+  verifyPostProvisioning?: boolean;
+}
+
+export interface OnuProvisioningVerification {
+  ok: boolean;
+  mgmtIp?: string;
+  ipHostFound: boolean;
+  learnedMacs: Array<{ mac: string; vlan: number }>;
+  warnings: string[];
+  rawIpHost?: string;
+  rawMac?: string;
 }
 
 /**
@@ -481,6 +493,13 @@ export interface IOltDriver {
   generateAuthorizationScript(config: AuthorizeOnuParams): string[];
   /** Script CLI del bloque OMCI que apunta la ONU al ACS (TR-069) -- ver `applyTr069Management`. Asume `config.managementMethod==='TR069' && config.tr069Url && config.tr069Vlan`. */
   generateTr069ManagementScript(config: AuthorizeOnuParams): string[];
+  /** Verificación post-aprovisionamiento de IP de gestión (Host ID: 2) y MACs aprendidas en VLANs */
+  verifyOnuProvisioning?(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+    options?: { expectedVlans?: number[]; timeoutMs?: number },
+  ): Promise<OnuProvisioningVerification>;
   getRunningConfig?(params: OltConnectionParams): Promise<string>;
   /**
    * Ejecuta un comando CLI arbitrario tal cual el operador lo escriba, por
