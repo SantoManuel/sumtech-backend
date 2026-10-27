@@ -165,14 +165,37 @@ export class OnuManagementService {
       }
     }
     if (dto?.search) {
-      const q = `%${dto.search}%`;
-      // ClientEntity solo tiene "name" (un solo campo, no firstName/lastName
-      // separados) -- "client.firstName"/"client.lastName" nunca existieron
-      // como propiedades reales, así que TypeORM no podía traducirlos a una
-      // columna real y Postgres los rechazaba con "column client.firstname
-      // does not exist" (500 real confirmado en producción, 2026-10-22,
-      // reproducido buscando por serial de ONU con filtro de status activo).
-      qb.andWhere('(onu.serialNumber ILIKE :q OR onu.mac ILIKE :q OR client.name ILIKE :q)', { q });
+      const rawSearch = dto.search.trim();
+      if (rawSearch) {
+        const q = `%${rawSearch}%`;
+        const cleanRaw = rawSearch.replace(/[:.\-\s]/g, '');
+        const cleanQ = cleanRaw ? `%${cleanRaw}%` : q;
+
+        // Buscador 360° Universal: serial (con/sin dos puntos o guiones), MAC,
+        // nombre asignado en OLT (onu.name), descripción/zona (onu.description),
+        // nombre de cliente (client.name), cédula/RNC (client.docNumber), contrato
+        // (contract.contractNumber), índice óptico (onu.onuIndex), interfaz PON
+        // (ponInterface.name), OLT (olt.name) y modelo (onuType.modelName).
+        qb.andWhere(
+          `(
+            onu.serialNumber ILIKE :q
+            OR REPLACE(onu.serialNumber, ':', '') ILIKE :cleanQ
+            OR REPLACE(onu.serialNumber, '-', '') ILIKE :cleanQ
+            OR onu.mac ILIKE :q
+            OR REPLACE(onu.mac, ':', '') ILIKE :cleanQ
+            OR onu.name ILIKE :q
+            OR onu.description ILIKE :q
+            OR client.name ILIKE :q
+            OR client.docNumber ILIKE :cleanQ
+            OR contract.contractNumber ILIKE :q
+            OR onu.onuIndex ILIKE :q
+            OR ponInterface.name ILIKE :q
+            OR olt.name ILIKE :q
+            OR onuType.modelName ILIKE :q
+          )`,
+          { q, cleanQ },
+        );
+      }
     }
 
     // Entidad cruda (serialNumber/mac/onuIndex/ponInterface/onuType/rxPowerDbm/
@@ -376,7 +399,15 @@ export class OnuManagementService {
     const imported: OnuEntity[] = [];
     for (const item of discovered) {
       const existing = await this.onuRepository.findOneBy({ oltId: olt.id, serialNumber: item.serialNumber });
-      if (existing) continue;
+      if (existing) {
+        if ((!existing.name && item.name) || (!existing.description && item.description)) {
+          await this.onuRepository.update(existing.id, {
+            name: existing.name || item.name,
+            description: existing.description || item.description,
+          });
+        }
+        continue;
+      }
 
       const created = this.onuRepository.create({
         oltId: olt.id,
@@ -384,6 +415,8 @@ export class OnuManagementService {
         onuIndex: item.onuIndex,
         serialNumber: item.serialNumber,
         vendor: item.vendor,
+        name: item.name,
+        description: item.description,
         status: item.adminState === 'DISABLE' ? 'BLOCKED' : 'ACTIVE',
         detectedBy: 'OLT_IMPORT',
         detectedAt: new Date(),
@@ -665,6 +698,8 @@ export class OnuManagementService {
     onu.contractId = dto.contractId || onu.contractId;
     onu.onuTypeId = dto.onuTypeId || onu.onuTypeId;
     if (dto.onuIndex) onu.onuIndex = dto.onuIndex;
+    onu.name = authParams.clientName || onu.name;
+    onu.description = authParams.description || onu.description;
 
     await this.onuRepository.update(onu.id, {
       status: onu.status,
@@ -673,6 +708,8 @@ export class OnuManagementService {
       contractId: onu.contractId,
       onuTypeId: onu.onuTypeId,
       onuIndex: onu.onuIndex,
+      name: onu.name,
+      description: onu.description,
     });
 
     await this.deviceOperationLogger.logEvent({

@@ -545,6 +545,65 @@ describe('ZteC320Driver', () => {
     ).rejects.toThrow('no reconoce el puerto PON');
   });
 
+  describe('parseOnuRunningConfig / getOnuRunningConfig', () => {
+    it('parseOnuRunningConfig() extrae name y description de la configuración activa de la ONU', () => {
+      const output = `
+Building configuration...
+interface gpon-onu_1/2/15:1
+  name Test_3
+  description zone_Azua_Tabara_Abajo_authd_20261027
+  tcont 1 profile SMARTOLT-VOIPMNG-10M-UP
+  tcont 2 profile SMARTOLT-VOIPMNG-10M
+  gemport 1 tcont 1
+  gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN
+  gemport 2 tcont 2
+  gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M
+  service-port 1 vport 1 user-vlan 400 vlan 400
+  service-port 2 vport 2 user-vlan 4069 vlan 4069
+  traffic-profile TRAFFIC-10M vport 1 direction egress
+!
+end`;
+
+      const parsed = driver.parseOnuRunningConfig(output);
+      expect(parsed.name).toBe('Test_3');
+      expect(parsed.description).toBe('zone_Azua_Tabara_Abajo_authd_20261027');
+    });
+
+    it('parseOnuRunningConfig() maneja salidas sin name ni description limpiamente', () => {
+      const output = `
+interface gpon-onu_1/2/15:1
+  tcont 1 profile DEFAULT
+!`;
+      const parsed = driver.parseOnuRunningConfig(output);
+      expect(parsed.name).toBeUndefined();
+      expect(parsed.description).toBeUndefined();
+    });
+
+    it('getOnuRunningConfig() ejecuta "show running-config interface <iface>" y devuelve los campos parseados', async () => {
+      const mockConfig = `
+interface gpon-onu_1/2/15:1
+  name Juan_Perez
+  description Sector_Norte
+!`;
+      const executeCommand = jest.fn().mockResolvedValue(mockConfig);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const res = await driver.getOnuRunningConfig!(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-onu_1/2/15:1',
+      );
+
+      expect(executeCommand).toHaveBeenCalledWith('show running-config interface gpon-onu_1/2/15:1', 15000);
+      expect(res.name).toBe('Juan_Perez');
+      expect(res.description).toBe('Sector_Norte');
+      expect(res.raw).toBe(mockConfig);
+    });
+  });
+
   it('getVlanConfigForInterface() expande rangos con guión en la lista de VLANs reales (RF: brownfield -- confirmado en vivo contra OLT_Tabara_Abajo)', async () => {
     const fixturePath = path.join(__dirname, '../../../../test/fixtures/zte-c320/show_vlan_port_uplink_tagged.txt');
     const fixtureContent = fs.readFileSync(fixturePath, 'utf8');

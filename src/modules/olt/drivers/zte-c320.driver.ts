@@ -638,6 +638,38 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * Parsea name y description de la salida de "show running-config interface gpon-onu_X/Y/Z:ID".
+   */
+  parseOnuRunningConfig(output: string): { name?: string; description?: string } {
+    if (!output || typeof output !== 'string') return {};
+    const nameMatch = output.match(/^\s*name\s+(\S+)/mi);
+    const descMatch = output.match(/^\s*description\s+(\S+)/mi);
+    return {
+      name: nameMatch ? nameMatch[1] : undefined,
+      description: descMatch ? descMatch[1] : undefined,
+    };
+  }
+
+  /**
+   * Consulta la configuración activa de una sub-interfaz de ONU (ej. gpon-onu_1/2/15:1)
+   * para extraer name (cliente) y description (zona/fecha) directamente de la OLT.
+   */
+  async getOnuRunningConfig(
+    params: OltConnectionParams,
+    onuInterface: string,
+  ): Promise<{ name?: string; description?: string; raw?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand(`show running-config interface ${onuInterface}`, 15000);
+      const parsed = this.parseOnuRunningConfig(output);
+      return { ...parsed, raw: output };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
    * Consulta los niveles de potencia óptica RX/TX de una ONU (RF-OLT-015).
    * Ejecuta `show pon power attenuation gpon-onu_X:Y`.
    */

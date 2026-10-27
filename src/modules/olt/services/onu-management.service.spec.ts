@@ -284,6 +284,30 @@ describe('OnuManagementService', () => {
         statuses: ['AUTHORIZING', 'ACTIVE', 'BLOCKED', 'OFFLINE', 'LOS', 'ERROR'],
       });
     });
+
+    it('con search sanitiza con trim y aplica buscador 360° incluyendo onu.name y onu.description de la OLT', async () => {
+      await service.findAll({ search: '  Test_3  ' } as any);
+
+      expect(onuQueryBuilder.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('onu.name ILIKE :q'),
+        expect.objectContaining({
+          q: '%Test_3%',
+          cleanQ: '%Test_3%',
+        }),
+      );
+    });
+
+    it('con search de MAC o serial con dos puntos, genera cleanQ sin separadores', async () => {
+      await service.findAll({ search: 'b4:54:59:6f:12:04' } as any);
+
+      expect(onuQueryBuilder.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('REPLACE(onu.serialNumber, \':\', \'\') ILIKE :cleanQ'),
+        expect.objectContaining({
+          q: '%b4:54:59:6f:12:04%',
+          cleanQ: '%b454596f1204%',
+        }),
+      );
+    });
   });
 
   describe('findUnconfigured', () => {

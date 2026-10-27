@@ -97,6 +97,8 @@ export interface DiscoveredAuthorizedOnu {
   onuType?: string; // modelo/tipo real reportado por la OLT, ej. 'EG8141A5'
   adminState: 'ENABLE' | 'DISABLE';
   phaseState?: string; // ej. 'working' | 'ready' | 'OffLine' | 'LOS' | 'DyingGasp'
+  name?: string; // Nombre de abonado asignado en la OLT (name <cliente>)
+  description?: string; // Descripción asignada en la OLT (description <zona_fecha>)
 }
 
 export interface OltSystemHealth {
@@ -398,6 +400,14 @@ export interface IOltDriver {
    * los fabricantes tienen un comando de solo lectura equivalente confirmado.
    */
   getTrafficProfiles?(params: OltConnectionParams): Promise<DiscoveredTrafficProfile[]>;
+  /**
+   * Lee la configuración activa de una sub-interfaz de ONU (ej. gpon-onu_1/2/15:1)
+   * para obtener su name, description, perfiles y puertos configurados en la OLT.
+   */
+  getOnuRunningConfig?(
+    params: OltConnectionParams,
+    onuInterface: string,
+  ): Promise<{ name?: string; description?: string; raw?: string }>;
   getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower>;
   /**
    * `warning` (opcional, solo con `ok: true`): la autorización en sí tuvo

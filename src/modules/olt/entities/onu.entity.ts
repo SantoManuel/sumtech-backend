@@ -59,6 +59,12 @@ export class OnuEntity {
   @Column({ type: 'varchar', length: 50, nullable: true })
   model?: string;
 
+  @Column({ type: 'varchar', length: 150, nullable: true })
+  name?: string;
+
+  @Column({ type: 'text', nullable: true })
+  description?: string;
+
   @Column({ name: 'onu_type_id', type: 'uuid', nullable: true })
   onuTypeId?: string;
 
