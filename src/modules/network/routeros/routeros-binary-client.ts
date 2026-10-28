@@ -57,10 +57,17 @@ const DEFAULT_TIMEOUT_SEC = 8;
  * Fase 1 Lote A): los métodos de SOLO LECTURA que ya eran el problema
  * reportado (getInterfaces/getIpPools y el resto de listados usados por
  * NodeFormModal/NodeInfrastructureModal) están completamente implementados.
+ * También se adelantaron del Lote B los 3 métodos de regla DST-NAT
+ * (findNatRuleByComment/addFirewallNatRule/updateFirewallNatRule) que
+ * necesitaba OltNatManagerService para el botón "Aplicar regla DST-NAT"
+ * (RF-OLT-006) -- ese servicio construía su propio cliente REST a mano
+ * (ignorando transportType) y fallaba con 400 contra cualquier nodo en
+ * API Binaria; ahora usa RouterOsClientResolverService como todo lo demás.
  * El resto de la interfaz (Lote B: creación/edición/borrado de VLANs, PPP,
- * DHCP, NAT, firewall, rutas, colas, backups) lanza un error explícito y
- * tipado en vez de fallar en silencio o corromper datos -- es una frontera
- * de alcance deliberada, no un olvido: ver `unsupportedOperation()` abajo.
+ * DHCP, resto de firewall, rutas, colas, backups) lanza un error explícito
+ * y tipado en vez de fallar en silencio o corromper datos -- es una
+ * frontera de alcance deliberada, no un olvido: ver `unsupportedOperation()`
+ * abajo.
  */
 export class RouterOsBinaryClient implements RouterOsClientLike {
   constructor(private readonly config: RouterOsClientConfig) {}
@@ -118,6 +125,11 @@ export class RouterOsBinaryClient implements RouterOsClientLike {
         'Cambia el Protocolo del nodo a REST para usarla, o agrega soporte binario ' +
         '(ver Plan_Implementacion_Soporte_API_Binaria_SSH.md, Fase 1 Lote B).',
     );
+  }
+
+  /** Convierte un payload plano {clave: valor} al formato "=clave=valor" que node-routeros espera para /add y /set. */
+  private toWordParams(rule: Record<string, string>): string[] {
+    return Object.entries(rule).map(([key, value]) => `=${key}=${value}`);
   }
 
   private mapPppoeServerEntry(entry: any): RouterOsPppoeServer {
@@ -421,7 +433,17 @@ export class RouterOsBinaryClient implements RouterOsClientLike {
   }
 
   async addFirewallNatRule(rule: Record<string, string>): Promise<void> {
-    throw this.unsupportedOperation('addFirewallNatRule');
+    try {
+      await this.withConnection((conn) => conn.write('/ip/firewall/nat/add', this.toWordParams(rule)));
+    } catch {
+      // Ignorar si ya existe -- mismo comportamiento que RouterOsClient (REST).
+    }
+  }
+
+  async updateFirewallNatRule(ruleId: string, rule: Record<string, string>): Promise<void> {
+    return this.withConnection((conn) =>
+      conn.write('/ip/firewall/nat/set', [`=.id=${ruleId}`, ...this.toWordParams(rule)]),
+    );
   }
 
   async addFirewallFilterRule(rule: Record<string, string>): Promise<void> {
@@ -486,7 +508,11 @@ export class RouterOsBinaryClient implements RouterOsClientLike {
   }
 
   async findNatRuleByComment(comment: string): Promise<{ id: string } | null> {
-    throw this.unsupportedOperation('findNatRuleByComment');
+    return this.withConnection(async (conn) => {
+      const results = await conn.write('/ip/firewall/nat/print');
+      const match = (Array.isArray(results) ? results : []).find((entry: any) => entry?.comment === comment);
+      return match ? { id: match['.id'] } : null;
+    });
   }
 
   async ensureFirewallBaseline(): Promise<void> {

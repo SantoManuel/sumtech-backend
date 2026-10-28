@@ -1,12 +1,10 @@
-import { Injectable, Logger, Inject, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { OltEntity } from '../entities/olt.entity';
-import { ROUTEROS_CLIENT_FACTORY, RouterOsClientFactory } from '../../network/routeros/routeros-client-factory';
-import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { RouterOsClientResolverService } from '../../network/services/routeros-client-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
-import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 
 @Injectable()
 export class OltNatManagerService {
@@ -17,9 +15,7 @@ export class OltNatManagerService {
     private readonly oltRepository: Repository<OltEntity>,
     @InjectRepository(NetworkNodeEntity)
     private readonly nodeRepository: Repository<NetworkNodeEntity>,
-    @Inject(ROUTEROS_CLIENT_FACTORY)
-    private readonly clientFactory: RouterOsClientFactory,
-    private readonly reachabilityResolver: ReachabilityResolver,
+    private readonly clientResolver: RouterOsClientResolverService,
     private readonly deviceOperationLogger: DeviceOperationLogger,
   ) {}
 
@@ -47,36 +43,19 @@ export class OltNatManagerService {
       throw new NotFoundException(`Router MikroTik asignado no encontrado: ${olt.viaNodeId}`);
     }
 
-    const endpoint = await this.reachabilityResolver.resolveEndpoint(node);
-    // BUG REAL (certificación HiOSO, 2026-10-08): se pasaba node.apiPasswordEnc
-    // (el blob cifrado "iv:authTag:ciphertext") directo como password del
-    // cliente RouterOS, sin descifrar — el router rechazaba CUALQUIER
-    // contraseña real guardada con 401, sin importar cuántas veces se
-    // corrigiera en la base de datos, porque nunca se estaba enviando la
-    // contraseña real.
-    const password = node.apiPasswordEnc ? decryptCredential(node.apiPasswordEnc) : 'admin';
-    const client = this.clientFactory({
-      managementIp: endpoint.host,
-      apiPort: endpoint.port,
-      username: node.apiUser || 'admin',
-      password,
-      useHttps: endpoint.useHttps,
-    });
-
     const comment = `Sumtech-OLT-${olt.name.replace(/\s+/g, '_')}`;
 
     try {
-      // Usamos el cliente REST de RouterOS para consultar/crear en /ip/firewall/nat
-      const existingRules = await (client as any).http.get(
-        (client as any).buildUrl('ip/firewall/nat'),
-        {
-          ...(client as any).buildRequestConfig(),
-          params: { comment },
-        },
-      );
+      // RouterOsClientResolverService ya resuelve el endpoint alcanzable
+      // (WireGuard/DDNS/IP pública), descifra la contraseña correctamente, y
+      // construye el cliente correcto (REST o API Binaria) según
+      // node.transportType -- antes este servicio armaba su propio cliente
+      // REST a mano con `this.clientFactory` y reventaba con 400 contra
+      // cualquier nodo configurado en API Binaria, ignorando por completo el
+      // transporte real del nodo.
+      const client = await this.clientResolver.resolveClient(node);
 
-      const rules = Array.isArray(existingRules.data) ? existingRules.data : [];
-      const match = rules.find((r: any) => r.comment === comment);
+      const match = await client.findNatRuleByComment(comment);
 
       const payload = {
         chain: 'dstnat',
@@ -89,17 +68,9 @@ export class OltNatManagerService {
       };
 
       if (match) {
-        await (client as any).http.patch(
-          (client as any).buildUrl(`ip/firewall/nat/${encodeURIComponent(match['.id'])}`),
-          payload,
-          (client as any).buildRequestConfig(),
-        );
+        await client.updateFirewallNatRule(match.id, payload);
       } else {
-        await (client as any).http.put(
-          (client as any).buildUrl('ip/firewall/nat'),
-          payload,
-          (client as any).buildRequestConfig(),
-        );
+        await client.addFirewallNatRule(payload);
       }
 
       await this.deviceOperationLogger.logEvent({

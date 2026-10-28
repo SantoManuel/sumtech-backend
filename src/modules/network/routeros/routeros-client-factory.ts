@@ -29,6 +29,7 @@ export type RouterOsClientLike = Pick<
   | 'addAddressListEntry'
   | 'removeAddressListEntry'
   | 'addFirewallNatRule'
+  | 'updateFirewallNatRule'
   | 'addFirewallFilterRule'
   | 'findVlanInterfaceByVlanId'
   | 'listVlanInterfaces'

@@ -1505,6 +1505,19 @@ export class RouterOsClient {
     }
   }
 
+  /** Actualiza una regla NAT existente por su .id (ej. refrescar el destino de un DST-NAT ya creado). */
+  async updateFirewallNatRule(ruleId: string, rule: Record<string, string>): Promise<void> {
+    try {
+      await this.http.patch(
+        this.buildUrl(`ip/firewall/nat/${encodeURIComponent(ruleId)}`),
+        rule,
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
   /**
    * Agrega una regla filter en /ip/firewall/filter (RF-PORTAL-001).
    */

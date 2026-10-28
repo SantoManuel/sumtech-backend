@@ -623,6 +623,25 @@ describe('RouterOsClient', () => {
     });
   });
 
+  describe('updateFirewallNatRule', () => {
+    it('hace PATCH a la regla por .id con el payload dado (ej. refrescar el destino de un DST-NAT ya creado)', async () => {
+      http.patch.mockResolvedValue({ data: {} });
+
+      await client.updateFirewallNatRule('*2', { 'to-addresses': '192.168.0.99', 'to-ports': '23' });
+
+      expect(http.patch).toHaveBeenCalledWith(
+        'https://10.10.0.1:8729/rest/ip/firewall/nat/*2',
+        { 'to-addresses': '192.168.0.99', 'to-ports': '23' },
+        expect.anything(),
+      );
+    });
+
+    it('propaga un error legible si la actualización falla', async () => {
+      http.patch.mockRejectedValue({ response: { status: 404, data: { message: 'no such item' } } });
+      await expect(client.updateFirewallNatRule('*x', { comment: 'y' })).rejects.toThrow(/404/);
+    });
+  });
+
   describe('ensureFirewallBaseline', () => {
     it('crea las 2 reglas base (established/related + drop invalid) si no existen', async () => {
       http.get.mockResolvedValue({ data: [] });

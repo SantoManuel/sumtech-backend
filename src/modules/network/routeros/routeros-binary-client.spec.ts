@@ -475,6 +475,76 @@ describe('RouterOsBinaryClient', () => {
     });
   });
 
+  describe('findNatRuleByComment (adelantado del Lote B para RF-OLT-006)', () => {
+    it('encuentra la regla por su comentario exacto', async () => {
+      mockWrite.mockResolvedValue([
+        { '.id': '*1', comment: 'otra-regla' },
+        { '.id': '*2', comment: 'Sumtech-OLT-HiOSO_Rancho_Arriba' },
+      ]);
+
+      const result = await client.findNatRuleByComment('Sumtech-OLT-HiOSO_Rancho_Arriba');
+
+      expect(mockWrite).toHaveBeenCalledWith('/ip/firewall/nat/print');
+      expect(result).toEqual({ id: '*2' });
+    });
+
+    it('devuelve null si ninguna regla tiene ese comentario', async () => {
+      mockWrite.mockResolvedValue([{ '.id': '*1', comment: 'otra-regla' }]);
+      const result = await client.findNatRuleByComment('Sumtech-OLT-Inexistente');
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('addFirewallNatRule (adelantado del Lote B para RF-OLT-006)', () => {
+    it('crea la regla DST-NAT con los pares =clave=valor esperados por node-routeros', async () => {
+      mockWrite.mockResolvedValue([{ '.id': '*3' }]);
+
+      await client.addFirewallNatRule({
+        chain: 'dstnat',
+        protocol: 'tcp',
+        'dst-port': '2324',
+        action: 'dst-nat',
+        'to-addresses': '192.168.0.88',
+        'to-ports': '23',
+        comment: 'Sumtech-OLT-HiOSO_Rancho_Arriba',
+      });
+
+      expect(mockWrite).toHaveBeenCalledWith('/ip/firewall/nat/add', [
+        '=chain=dstnat',
+        '=protocol=tcp',
+        '=dst-port=2324',
+        '=action=dst-nat',
+        '=to-addresses=192.168.0.88',
+        '=to-ports=23',
+        '=comment=Sumtech-OLT-HiOSO_Rancho_Arriba',
+      ]);
+    });
+
+    it('ignora el error si la regla ya existe, igual que el cliente REST', async () => {
+      mockWrite.mockRejectedValue(new Error('already have such entry'));
+      await expect(client.addFirewallNatRule({ chain: 'dstnat' })).resolves.toBeUndefined();
+    });
+  });
+
+  describe('updateFirewallNatRule (adelantado del Lote B para RF-OLT-006)', () => {
+    it('actualiza la regla existente por .id con los pares =clave=valor', async () => {
+      mockWrite.mockResolvedValue([]);
+
+      await client.updateFirewallNatRule('*2', { 'to-addresses': '192.168.0.99', 'to-ports': '23' });
+
+      expect(mockWrite).toHaveBeenCalledWith('/ip/firewall/nat/set', [
+        '=.id=*2',
+        '=to-addresses=192.168.0.99',
+        '=to-ports=23',
+      ]);
+    });
+
+    it('SÍ propaga el error (a diferencia de addFirewallNatRule) si la actualización falla', async () => {
+      mockWrite.mockRejectedValue(new Error('no such item'));
+      await expect(client.updateFirewallNatRule('*2', { comment: 'x' })).rejects.toThrow(/no such item/i);
+    });
+  });
+
   describe('listFilterRules (Lote A)', () => {
     it('mapea las reglas de filter desde /ip/firewall/filter/print', async () => {
       mockWrite.mockResolvedValue([
@@ -545,7 +615,6 @@ describe('RouterOsBinaryClient', () => {
       'killActiveSession',
       'addAddressListEntry',
       'removeAddressListEntry',
-      'addFirewallNatRule',
       'addFirewallFilterRule',
       'findVlanInterfaceByVlanId',
       'ensureVlanInterface',
@@ -560,7 +629,6 @@ describe('RouterOsBinaryClient', () => {
       'findRouteByDestination',
       'ensureDefaultRoute',
       'ensureNatMasquerade',
-      'findNatRuleByComment',
       'ensureFirewallBaseline',
       'findFilterRuleByComment',
       'findIpPoolByName',
@@ -600,8 +668,8 @@ describe('RouterOsBinaryClient', () => {
       expect(mockConnect).not.toHaveBeenCalled();
     });
 
-    it('cubre exactamente los 62 métodos de Lote B/C definidos en el plan (ni de más ni de menos)', () => {
-      expect(unsupportedMethods).toHaveLength(62);
+    it('cubre exactamente los 60 métodos de Lote B/C restantes (ni de más ni de menos) -- findNatRuleByComment/addFirewallNatRule ya se implementaron de verdad para RF-OLT-006', () => {
+      expect(unsupportedMethods).toHaveLength(60);
     });
   });
 });

@@ -4,7 +4,8 @@ import { JwtModule } from '@nestjs/jwt';
 import { UsersModule } from '../users/users.module';
 import { NetworkConnectivityModule } from '../network-connectivity/network-connectivity.module';
 import { GenieAcsModule } from '../genieacs/genieacs.module';
-import { routerOsClientFactoryProvider } from '../network/routeros/routeros-client-factory';
+import { routerOsClientFactoryProvider, routerOsBinaryClientFactoryProvider } from '../network/routeros/routeros-client-factory';
+import { RouterOsClientResolverService } from '../network/services/routeros-client-resolver.service';
 
 import { OltEntity } from './entities/olt.entity';
 import { OltRolePermissionEntity } from './entities/olt-role-permission.entity';
@@ -93,6 +94,8 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
     CpeProxyMiddleware,
     OltPermissionGuard,
     routerOsClientFactoryProvider,
+    routerOsBinaryClientFactoryProvider,
+    RouterOsClientResolverService,
   ],
   exports: [
     OltManagementService,
