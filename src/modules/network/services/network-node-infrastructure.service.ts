@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, Inject } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, GatewayTimeoutException, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
@@ -988,7 +988,14 @@ export class NetworkNodeInfrastructureService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
     const client = await this.resolveClient(node);
-    return client.getInterfaces();
+    try {
+      return await client.getInterfaces();
+    } catch (err: any) {
+      this.logger.warn(`Error obteniendo interfaces en nodo "${node.name}": ${err.message}`);
+      throw new GatewayTimeoutException(
+        `El nodo "${node.name}" (${node.wireguardIp || node.managementIp || 'desconocido'}) no respondio a tiempo: ${err.message}`,
+      );
+    }
   }
 
   async setInterfaceDisabled(
