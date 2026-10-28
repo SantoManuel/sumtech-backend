@@ -922,8 +922,55 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * Determina si un comando pertenece al canal de gestión secundario (TR-069, VoIP, VEIP, Firewall)
+   * que debe tratarse como mejor esfuerzo (no crítico) para no abortar la provisión de Internet.
+   */
+  private isManagementOrTr069Command(cmd: string): boolean {
+    return (
+      cmd.startsWith('tcont 2') ||
+      cmd.startsWith('gemport 2') ||
+      cmd.startsWith('service-port 2') ||
+      cmd.startsWith('flow 2') ||
+      cmd.startsWith('flow mode 2') ||
+      cmd.startsWith('switchport-bind switch_0/1 iphost 2') ||
+      cmd.startsWith('switchport-bind switch_0/1 veip') ||
+      cmd.startsWith('ip-host 2') ||
+      cmd.startsWith('vlan-filter-mode iphost 2') ||
+      cmd.startsWith('vlan-filter iphost 2') ||
+      cmd.startsWith('voip') ||
+      cmd.startsWith('veip') ||
+      cmd.startsWith('tr069-mgmt') ||
+      cmd.startsWith('security-mgmt')
+    );
+  }
+
+  /**
+   * Pausa de simulación humana (Human Pacing) adaptada al tiempo de convergencia
+   * del hardware óptico, buffers del procesador de control y demonios OMCI de ZTE.
+   */
+  private getHumanPacingDelay(cmd: string): number {
+    if (cmd.startsWith('onu ') && cmd.includes('type ') && cmd.includes('sn ')) {
+      return 1500; // Registro de transceptor óptico y espera de .[Successful]
+    }
+    if (cmd.startsWith('pon-onu-mng ')) {
+      return 1500; // Negociación y apertura de sesión de switch virtual OMCI
+    }
+    if (cmd === 'configure terminal') {
+      return 350; // Asentamiento tras banner informativo %Info 20272
+    }
+    if (cmd === 'write') {
+      return 1200; // Escritura en memoria no volátil
+    }
+    if (cmd === 'exit' || cmd === 'end') {
+      return 250; // Cambio de contexto de sub-modo
+    }
+    return 120; // Pausa humana estándar entre comandos CLI
+  }
+
+
+  /**
    * Ejecuta el aprovisionamiento de la ONU en la OLT respetando los tiempos de
-   * convergencia OMCI y el orden jerárquico estricto.
+   * convergencia OMCI, simulación de operador humano y el orden jerárquico estricto.
    */
   async authorizeOnu(
     params: OltConnectionParams,
@@ -956,35 +1003,42 @@ export class ZteC320Driver implements IOltDriver {
       const commands = this.generateAuthorizationScript(config);
 
       let warning: string | undefined;
-      let inTr069Block = false;
 
       for (const cmd of commands) {
         if (cmd.startsWith('no onu ')) {
           await session.executeCommand(cmd);
+          await this.delay(200);
           continue;
         }
 
-        // Pausa de estabilización OMCI al entrar a pon-onu-mng tras haber recreado la ONU
-        if (cmd.startsWith('pon-onu-mng ')) {
-          await this.delay(2000);
+        let output = await session.executeCommand(cmd);
+
+        // Simulación humana: si hubo un choque de buffer de entrada (%Error 20200), reintentar una vez
+        if (output.includes('%Error 20200')) {
+          this.logger.warn(`[human-sim] Reintentando comando "${cmd}" tras detectar glitch de input %Error 20200`);
+          await this.delay(350);
+          output = await session.executeCommand(cmd);
         }
 
-        if (cmd.startsWith('tr069-mgmt') || cmd.startsWith('security-mgmt')) {
-          inTr069Block = true;
+        // Pacing humano entre comandos
+        const pacingMs = this.getHumanPacingDelay(cmd);
+        if (pacingMs > 0) {
+          await this.delay(pacingMs);
         }
 
-        const output = await session.executeCommand(cmd);
         if (this.isOltErrorResponse(output) && !this.isAlreadyAppliedResponse(output)) {
           const errMsg = output.trim();
-          this.logger.warn(`[diag] authorizeOnu: OLT reportó error en comando "${cmd}": ${errMsg}`);
+          this.logger.warn(`[diag] authorizeOnu: OLT reportó respuesta no exitosa en comando "${cmd}": ${errMsg}`);
 
-          if (inTr069Block) {
+          if (this.isManagementOrTr069Command(cmd)) {
+            // Canal secundario de gestión / TR-069: MEJOR ESFUERZO, nunca abortar la provisión de internet
             if (!warning) {
-              warning =
-                `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${errMsg}. ` +
-                'El canal de internet sí quedó configurado. Reintenta el TR-069 desde el panel.';
+              warning = `La OLT rechazó la configuración secundaria de gestión ("${cmd}"): ${errMsg}. El canal de internet sí quedó activo.`;
+            } else {
+              this.logger.warn(`[diag] authorizeOnu: detalle adicional de rechazo en comando de gestión: "${cmd}" -> ${errMsg}`);
             }
           } else {
+            // Canal primario de Internet (Fase 1/2/3 datos): error fatal
             throw new Error(`La OLT rechazó el comando "${cmd}": ${errMsg}`);
           }
         }
@@ -1185,6 +1239,13 @@ export class ZteC320Driver implements IOltDriver {
         }
 
         const output = await session.executeCommand(cmd);
+
+        // Pacing humano entre comandos
+        const pacingMs = this.getHumanPacingDelay(cmd);
+        if (pacingMs > 0) {
+          await this.delay(pacingMs);
+        }
+
         if (this.isOltErrorResponse(output)) {
           if (this.isAlreadyAppliedResponse(output)) {
             // ok, ya aplicado en un intento anterior -- seguir con el resto.
@@ -1316,7 +1377,7 @@ export class ZteC320Driver implements IOltDriver {
     };
   }
 
-  private delay(ms: number): Promise<void> {
+  protected delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 

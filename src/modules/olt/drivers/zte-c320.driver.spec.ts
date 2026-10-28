@@ -1554,6 +1554,63 @@ No.15 profile : TRAFFIC-977M
       expect(noOnuIdx).toBeGreaterThanOrEqual(0);
       expect(createOnuIdx).toBeGreaterThan(noOnuIdx);
     });
+
+    it('trata rechazos en el canal secundario de gestión (ej. flow mode 2 con "%Code 63953 Flow does not exist") como advertencia no fatal, preservando la provisión de internet y ejecutando write', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('flow mode 2')) {
+          return Promise.resolve('\r\n%Code 63953-GPONRM : Flow does not exist.\r\nOLT#');
+        }
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        {
+          ...baseConfig,
+          modelTypeName: 'HUAWEY-HG8546M',
+          managementMethod: 'TR069',
+          tr069Url: 'http://10.46.0.1:7547/',
+          tr069Vlan: 46,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('Flow does not exist');
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('simula operador humano y reintenta automáticamente un comando si la OLT devuelve "%Error 20200: Invalid input detected"', async () => {
+      let attempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'interface gpon-olt_1/1/1') {
+          attempts++;
+          if (attempts === 1) {
+            return Promise.resolve('\r\n%Error 20200: Invalid input detected at \'^\' marker.Invalid command\r\nOLT#');
+          }
+          return Promise.resolve('\r\nOLT(config-if)#');
+        }
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { ...baseConfig, modelTypeName: 'ZTE-F660' },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(attempts).toBe(2);
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
   });
 
   describe('applyTr069Management() trata el push OMCI de TR-069/ACS como mejor esfuerzo, no crítico (bug real confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-20: "%Code 63990-GPONRM : ONT return error: command processing error." en "tr069-mgmt 1 acs <url>") -- Etapa 2 del flujo de 3 etapas, separada de authorizeOnu()', () => {
