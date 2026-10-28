@@ -323,9 +323,17 @@ describe('OnuManagementService', () => {
       // case) con el alias usado en el JOIN -- nunca "ponInterface."/"onuType."
       // sueltos sin comillas.
       expect(searchSql).toContain('poninterface.name ILIKE');
-      expect(searchSql).toContain('onutype.modelName ILIKE');
+      expect(searchSql).toContain('onutype.model ILIKE');
       expect(searchSql).not.toMatch(/\bponInterface\./);
       expect(searchSql).not.toMatch(/\bonuType\./);
+    });
+
+    it('busca por onutype.model, no "modelName" -- OnuTypeEntity nunca tuvo esa propiedad; TypeORM no la traduce y Postgres revienta con "column does not exist" en cuanto se arregla el alias (bug real confirmado en producción 2026-10-28, posterior al fix de alias)', async () => {
+      await service.findAll({ search: 'F660' } as any);
+
+      const searchCall = onuQueryBuilder.andWhere.mock.calls.find(([sql]: [string]) => sql.includes('ILIKE'));
+      const [searchSql] = searchCall;
+      expect(searchSql).not.toMatch(/\bmodelName\b/);
     });
   });
 

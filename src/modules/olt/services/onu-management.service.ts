@@ -183,7 +183,11 @@ export class OnuManagementService {
         // nombre asignado en OLT (onu.name), descripción/zona (onu.description),
         // nombre de cliente (client.name), cédula/RNC (client.docNumber), contrato
         // (contract.contractNumber), índice óptico (onu.onuIndex), interfaz PON
-        // (ponInterface.name), OLT (olt.name) y modelo (onuType.modelName).
+        // (ponInterface.name), OLT (olt.name) y modelo (onuType.model -- OnuTypeEntity
+        // nunca tuvo una propiedad "modelName", solo "model"; TypeORM no traduce un
+        // alias.propiedad inexistente, lo deja literal y Postgres revienta con
+        // "column onutype.modelname does not exist" -- bug real, independiente del
+        // de los alias con mayúsculas, confirmado en producción 2026-10-28).
         qb.andWhere(
           `(
             onu.serialNumber ILIKE :q
@@ -199,7 +203,7 @@ export class OnuManagementService {
             OR onu.onuIndex ILIKE :q
             OR poninterface.name ILIKE :q
             OR olt.name ILIKE :q
-            OR onutype.modelName ILIKE :q
+            OR onutype.model ILIKE :q
           )`,
           { q, cleanQ },
         );
