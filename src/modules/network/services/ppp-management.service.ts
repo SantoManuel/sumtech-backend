@@ -1,15 +1,13 @@
-import { Injectable, NotFoundException, BadRequestException, GatewayTimeoutException, Inject, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, GatewayTimeoutException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkAccessEntity } from '../entities/network-access.entity';
 import { NetworkNodeVlanEntity } from '../entities/network-node-vlan.entity';
-import { ROUTEROS_CLIENT_FACTORY, RouterOsClientFactory, RouterOsClientLike } from '../routeros/routeros-client-factory';
+import { RouterOsClientLike } from '../routeros/routeros-client-factory';
 import { RouterOsPppSecret, RouterOsActivePppSession, RouterOsIpPool } from '../routeros/routeros-client';
-import { resolveRouterOsCredentials } from '../routeros/routeros-credentials';
-import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { RouterOsClientResolverService } from './routeros-client-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
-import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { PlanEntity } from '../../plans/entities/plan.entity';
 import { buildSymmetricRateLimit } from '../routeros/router-profile-name.util';
 import { CreateRouterOsProfileDto, UpdateRouterOsProfileDto } from '../dto/routeros-profile.dto';
@@ -128,9 +126,7 @@ export class PppManagementService {
     private readonly nodeVlanRepository: Repository<NetworkNodeVlanEntity>,
     @InjectRepository(PlanEntity)
     private readonly planRepository: Repository<PlanEntity>,
-    @Inject(ROUTEROS_CLIENT_FACTORY)
-    private readonly clientFactory: RouterOsClientFactory,
-    private readonly reachabilityResolver: ReachabilityResolver,
+    private readonly clientResolver: RouterOsClientResolverService,
     private readonly deviceOperationLogger: DeviceOperationLogger,
   ) {}
 
@@ -151,7 +147,7 @@ export class PppManagementService {
       return { isConnected: false };
     }
 
-    const client = await this.resolveClient(access.node);
+    const client = await this.clientResolver.resolveClient(access.node);
     try {
       const active = await client.findActiveSessionByName(access.username);
       if (!active) {
@@ -200,7 +196,7 @@ export class PppManagementService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     try {
       const sessions = await client.getActiveSessions();
       return {
@@ -232,7 +228,7 @@ export class PppManagementService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     let secrets: RouterOsPppSecret[];
     let activeSessions: RouterOsActivePppSession[];
     try {
@@ -289,7 +285,7 @@ export class PppManagementService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     const killed = await client.killActiveSession(username);
 
     await this.deviceOperationLogger.logEvent({
@@ -326,7 +322,7 @@ export class PppManagementService {
       return { success: false, message: 'El acceso no tiene usuario o nodo configurado' };
     }
 
-    const client = await this.resolveClient(access.node);
+    const client = await this.clientResolver.resolveClient(access.node);
     const killed = await client.killActiveSession(access.username);
 
     await this.deviceOperationLogger.logEvent({
@@ -367,7 +363,7 @@ export class PppManagementService {
       plans = plans.filter((p) => allowedSet.has(p.id));
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
 
     // 1. Asegurar perfil de corte (si no se excluyó explícitamente)
     if (dto?.includeSuspensionProfile !== false) {
@@ -457,7 +453,7 @@ export class PppManagementService {
 
     let client: RouterOsClientLike;
     try {
-      client = await this.resolveClient(node);
+      client = await this.clientResolver.resolveClient(node);
     } catch (err: any) {
       this.logger.warn(`No se pudo resolver cliente RouterOS para nodo "${node.name}": ${err.message}`);
       throw new GatewayTimeoutException(
@@ -546,7 +542,7 @@ export class PppManagementService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     try {
       return await client.getIpPools();
     } catch (err: any) {
@@ -603,7 +599,7 @@ export class PppManagementService {
       );
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
 
     let pools: RouterOsIpPool[];
     try {
@@ -664,7 +660,7 @@ export class PppManagementService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     const created = await client.createIpPool(dto.name, dto.ranges);
 
     await this.deviceOperationLogger.logEvent({
@@ -691,7 +687,7 @@ export class PppManagementService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     const updated = await client.updateIpPool(poolId, dto.ranges);
 
     await this.deviceOperationLogger.logEvent({
@@ -717,7 +713,7 @@ export class PppManagementService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     await client.deleteIpPool(poolId);
 
     await this.deviceOperationLogger.logEvent({
@@ -744,7 +740,7 @@ export class PppManagementService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     const existing = await client.findProfileByName(dto.name);
     if (existing) {
       throw new BadRequestException(`Ya existe un perfil con el nombre "${dto.name}" en este router.`);
@@ -799,7 +795,7 @@ export class PppManagementService {
       dto.priority,
     );
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     await client.updateProfile(profileId, formattedRateLimit, {
       parentQueue: dto.parentQueue,
       localAddress: dto.localAddress,
@@ -828,7 +824,7 @@ export class PppManagementService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     const profiles = await client.getProfiles();
     const target = profiles.find((p) => p.id === profileId || p.name === profileId);
     if (!target) {
@@ -872,43 +868,5 @@ export class PppManagementService {
     });
 
     return { success: true, message: `Perfil "${target.name}" eliminado exitosamente.` };
-  }
-
-  private async resolveClient(node: NetworkNodeEntity): Promise<RouterOsClientLike> {
-    let host = node.managementIp;
-    let port = node.apiPort;
-    let useHttps = node.useHttps;
-
-    try {
-      const endpoint = await this.reachabilityResolver.resolveEndpoint(node);
-      host = endpoint.host;
-      port = endpoint.port;
-      useHttps = endpoint.useHttps;
-    } catch {
-      // Fallback a managementIp
-    }
-
-    if (!host) {
-      throw new Error(`El nodo "${node.name}" no tiene IP de gestión o túnel alcanzable.`);
-    }
-
-    let username = node.apiUser || 'admin';
-    let password = '';
-
-    if (node.apiPasswordEnc) {
-      password = decryptCredential(node.apiPasswordEnc);
-    } else {
-      const credentials = resolveRouterOsCredentials(node.name);
-      username = credentials.username;
-      password = credentials.password;
-    }
-
-    return this.clientFactory({
-      managementIp: host,
-      apiPort: port,
-      useHttps,
-      username,
-      password,
-    });
   }
 }

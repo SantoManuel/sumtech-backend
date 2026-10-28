@@ -1,10 +1,9 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, GatewayTimeoutException, Inject } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, GatewayTimeoutException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkNodeVlanEntity } from '../entities/network-node-vlan.entity';
 import { VlanEntity } from '../../olt/entities/vlan.entity';
-import { ROUTEROS_CLIENT_FACTORY, RouterOsClientFactory, RouterOsClientLike } from '../routeros/routeros-client-factory';
 import {
   RouterOsUpdateInfo,
   RouterOsInterfaceItem,
@@ -12,8 +11,7 @@ import {
   RouterOsSimpleQueue,
   RouterOsLogEntry,
 } from '../routeros/routeros-client';
-import { resolveRouterOsCredentials } from '../routeros/routeros-credentials';
-import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { RouterOsClientResolverService } from './routeros-client-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
 
@@ -70,9 +68,7 @@ export class NetworkNodeInfrastructureService {
     private readonly nodeVlanRepository: Repository<NetworkNodeVlanEntity>,
     @InjectRepository(VlanEntity)
     private readonly vlanRepository: Repository<VlanEntity>,
-    @Inject(ROUTEROS_CLIENT_FACTORY)
-    private readonly clientFactory: RouterOsClientFactory,
-    private readonly reachabilityResolver: ReachabilityResolver,
+    private readonly clientResolver: RouterOsClientResolverService,
     private readonly deviceOperationLogger: DeviceOperationLogger,
   ) {}
 
@@ -133,7 +129,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     try {
-      const client = await this.resolveClient(node);
+      const client = await this.clientResolver.resolveClient(node);
 
       await client.ensureVlanInterface({
         name: interfaceName,
@@ -233,7 +229,7 @@ export class NetworkNodeInfrastructureService {
       throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     const [realInterfaces, trackedRows] = await Promise.all([
       client.listVlanInterfaces(),
       this.nodeVlanRepository.find({ where: { nodeId }, relations: ['vlan'] }),
@@ -330,7 +326,7 @@ export class NetworkNodeInfrastructureService {
 
     const node = nodeVlan.node || (await this.nodeRepository.findOneBy({ id: nodeId }))!;
     const interfaceName = this.resolveVlanInterfaceName(nodeVlan);
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
 
     const [pppoeServer, dhcpServer] = await Promise.all([
       client.findPppoeServerByInterface(interfaceName),
@@ -411,7 +407,7 @@ export class NetworkNodeInfrastructureService {
     const networkCidr = networkAddressFromGatewayCidr(nodeVlan.gatewayCidr);
 
     try {
-      const client = await this.resolveClient(node);
+      const client = await this.clientResolver.resolveClient(node);
 
       await client.ensureIpPool(poolName, options.poolRange);
       await client.ensureDhcpServerNetwork(networkCidr, gatewayIp, options.dnsServers);
@@ -464,7 +460,7 @@ export class NetworkNodeInfrastructureService {
     const defaultProfile = options?.defaultProfile || 'default';
 
     try {
-      const client = await this.resolveClient(node);
+      const client = await this.clientResolver.resolveClient(node);
 
       const server = await client.ensurePppoeServer({
         serviceName,
@@ -516,7 +512,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     const nodeVlans = await this.nodeVlanRepository.find({ where: { nodeId }, relations: ['vlan'] });
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
 
     return Promise.all(
       nodeVlans.map(async (nv) => {
@@ -572,7 +568,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     const nodeVlans = await this.nodeVlanRepository.find({ where: { nodeId }, relations: ['vlan'] });
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
 
     return Promise.all(
       nodeVlans.map(async (nv) => {
@@ -623,7 +619,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     try {
-      const client = await this.resolveClient(node);
+      const client = await this.clientResolver.resolveClient(node);
       await client.ensureNatMasquerade(node.wanInterfaceName, 'sumtech-nat-masquerade');
 
       node.natLastSyncAt = new Date();
@@ -669,7 +665,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     try {
-      const client = await this.resolveClient(node);
+      const client = await this.clientResolver.resolveClient(node);
       await client.ensureFirewallBaseline();
 
       node.firewallBaselineLastSyncAt = new Date();
@@ -718,7 +714,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     return client.listNatRules();
   }
 
@@ -734,7 +730,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     return client.listFilterRules();
   }
 
@@ -754,7 +750,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     const nodeVlans = await this.nodeVlanRepository.find({ where: { nodeId }, relations: ['vlan'] });
 
     const vlans = await Promise.all(
@@ -799,7 +795,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo de red no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     return client.getIpAddresses();
   }
 
@@ -818,7 +814,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     try {
-      const client = await this.resolveClient(node);
+      const client = await this.clientResolver.resolveClient(node);
       await client.ensureAcsAutoProvisioning(acsUrl);
 
       await this.deviceOperationLogger.logEvent({
@@ -862,7 +858,7 @@ export class NetworkNodeInfrastructureService {
     }
 
     try {
-      const client = await this.resolveClient(node);
+      const client = await this.clientResolver.resolveClient(node);
 
       if (node.wanMode === 'STATIC') {
         if (!node.wanStaticIp || !node.wanStaticGateway) {
@@ -929,7 +925,7 @@ export class NetworkNodeInfrastructureService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     const safeNodeName = (node.name || 'node').replace(/[^a-zA-Z0-9_-]/g, '_');
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const baseName = `sumtech_${safeNodeName}_${timestamp}`;
@@ -976,7 +972,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     return client.checkPackageUpdates();
   }
 
@@ -987,7 +983,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     try {
       return await client.getInterfaces();
     } catch (err: any) {
@@ -1014,7 +1010,7 @@ export class NetworkNodeInfrastructureService {
       throw new BadRequestException(`No se puede deshabilitar la interfaz WAN activa ("${name}").`);
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     await client.setInterfaceDisabled(name, disabled);
 
     await this.deviceOperationLogger.logEvent({
@@ -1034,7 +1030,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     return client.getDhcpLeases();
   }
 
@@ -1048,7 +1044,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     await client.makeDhcpLeaseStatic(leaseId, comment);
 
     await this.deviceOperationLogger.logEvent({
@@ -1072,7 +1068,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     await client.deleteDhcpLease(leaseId);
 
     await this.deviceOperationLogger.logEvent({
@@ -1094,7 +1090,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     return client.getSimpleQueues();
   }
 
@@ -1110,7 +1106,7 @@ export class NetworkNodeInfrastructureService {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
 
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
 
     // Lista blanca segura: incluye Wireguard (10.254.1.0/24), la IP de gestión del nodo y las solicitadas
     const safeIps = new Set<string>(['10.254.1.0/24']);
@@ -1155,7 +1151,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     await client.removeFilterRulesByComment('sumtech-lockdown-management');
     await client.removeAddressListEntriesByComment('Sumtech Management Protected');
 
@@ -1181,7 +1177,7 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
 
     if (template === 'BLOCK_SMTP_PORT25') {
       const comment = 'sumtech-block-smtp-port25';
@@ -1234,40 +1230,8 @@ export class NetworkNodeInfrastructureService {
     if (!node) {
       throw new NotFoundException(`Nodo no encontrado: ${nodeId}`);
     }
-    const client = await this.resolveClient(node);
+    const client = await this.clientResolver.resolveClient(node);
     return client.getRouterLogs(topics);
   }
 
-  /** Mismo patrón de resolución de cliente RouterOS ya usado en PppManagementService/RouterOsProvisioningAdapter. */
-  private async resolveClient(node: NetworkNodeEntity): Promise<RouterOsClientLike> {
-    let host = node.managementIp;
-    let port = node.apiPort;
-    let useHttps = node.useHttps;
-
-    try {
-      const endpoint = await this.reachabilityResolver.resolveEndpoint(node);
-      host = endpoint.host;
-      port = endpoint.port;
-      useHttps = endpoint.useHttps;
-    } catch {
-      // Fallback a managementIp
-    }
-
-    if (!host) {
-      throw new Error(`El nodo "${node.name}" no tiene IP de gestión o túnel alcanzable.`);
-    }
-
-    let username = node.apiUser || 'admin';
-    let password = '';
-
-    if (node.apiPasswordEnc) {
-      password = decryptCredential(node.apiPasswordEnc);
-    } else {
-      const credentials = resolveRouterOsCredentials(node.name);
-      username = credentials.username;
-      password = credentials.password;
-    }
-
-    return this.clientFactory({ managementIp: host, apiPort: port, useHttps, username, password });
-  }
 }

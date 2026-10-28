@@ -19,7 +19,8 @@ import { NetworkContractStatusListener } from './listeners/contract-status.liste
 import { NetworkContractPlanChangedListener } from './listeners/contract-plan-changed.listener';
 import { NetworkPlanSpeedChangedListener } from './listeners/plan-speed-changed.listener';
 import { RouterOsShadowSyncService } from './routeros-shadow-sync.service';
-import { routerOsClientFactoryProvider } from './routeros/routeros-client-factory';
+import { routerOsClientFactoryProvider, routerOsBinaryClientFactoryProvider } from './routeros/routeros-client-factory';
+import { RouterOsClientResolverService } from './services/routeros-client-resolver.service';
 import { ZoneEntity } from './entities/zone.entity';
 import { NetworkNodeEntity } from './entities/network-node.entity';
 import { NetworkNodeVlanEntity } from './entities/network-node-vlan.entity';
@@ -97,6 +98,8 @@ import { PendingOperationsController } from './pending-operations.controller';
     DhcpProvisioningAdapter,
     NetworkProvisioningPortRegistry,
     routerOsClientFactoryProvider,
+    routerOsBinaryClientFactoryProvider,
+    RouterOsClientResolverService,
     NetworkContractCreatedListener,
     NetworkContractStatusListener,
     NetworkContractPlanChangedListener,

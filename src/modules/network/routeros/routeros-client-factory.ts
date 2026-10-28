@@ -1,6 +1,9 @@
 import { RouterOsClient, RouterOsClientConfig } from './routeros-client';
+import { RouterOsBinaryClient } from './routeros-binary-client';
 
 export const ROUTEROS_CLIENT_FACTORY = 'ROUTEROS_CLIENT_FACTORY';
+/** Fábrica del cliente de API Binaria (puerto 8728/8729) -- ver RouterOsClientResolverService. */
+export const ROUTEROS_BINARY_CLIENT_FACTORY = 'ROUTEROS_BINARY_CLIENT_FACTORY';
 
 export type RouterOsClientLike = Pick<
   RouterOsClient,
@@ -95,4 +98,15 @@ export type RouterOsClientFactory = (config: RouterOsClientConfig) => RouterOsCl
 export const routerOsClientFactoryProvider = {
   provide: ROUTEROS_CLIENT_FACTORY,
   useValue: ((config: RouterOsClientConfig) => new RouterOsClient(config)) as RouterOsClientFactory,
+};
+
+/**
+ * Único punto de construcción de un RouterOsBinaryClient real, mismo patrón
+ * que routerOsClientFactoryProvider -- inyectado por token para que
+ * RouterOsClientResolverService (y las pruebas) puedan sustituirlo sin tocar
+ * el protocolo binario real.
+ */
+export const routerOsBinaryClientFactoryProvider = {
+  provide: ROUTEROS_BINARY_CLIENT_FACTORY,
+  useValue: ((config: RouterOsClientConfig) => new RouterOsBinaryClient(config)) as RouterOsClientFactory,
 };

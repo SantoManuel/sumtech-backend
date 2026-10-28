@@ -5,8 +5,7 @@ import { NetworkNodeInfrastructureService } from './network-node-infrastructure.
 import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkNodeVlanEntity } from '../entities/network-node-vlan.entity';
 import { VlanEntity } from '../../olt/entities/vlan.entity';
-import { ROUTEROS_CLIENT_FACTORY } from '../routeros/routeros-client-factory';
-import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { RouterOsClientResolverService } from './routeros-client-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
 
@@ -16,7 +15,6 @@ describe('NetworkNodeInfrastructureService', () => {
   let nodeVlanRepo: any;
   let vlanRepo: any;
   let clientFactory: jest.Mock;
-  let reachabilityResolver: any;
   let deviceOperationLogger: any;
 
   const node = { id: 'node-1', name: 'RB Las Yayas', managementIp: '10.10.0.1', apiPort: 8729 } as NetworkNodeEntity;
@@ -42,9 +40,6 @@ describe('NetworkNodeInfrastructureService', () => {
       save: jest.fn((entity) => Promise.resolve({ ...entity, id: entity.id || 'vlan-new' })),
     };
     clientFactory = jest.fn();
-    reachabilityResolver = {
-      resolveEndpoint: jest.fn().mockResolvedValue({ host: '10.10.0.1', port: 8729, useHttps: false }),
-    };
     deviceOperationLogger = { logEvent: jest.fn().mockResolvedValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -53,8 +48,7 @@ describe('NetworkNodeInfrastructureService', () => {
         { provide: getRepositoryToken(NetworkNodeEntity), useValue: nodeRepo },
         { provide: getRepositoryToken(NetworkNodeVlanEntity), useValue: nodeVlanRepo },
         { provide: getRepositoryToken(VlanEntity), useValue: vlanRepo },
-        { provide: ROUTEROS_CLIENT_FACTORY, useValue: clientFactory },
-        { provide: ReachabilityResolver, useValue: reachabilityResolver },
+        { provide: RouterOsClientResolverService, useValue: { resolveClient: clientFactory } },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
       ],
     }).compile();

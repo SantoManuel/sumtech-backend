@@ -6,8 +6,7 @@ import { NetworkNodeEntity } from '../entities/network-node.entity';
 import { NetworkAccessEntity } from '../entities/network-access.entity';
 import { NetworkNodeVlanEntity } from '../entities/network-node-vlan.entity';
 import { PlanEntity } from '../../plans/entities/plan.entity';
-import { ROUTEROS_CLIENT_FACTORY } from '../routeros/routeros-client-factory';
-import { ReachabilityResolver } from '../../network-connectivity/services/reachability-resolver.service';
+import { RouterOsClientResolverService } from './routeros-client-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 
 describe('PppManagementService', () => {
@@ -17,7 +16,6 @@ describe('PppManagementService', () => {
   let nodeVlanRepo: any;
   let planRepo: any;
   let clientFactory: jest.Mock;
-  let reachabilityResolver: any;
   let deviceOperationLogger: any;
 
   const mockNode = {
@@ -54,14 +52,6 @@ describe('PppManagementService', () => {
       find: jest.fn(),
     };
     clientFactory = jest.fn();
-    reachabilityResolver = {
-      resolveEndpoint: jest.fn().mockResolvedValue({
-        host: '10.0.0.1',
-        port: 8729,
-        useHttps: false,
-        method: 'API',
-      }),
-    };
     deviceOperationLogger = {
       logEvent: jest.fn().mockResolvedValue(undefined),
     };
@@ -73,8 +63,7 @@ describe('PppManagementService', () => {
         { provide: getRepositoryToken(NetworkAccessEntity), useValue: accessRepo },
         { provide: getRepositoryToken(NetworkNodeVlanEntity), useValue: nodeVlanRepo },
         { provide: getRepositoryToken(PlanEntity), useValue: planRepo },
-        { provide: ROUTEROS_CLIENT_FACTORY, useValue: clientFactory },
-        { provide: ReachabilityResolver, useValue: reachabilityResolver },
+        { provide: RouterOsClientResolverService, useValue: { resolveClient: clientFactory } },
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
       ],
     }).compile();
