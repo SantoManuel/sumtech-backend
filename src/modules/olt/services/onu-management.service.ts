@@ -138,8 +138,16 @@ export class OnuManagementService {
     const qb = this.onuRepository
       .createQueryBuilder('onu')
       .leftJoinAndSelect('onu.olt', 'olt')
-      .leftJoinAndSelect('onu.ponInterface', 'ponInterface')
-      .leftJoinAndSelect('onu.onuType', 'onuType')
+      // Alias en minúsculas a propósito (no "ponInterface"/"onuType"): dentro de un
+      // .andWhere() crudo, TypeORM solo re-escapa alias.propiedad para alias que ya
+      // son válidos sin comillas -- un alias con mayúsculas intercaladas llega a
+      // Postgres sin comillas, que lo pasa a minúsculas ("onutype") y ya no
+      // coincide con el alias real (con mayúscula preservada) del FROM/JOIN,
+      // reventando con "missing FROM-clause entry" (bug real confirmado en
+      // producción contra OLTs ZTE C320, 2026-10-28). Mismo motivo por el que
+      // "onu"/"client"/"contract"/"olt" sí funcionaban: ya eran minúsculas.
+      .leftJoinAndSelect('onu.ponInterface', 'poninterface')
+      .leftJoinAndSelect('onu.onuType', 'onutype')
       .leftJoinAndSelect('onu.contract', 'contract')
       .leftJoinAndSelect('contract.client', 'client')
       .leftJoinAndSelect('onu.serviceConfig', 'serviceConfig')
@@ -189,9 +197,9 @@ export class OnuManagementService {
             OR client.docNumber ILIKE :cleanQ
             OR contract.contractNumber ILIKE :q
             OR onu.onuIndex ILIKE :q
-            OR ponInterface.name ILIKE :q
+            OR poninterface.name ILIKE :q
             OR olt.name ILIKE :q
-            OR onuType.modelName ILIKE :q
+            OR onutype.modelName ILIKE :q
           )`,
           { q, cleanQ },
         );

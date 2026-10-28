@@ -308,6 +308,25 @@ describe('OnuManagementService', () => {
         }),
       );
     });
+
+    it('usa alias en minúsculas para los joins de ponInterface/onuType -- regresión: un alias con mayúsculas intercaladas (ej. "ponInterface") llega SIN comillas a Postgres dentro de un .andWhere() crudo, que lo pasa a minúsculas y ya no coincide con el alias real del JOIN, reventando con "missing FROM-clause entry for table poninterface" en producción contra cualquier OLT (confirmado 2026-10-28)', async () => {
+      await service.findAll({ search: 'ECOM0F91DF9B' } as any);
+
+      expect(onuQueryBuilder.leftJoinAndSelect).toHaveBeenCalledWith('onu.ponInterface', 'poninterface');
+      expect(onuQueryBuilder.leftJoinAndSelect).toHaveBeenCalledWith('onu.onuType', 'onutype');
+
+      const searchCall = onuQueryBuilder.andWhere.mock.calls.find(([sql]: [string]) => sql.includes('ILIKE'));
+      expect(searchCall).toBeDefined();
+      const [searchSql] = searchCall;
+
+      // El alias de la condición de búsqueda debe coincidir EXACTO (mismo
+      // case) con el alias usado en el JOIN -- nunca "ponInterface."/"onuType."
+      // sueltos sin comillas.
+      expect(searchSql).toContain('poninterface.name ILIKE');
+      expect(searchSql).toContain('onutype.modelName ILIKE');
+      expect(searchSql).not.toMatch(/\bponInterface\./);
+      expect(searchSql).not.toMatch(/\bonuType\./);
+    });
   });
 
   describe('findUnconfigured', () => {
