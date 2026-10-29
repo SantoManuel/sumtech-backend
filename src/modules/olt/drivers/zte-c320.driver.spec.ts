@@ -2429,6 +2429,56 @@ OLT#`);
 
       expect(ipHost.mgmtIp).toBeUndefined();
     });
+
+    it('CONFIRMADO EN VIVO (2026-10-29, ONU ECOM0F91DF9B): formato real del firmware usa "IP addres:" (typo real del fabricante, sin la "s" final) y "Current IP address:" -- bug real corregido: el regex anterior esperaba "IP address:" pegado al ":" y nunca matcheaba ninguno de los dos, fallando en silencio para CUALQUIER IP real, no solo 0.0.0.0', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(`
+Host ID:            1
+IP addres:          0.0.0.0
+Current IP address: 0.0.0.0
+Host ID:            2
+IP addres:          0.0.0.0
+MAC address:        e42d.7b0f.91e1
+Current IP address: 10.46.0.247
+Current mask:       255.255.255.0
+OLT#`);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const ipHost = await driver.getOnuIpHost(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      // Prioriza "Current IP address" (valor realmente negociado por DHCP)
+      // sobre "IP addres" (que puede quedar en 0.0.0.0 aun con DHCP activo).
+      expect(ipHost.mgmtIp).toBe('10.46.0.247');
+    });
+
+    it('formato real sin ninguna IP asignada (ambos campos en 0.0.0.0 en Host ID: 2) sigue reportando sin IP de gestión', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(`
+Host ID:            2
+IP addres:          0.0.0.0
+MAC address:        e42d.7b0f.91e1
+Current IP address: 0.0.0.0
+OLT#`);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const ipHost = await driver.getOnuIpHost(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(ipHost.mgmtIp).toBeUndefined();
+    });
   });
 
   describe('getOnuWanIp() / getOnuTr069MgmtInfo() -- parseo mejor-esfuerzo, SIN muestra real confirmada en vivo (ver Plan_Implementacion_WanIp_VlanProfile_HGU.md Fase 0); "raw" siempre se devuelve completo', () => {

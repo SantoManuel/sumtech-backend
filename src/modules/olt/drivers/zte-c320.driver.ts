@@ -1182,7 +1182,20 @@ export class ZteC320Driver implements IOltDriver {
       ipHostFound = true;
     }
 
-    const ipMatch = searchTarget.match(/(?:IP(?:\s+address)?|Current\s*IP)\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/i);
+    // CONFIRMADO EN VIVO (2026-10-29, ONU ECOM0F91DF9B): el firmware real usa
+    // "IP addres:" (sin la "s" final -- typo del propio fabricante) y
+    // "Current IP address:" (bien escrito) -- ninguno de los dos coincidía
+    // con el regex anterior (esperaba "IP address:" pegado al ":", bug real
+    // que hacía fallar el parseo silenciosamente para CUALQUIER IP real, no
+    // solo 0.0.0.0). "Current IP address" es el valor realmente negociado
+    // por DHCP (más confiable que "IP addres", que puede quedar en blanco
+    // aun con DHCP activo) -- se prioriza sobre el campo plano "IP:"/
+    // "IP addres:" cuando ambos están presentes. El ancla de línea (^/\n)
+    // en el patrón plano evita que la "IP" dentro de "Current IP address:"
+    // se cuente dos veces.
+    const currentIpMatch = searchTarget.match(/Current\s+IP\s*(?:addr(?:ess|es))?\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/i);
+    const plainIpMatch = searchTarget.match(/(?:^|\n)\s*IP\s*(?:addr(?:ess|es))?\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/im);
+    const ipMatch = currentIpMatch || plainIpMatch;
     if (ipMatch) {
       const parsedIp = ipMatch[1];
       if (parsedIp !== '0.0.0.0') {
