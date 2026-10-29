@@ -1384,6 +1384,7 @@ export class OnuManagementService {
         ethPorts: onu.onuType?.ethPorts,
         potsPorts: onu.onuType?.potsPorts,
         ethuniDhcpDelegationSupported: onu.onuType?.supportsEthuniDhcpDelegation,
+        securityMgmtSupported: onu.onuType?.supportsSecurityMgmt,
         serialNumber: onu.serialNumber,
         clientName: onu.contract?.client?.name || undefined,
         serviceVlan: onu.serviceConfig?.serviceVlan?.vlanId || 100,
@@ -1521,6 +1522,7 @@ export class OnuManagementService {
     let onuTypeEthPorts: number | undefined;
     let onuTypePotsPorts: number | undefined;
     let onuTypeEthuniDhcpDelegationSupported: boolean | undefined;
+    let onuTypeSecurityMgmtSupported: boolean | undefined;
     if (dto.onuTypeId) {
       const type = await this.onuTypeRepository.findOneBy({ id: dto.onuTypeId });
       if (type) {
@@ -1528,6 +1530,7 @@ export class OnuManagementService {
         onuTypeEthPorts = type.ethPorts;
         onuTypePotsPorts = type.potsPorts;
         onuTypeEthuniDhcpDelegationSupported = type.supportsEthuniDhcpDelegation;
+        onuTypeSecurityMgmtSupported = type.supportsSecurityMgmt;
       }
     }
 
@@ -1599,6 +1602,7 @@ export class OnuManagementService {
       ethPorts: onuTypeEthPorts,
       potsPorts: onuTypePotsPorts,
       ethuniDhcpDelegationSupported: onuTypeEthuniDhcpDelegationSupported,
+      securityMgmtSupported: onuTypeSecurityMgmtSupported,
       serialNumber: onu.serialNumber,
       clientName: dto.clientName || undefined,
       // Autogenerada en el frontend (zona de la OLT + GPS del contrato si

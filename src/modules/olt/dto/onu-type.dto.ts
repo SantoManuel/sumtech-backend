@@ -66,6 +66,10 @@ export class CreateOnuTypeDto {
 
   @IsOptional()
   @IsBoolean()
+  supportsSecurityMgmt?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   isActive?: boolean;
 }
 
@@ -133,6 +137,10 @@ export class UpdateOnuTypeDto {
   @IsOptional()
   @IsBoolean()
   supportsEthuniDhcpDelegation?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  supportsSecurityMgmt?: boolean;
 
   @IsOptional()
   @IsBoolean()

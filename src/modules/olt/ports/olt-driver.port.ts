@@ -204,6 +204,16 @@ export interface AuthorizeOnuParams {
    * generateTr069ManagementScript en zte-c320.driver.ts.
    */
   ethuniDhcpDelegationSupported?: boolean;
+  /**
+   * Si el firmware OMCI del modelo acepta las reglas "security-mgmt ..."
+   * (net.onu_types.supports_security_mgmt). Habilitan acceso remoto
+   * HTTPS/SSH/Telnet/FTP/SNMP al router desde la OLT -- NO son necesarias
+   * para el registro TR-069 (eso depende solo de iphost 2/VEIP). Default
+   * true (no especificado) para no alterar modelos ya confirmados en vivo
+   * que SÍ las aceptan (ej. HUAWEI HG8546M). false para modelos que las
+   * rechazan con "%Code 63993 : unknown ME" (ej. HUAWEY-BT546XG).
+   */
+  securityMgmtSupported?: boolean;
 }
 
 export interface OnuProvisioningVerification {

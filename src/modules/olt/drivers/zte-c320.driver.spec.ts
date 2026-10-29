@@ -180,6 +180,50 @@ describe('ZteC320Driver', () => {
     });
   });
 
+  describe('generateAuthorizationScript: "security-mgmt ..." según soporte OMCI del modelo (net.onu_types.supports_security_mgmt)', () => {
+    const baseConfig = {
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'HUAWEY-BT546XG-TR069',
+      serialNumber: 'ECOM0F91DF9B',
+      serviceVlan: 200,
+      tr069Vlan: 46,
+      tr069Url: 'http://10.46.0.1:7547/',
+      tcontProfile: 'UP-50M',
+      managementMethod: 'TR069' as const,
+      operationMode: 'ROUTER' as const,
+      ethPorts: 4,
+    };
+
+    it('securityMgmtSupported: false -- omite las 3 líneas "security-mgmt ..." (modelo que las rechaza por OMCI con "%Code 63993 : unknown ME", ej. HUAWEY-BT546XG)', () => {
+      const commands = driver.generateAuthorizationScript({
+        ...baseConfig,
+        securityMgmtSupported: false,
+      });
+      expect(commands.some((c) => c.includes('security-mgmt'))).toBe(false);
+      // El resto del canal de gestión (incluido el registro TR-069) debe
+      // seguir generándose igual -- security-mgmt no es parte de esa ruta.
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      expect(commands).toContain('tr069-mgmt 1 state unlock');
+      expect(commands).toContain(`tr069-mgmt 1 acs ${baseConfig.tr069Url}`);
+    });
+
+    it('securityMgmtSupported: true -- genera las 3 líneas "security-mgmt ..."', () => {
+      const commands = driver.generateAuthorizationScript({
+        ...baseConfig,
+        securityMgmtSupported: true,
+      });
+      expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
+      expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
+      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
+    });
+
+    it('securityMgmtSupported no especificado (undefined) -- default seguro, sigue generando las 3 líneas para no alterar modelos ya confirmados en vivo (ej. HUAWEI HG8546M)', () => {
+      const commands = driver.generateAuthorizationScript(baseConfig);
+      expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
+    });
+  });
+
   it('sin managementMethod TR069 (ej. ONU gestionado por OMCI puro, sin Red TR-069 asignada) NO genera el canal de gestión ni el bloque tr069-mgmt -- bug real evitado: antes esto mandaba literalmente "tr069-mgmt 1 acs undefined" a la OLT porque OnuAuthorizeModal.tsx (Etapa 1 del frontend) no recolecta tr069NetworkId', () => {
     const commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
@@ -364,6 +408,21 @@ describe('ZteC320Driver', () => {
     it('no especificar ethuniDhcpDelegationSupported (undefined) sigue generando "dhcp-ip ethuni ... from-onu" -- default seguro para no alterar modelos ya confirmados en vivo (ZTE-F660, X2251) que SÍ lo requieren', () => {
       const commands = driver.generateTr069ManagementScript(baseConfig);
       expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
+    });
+
+    it('omite "security-mgmt ..." cuando securityMgmtSupported es false -- modelos como HUAWEY-BT546XG rechazan esa ME por OMCI con "%Code 63993 : unknown ME"', () => {
+      const commands = driver.generateTr069ManagementScript({
+        ...baseConfig,
+        securityMgmtSupported: false,
+      });
+      expect(commands.some((c) => c.includes('security-mgmt'))).toBe(false);
+      expect(commands).toContain('tr069-mgmt 1 state unlock');
+      expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
+    });
+
+    it('no especificar securityMgmtSupported (undefined) sigue generando "security-mgmt ..." -- default seguro para no alterar modelos ya confirmados en vivo (ej. HUAWEI HG8546M)', () => {
+      const commands = driver.generateTr069ManagementScript(baseConfig);
+      expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
     });
   });
 

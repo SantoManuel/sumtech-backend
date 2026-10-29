@@ -867,10 +867,20 @@ export class ZteC320Driver implements IOltDriver {
           ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
           : `tr069-mgmt 1 acs ${config.tr069Url}`,
         `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
-        'security-mgmt 5 state enable mode forward protocol web https',
-        'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
-        'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
       );
+      // "security-mgmt ..." solo si el modelo lo soporta por OMCI -- algunos
+      // modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 : unknown
+      // ME", lo que deja el resto de la transacción OMCI en "fail". No es
+      // necesario para que el ONT se registre en el ACS (eso ya quedó
+      // cableado arriba vía iphost 2/VEIP) -- solo habilita acceso remoto
+      // HTTPS/SSH/Telnet/FTP/SNMP al propio router desde la OLT.
+      if (config.securityMgmtSupported !== false) {
+        commands.push(
+          'security-mgmt 5 state enable mode forward protocol web https',
+          'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
+          'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
+        );
+      }
     }
 
     // Cierre ordenado de sub-vistas (pon-onu-mng -> configure terminal -> EXEC) y persistencia
@@ -919,9 +929,17 @@ export class ZteC320Driver implements IOltDriver {
         ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
         : `tr069-mgmt 1 acs ${config.tr069Url}`,
       `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
-      'security-mgmt 5 state enable mode forward protocol web https',
-      'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
-      'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
+      // "security-mgmt ..." solo si el modelo lo soporta por OMCI -- algunos
+      // modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 : unknown
+      // ME". No es necesario para el registro TR-069 (ya cableado arriba vía
+      // iphost 2/VEIP), solo habilita acceso remoto HTTPS/SSH/Telnet/FTP/SNMP.
+      ...(config.securityMgmtSupported !== false
+        ? [
+            'security-mgmt 5 state enable mode forward protocol web https',
+            'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
+            'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
+          ]
+        : []),
       // 5. Reinicio OMCI ÚNICAMENTE cuando ya se enviaron tag y security-mgmt
       REBOOT_ONU_SENTINEL,
       'end',
