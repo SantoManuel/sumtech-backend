@@ -184,6 +184,7 @@ describe('OnuManagementService', () => {
       setOnuAdminState: jest.fn(),
       deleteOnu: jest.fn(),
       getOnuDetailInfo: jest.fn(),
+      getOnuIpHost: jest.fn(),
       getOnuWanIp: jest.fn(),
       getOnuTr069MgmtInfo: jest.fn(),
       getOnuMacTable: jest.fn(),
@@ -640,59 +641,83 @@ describe('OnuManagementService', () => {
     it('marca CRÍTICO cuando Config state ≠ success', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'fail', raw: 'Config state: fail' });
-      zteDriver.getOnuWanIp.mockResolvedValue({ host2: { ip: '10.46.0.247' }, raw: '' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', ipHostFound: true, raw: '' });
+      zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
 
       const result = await service.getProvisioningAudit('onu-uuid-1');
 
-      expect(result.findings.some((f) => f.severity === 'CRITICAL' && f.message.includes('Config state'))).toBe(true);
+      const finding = result.findings.find((f) => f.severity === 'CRITICAL' && f.message.includes('Config state'));
+      expect(finding).toBeDefined();
+      expect(finding?.fixAction).toBe('REAPPLY_TR069');
     });
 
     it('marca CRÍTICO cuando el tipo de ONU reportado por la OLT no coincide con el esperado', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'EG8141A5-TR069', configState: 'success', raw: 'Type: EG8141A5-TR069' });
-      zteDriver.getOnuWanIp.mockResolvedValue({ host2: { ip: '10.46.0.247' }, raw: '' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', ipHostFound: true, raw: '' });
+      zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
 
       const result = await service.getProvisioningAudit('onu-uuid-1');
 
-      expect(
-        result.findings.some(
-          (f) => f.severity === 'CRITICAL' && f.message.includes('EG8141A5-TR069') && f.message.includes('HUAWEY-BT546XG-TR069'),
-        ),
-      ).toBe(true);
+      const finding = result.findings.find(
+        (f) => f.severity === 'CRITICAL' && f.message.includes('EG8141A5-TR069') && f.message.includes('HUAWEY-BT546XG-TR069'),
+      );
+      expect(finding).toBeDefined();
+      expect(finding?.fixAction).toBe('REAUTHORIZE');
     });
 
-    it('marca CRÍTICO cuando la IP de gestión (WAN host 2) es 0.0.0.0', async () => {
+    it('marca CRÍTICO cuando la IP de gestión (Host ID: 2, ip-host) es 0.0.0.0/sin asignar', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', raw: '' });
-      zteDriver.getOnuWanIp.mockResolvedValue({ host2: { ip: '0.0.0.0' }, raw: 'IP: 0.0.0.0' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: undefined, ipHostFound: true, raw: 'IP: 0.0.0.0' });
+      zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
 
       const result = await service.getProvisioningAudit('onu-uuid-1');
 
-      expect(result.findings.some((f) => f.severity === 'CRITICAL' && f.message.includes('DHCP'))).toBe(true);
+      const finding = result.findings.find((f) => f.severity === 'CRITICAL' && f.message.includes('DHCP'));
+      expect(finding).toBeDefined();
+      expect(finding?.fixAction).toBe('REAPPLY_TR069');
+    });
+
+    it('REGRESIÓN (bug real confirmado en vivo, 2026-10-29, ONU ECOM0F91DF9B): "show ... wan-ip" devolviendo "%Code 64040 : No relate information to show" NO debe marcar crítico si ip-host SÍ tiene IP real -- wan-ip solo aplica al mecanismo todavía no implementado (Plan_Implementacion_WanIp_VlanProfile_HGU.md)', async () => {
+      onuRepo.findOne.mockResolvedValue(auditOnu);
+      zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', raw: '' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', ipHostFound: true, raw: 'IP: 10.46.0.247' });
+      zteDriver.getOnuWanIp.mockResolvedValue({ host1: undefined, host2: undefined, raw: '%Code 64040-GPONRM : No relate information to show.' });
+      zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
+      zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
+
+      const result = await service.getProvisioningAudit('onu-uuid-1');
+
+      expect(result.findings.some((f) => f.severity === 'CRITICAL')).toBe(false);
     });
 
     it('marca ADVERTENCIA cuando el ACS aplicado no coincide con la Red TR-069 esperada', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', raw: '' });
-      zteDriver.getOnuWanIp.mockResolvedValue({ host2: { ip: '10.46.0.247' }, raw: '' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', ipHostFound: true, raw: '' });
+      zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://otro-acs-viejo:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
 
       const result = await service.getProvisioningAudit('onu-uuid-1');
 
-      expect(result.findings.some((f) => f.severity === 'WARNING' && f.message.includes('ACS'))).toBe(true);
+      const finding = result.findings.find((f) => f.severity === 'WARNING' && f.message.includes('ACS'));
+      expect(finding).toBeDefined();
+      expect(finding?.fixAction).toBe('REAPPLY_TR069');
     });
 
     it('marca ADVERTENCIA cuando una VLAN esperada no tiene ninguna MAC aprendida', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', raw: '' });
-      zteDriver.getOnuWanIp.mockResolvedValue({ host2: { ip: '10.46.0.247' }, raw: '' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', ipHostFound: true, raw: '' });
+      zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }]); // falta la 4069
 
@@ -707,7 +732,8 @@ describe('OnuManagementService', () => {
         onuType: { vendorTypeName: 'HUAWEY-BT546XG-TR069', supportsEthuniDhcpDelegation: true, supportsSecurityMgmt: true },
       });
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', raw: '' });
-      zteDriver.getOnuWanIp.mockResolvedValue({ host2: { ip: '10.46.0.247' }, raw: '' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', ipHostFound: true, raw: '' });
+      zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
 
@@ -719,6 +745,7 @@ describe('OnuManagementService', () => {
     it('un driver que no implementa estos métodos opcionales (ej. HiOSO) reporta "unsupported" en vez de reventar', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       delete zteDriver.getOnuDetailInfo;
+      delete zteDriver.getOnuIpHost;
       delete zteDriver.getOnuWanIp;
       delete zteDriver.getOnuTr069MgmtInfo;
       delete zteDriver.getOnuMacTable;
@@ -726,7 +753,7 @@ describe('OnuManagementService', () => {
       const result = await service.getProvisioningAudit('onu-uuid-1');
 
       expect(result.unsupported).toEqual(
-        expect.arrayContaining(['getOnuDetailInfo', 'getOnuWanIp', 'getOnuTr069MgmtInfo', 'getOnuMacTable']),
+        expect.arrayContaining(['getOnuDetailInfo', 'getOnuIpHost', 'getOnuWanIp', 'getOnuTr069MgmtInfo', 'getOnuMacTable']),
       );
       expect(result.findings.every((f) => f.severity !== 'CRITICAL')).toBe(true);
     });

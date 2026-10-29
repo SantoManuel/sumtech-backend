@@ -19,6 +19,7 @@ import {
   DiscoveredTcontProfile,
   DiscoveredTrafficProfile,
   OnuDetailInfo,
+  OnuIpHostInfo,
   OnuWanIpInfo,
   OnuTr069MgmtInfo,
 } from '../ports/olt-driver.port';
@@ -1126,24 +1127,7 @@ export class ZteC320Driver implements IOltDriver {
 
     // 1. show gpon remote-onu ip-host gpon-onu_{port}:{onu_id}
     const rawIpHost = await session.executeCommand(`show gpon remote-onu ip-host ${onuInterface}`);
-    let mgmtIp: string | undefined;
-    let ipHostFound = false;
-
-    // Buscar Host ID: 2 (gestión TR-069)
-    const host2Match = rawIpHost.match(/Host\s*(?:ID)?\s*:\s*2\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
-    const searchTarget = host2Match ? host2Match[1] : rawIpHost;
-
-    if (host2Match) {
-      ipHostFound = true;
-    }
-
-    const ipMatch = searchTarget.match(/(?:IP(?:\s+address)?|Current\s*IP)\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/i);
-    if (ipMatch) {
-      const parsedIp = ipMatch[1];
-      if (parsedIp !== '0.0.0.0') {
-        mgmtIp = parsedIp;
-      }
-    }
+    const { mgmtIp, ipHostFound } = this.parseIpHost(rawIpHost);
 
     if (!mgmtIp) {
       warnings.push('Host ID: 2 no ha obtenido dirección IP (0.0.0.0 o sin asignar).');
@@ -1171,6 +1155,55 @@ export class ZteC320Driver implements IOltDriver {
       rawIpHost,
       rawMac,
     };
+  }
+
+  /**
+   * Parser de "show gpon remote-onu ip-host <interfaz>" -- extraído de
+   * `verifyOnuProvisioningWithSession` para reutilizarlo desde
+   * `getOnuIpHost()`. Esta es la señal REAL de si la ONU obtuvo IP de
+   * gestión para el camino de aprovisionamiento que SÍ usamos hoy
+   * (ip-host + dhcp-ip ethuni) -- a diferencia de `getOnuWanIp` (comando
+   * "wan-ip"), que solo aplica al mecanismo alternativo de
+   * Plan_Implementacion_WanIp_VlanProfile_HGU.md, todavía no implementado.
+   * Confirmado en vivo (2026-10-29, ONU ECOM0F91DF9B): "show ... wan-ip"
+   * devuelve "%Code 64040-GPONRM : No relate information to show" para
+   * cualquier ONU que NO pase por ese mecanismo -- no es evidencia de que
+   * la ONU no tenga IP, solo de que no usa "wan-ip".
+   */
+  private parseIpHost(raw: string): { mgmtIp?: string; ipHostFound: boolean } {
+    let mgmtIp: string | undefined;
+    let ipHostFound = false;
+
+    // Buscar Host ID: 2 (gestión TR-069)
+    const host2Match = raw.match(/Host\s*(?:ID)?\s*:\s*2\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
+    const searchTarget = host2Match ? host2Match[1] : raw;
+
+    if (host2Match) {
+      ipHostFound = true;
+    }
+
+    const ipMatch = searchTarget.match(/(?:IP(?:\s+address)?|Current\s*IP)\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/i);
+    if (ipMatch) {
+      const parsedIp = ipMatch[1];
+      if (parsedIp !== '0.0.0.0') {
+        mgmtIp = parsedIp;
+      }
+    }
+
+    return { mgmtIp, ipHostFound };
+  }
+
+  /** "show gpon remote-onu ip-host <interfaz>" como método independiente -- ver `IOltDriver.getOnuIpHost`. */
+  async getOnuIpHost(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuIpHostInfo> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const raw = await session.executeCommand(`show gpon remote-onu ip-host ${onuInterface}`);
+      return { ...this.parseIpHost(raw), raw };
+    } finally {
+      await session.close();
+    }
   }
 
   /**

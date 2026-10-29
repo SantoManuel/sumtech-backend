@@ -2387,6 +2387,50 @@ OLT#`);
     });
   });
 
+  describe('getOnuIpHost() -- "show gpon remote-onu ip-host" como método independiente, fuente REAL de IP de gestión para el camino ip-host/dhcp-ip ethuni (NO confundir con getOnuWanIp)', () => {
+    it('parsea la IP de gestión del Host ID: 2', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(`
+Host ID: 1
+  IP: 0.0.0.0
+Host ID: 2
+  IP: 10.46.0.247
+  MAC: e42d.7b0f.91e1
+OLT#`);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const ipHost = await driver.getOnuIpHost(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(ipHost.mgmtIp).toBe('10.46.0.247');
+      expect(ipHost.ipHostFound).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('show gpon remote-onu ip-host gpon-onu_1/2/6:3');
+    });
+
+    it('IP 0.0.0.0 en Host ID: 2 queda sin mgmtIp (sin IP real asignada)', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('\r\nHost ID: 2\r\n  IP: 0.0.0.0\r\nOLT#');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const ipHost = await driver.getOnuIpHost(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(ipHost.mgmtIp).toBeUndefined();
+    });
+  });
+
   describe('getOnuWanIp() / getOnuTr069MgmtInfo() -- parseo mejor-esfuerzo, SIN muestra real confirmada en vivo (ver Plan_Implementacion_WanIp_VlanProfile_HGU.md Fase 0); "raw" siempre se devuelve completo', () => {
     it('getOnuWanIp: asigna la primera IP/MAC encontrada a host1 y la segunda a host2', async () => {
       const executeCommand = jest.fn().mockResolvedValue(`
@@ -2411,6 +2455,25 @@ OLT#`);
       expect(wanIp.host2).toEqual({ ip: '10.46.0.247', mac: '1122.3344.5566' });
       expect(wanIp.raw).toContain('WAN index: 2');
       expect(executeCommand).toHaveBeenCalledWith('show gpon remote-onu wan-ip gpon-onu_1/2/6:3');
+    });
+
+    it('getOnuWanIp: CONFIRMADO EN VIVO (2026-10-29, ONU ECOM0F91DF9B) -- "%Code 64040-GPONRM : No relate information to show" para una ONU aprovisionada por ip-host (no por "wan-ip") no revienta, host1/host2 quedan undefined, raw conserva el mensaje de la OLT', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('\r\n%Code 64040-GPONRM : No relate information to show.\r\nOLT#');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const wanIp = await driver.getOnuWanIp(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(wanIp.host1).toBeUndefined();
+      expect(wanIp.host2).toBeUndefined();
+      expect(wanIp.raw).toContain('64040');
     });
 
     it('getOnuWanIp: sin ninguna IP en la salida (ej. 0.0.0.0 sin match numérico útil o equipo sin WAN asignada), host1/host2 quedan undefined', async () => {

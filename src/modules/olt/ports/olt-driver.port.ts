@@ -246,6 +246,19 @@ export interface OnuDetailInfo {
 }
 
 /**
+ * Resultado de "show gpon remote-onu ip-host <interfaz>" -- señal REAL de
+ * IP de gestión para el camino de aprovisionamiento usado hoy (ip-host +
+ * dhcp-ip ethuni). Distinto de `OnuWanIpInfo` (comando "wan-ip"), que solo
+ * aplica al mecanismo alternativo todavía no implementado -- ver
+ * Plan_Implementacion_WanIp_VlanProfile_HGU.md.
+ */
+export interface OnuIpHostInfo {
+  mgmtIp?: string;
+  ipHostFound: boolean;
+  raw: string;
+}
+
+/**
  * Resultado de "show gpon remote-onu wan-ip <interfaz>". A diferencia de
  * OnuDetailInfo, el formato exacto de esta salida NO está confirmado en
  * vivo para todos los casos -- el parseo es mejor esfuerzo (busca
@@ -573,6 +586,12 @@ export interface IOltDriver {
    * Sumtech cree haber cambiado el tipo).
    */
   getOnuDetailInfo?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuDetailInfo>;
+  /**
+   * "show gpon remote-onu ip-host <interfaz>" -- ver `OnuIpHostInfo`. Esta
+   * es la fuente correcta para saber si la ONU obtuvo IP de gestión en el
+   * camino de aprovisionamiento usado hoy (NO usar `getOnuWanIp` para eso).
+   */
+  getOnuIpHost?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuIpHostInfo>;
   /**
    * "show gpon remote-onu wan-ip <interfaz>" -- IP/MAC real de cada host WAN
    * (1: Internet, 2: gestión TR-069). Parseo mejor-esfuerzo, ver

@@ -29,6 +29,7 @@ import {
   DriverNotImplementedError,
   UnknownOltVendorError,
   OnuDetailInfo,
+  OnuIpHostInfo,
   OnuWanIpInfo,
   OnuTr069MgmtInfo,
 } from '../ports/olt-driver.port';
@@ -39,11 +40,23 @@ export interface ProvisioningAuditFinding {
   message: string;
   command?: string;
   rawExcerpt?: string;
+  /**
+   * Acción de corrección disponible desde la pestaña de Auditoría:
+   * "REAPPLY_TR069" reabre el modal "Aplicar Perfil TR-069" (Etapa 2 --
+   * recablea iphost2/VEIP/ACS y fuerza el reinicio OMCI, mismo flujo ya
+   * probado manualmente durante la depuración de ECOM0F91DF9B). "REAUTHORIZE"
+   * reabre el modal de Autorización completa (Etapa 1 -- fuerza "no onu" +
+   * recreación limpia); deliberadamente SIN prefill automático: un tipo de
+   * ONU equivocado amerita que el operador reconfirme a mano plan/VLAN/
+   * contrato, no un reintento silencioso con valores adivinados.
+   */
+  fixAction?: 'REAPPLY_TR069' | 'REAUTHORIZE';
 }
 
 export interface ProvisioningAuditResult {
   findings: ProvisioningAuditFinding[];
   detailInfo?: OnuDetailInfo;
+  ipHost?: OnuIpHostInfo;
   wanIp?: OnuWanIpInfo;
   tr069Mgmt?: OnuTr069MgmtInfo;
   macTable?: Array<{ mac: string; vlan: number }>;
@@ -602,9 +615,12 @@ export class OnuManagementService {
     const onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
 
     const NOT_SUPPORTED = 'NOT_SUPPORTED';
-    const [detailInfoResult, wanIpResult, tr069MgmtResult, macTableResult] = await Promise.allSettled([
+    const [detailInfoResult, ipHostResult, wanIpResult, tr069MgmtResult, macTableResult] = await Promise.allSettled([
       typeof driver.getOnuDetailInfo === 'function'
         ? driver.getOnuDetailInfo(connParams, ponInterface, onuId)
+        : Promise.reject(new Error(NOT_SUPPORTED)),
+      typeof driver.getOnuIpHost === 'function'
+        ? driver.getOnuIpHost(connParams, ponInterface, onuId)
         : Promise.reject(new Error(NOT_SUPPORTED)),
       typeof driver.getOnuWanIp === 'function'
         ? driver.getOnuWanIp(connParams, ponInterface, onuId)
@@ -618,6 +634,7 @@ export class OnuManagementService {
     ]);
 
     const detailInfo = detailInfoResult.status === 'fulfilled' ? detailInfoResult.value : undefined;
+    const ipHost = ipHostResult.status === 'fulfilled' ? ipHostResult.value : undefined;
     const wanIp = wanIpResult.status === 'fulfilled' ? wanIpResult.value : undefined;
     const tr069Mgmt = tr069MgmtResult.status === 'fulfilled' ? tr069MgmtResult.value : undefined;
     const macTable = macTableResult.status === 'fulfilled' ? macTableResult.value : undefined;
@@ -627,6 +644,7 @@ export class OnuManagementService {
 
     const namedResults: Array<[string, PromiseSettledResult<unknown>]> = [
       ['getOnuDetailInfo', detailInfoResult],
+      ['getOnuIpHost', ipHostResult],
       ['getOnuWanIp', wanIpResult],
       ['getOnuTr069MgmtInfo', tr069MgmtResult],
       ['getOnuMacTable', macTableResult],
@@ -652,6 +670,7 @@ export class OnuManagementService {
             'varios reintentos fallidos encima, reautoriza desde la Etapa 1 completa (fuerza "no onu" + recreación limpia).',
           command: 'show gpon onu detail-info',
           rawExcerpt: detailInfo.raw,
+          fixAction: 'REAPPLY_TR069',
         });
       }
 
@@ -664,20 +683,29 @@ export class OnuManagementService {
             'La última reautorización no se aplicó de verdad en el equipo.',
           command: 'show gpon onu detail-info',
           rawExcerpt: detailInfo.raw,
+          fixAction: 'REAUTHORIZE',
         });
       }
     }
 
-    if (wanIp) {
-      const mgmtIp = wanIp.host2?.ip;
-      if (!mgmtIp || mgmtIp === '0.0.0.0') {
+    // Usa ip-host, NO wan-ip, como fuente de verdad -- CONFIRMADO EN VIVO
+    // (2026-10-29, ONU ECOM0F91DF9B): "show ... wan-ip" devuelve "%Code
+    // 64040-GPONRM : No relate information to show" para cualquier ONU
+    // aprovisionada por el camino ip-host/dhcp-ip ethuni (el que de verdad
+    // usamos hoy) -- NO es evidencia de que la ONU no tenga IP, solo de que
+    // no usa el mecanismo "wan-ip" (ver Plan_Implementacion_WanIp_VlanProfile_HGU.md,
+    // todavía no implementado). Tratar esa ausencia como "crítico" era un
+    // falso positivo.
+    if (ipHost) {
+      if (!ipHost.mgmtIp) {
         findings.push({
           severity: 'CRITICAL',
           message:
-            'La ONU no ha obtenido IP de gestión por DHCP (WAN host 2). Revisa el servidor DHCP de la VLAN de ' +
+            'La ONU no ha obtenido IP de gestión por DHCP (Host ID: 2). Revisa el servidor DHCP de la VLAN de ' +
             'gestión en el MikroTik, o confirma primero que el "Config state" realmente haya quedado en "success".',
-          command: 'show gpon remote-onu wan-ip',
-          rawExcerpt: wanIp.raw,
+          command: 'show gpon remote-onu ip-host',
+          rawExcerpt: ipHost.raw,
+          fixAction: 'REAPPLY_TR069',
         });
       }
     }
@@ -690,6 +718,7 @@ export class OnuManagementService {
           message: `El ACS aplicado en la OLT ("${tr069Mgmt.acsUrl}") no coincide con la Red TR-069 configurada en Sumtech ("${expectedAcs}").`,
           command: 'show gpon remote-onu tr069-mgmt',
           rawExcerpt: tr069Mgmt.raw,
+          fixAction: 'REAPPLY_TR069',
         });
       }
     }
@@ -731,7 +760,7 @@ export class OnuManagementService {
       findings.push({ severity: 'INFO', message: 'No se detectaron discrepancias conocidas en esta auditoría.' });
     }
 
-    return { findings, detailInfo, wanIp, tr069Mgmt, macTable, unsupported };
+    return { findings, detailInfo, ipHost, wanIp, tr069Mgmt, macTable, unsupported };
   }
 
   /**
