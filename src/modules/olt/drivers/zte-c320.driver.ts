@@ -1210,7 +1210,17 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
 
       const commands = this.generateTr069ManagementScript(config);
-      let warning: string | undefined;
+      // Acumula TODOS los rechazos de la corrida, no solo el primero -- antes
+      // `warning` se fijaba una sola vez (`if (!warning)`) y cualquier
+      // rechazo posterior en la MISMA corrida quedaba invisible (ni
+      // siquiera en los logs del servidor, porque el `logger.warn` también
+      // estaba adentro de ese guard). Eso obligaba a descubrir las
+      // incompatibilidades OMCI de un modelo de a una por reintento en vez
+      // de verlas todas de una vez (confirmado en vivo, 2026-10-28, ONU
+      // ECOM0F91DF9B/HUAWEY-BT546XG: "dhcp-ip ethuni" y "security-mgmt"
+      // fueron rechazados en la misma corrida, pero solo el primero se
+      // reportó).
+      const warnings: string[] = [];
       // TODO el script generado por generateTr069ManagementScript() es el
       // bloque TR-069 (así lo documenta este método) -- antes el flag solo se
       // activaba al llegar a "pon-onu-mng", así que un rechazo en los
@@ -1237,10 +1247,9 @@ export class ZteC320Driver implements IOltDriver {
           try {
             await session.rebootOnu();
           } catch (err: any) {
-            if (!warning) {
-              warning = `No se pudo confirmar el reinicio OMCI del ONT tras configurar TR-069: ${err.message}. La configuración sí se aplicó en la OLT.`;
-              this.logger.warn(`[diag] applyTr069Management: rebootOnu() best-effort falló, continuando: ${warning}`);
-            }
+            const msg = `No se pudo confirmar el reinicio OMCI del ONT tras configurar TR-069: ${err.message}. La configuración sí se aplicó en la OLT.`;
+            warnings.push(msg);
+            this.logger.warn(`[diag] applyTr069Management: rebootOnu() best-effort falló, continuando: ${msg}`);
           }
           continue;
         }
@@ -1260,8 +1269,8 @@ export class ZteC320Driver implements IOltDriver {
         if (isAcsCommand) {
           const acsResult = await this.applyAcsUrlWithRetries(session, cmd);
           acsRebootHandled = true;
-          if (acsResult.warningMessage && !warning) {
-            warning = acsResult.warningMessage;
+          if (acsResult.warningMessage) {
+            warnings.push(acsResult.warningMessage);
           }
           continue;
         }
@@ -1278,12 +1287,11 @@ export class ZteC320Driver implements IOltDriver {
           if (this.isAlreadyAppliedResponse(output)) {
             // ok, ya aplicado en un intento anterior -- seguir con el resto.
           } else if (inTr069Block) {
-            if (!warning) {
-              warning =
-                `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${output.trim()}. ` +
-                'Probablemente debas configurar el WAN manualmente en la ONU.';
-              this.logger.warn(`[diag] applyTr069Management: TR-069/ACS best-effort falló, continuando: ${warning}`);
-            }
+            const msg =
+              `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${output.trim()}. ` +
+              'Probablemente debas configurar el WAN manualmente en la ONU.';
+            warnings.push(msg);
+            this.logger.warn(`[diag] applyTr069Management: TR-069/ACS best-effort falló, continuando: ${msg}`);
             // No se relanza: el resto del script (incluido "end" para salir
             // limpio de "(gpon-onu-mng)#" y el "write" final) debe seguir
             // corriendo igual.
@@ -1316,11 +1324,7 @@ export class ZteC320Driver implements IOltDriver {
             `El "Config state" del ONT quedó en "${configState}" (no "success") tras aplicar el bloque TR-069 -- ` +
             'es posible que el canal de gestión (iphost 2/VEIP) no se haya terminado de aplicar pese a que ' +
             'ningún comando individual fue rechazado. Revisa manualmente o reintenta la Etapa 2.';
-          if (!warning) {
-            warning = configStateWarning;
-          } else {
-            warning = `${warning} Además: ${configStateWarning}`;
-          }
+          warnings.push(configStateWarning);
           this.logger.warn(`[diag] applyTr069Management: ${configStateWarning}`);
         }
       } catch (err: any) {
@@ -1329,7 +1333,7 @@ export class ZteC320Driver implements IOltDriver {
         this.logger.warn(`[diag] applyTr069Management: no se pudo verificar "Config state": ${err.message}`);
       }
 
-      return { ok: true, warning };
+      return { ok: true, warning: warnings.length > 0 ? warnings.join(' | ') : undefined };
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {

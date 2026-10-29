@@ -1883,6 +1883,32 @@ No.15 profile : TRAFFIC-977M
       expect(rebootOnu).toHaveBeenCalled();
     });
 
+    it('dos comandos rechazados en la MISMA corrida aparecen AMBOS en el warning final -- bug real corregido (2026-10-28): antes solo se reportaba el primer rechazo ("if (!warning)"), y los siguientes ni siquiera quedaban en los logs del servidor, obligando a descubrir las incompatibilidades OMCI de un modelo de a una por reintento (ej. "dhcp-ip ethuni" y "security-mgmt" rechazados juntos por HUAWEY-BT546XG, pero solo el primero se veía)', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('dhcp-ip ethuni')) return Promise.resolve('\r\n%Code 63993-GPONRM : ONT return error:unknown ME.\r\nOLT#');
+        if (cmd.startsWith('security-mgmt')) return Promise.resolve('\r\n%Code 63993-GPONRM : ONT return error:unknown ME.\r\nOLT#');
+        return Promise.resolve('');
+      });
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('dhcp-ip ethuni');
+      expect(result.warning).toContain('security-mgmt');
+      // El script completo debe seguir corriendo pese a ambos rechazos.
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
     it('reintenta "tr069-mgmt ... acs ..." con reinicio entre cada intento -- si la OLT lo acepta en el 4to intento, no hay warning y se reinició 4 veces (bug real: antes era un intento único, mejor esfuerzo, que dependía de un job externo lento para reintentar)', async () => {
       let acsAttempts = 0;
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
