@@ -1,4 +1,4 @@
-import * as net from 'net';
+﻿import * as net from 'net';
 import { Injectable, Logger } from '@nestjs/common';
 import {
   IOltDriver,
@@ -39,7 +39,7 @@ export class ZteC320Driver implements IOltDriver {
     connectAndLogin(): Promise<void>;
     executeCommand(cmd: string, timeoutMs?: number): Promise<string>;
     rebootOnu(timeoutMs?: number): Promise<void>;
-    close(): void;
+    close(): Promise<void>;
   } {
     return new ZteTelnetSession(params);
   }
@@ -119,7 +119,7 @@ export class ZteC320Driver implements IOltDriver {
       return { ok: false, error: err.message || 'Error de conexión Telnet con OLT' };
     } finally {
       if (session) {
-        session.close();
+        await session.close();
       }
     }
   }
@@ -148,7 +148,7 @@ export class ZteC320Driver implements IOltDriver {
         rawSystemGroup: rawSystem.slice(0, 500),
       };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -203,7 +203,7 @@ export class ZteC320Driver implements IOltDriver {
         raw: rawDetail || fanOutput.slice(0, 500),
       };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -241,7 +241,7 @@ export class ZteC320Driver implements IOltDriver {
       const output = await session.executeCommand('show card');
       return this.parseCards(output);
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -389,7 +389,7 @@ export class ZteC320Driver implements IOltDriver {
 
       return interfaces;
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -427,7 +427,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -502,7 +502,7 @@ export class ZteC320Driver implements IOltDriver {
       for (const vlanId of tagged) result.push({ vlanId, mode: 'TAG' });
       return result;
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -543,7 +543,7 @@ export class ZteC320Driver implements IOltDriver {
 
       return results;
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -633,7 +633,7 @@ export class ZteC320Driver implements IOltDriver {
 
       return discovered;
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -665,7 +665,7 @@ export class ZteC320Driver implements IOltDriver {
       const parsed = this.parseOnuRunningConfig(output);
       return { ...parsed, raw: output };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -729,7 +729,7 @@ export class ZteC320Driver implements IOltDriver {
         raw: output.slice(0, 300),
       };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1088,7 +1088,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1108,7 +1108,7 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
       return await this.verifyOnuProvisioningWithSession(session, ponInterface, onuId, options);
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1337,7 +1337,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1477,7 +1477,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1497,7 +1497,7 @@ export class ZteC320Driver implements IOltDriver {
       const found = this.parseTcontProfilesFromOutput(output).find((p) => p.name === name);
       return found ? { name: found.name, fixedKbps: found.speedKbps } : null;
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1558,7 +1558,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1603,7 +1603,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1659,7 +1659,7 @@ export class ZteC320Driver implements IOltDriver {
       const output = await session.executeCommand('show traffic-profile');
       return this.parseTrafficProfilesFromOutput(output);
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1707,7 +1707,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1869,7 +1869,7 @@ export class ZteC320Driver implements IOltDriver {
       const output = await session.executeCommand('show gpon profile tcont');
       return this.parseTcontProfilesFromOutput(output);
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1916,7 +1916,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1941,7 +1941,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1974,7 +1974,7 @@ export class ZteC320Driver implements IOltDriver {
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1984,7 +1984,7 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
       return await session.executeCommand('show running-config', 20000);
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -1994,7 +1994,7 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
       return await session.executeCommand(command, 20000);
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -2016,7 +2016,7 @@ export class ZteC320Driver implements IOltDriver {
         rawBps: { inputBps: inBps, outputBps: outBps },
       };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 
@@ -2126,6 +2126,14 @@ export class ZteTelnetSession {
   private socket: net.Socket | null = null;
   private prompt = 'ZXAN#';
   private buffer = '';
+  /**
+   * Se pone en `true` al entrar a "configure terminal" -- señal de que la
+   * sesión puede tener cambios sin guardar. Usado por `close()` para decidir
+   * si vale la pena esperar un posible prompt interactivo "[yes/no]:" al
+   * salir (ver close() para el porqué). Las sesiones de solo lectura (show *)
+   * nunca lo activan, así que no pagan ningún costo de espera adicional.
+   */
+  private dirty = false;
   // Instrumentación temporal (RF: bug real en producción, 2026-10-17 --
   // "show gpon onu baseinfo" se cuelga completo en algunos puertos incluso
   // ya serializado por OLT -- ver withOltTelnetLock -- y confirmado que la
@@ -2250,6 +2258,10 @@ export class ZteTelnetSession {
     const socket = this.socket;
     if (!socket) {
       throw new Error('Socket Telnet no inicializado.');
+    }
+
+    if (command === 'configure terminal') {
+      this.dirty = true;
     }
 
     const t0 = Date.now();
@@ -2399,16 +2411,78 @@ export class ZteTelnetSession {
     });
   }
 
-  close(): void {
-    if (this.socket) {
+  /**
+   * CONFIRMADO EN VIVO (logs de producción): "exit" dentro de un submodo con
+   * cambios sin guardar dispara el prompt interactivo "The configuration is
+   * changed,confirm to logout without saving? [yes/no]:" -- antes este
+   * método escribía "exit\r\n" y destruía el socket de inmediato, sin
+   * esperar esa respuesta. Si la OLT se queda esperando un "yes"/"no" que
+   * nunca llega porque el socket ya se cerró, la sesión puede quedar
+   * colgada del lado del equipo (contando contra el límite de sesiones
+   * Telnet concurrentes) en vez de liberarse de inmediato. Mismo patrón ya
+   * probado en `rebootOnu()`: escuchar la respuesta real y solo responder
+   * "yes" si el prompt efectivamente aparece -- nunca se manda "yes" a
+   * ciegas, porque en cualquier otro contexto eso se interpretaría como un
+   * comando literal inválido. Las sesiones de solo lectura (sin
+   * "configure terminal") nunca entran a este camino -- destrucción
+   * inmediata, sin penalidad de espera.
+   */
+  async close(): Promise<void> {
+    const socket = this.socket;
+    this.socket = null;
+    if (!socket) {
+      return;
+    }
+
+    if (!this.dirty) {
       try {
-        this.socket.write('exit\r\n');
-        this.socket.destroy();
+        socket.destroy();
       } catch {
         // ignore
       }
-      this.socket = null;
+      return;
     }
+
+    const graceMs = 500;
+    await new Promise<void>((resolve) => {
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        socket.removeListener('data', onData);
+        try {
+          socket.destroy();
+        } catch {
+          // ignore
+        }
+        resolve();
+      };
+
+      const timer = setTimeout(finish, graceMs);
+
+      const onData = (raw: Buffer) => {
+        const cleaned = this.handleIac(raw);
+        const text = cleaned.toString('ascii').trim();
+        if (/\[yes\/no\]:\s*$/i.test(text)) {
+          try {
+            socket.write('yes\r\n');
+          } catch {
+            // ignore
+          }
+          // Pequeño margen para que "yes\r\n" viaje antes de destruir.
+          clearTimeout(timer);
+          setTimeout(finish, 200);
+        }
+      };
+
+      socket.on('data', onData);
+      try {
+        socket.write('exit\r\n');
+      } catch {
+        finish();
+      }
+    });
   }
 
   /**

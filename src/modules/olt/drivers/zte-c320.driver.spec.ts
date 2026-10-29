@@ -2380,8 +2380,9 @@ describe('ZteTelnetSession.executeCommand() -- bug real de producción (2026-10-
   // Fake socket mínimo: EventEmitter + write(), igual a la interfaz que
   // net.Socket expone y que executeCommand() consume.
   function createFakeSocket() {
-    const emitter = new EventEmitter() as EventEmitter & { write: jest.Mock; removeListener: any };
+    const emitter = new EventEmitter() as EventEmitter & { write: jest.Mock; destroy: jest.Mock; removeListener: any };
     emitter.write = jest.fn();
+    emitter.destroy = jest.fn();
     return emitter;
   }
 
@@ -2469,5 +2470,70 @@ describe('ZteTelnetSession.executeCommand() -- bug real de producción (2026-10-
     const promise = session.rebootOnu(50);
 
     await expect(promise).rejects.toThrow(/timeout/i);
+  });
+
+  describe('close() -- bug real corregido (2026-10-29): antes escribía "exit\\r\\n" y destruía el socket de inmediato, sin esperar el prompt interactivo "[yes/no]:" que la OLT dispara si hay cambios sin guardar, dejando potencialmente la sesión colgada del lado del equipo', () => {
+    it('sesión "dirty" (tras "configure terminal"): si la OLT pregunta "[yes/no]:" al hacer exit, responde "yes" antes de destruir el socket', async () => {
+      const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+      const fakeSocket = createFakeSocket();
+      (session as any).socket = fakeSocket;
+      (session as any).dirty = true;
+
+      const closePromise = session.close();
+
+      expect(fakeSocket.write).toHaveBeenCalledWith('exit\r\n');
+      fakeSocket.emit(
+        'data',
+        Buffer.from('\r\nThe configuration is changed,confirm to logout without saving? [yes/no]:'),
+      );
+
+      await closePromise;
+
+      expect(fakeSocket.write).toHaveBeenCalledWith('yes\r\n');
+      expect(fakeSocket.destroy).toHaveBeenCalled();
+    });
+
+    it('sesión "dirty" sin prompt interactivo (caso normal, ya se hizo "write" antes): destruye tras el margen de gracia, sin quedarse esperando para siempre', async () => {
+      const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+      const fakeSocket = createFakeSocket();
+      (session as any).socket = fakeSocket;
+      (session as any).dirty = true;
+
+      await session.close();
+
+      expect(fakeSocket.write).toHaveBeenCalledWith('exit\r\n');
+      expect(fakeSocket.destroy).toHaveBeenCalled();
+    });
+
+    it('sesión de solo lectura (nunca entró a "configure terminal"): destruye de inmediato, sin mandar "exit" ni esperar ningún margen de gracia -- no debe penalizar con latencia extra a operaciones de solo lectura (show *)', async () => {
+      const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+      const fakeSocket = createFakeSocket();
+      (session as any).socket = fakeSocket;
+      (session as any).dirty = false;
+
+      await session.close();
+
+      expect(fakeSocket.write).not.toHaveBeenCalled();
+      expect(fakeSocket.destroy).toHaveBeenCalled();
+    });
+
+    it('marca la sesión como "dirty" al ejecutar "configure terminal"', async () => {
+      const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+      const fakeSocket = createFakeSocket();
+      (session as any).socket = fakeSocket;
+
+      const promise = session.executeCommand('configure terminal', 5000);
+      fakeSocket.emit('data', Buffer.from('\r\nOLT-TABARA-ABAJO(config)#'));
+      await promise;
+
+      expect((session as any).dirty).toBe(true);
+    });
+
+    it('no revienta si el socket ya es null (close() llamado dos veces)', async () => {
+      const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+      (session as any).socket = null;
+
+      await expect(session.close()).resolves.toBeUndefined();
+    });
   });
 });
