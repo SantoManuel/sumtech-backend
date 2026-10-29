@@ -1383,6 +1383,7 @@ export class OnuManagementService {
         modelTypeName: onu.onuType?.vendorTypeName || onu.onuType?.model || 'ZTE-F660',
         ethPorts: onu.onuType?.ethPorts,
         potsPorts: onu.onuType?.potsPorts,
+        ethuniDhcpDelegationSupported: onu.onuType?.supportsEthuniDhcpDelegation,
         serialNumber: onu.serialNumber,
         clientName: onu.contract?.client?.name || undefined,
         serviceVlan: onu.serviceConfig?.serviceVlan?.vlanId || 100,
@@ -1519,12 +1520,14 @@ export class OnuManagementService {
     let modelTypeName = 'ZTE-F660';
     let onuTypeEthPorts: number | undefined;
     let onuTypePotsPorts: number | undefined;
+    let onuTypeEthuniDhcpDelegationSupported: boolean | undefined;
     if (dto.onuTypeId) {
       const type = await this.onuTypeRepository.findOneBy({ id: dto.onuTypeId });
       if (type) {
         modelTypeName = type.vendorTypeName || type.model;
         onuTypeEthPorts = type.ethPorts;
         onuTypePotsPorts = type.potsPorts;
+        onuTypeEthuniDhcpDelegationSupported = type.supportsEthuniDhcpDelegation;
       }
     }
 
@@ -1595,6 +1598,7 @@ export class OnuManagementService {
       modelTypeName,
       ethPorts: onuTypeEthPorts,
       potsPorts: onuTypePotsPorts,
+      ethuniDhcpDelegationSupported: onuTypeEthuniDhcpDelegationSupported,
       serialNumber: onu.serialNumber,
       clientName: dto.clientName || undefined,
       // Autogenerada en el frontend (zona de la OLT + GPS del contrato si

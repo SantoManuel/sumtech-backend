@@ -50,6 +50,15 @@ export class OnuTypeEntity {
   @Column({ name: 'default_mode', type: 'varchar', length: 20, default: 'ROUTER' })
   defaultMode: 'ROUTER' | 'BRIDGE';
 
+  /**
+   * Si el firmware OMCI de este modelo acepta "dhcp-ip ethuni eth_0/N from-onu".
+   * FALSE para modelos que lo rechazan con "%Code 63993 : unknown ME" (ej.
+   * HUAWEY-BT546XG) -- ver zte-c320.driver.ts generateAuthorizationScript /
+   * generateTr069ManagementScript.
+   */
+  @Column({ name: 'supports_ethuni_dhcp_delegation', type: 'boolean', default: true })
+  supportsEthuniDhcpDelegation: boolean;
+
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 

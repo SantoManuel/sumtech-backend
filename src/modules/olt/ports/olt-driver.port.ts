@@ -194,6 +194,16 @@ export interface AuthorizeOnuParams {
   tr069AcsPassword?: string;
   /** Habilita la verificación post-aprovisionamiento de IP-Host y aprendizaje de MACs en la OLT */
   verifyPostProvisioning?: boolean;
+  /**
+   * Si el firmware OMCI del modelo acepta "dhcp-ip ethuni eth_0/N from-onu"
+   * (net.onu_types.supports_ethuni_dhcp_delegation). Default true (no
+   * especificado) para no alterar el comportamiento de modelos ya
+   * confirmados en vivo que SÍ requieren ese comando (ZTE-F660, X2251).
+   * false para modelos que lo rechazan con "%Code 63993 : unknown ME"
+   * (ej. HUAWEY-BT546XG) -- ver generateAuthorizationScript/
+   * generateTr069ManagementScript en zte-c320.driver.ts.
+   */
+  ethuniDhcpDelegationSupported?: boolean;
 }
 
 export interface OnuProvisioningVerification {

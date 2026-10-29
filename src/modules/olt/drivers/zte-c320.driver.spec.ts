@@ -136,6 +136,50 @@ describe('ZteC320Driver', () => {
     expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
   });
 
+  describe('generateAuthorizationScript: "dhcp-ip ethuni ... from-onu" según soporte OMCI del modelo (net.onu_types.supports_ethuni_dhcp_delegation)', () => {
+    const baseConfig = {
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 5,
+      modelTypeName: 'HUAWEY-BT546XG-TR069',
+      serialNumber: 'ECOM0F91DF9B',
+      serviceVlan: 200,
+      tr069Vlan: 46,
+      tr069Url: 'http://10.46.0.1:7547/',
+      tcontProfile: 'UP-50M',
+      managementMethod: 'TR069' as const,
+      operationMode: 'ROUTER' as const,
+      ethPorts: 4,
+    };
+
+    it('ethuniDhcpDelegationSupported: false -- omite las 4 líneas "dhcp-ip ethuni ... from-onu" (modelo que las rechaza por OMCI con "%Code 63993 : unknown ME", ej. HUAWEY-BT546XG)', () => {
+      const commands = driver.generateAuthorizationScript({
+        ...baseConfig,
+        ethuniDhcpDelegationSupported: false,
+      });
+      expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
+      // El resto del canal de gestión debe seguir generándose igual.
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      expect(commands).toContain('tr069-mgmt 1 state unlock');
+    });
+
+    it('ethuniDhcpDelegationSupported: true -- genera las 4 líneas según ethPorts', () => {
+      const commands = driver.generateAuthorizationScript({
+        ...baseConfig,
+        ethuniDhcpDelegationSupported: true,
+      });
+      expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
+      expect(commands).toContain('dhcp-ip ethuni eth_0/2 from-onu');
+      expect(commands).toContain('dhcp-ip ethuni eth_0/3 from-onu');
+      expect(commands).toContain('dhcp-ip ethuni eth_0/4 from-onu');
+    });
+
+    it('ethuniDhcpDelegationSupported no especificado (undefined) -- default seguro, sigue generando las 4 líneas para no alterar modelos ya confirmados en vivo (ZTE-F660, X2251)', () => {
+      const commands = driver.generateAuthorizationScript(baseConfig);
+      expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
+      expect(commands).toContain('dhcp-ip ethuni eth_0/4 from-onu');
+    });
+  });
+
   it('sin managementMethod TR069 (ej. ONU gestionado por OMCI puro, sin Red TR-069 asignada) NO genera el canal de gestión ni el bloque tr069-mgmt -- bug real evitado: antes esto mandaba literalmente "tr069-mgmt 1 acs undefined" a la OLT porque OnuAuthorizeModal.tsx (Etapa 1 del frontend) no recolecta tr069NetworkId', () => {
     const commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
@@ -302,6 +346,24 @@ describe('ZteC320Driver', () => {
 
       const withoutCreds = driver.generateTr069ManagementScript(baseConfig);
       expect(withoutCreds).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
+    });
+
+    it('omite "dhcp-ip ethuni ... from-onu" cuando ethuniDhcpDelegationSupported es false -- modelos como HUAWEY-BT546XG rechazan ese ME por OMCI con "%Code 63993 : unknown ME", lo que dejaba el resto de la transacción (incluido ip-host 2) en "Config state: fail" y el equipo nunca obtenía IP de gestión ni se registraba en GenieACS', () => {
+      const commands = driver.generateTr069ManagementScript({
+        ...baseConfig,
+        ethuniDhcpDelegationSupported: false,
+      });
+
+      expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
+      // El resto del bloque (incluido el reinicio OMCI) debe generarse igual.
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      expect(commands).toContain('tr069-mgmt 1 state unlock');
+      expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
+    });
+
+    it('no especificar ethuniDhcpDelegationSupported (undefined) sigue generando "dhcp-ip ethuni ... from-onu" -- default seguro para no alterar modelos ya confirmados en vivo (ZTE-F660, X2251) que SÍ lo requieren', () => {
+      const commands = driver.generateTr069ManagementScript(baseConfig);
+      expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
     });
   });
 

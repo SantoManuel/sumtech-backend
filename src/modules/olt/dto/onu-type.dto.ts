@@ -62,6 +62,10 @@ export class CreateOnuTypeDto {
 
   @IsOptional()
   @IsBoolean()
+  supportsEthuniDhcpDelegation?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   isActive?: boolean;
 }
 
@@ -125,6 +129,10 @@ export class UpdateOnuTypeDto {
   @IsOptional()
   @IsIn(['ROUTER', 'BRIDGE'])
   defaultMode?: 'ROUTER' | 'BRIDGE';
+
+  @IsOptional()
+  @IsBoolean()
+  supportsEthuniDhcpDelegation?: boolean;
 
   @IsOptional()
   @IsBoolean()

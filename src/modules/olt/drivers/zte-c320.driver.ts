@@ -849,9 +849,14 @@ export class ZteC320Driver implements IOltDriver {
     }
 
     // === FASE 6: Capa de Aplicación (Puertos ETH, VoIP, VEIP, TR-069 y Seguridad) ===
-    commands.push(
-      ...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`),
-    );
+    // "dhcp-ip ethuni ... from-onu" solo si el modelo lo soporta por OMCI --
+    // algunos modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 :
+    // unknown ME", lo que deja el resto de la transacción OMCI en "fail".
+    if (config.ethuniDhcpDelegationSupported !== false) {
+      commands.push(
+        ...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`),
+      );
+    }
 
     if (hasTr069) {
       commands.push(
@@ -901,7 +906,12 @@ export class ZteC320Driver implements IOltDriver {
       'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
       `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
       // 4. Puertos LAN, VoIP, VEIP, TR-069 y Firewall al final
-      ...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`),
+      // "dhcp-ip ethuni ... from-onu" solo si el modelo lo soporta por OMCI --
+      // algunos modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 :
+      // unknown ME", lo que deja el resto de la transacción OMCI en "fail".
+      ...(config.ethuniDhcpDelegationSupported !== false
+        ? Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`)
+        : []),
       'voip protocol sip',
       'veip 1 port udp 1232 host 2',
       'tr069-mgmt 1 state unlock',
