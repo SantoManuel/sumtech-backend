@@ -227,6 +227,51 @@ export interface OnuProvisioningVerification {
 }
 
 /**
+ * Resultado de "show gpon onu detail-info <interfaz>" -- usado por la
+ * pestaña de Auditoría de Aprovisionamiento para comparar el tipo/estado
+ * REAL que reporta la OLT contra lo que Sumtech cree tener configurado.
+ * Campos opcionales: si una línea no aparece en la salida (formato
+ * distinto al confirmado en vivo), queda `undefined` en vez de inventar un
+ * valor -- `raw` siempre se devuelve completo para que el operador pueda
+ * revisar manualmente lo que el parser no haya cubierto.
+ */
+export interface OnuDetailInfo {
+  /** Nombre del onu-type que la OLT tiene REALMENTE asociado a esta ONU -- puede no coincidir con lo que Sumtech espera si una reautorización no se aplicó de verdad. */
+  type?: string;
+  /** "success" | "fail" | etc. -- veredicto global de la última transacción OMCI aplicada. */
+  configState?: string;
+  onlineDuration?: string;
+  adminState?: string;
+  raw: string;
+}
+
+/**
+ * Resultado de "show gpon remote-onu wan-ip <interfaz>". A diferencia de
+ * OnuDetailInfo, el formato exacto de esta salida NO está confirmado en
+ * vivo para todos los casos -- el parseo es mejor esfuerzo (busca
+ * direcciones IPv4 genéricas por host), `raw` siempre se incluye completo.
+ * Ver Plan_Implementacion_WanIp_VlanProfile_HGU.md.
+ */
+export interface OnuWanIpInfo {
+  host1?: { mac?: string; ip?: string };
+  host2?: { mac?: string; ip?: string };
+  raw: string;
+}
+
+/**
+ * Resultado de "show gpon remote-onu tr069-mgmt <interfaz>" -- lectura del
+ * puntero ACS realmente aplicado en la OLT. Mismo criterio de mejor
+ * esfuerzo que OnuWanIpInfo: formato no confirmado en vivo, `raw` siempre
+ * presente.
+ */
+export interface OnuTr069MgmtInfo {
+  adminStatus?: string;
+  acsUrl?: string;
+  vlanTag?: string;
+  raw: string;
+}
+
+/**
  * Refleja qué operaciones de IOltDriver tienen comunicación real implementada
  * contra el hardware para este fabricante. `false` en cualquier campo significa
  * que la operación existe en la interfaz pero el driver aún no la implementó de
@@ -520,6 +565,33 @@ export interface IOltDriver {
     onuId: number,
     options?: { expectedVlans?: number[]; timeoutMs?: number },
   ): Promise<OnuProvisioningVerification>;
+  /**
+   * "show gpon onu detail-info <interfaz>" -- tipo/estado OMCI REAL que la
+   * OLT tiene asociado a esta ONU. Usado por la pestaña de Auditoría de
+   * Aprovisionamiento para detectar cuando una reautorización no se aplicó
+   * de verdad (ej. la OLT sigue reportando un onu-type viejo pese a que
+   * Sumtech cree haber cambiado el tipo).
+   */
+  getOnuDetailInfo?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuDetailInfo>;
+  /**
+   * "show gpon remote-onu wan-ip <interfaz>" -- IP/MAC real de cada host WAN
+   * (1: Internet, 2: gestión TR-069). Parseo mejor-esfuerzo, ver
+   * `OnuWanIpInfo`.
+   */
+  getOnuWanIp?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuWanIpInfo>;
+  /**
+   * "show gpon remote-onu tr069-mgmt <interfaz>" -- puntero ACS realmente
+   * aplicado en la OLT (lectura, distinto de `updateTr069AcsUrl` que
+   * escribe). Parseo mejor-esfuerzo, ver `OnuTr069MgmtInfo`.
+   */
+  getOnuTr069MgmtInfo?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuTr069MgmtInfo>;
+  /**
+   * "show mac gpon onu <interfaz>" como método independiente -- la misma
+   * lógica ya vivía privada dentro de `verifyOnuProvisioningWithSession`;
+   * se expone aparte para que la Auditoría de Aprovisionamiento pueda
+   * pedirla sin forzar el resto de `verifyOnuProvisioning`.
+   */
+  getOnuMacTable?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<Array<{ mac: string; vlan: number }>>;
   getRunningConfig?(params: OltConnectionParams): Promise<string>;
   /**
    * Ejecuta un comando CLI arbitrario tal cual el operador lo escriba, por

@@ -28,8 +28,28 @@ import {
   AuthorizeOnuParams,
   DriverNotImplementedError,
   UnknownOltVendorError,
+  OnuDetailInfo,
+  OnuWanIpInfo,
+  OnuTr069MgmtInfo,
 } from '../ports/olt-driver.port';
 import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
+
+export interface ProvisioningAuditFinding {
+  severity: 'CRITICAL' | 'WARNING' | 'INFO';
+  message: string;
+  command?: string;
+  rawExcerpt?: string;
+}
+
+export interface ProvisioningAuditResult {
+  findings: ProvisioningAuditFinding[];
+  detailInfo?: OnuDetailInfo;
+  wanIp?: OnuWanIpInfo;
+  tr069Mgmt?: OnuTr069MgmtInfo;
+  macTable?: Array<{ mac: string; vlan: number }>;
+  /** Nombres de los métodos del driver que no están implementados para este fabricante (ej. HiOSO) -- el frontend debe mostrar "no disponible para este fabricante" en vez de un error. */
+  unsupported: string[];
+}
 
 @Injectable()
 export class OnuManagementService {
@@ -554,6 +574,164 @@ export class OnuManagementService {
           ? 'WARNING'
           : 'OPTIMAL',
     };
+  }
+
+  /**
+   * Auditoría de aprovisionamiento (pestaña "Auditoría" de la Ficha 360 de
+   * la ONU) -- corre en vivo contra la OLT los mismos comandos `show` que
+   * hasta ahora se interpretaban a mano (pegados en texto) cuando una ONU
+   * no obtenía IP, y aplica un motor de reglas simple con los patrones de
+   * falla ya identificados en producción: Config state distinto de
+   * "success", el tipo de ONU que la OLT reporta no coincide con el que
+   * Sumtech cree tener autorizado, la IP de gestión (WAN host 2) en
+   * 0.0.0.0, el ACS aplicado distinto al configurado, o VLANs sin ninguna
+   * MAC aprendida. Ver Plan_Implementacion_Auditoria_Aprovisionamiento_ONU.md.
+   *
+   * Las 4 consultas corren en paralelo vía `Promise.allSettled` -- un
+   * driver que no implemente alguno de estos métodos opcionales (ej.
+   * HiOSO) no debe tumbar las otras 3, solo reportarse en `unsupported`.
+   */
+  async getProvisioningAudit(id: string): Promise<ProvisioningAuditResult> {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+    const driver = this.resolveDriver(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
+
+    const ponInterface = onu.ponInterface?.name || 'gpon-olt_1/1/1';
+    const parts = onu.onuIndex.split(':');
+    const onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
+
+    const NOT_SUPPORTED = 'NOT_SUPPORTED';
+    const [detailInfoResult, wanIpResult, tr069MgmtResult, macTableResult] = await Promise.allSettled([
+      typeof driver.getOnuDetailInfo === 'function'
+        ? driver.getOnuDetailInfo(connParams, ponInterface, onuId)
+        : Promise.reject(new Error(NOT_SUPPORTED)),
+      typeof driver.getOnuWanIp === 'function'
+        ? driver.getOnuWanIp(connParams, ponInterface, onuId)
+        : Promise.reject(new Error(NOT_SUPPORTED)),
+      typeof driver.getOnuTr069MgmtInfo === 'function'
+        ? driver.getOnuTr069MgmtInfo(connParams, ponInterface, onuId)
+        : Promise.reject(new Error(NOT_SUPPORTED)),
+      typeof driver.getOnuMacTable === 'function'
+        ? driver.getOnuMacTable(connParams, ponInterface, onuId)
+        : Promise.reject(new Error(NOT_SUPPORTED)),
+    ]);
+
+    const detailInfo = detailInfoResult.status === 'fulfilled' ? detailInfoResult.value : undefined;
+    const wanIp = wanIpResult.status === 'fulfilled' ? wanIpResult.value : undefined;
+    const tr069Mgmt = tr069MgmtResult.status === 'fulfilled' ? tr069MgmtResult.value : undefined;
+    const macTable = macTableResult.status === 'fulfilled' ? macTableResult.value : undefined;
+
+    const findings: ProvisioningAuditFinding[] = [];
+    const unsupported: string[] = [];
+
+    const namedResults: Array<[string, PromiseSettledResult<unknown>]> = [
+      ['getOnuDetailInfo', detailInfoResult],
+      ['getOnuWanIp', wanIpResult],
+      ['getOnuTr069MgmtInfo', tr069MgmtResult],
+      ['getOnuMacTable', macTableResult],
+    ];
+    for (const [label, result] of namedResults) {
+      if (result.status === 'rejected') {
+        const message = result.reason?.message || String(result.reason);
+        if (message === NOT_SUPPORTED) {
+          unsupported.push(label);
+        } else {
+          findings.push({ severity: 'WARNING', message: `No se pudo obtener "${label}": ${message}` });
+        }
+      }
+    }
+
+    if (detailInfo) {
+      if (detailInfo.configState && detailInfo.configState.toLowerCase() !== 'success') {
+        findings.push({
+          severity: 'CRITICAL',
+          message:
+            `El "Config state" del ONT está en "${detailInfo.configState}" (no "success"). El canal de gestión ` +
+            'OMCI no se aplicó limpio. Reintenta la Etapa 2 ("Aplicar perfil TR-069"); si el equipo ya tiene ' +
+            'varios reintentos fallidos encima, reautoriza desde la Etapa 1 completa (fuerza "no onu" + recreación limpia).',
+          command: 'show gpon onu detail-info',
+          rawExcerpt: detailInfo.raw,
+        });
+      }
+
+      const expectedType = onu.onuType?.vendorTypeName;
+      if (detailInfo.type && expectedType && detailInfo.type !== expectedType) {
+        findings.push({
+          severity: 'CRITICAL',
+          message:
+            `La OLT reporta el tipo de ONU "${detailInfo.type}", pero Sumtech tiene registrado "${expectedType}". ` +
+            'La última reautorización no se aplicó de verdad en el equipo.',
+          command: 'show gpon onu detail-info',
+          rawExcerpt: detailInfo.raw,
+        });
+      }
+    }
+
+    if (wanIp) {
+      const mgmtIp = wanIp.host2?.ip;
+      if (!mgmtIp || mgmtIp === '0.0.0.0') {
+        findings.push({
+          severity: 'CRITICAL',
+          message:
+            'La ONU no ha obtenido IP de gestión por DHCP (WAN host 2). Revisa el servidor DHCP de la VLAN de ' +
+            'gestión en el MikroTik, o confirma primero que el "Config state" realmente haya quedado en "success".',
+          command: 'show gpon remote-onu wan-ip',
+          rawExcerpt: wanIp.raw,
+        });
+      }
+    }
+
+    if (tr069Mgmt) {
+      const expectedAcs = onu.serviceConfig?.tr069Network?.acsUrl;
+      if (expectedAcs && tr069Mgmt.acsUrl && tr069Mgmt.acsUrl !== expectedAcs) {
+        findings.push({
+          severity: 'WARNING',
+          message: `El ACS aplicado en la OLT ("${tr069Mgmt.acsUrl}") no coincide con la Red TR-069 configurada en Sumtech ("${expectedAcs}").`,
+          command: 'show gpon remote-onu tr069-mgmt',
+          rawExcerpt: tr069Mgmt.raw,
+        });
+      }
+    }
+
+    if (macTable) {
+      const expectedVlans = [onu.serviceConfig?.serviceVlan?.vlanId, onu.serviceConfig?.tr069Vlan?.vlanId].filter(
+        (v): v is number => typeof v === 'number',
+      );
+      for (const vlan of expectedVlans) {
+        if (!macTable.some((m) => m.vlan === vlan)) {
+          findings.push({
+            severity: 'WARNING',
+            message: `No se ha aprendido ninguna dirección MAC en la VLAN ${vlan} todavía.`,
+            command: 'show mac gpon onu',
+          });
+        }
+      }
+    }
+
+    // Advertencia retroactiva: el modelo tiene una incompatibilidad OMCI
+    // conocida (dhcp-ip ethuni / security-mgmt, ver migraciones 103/104) y
+    // esta ONU se autorizó antes de que ese fix existiera -- el script que
+    // realmente corrió pudo haber incluido el comando problemático.
+    const fixDeployedAt = new Date('2026-10-28T22:00:00Z');
+    if (
+      onu.authorizedAt &&
+      new Date(onu.authorizedAt) < fixDeployedAt &&
+      (onu.onuType?.supportsEthuniDhcpDelegation === false || onu.onuType?.supportsSecurityMgmt === false)
+    ) {
+      findings.push({
+        severity: 'WARNING',
+        message:
+          'Este modelo tiene una incompatibilidad OMCI conocida y esta ONU se autorizó antes de corregirla en el ' +
+          'sistema. Recomendado: reautorizar desde la Etapa 1 completa.',
+      });
+    }
+
+    if (findings.length === 0) {
+      findings.push({ severity: 'INFO', message: 'No se detectaron discrepancias conocidas en esta auditoría.' });
+    }
+
+    return { findings, detailInfo, wanIp, tr069Mgmt, macTable, unsupported };
   }
 
   /**

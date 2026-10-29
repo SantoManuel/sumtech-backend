@@ -2311,6 +2311,151 @@ OLT#`);
     });
   });
 
+  describe('getOnuMacTable() -- "show mac gpon onu" como método independiente, extraído de verifyOnuProvisioningWithSession para la pestaña de Auditoría de Aprovisionamiento', () => {
+    it('parsea la tabla MAC sin depender del resto de verifyOnuProvisioning', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(`
+Total mac address : 2
+Mac Address       Port                   Vlan  Type
+-----------------------------------------------------
+b454.596f.1204    gpon-onu_1/2/15:1      400   Dynamic
+c850.e912.3456    gpon-onu_1/2/15:1      46    Dynamic
+OLT#`);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const macTable = await driver.getOnuMacTable(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/15',
+        1,
+      );
+
+      expect(macTable).toEqual([
+        { mac: 'b454.596f.1204', vlan: 400 },
+        { mac: 'c850.e912.3456', vlan: 46 },
+      ]);
+      expect(executeCommand).toHaveBeenCalledWith('show mac gpon onu gpon-onu_1/2/15:1');
+    });
+  });
+
+  describe('getOnuDetailInfo() -- "show gpon onu detail-info", campos confirmados en vivo (2026-10-28, OLT_Tabara_Abajo, ONU ECOM0F91DF9B)', () => {
+    it('parsea Type y Config state de una salida real', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(`
+Interface: gpon-onu_1/2/6:3
+Type: EG8141A5-TR069
+Config state: fail
+Online Duration: 0h 11m 48s
+OLT#`);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const info = await driver.getOnuDetailInfo(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(info.type).toBe('EG8141A5-TR069');
+      expect(info.configState).toBe('fail');
+      expect(info.onlineDuration).toBe('0h 11m 48s');
+      expect(info.raw).toContain('EG8141A5-TR069');
+      expect(executeCommand).toHaveBeenCalledWith('show gpon onu detail-info gpon-onu_1/2/6:3');
+    });
+
+    it('campos ausentes en la salida quedan undefined en vez de inventar un valor', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('Salida inesperada sin los campos conocidos\r\nOLT#');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const info = await driver.getOnuDetailInfo(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(info.type).toBeUndefined();
+      expect(info.configState).toBeUndefined();
+      expect(info.raw).toContain('Salida inesperada');
+    });
+  });
+
+  describe('getOnuWanIp() / getOnuTr069MgmtInfo() -- parseo mejor-esfuerzo, SIN muestra real confirmada en vivo (ver Plan_Implementacion_WanIp_VlanProfile_HGU.md Fase 0); "raw" siempre se devuelve completo', () => {
+    it('getOnuWanIp: asigna la primera IP/MAC encontrada a host1 y la segunda a host2', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(`
+WAN index: 1 (CVLAN 400)
+  MAC: aabb.ccdd.eeff  IP: 192.168.1.50
+WAN index: 2 (CVLAN 4069)
+  MAC: 1122.3344.5566  IP: 10.46.0.247
+OLT#`);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const wanIp = await driver.getOnuWanIp(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(wanIp.host1).toEqual({ ip: '192.168.1.50', mac: 'aabb.ccdd.eeff' });
+      expect(wanIp.host2).toEqual({ ip: '10.46.0.247', mac: '1122.3344.5566' });
+      expect(wanIp.raw).toContain('WAN index: 2');
+      expect(executeCommand).toHaveBeenCalledWith('show gpon remote-onu wan-ip gpon-onu_1/2/6:3');
+    });
+
+    it('getOnuWanIp: sin ninguna IP en la salida (ej. 0.0.0.0 sin match numérico útil o equipo sin WAN asignada), host1/host2 quedan undefined', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('Sin datos de WAN para esta ONU\r\nOLT#');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const wanIp = await driver.getOnuWanIp(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(wanIp.host1).toBeUndefined();
+      expect(wanIp.host2).toBeUndefined();
+    });
+
+    it('getOnuTr069MgmtInfo: extrae la URL del ACS y el admin status', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(`
+Admin status: unlock
+ACS: http://10.254.0.1:7547
+Tag: priority: 2, vlan: 4069
+OLT#`);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const info = await driver.getOnuTr069MgmtInfo(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(info.adminStatus).toBe('unlock');
+      expect(info.acsUrl).toBe('http://10.254.0.1:7547');
+      expect(info.vlanTag).toBe('4069');
+      expect(executeCommand).toHaveBeenCalledWith('show gpon remote-onu tr069-mgmt gpon-onu_1/2/6:3');
+    });
+  });
+
   describe('Secuencia y plantilla estricta de aprovisionamiento', () => {
     it('genera exactamente la secuencia de 6 fases y orden jerárquico OMCI según plantilla', () => {
       const commands = driver.generateAuthorizationScript({

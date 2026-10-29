@@ -105,6 +105,21 @@ export class OnuController {
   }
 
   /**
+   * Auditoría de aprovisionamiento: corre en vivo contra la OLT los `show`
+   * de diagnóstico (detail-info, wan-ip, tr069-mgmt, tabla MAC) y resalta
+   * discrepancias conocidas (Config state ≠ success, tipo de ONU distinto
+   * al esperado, IP de gestión en 0.0.0.0, ACS desalineado, VLANs sin
+   * tráfico). Ver Plan_Implementacion_Auditoria_Aprovisionamiento_ONU.md.
+   */
+  @Get(':id/provisioning-audit')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('OPERATE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async getProvisioningAudit(@Param('id') id: string) {
+    return this.onuService.getProvisioningAudit(id);
+  }
+
+  /**
    * Serie temporal histórica de potencia óptica (SmartOLT benchmark Sección 5.3).
    */
   @Get(':id/optical-history')

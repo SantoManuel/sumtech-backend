@@ -18,6 +18,9 @@ import {
   DiscoveredAuthorizedOnu,
   DiscoveredTcontProfile,
   DiscoveredTrafficProfile,
+  OnuDetailInfo,
+  OnuWanIpInfo,
+  OnuTr069MgmtInfo,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
@@ -1148,16 +1151,7 @@ export class ZteC320Driver implements IOltDriver {
 
     // 2. show mac gpon onu gpon-onu_{port}:{onu_id}
     const rawMac = await session.executeCommand(`show mac gpon onu ${onuInterface}`);
-    const learnedMacs: Array<{ mac: string; vlan: number }> = [];
-
-    const macRegex = /([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}|[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s+(?:\S+\s+)?(\d+)/gi;
-    let match: RegExpExecArray | null;
-    while ((match = macRegex.exec(rawMac)) !== null) {
-      learnedMacs.push({
-        mac: match[1],
-        vlan: parseInt(match[2], 10),
-      });
-    }
+    const learnedMacs = this.parseMacTable(rawMac);
 
     if (options?.expectedVlans && options.expectedVlans.length > 0) {
       for (const expectedVlan of options.expectedVlans) {
@@ -1177,6 +1171,129 @@ export class ZteC320Driver implements IOltDriver {
       rawIpHost,
       rawMac,
     };
+  }
+
+  /**
+   * Parser de "show mac gpon onu <interfaz>" -- extraído de
+   * `verifyOnuProvisioningWithSession` para poder reutilizarlo desde
+   * `getOnuMacTable()` sin duplicar la expresión regular.
+   */
+  private parseMacTable(raw: string): Array<{ mac: string; vlan: number }> {
+    const learnedMacs: Array<{ mac: string; vlan: number }> = [];
+    const macRegex = /([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}|[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s+(?:\S+\s+)?(\d+)/gi;
+    let match: RegExpExecArray | null;
+    while ((match = macRegex.exec(raw)) !== null) {
+      learnedMacs.push({
+        mac: match[1],
+        vlan: parseInt(match[2], 10),
+      });
+    }
+    return learnedMacs;
+  }
+
+  /** "show mac gpon onu <interfaz>" como método independiente -- ver `IOltDriver.getOnuMacTable`. */
+  async getOnuMacTable(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+  ): Promise<Array<{ mac: string; vlan: number }>> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const raw = await session.executeCommand(`show mac gpon onu ${onuInterface}`);
+      return this.parseMacTable(raw);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * "show gpon onu detail-info <interfaz>" -- ver `IOltDriver.getOnuDetailInfo`.
+   * Campos confirmados en vivo (2026-10-28, OLT_Tabara_Abajo, ONU
+   * ECOM0F91DF9B): "Type: <nombre>", "Config state: <success|fail>". Los
+   * demás campos (`onlineDuration`, `adminState`) se parsean con el mismo
+   * criterio ("Etiqueta: valor") pero sin una muestra en vivo tan completa
+   * como la de Type/Config state -- si el formato real difiere, quedan
+   * `undefined` en vez de inventar un valor; `raw` siempre se devuelve
+   * completo para revisión manual.
+   */
+  async getOnuDetailInfo(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuDetailInfo> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const raw = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
+      return this.parseOnuDetailInfo(raw);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** Parser de "show gpon onu detail-info <interfaz>" -- ver `getOnuDetailInfo` para las notas sobre qué campos están confirmados en vivo. */
+  private parseOnuDetailInfo(raw: string): OnuDetailInfo {
+    return {
+      type: raw.match(/^\s*Type:\s*(\S+)/im)?.[1],
+      configState: raw.match(/Config state:\s*(\S+)/i)?.[1],
+      onlineDuration: raw.match(/Online\s*Duration:\s*(.+)/i)?.[1]?.trim(),
+      adminState: raw.match(/Admin\s*state:\s*(\S+)/i)?.[1],
+      raw,
+    };
+  }
+
+  /**
+   * "show gpon remote-onu wan-ip <interfaz>" -- ver `IOltDriver.getOnuWanIp`.
+   * SIN muestra real confirmada en vivo para el formato exacto de esta
+   * salida (ver Plan_Implementacion_WanIp_VlanProfile_HGU.md, Fase 0) --
+   * parseo mejor-esfuerzo por posición (primera IPv4/MAC encontrada = host
+   * 1, segunda = host 2). `raw` siempre se devuelve completo para que el
+   * operador confirme a ojo si el parseo posicional se equivocó.
+   */
+  async getOnuWanIp(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuWanIpInfo> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const raw = await session.executeCommand(`show gpon remote-onu wan-ip ${onuInterface}`);
+
+      const ipMatches = [...raw.matchAll(/(\d{1,3}(?:\.\d{1,3}){3})/g)].map((m) => m[1]);
+      const macMatches = [...raw.matchAll(/([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}|[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})/g)].map(
+        (m) => m[1],
+      );
+
+      return {
+        host1: ipMatches[0] || macMatches[0] ? { ip: ipMatches[0], mac: macMatches[0] } : undefined,
+        host2: ipMatches[1] || macMatches[1] ? { ip: ipMatches[1], mac: macMatches[1] } : undefined,
+        raw,
+      };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * "show gpon remote-onu tr069-mgmt <interfaz>" -- ver
+   * `IOltDriver.getOnuTr069MgmtInfo`. Lectura (distinta de los comandos de
+   * escritura "tr069-mgmt N ..." que sí usa `generateTr069ManagementScript`).
+   * SIN muestra real confirmada en vivo para el formato exacto -- parseo
+   * mejor-esfuerzo, `raw` siempre completo.
+   */
+  async getOnuTr069MgmtInfo(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuTr069MgmtInfo> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const raw = await session.executeCommand(`show gpon remote-onu tr069-mgmt ${onuInterface}`);
+
+      return {
+        adminStatus: raw.match(/Admin\s*status:\s*(\S+)/i)?.[1],
+        acsUrl: raw.match(/(https?:\/\/\S+)/i)?.[1],
+        vlanTag: raw.match(/vlan\s*:?\s*(\d+)/i)?.[1],
+        raw,
+      };
+    } finally {
+      await session.close();
+    }
   }
 
   /**
@@ -1317,8 +1434,7 @@ export class ZteC320Driver implements IOltDriver {
       const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
       try {
         const detailOutput = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
-        const configStateMatch = detailOutput.match(/Config state:\s*(\S+)/i);
-        const configState = configStateMatch?.[1];
+        const configState = this.parseOnuDetailInfo(detailOutput).configState;
         if (configState && configState.toLowerCase() !== 'success') {
           const configStateWarning =
             `El "Config state" del ONT quedó en "${configState}" (no "success") tras aplicar el bloque TR-069 -- ` +
