@@ -240,6 +240,15 @@ export interface OnuDetailInfo {
   type?: string;
   /** "success" | "fail" | etc. -- veredicto global de la última transacción OMCI aplicada. */
   configState?: string;
+  /**
+   * Estado de la capa física/ranging GPON -- ej. "working" (sano) | "ready"
+   * | "OffLine" | "LOS" (Loss Of Signal: la OLT no recibe óptica de esta
+   * ONU) | "DyingGasp". CONFIRMADO EN VIVO (2026-10-29, ONU ECOM0F91DF9B):
+   * con "Phase state: LOS" ningún host (ni el de servicio ni el de gestión)
+   * obtiene IP, porque OMCI/VEIP ni siquiera puede aplicarse sin señal
+   * óptica -- es un problema de capa física, no de cableado OMCI/TR-069.
+   */
+  phaseState?: string;
   onlineDuration?: string;
   adminState?: string;
   raw: string;
@@ -253,7 +262,16 @@ export interface OnuDetailInfo {
  * Plan_Implementacion_WanIp_VlanProfile_HGU.md.
  */
 export interface OnuIpHostInfo {
+  /** IP del Host ID: 2 (canal de gestión/TR-069, vía VEIP). */
   mgmtIp?: string;
+  /**
+   * IP del Host ID: 1 (canal de servicio/internet del cliente) -- el audit
+   * original solo rastreaba Host 2; sin esto, una ONU que falla en AMBOS
+   * canales (ver `phaseState`) se reportaba igual que una que solo falla en
+   * gestión, llevando a sugerir "Reaplicar TR-069" cuando el problema real
+   * era más profundo (óptico) o requería reautorizar Etapa 1 completa.
+   */
+  serviceIp?: string;
   ipHostFound: boolean;
   raw: string;
 }
@@ -611,6 +629,34 @@ export interface IOltDriver {
    * pedirla sin forzar el resto de `verifyOnuProvisioning`.
    */
   getOnuMacTable?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<Array<{ mac: string; vlan: number }>>;
+  /**
+   * Opción A de recuperación cuando ninguna IP se obtiene pese a que el
+   * cableado OMCI (flow/switchport-bind/veip) ya existe -- re-aplica
+   * "wan-ip" directamente sobre la ONU, SIN tocar el resto del cableado.
+   * CONFIRMADO EN VIVO (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B).
+   * Disparado a propósito desde la Auditoría de Aprovisionamiento, nunca
+   * automáticamente.
+   */
+  applyWanIpFix?(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+    config: { serviceVlan: number; tr069Vlan?: number },
+  ): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Opción B ("último recurso") cuando la Opción A (`applyWanIpFix`) tampoco
+   * resuelve el problema de IP -- DESTRUCTIVA: borra el cableado flow/
+   * switchport-bind/veip existente de AMBOS canales y lo reemplaza por el
+   * mecanismo "service <id> gemport <id> vlan <vlan>". CONFIRMADO EN VIVO
+   * (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B) que esto no deja a la
+   * ONU sin servicio. Solo debe dispararse después de intentar la Opción A.
+   */
+  applyServiceGemportFix?(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+    config: { serviceVlan: number; tr069Vlan?: number },
+  ): Promise<{ ok: boolean; error?: string }>;
   getRunningConfig?(params: OltConnectionParams): Promise<string>;
   /**
    * Ejecuta un comando CLI arbitrario tal cual el operador lo escriba, por

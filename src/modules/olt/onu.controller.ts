@@ -120,6 +120,33 @@ export class OnuController {
   }
 
   /**
+   * Opción A de recuperación de IP ("Reaplicar wan-ip") desde la pestaña de
+   * Auditoría -- CONFIRMADA EN VIVO (2026-10-30, OLT_Tabara_Abajo, ONU
+   * ECOM0F91DF9B). No toca el resto del cableado OMCI.
+   */
+  @Post(':id/apply-wan-ip-fix')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('OPERATE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async applyWanIpFix(@Param('id') id: string) {
+    return this.onuService.applyWanIpFix(id);
+  }
+
+  /**
+   * Opción B ("último recurso") de recuperación de IP desde la pestaña de
+   * Auditoría -- DESTRUCTIVA: borra flow/switchport-bind/veip de ambos
+   * canales y los reemplaza por "service <id> gemport <id> vlan <vlan>".
+   * CONFIRMADA EN VIVO (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B).
+   */
+  @Post(':id/apply-service-gemport-fix')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('OPERATE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async applyServiceGemportFix(@Param('id') id: string) {
+    return this.onuService.applyServiceGemportFix(id);
+  }
+
+  /**
    * Serie temporal histórica de potencia óptica (SmartOLT benchmark Sección 5.3).
    */
   @Get(':id/optical-history')

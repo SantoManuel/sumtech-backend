@@ -176,29 +176,25 @@ export function parseOnuRunningConfig(output: string): { name?: string; descript
  * patrón plano evita que la "IP" dentro de "Current IP address:" se cuente
  * dos veces.
  */
-export function parseIpHost(raw: string): { mgmtIp?: string; ipHostFound: boolean } {
-  let mgmtIp: string | undefined;
-  let ipHostFound = false;
-
-  // Buscar Host ID: 2 (gestión TR-069)
-  const host2Match = raw.match(/Host\s*(?:ID)?\s*:\s*2\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
-  const searchTarget = host2Match ? host2Match[1] : raw;
-
-  if (host2Match) {
-    ipHostFound = true;
-  }
-
-  const currentIpMatch = searchTarget.match(/Current\s+IP\s*(?:addr(?:ess|es))?\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/i);
-  const plainIpMatch = searchTarget.match(/(?:^|\n)\s*IP\s*(?:addr(?:ess|es))?\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/im);
+/** Extrae la IP real (ignora "0.0.0.0") del bloque de texto de UN Host ID -- usado para Host 1 y Host 2 por igual. */
+function extractHostIp(hostBlock: string): string | undefined {
+  const currentIpMatch = hostBlock.match(/Current\s+IP\s*(?:addr(?:ess|es))?\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/i);
+  const plainIpMatch = hostBlock.match(/(?:^|\n)\s*IP\s*(?:addr(?:ess|es))?\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/im);
   const ipMatch = currentIpMatch || plainIpMatch;
-  if (ipMatch) {
-    const parsedIp = ipMatch[1];
-    if (parsedIp !== '0.0.0.0') {
-      mgmtIp = parsedIp;
-    }
-  }
+  if (!ipMatch) return undefined;
+  const parsedIp = ipMatch[1];
+  return parsedIp !== '0.0.0.0' ? parsedIp : undefined;
+}
 
-  return { mgmtIp, ipHostFound };
+export function parseIpHost(raw: string): { mgmtIp?: string; serviceIp?: string; ipHostFound: boolean } {
+  // Buscar Host ID: 1 (servicio/internet) y Host ID: 2 (gestión TR-069) por separado.
+  const host1Match = raw.match(/Host\s*(?:ID)?\s*:\s*1\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
+  const host2Match = raw.match(/Host\s*(?:ID)?\s*:\s*2\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
+
+  const serviceIp = host1Match ? extractHostIp(host1Match[1]) : undefined;
+  const mgmtIp = host2Match ? extractHostIp(host2Match[1]) : extractHostIp(raw);
+
+  return { mgmtIp, serviceIp, ipHostFound: Boolean(host2Match) };
 }
 
 /** Parser de "show mac gpon onu <interfaz>". */
@@ -220,6 +216,7 @@ export function parseOnuDetailInfo(raw: string): OnuDetailInfo {
   return {
     type: raw.match(/^\s*Type:\s*(\S+)/im)?.[1],
     configState: raw.match(/Config state:\s*(\S+)/i)?.[1],
+    phaseState: raw.match(/Phase\s*state:\s*(\S+)/i)?.[1],
     onlineDuration: raw.match(/Online\s*Duration:\s*(.+)/i)?.[1]?.trim(),
     adminState: raw.match(/Admin\s*state:\s*(\S+)/i)?.[1],
     raw,

@@ -42,13 +42,29 @@ export function buildTr069SwitchportBindCommands(): string[] {
   return ['switchport-bind switch_0/1 iphost 2', 'switchport-bind switch_0/1 veip 1'];
 }
 
-/** FASE 5 (parcial) del canal de gestión: ip-host 2 + su filtro de VLAN. */
-export function buildTr069IpHostCommands(config: AuthorizeOnuParams): string[] {
+/** FASE 5a (parcial) del canal de gestión: solo "ip-host 2 dhcp-enable ...". */
+export function buildTr069IpHostEnableCommand(): string[] {
+  return ['ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable'];
+}
+
+/** FASE 5b (parcial) del canal de gestión: vlan-filter-mode + vlan-filter de iphost 2. */
+export function buildTr069IpHostVlanFilterCommands(config: AuthorizeOnuParams): string[] {
   return [
-    'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
     'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
     `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
   ];
+}
+
+/**
+ * FASE 5 (parcial) del canal de gestión: ip-host 2 + su filtro de VLAN,
+ * combinados -- usado por el reintento aislado de Etapa 2
+ * (`generateTr069ManagementScript`), donde no existe un iphost 1 con el
+ * cual agrupar. `generateAuthorizationScript` usa en cambio las dos
+ * funciones separadas de arriba, para agrupar "ambos ip-host" antes que
+ * "ambos vlan-filter" (ver FASE 5 de ese generador).
+ */
+export function buildTr069IpHostCommands(config: AuthorizeOnuParams): string[] {
+  return [...buildTr069IpHostEnableCommand(), ...buildTr069IpHostVlanFilterCommands(config)];
 }
 
 /**
@@ -220,15 +236,20 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
   }
 
   // === FASE 5: Configuración de IP-Host y Filtros de VLAN ===
-  // Orden estricto: 1° activar ip-host -> 2° vlan-filter-mode -> 3° vlan-filter
+  // CONFIRMADO EN VIVO (2026-10-29): primero se activan AMBOS ip-host
+  // (dhcp-enable) y recién DESPUÉS se aplican AMBOS vlan-filter -- no
+  // intercalado por host (host 1 completo, luego host 2) como antes.
+  commands.push('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
+  if (hasTr069) {
+    commands.push(...buildTr069IpHostEnableCommand());
+  }
+
   commands.push(
-    'ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable',
     'vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard',
     `vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`,
   );
-
   if (hasTr069) {
-    commands.push(...buildTr069IpHostCommands(config));
+    commands.push(...buildTr069IpHostVlanFilterCommands(config));
   }
 
   // === FASE 6: Capa de Aplicación (Puertos ETH, VoIP, VEIP, TR-069 y Seguridad) ===

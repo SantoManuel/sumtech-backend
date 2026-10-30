@@ -22,6 +22,8 @@ import {
   getOnuDetailInfoWithSession,
   getOnuWanIpWithSession,
   getOnuTr069MgmtInfoWithSession,
+  applyWanIpFixWithSession,
+  applyServiceGemportFixWithSession,
 } from './zte-c320-onu-audit';
 import { applyTr069ManagementWithSession, updateTr069AcsUrlWithSession } from './zte-c320-tr069';
 import {
@@ -469,6 +471,44 @@ export class ZteC320Driver implements IOltDriver {
     try {
       await session.connectAndLogin();
       return await getOnuMacTableWithSession(session, ponInterface, onuId);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** Opción A de recuperación de IP ("Reaplicar wan-ip") -- ver `IOltDriver.applyWanIpFix`. */
+  async applyWanIpFix(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+    config: { serviceVlan: number; tr069Vlan?: number },
+  ): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await applyWanIpFixWithSession(session, ponInterface, onuId, config);
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** Opción B ("último recurso") de recuperación de IP -- ver `IOltDriver.applyServiceGemportFix`. */
+  async applyServiceGemportFix(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+    config: { serviceVlan: number; tr069Vlan?: number },
+  ): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await applyServiceGemportFixWithSession(session, ponInterface, onuId, config);
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
     } finally {
       await session.close();
     }

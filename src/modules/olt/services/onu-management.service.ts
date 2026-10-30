@@ -49,8 +49,15 @@ export interface ProvisioningAuditFinding {
    * recreación limpia); deliberadamente SIN prefill automático: un tipo de
    * ONU equivocado amerita que el operador reconfirme a mano plan/VLAN/
    * contrato, no un reintento silencioso con valores adivinados.
+   * "APPLY_WAN_IP" (Opción A, CONFIRMADO EN VIVO 2026-10-30) ejecuta de una
+   * vez "wan-ip ... mode dhcp vlan-profile ..." sin pasar por ningún modal --
+   * no cambia plan/VLAN/contrato, solo re-aplica un comando puntual.
+   * "APPLY_SERVICE_GEMPORT" (Opción B, "último recurso", también confirmado
+   * en vivo) es DESTRUCTIVA: borra flow/switchport-bind/veip de ambos
+   * canales y los reemplaza por "service <id> gemport <id> vlan <vlan>" --
+   * debe ofrecerse solo cuando la Opción A ya se intentó y no resolvió.
    */
-  fixAction?: 'REAPPLY_TR069' | 'REAUTHORIZE';
+  fixAction?: 'REAPPLY_TR069' | 'REAUTHORIZE' | 'APPLY_WAN_IP' | 'APPLY_SERVICE_GEMPORT';
 }
 
 export interface ProvisioningAuditResult {
@@ -605,14 +612,7 @@ export class OnuManagementService {
    * HiOSO) no debe tumbar las otras 3, solo reportarse en `unsupported`.
    */
   async getProvisioningAudit(id: string): Promise<ProvisioningAuditResult> {
-    const onu = await this.findById(id);
-    const olt = onu.olt;
-    const driver = this.resolveDriver(olt);
-    const connParams = await this.connectionResolver.resolve(olt);
-
-    const ponInterface = onu.ponInterface?.name || 'gpon-olt_1/1/1';
-    const parts = onu.onuIndex.split(':');
-    const onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
+    const { onu, driver, connParams, ponInterface, onuId } = await this.resolveOnuAuditTarget(id);
 
     const NOT_SUPPORTED = 'NOT_SUPPORTED';
     const [detailInfoResult, ipHostResult, wanIpResult, tr069MgmtResult, macTableResult] = await Promise.allSettled([
@@ -661,6 +661,26 @@ export class OnuManagementService {
     }
 
     if (detailInfo) {
+      // CONFIRMADO EN VIVO (2026-10-29, ONU ECOM0F91DF9B): con "Phase state:
+      // LOS" ningún host (ni servicio ni gestión) obtiene IP, porque OMCI/
+      // VEIP ni siquiera puede aplicarse sin señal óptica -- capa física, no
+      // cableado OMCI/TR-069. Se reporta PRIMERO y SIN fixAction (ni
+      // "Reaplicar TR-069" ni "Reautorizar" resuelven un problema óptico) para
+      // no mandar al operador a reintentar aprovisionamiento sobre un equipo
+      // que ni siquiera está en línea.
+      if (detailInfo.phaseState && detailInfo.phaseState.toLowerCase() !== 'working') {
+        findings.push({
+          severity: 'CRITICAL',
+          message:
+            `La OLT reporta "Phase state: ${detailInfo.phaseState}" -- esto es pérdida de señal óptica ` +
+            '(capa física GPON), no un problema de cableado OMCI/TR-069. Ningún canal (servicio ni gestión) ' +
+            'puede obtener IP mientras la ONU esté en este estado. Revisa la fibra, el conector, el splitter y ' +
+            'la potencia óptica (pestaña "Resumen" de esta ONU) antes de reintentar cualquier aprovisionamiento.',
+          command: 'show gpon onu detail-info',
+          rawExcerpt: detailInfo.raw,
+        });
+      }
+
       if (detailInfo.configState && detailInfo.configState.toLowerCase() !== 'success') {
         findings.push({
           severity: 'CRITICAL',
@@ -697,6 +717,23 @@ export class OnuManagementService {
     // todavía no implementado). Tratar esa ausencia como "crítico" era un
     // falso positivo.
     if (ipHost) {
+      // Host ID: 1 (canal de servicio/internet) -- iphost 1 se cablea en el
+      // script de autorización completo (Etapa 1), NO en el reintento aislado
+      // de TR-069 (Etapa 2, que solo toca iphost 2) -- por eso su fixAction
+      // es REAUTHORIZE y no REAPPLY_TR069.
+      if (!ipHost.serviceIp) {
+        findings.push({
+          severity: 'CRITICAL',
+          message:
+            'La ONU no ha obtenido IP en el canal de SERVICIO/internet por DHCP (Host ID: 1). Esto se cablea en ' +
+            'la autorización completa (Etapa 1), no en el reintento de TR-069 -- confirma primero que no esté en ' +
+            '"Phase state: LOS" arriba, y si no, reautoriza desde la Etapa 1 completa.',
+          command: 'show gpon remote-onu ip-host',
+          rawExcerpt: ipHost.raw,
+          fixAction: 'REAUTHORIZE',
+        });
+      }
+
       if (!ipHost.mgmtIp) {
         findings.push({
           severity: 'CRITICAL',
@@ -706,6 +743,31 @@ export class OnuManagementService {
           command: 'show gpon remote-onu ip-host',
           rawExcerpt: ipHost.raw,
           fixAction: 'REAPPLY_TR069',
+        });
+      }
+
+      // Opción A/B de recuperación (CONFIRMADO EN VIVO, 2026-10-30, ONU
+      // ECOM0F91DF9B): cuando NINGÚN host tiene IP pese a que el cableado
+      // flow/switchport-bind/veip ya existe, ofrece "wan-ip" como primer
+      // intento (no destructivo) y, si eso tampoco resuelve, "service
+      // <id> gemport <id> vlan <vlan>" como último recurso (destructivo --
+      // borra y reconstruye el cableado de ambos canales).
+      if (!ipHost.mgmtIp && !ipHost.serviceIp) {
+        findings.push({
+          severity: 'CRITICAL',
+          message:
+            'Ningún canal (servicio ni gestión) ha obtenido IP, pese a que el cableado OMCI parece correcto. ' +
+            'Opción A: re-aplicar "wan-ip" directamente sobre esta ONU, sin tocar el resto del cableado.',
+          command: 'wan-ip 1/2 mode dhcp vlan-profile ...',
+          fixAction: 'APPLY_WAN_IP',
+        });
+        findings.push({
+          severity: 'WARNING',
+          message:
+            'Opción B (último recurso, solo si la Opción A no resolvió): borra el cableado flow/switchport-bind/' +
+            'veip de AMBOS canales y lo reemplaza por "service <id> gemport <id> vlan <vlan>". Acción destructiva.',
+          command: 'service 1/2 gemport 1/2 vlan ...',
+          fixAction: 'APPLY_SERVICE_GEMPORT',
         });
       }
     }
@@ -761,6 +823,72 @@ export class OnuManagementService {
     }
 
     return { findings, detailInfo, ipHost, wanIp, tr069Mgmt, macTable, unsupported };
+  }
+
+  /** Resuelve driver/connParams/ponInterface/onuId -- mismo criterio que `getProvisioningAudit()`. */
+  private async resolveOnuAuditTarget(id: string) {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+    const driver = this.resolveDriver(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
+    const ponInterface = onu.ponInterface?.name || 'gpon-olt_1/1/1';
+    const parts = onu.onuIndex.split(':');
+    const onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
+    return { onu, driver, connParams, ponInterface, onuId };
+  }
+
+  /**
+   * Opción A de recuperación de IP ("Reaplicar wan-ip") -- acción deliberada
+   * disparada desde la pestaña de Auditoría, CONFIRMADA EN VIVO (2026-10-30,
+   * OLT_Tabara_Abajo, ONU ECOM0F91DF9B). NO toca el resto del cableado OMCI.
+   */
+  async applyWanIpFix(id: string) {
+    const { onu, driver, connParams, ponInterface, onuId } = await this.resolveOnuAuditTarget(id);
+    if (typeof driver.applyWanIpFix !== 'function') {
+      throw new BadRequestException('Este fabricante de OLT todavía no soporta esta corrección.');
+    }
+
+    const serviceVlan = onu.serviceConfig?.serviceVlan?.vlanId;
+    if (!serviceVlan) {
+      throw new BadRequestException('Esta ONU no tiene una VLAN de servicio configurada -- no se puede aplicar wan-ip.');
+    }
+
+    const result = await driver.applyWanIpFix(connParams, ponInterface, onuId, {
+      serviceVlan,
+      tr069Vlan: onu.serviceConfig?.tr069Vlan?.vlanId,
+    });
+    if (!result.ok) {
+      throw new BadRequestException(`La OLT rechazó la corrección: ${result.error}`);
+    }
+    return { success: true, message: 'Configuración "wan-ip" re-aplicada en la OLT.' };
+  }
+
+  /**
+   * Opción B ("último recurso") de recuperación de IP -- DESTRUCTIVA, borra
+   * el cableado flow/switchport-bind/veip de ambos canales y lo reemplaza
+   * por "service <id> gemport <id> vlan <vlan>". CONFIRMADA EN VIVO
+   * (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B). Solo debe dispararse
+   * después de intentar `applyWanIpFix`.
+   */
+  async applyServiceGemportFix(id: string) {
+    const { onu, driver, connParams, ponInterface, onuId } = await this.resolveOnuAuditTarget(id);
+    if (typeof driver.applyServiceGemportFix !== 'function') {
+      throw new BadRequestException('Este fabricante de OLT todavía no soporta esta corrección.');
+    }
+
+    const serviceVlan = onu.serviceConfig?.serviceVlan?.vlanId;
+    if (!serviceVlan) {
+      throw new BadRequestException('Esta ONU no tiene una VLAN de servicio configurada -- no se puede aplicar esta corrección.');
+    }
+
+    const result = await driver.applyServiceGemportFix(connParams, ponInterface, onuId, {
+      serviceVlan,
+      tr069Vlan: onu.serviceConfig?.tr069Vlan?.vlanId,
+    });
+    if (!result.ok) {
+      throw new BadRequestException(`La OLT rechazó la corrección: ${result.error}`);
+    }
+    return { success: true, message: 'Cableado reconstruido con "service/gemport" en la OLT.' };
   }
 
   /**

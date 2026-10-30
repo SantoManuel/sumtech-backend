@@ -122,6 +122,21 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('vlan-filter iphost 2 pri 2 vlan 46');
     expect(commands).toContain('veip 1 port udp 1232 host 2');
 
+    // CONFIRMADO EN VIVO (2026-10-29): primero se activan AMBOS ip-host
+    // (dhcp-enable) y recién DESPUÉS se aplican AMBOS vlan-filter -- no
+    // intercalado por host (host 1 completo, luego host 2) como antes.
+    const ipHost1Idx = commands.indexOf('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
+    const ipHost2Idx = commands.indexOf('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
+    const vlanFilterModeIphost1Idx = commands.indexOf('vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard');
+    const vlanFilterIphost1Idx = commands.indexOf('vlan-filter iphost 1 pri 0 vlan 200');
+    const vlanFilterModeIphost2Idx = commands.indexOf('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
+    const vlanFilterIphost2Idx = commands.indexOf('vlan-filter iphost 2 pri 2 vlan 46');
+    expect(ipHost1Idx).toBeLessThan(ipHost2Idx);
+    expect(ipHost2Idx).toBeLessThan(vlanFilterModeIphost1Idx);
+    expect(vlanFilterModeIphost1Idx).toBeLessThan(vlanFilterIphost1Idx);
+    expect(vlanFilterIphost1Idx).toBeLessThan(vlanFilterModeIphost2Idx);
+    expect(vlanFilterModeIphost2Idx).toBeLessThan(vlanFilterIphost2Idx);
+
     // Bloque TR-069/ACS -- ahora en la misma sesión atómica, tratado como
     // mejor esfuerzo por authorizeOnu() (ver inTr069Block ahí).
     expect(commands).toContain('tr069-mgmt 1 state unlock');
@@ -2526,6 +2541,29 @@ OLT#`);
       expect(executeCommand).toHaveBeenCalledWith('show gpon onu detail-info gpon-onu_1/2/6:3');
     });
 
+    it('CONFIRMADO EN VIVO (2026-10-29, ONU ECOM0F91DF9B): parsea "Phase state: LOS" -- gap real del audit original, que nunca rastreaba la capa física y podía sugerir "Reaplicar TR-069" sobre una ONU sin señal óptica', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(`
+ONU interface:         gpon-onu_1/2/6:2
+Type:                HUAWEY-BT546XG-TR069
+Phase state:         LOS
+Config state:        success
+Online Duration:     0h 0m 0s
+OLT#`);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const info = await driver.getOnuDetailInfo(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        2,
+      );
+
+      expect(info.phaseState).toBe('LOS');
+    });
+
     it('campos ausentes en la salida quedan undefined en vez de inventar un valor', async () => {
       const executeCommand = jest.fn().mockResolvedValue('Salida inesperada sin los campos conocidos\r\nOLT#');
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -2568,8 +2606,32 @@ OLT#`);
       );
 
       expect(ipHost.mgmtIp).toBe('10.46.0.247');
+      expect(ipHost.serviceIp).toBeUndefined();
       expect(ipHost.ipHostFound).toBe(true);
       expect(executeCommand).toHaveBeenCalledWith('show gpon remote-onu ip-host gpon-onu_1/2/6:3');
+    });
+
+    it('también parsea la IP de SERVICIO del Host ID: 1, por separado del Host ID: 2 -- gap real del audit original, que solo rastreaba gestión y dejaba invisible una falla en el canal de internet del cliente', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(`
+Host ID: 1
+  IP: 10.46.10.15
+Host ID: 2
+  IP: 10.46.0.247
+OLT#`);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const ipHost = await driver.getOnuIpHost(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-olt_1/2/6',
+        3,
+      );
+
+      expect(ipHost.serviceIp).toBe('10.46.10.15');
+      expect(ipHost.mgmtIp).toBe('10.46.0.247');
     });
 
     it('IP 0.0.0.0 en Host ID: 2 queda sin mgmtIp (sin IP real asignada)', async () => {
@@ -2637,6 +2699,135 @@ OLT#`);
       );
 
       expect(ipHost.mgmtIp).toBeUndefined();
+    });
+  });
+
+  describe('applyWanIpFix() -- Opción A de recuperación de IP, CONFIRMADA EN VIVO (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B): re-aplica "wan-ip" sin tocar el resto del cableado', () => {
+    const connParams = { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' };
+
+    it('manda la secuencia exacta confirmada en vivo y termina en ok:true', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'configure terminal') return Promise.resolve('%Info 20272: Enter configuration commands, one per line. End with CTRL/Z.');
+        if (cmd.startsWith('pon-onu-mng')) return Promise.resolve('');
+        if (cmd.startsWith('wan-ip')) return Promise.resolve('');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyWanIpFix(connParams, 'gpon-olt_1/2/6', 2, { serviceVlan: 400, tr069Vlan: 4069 });
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'configure terminal',
+        'pon-onu-mng gpon-onu_1/2/6:2',
+        'wan-ip 1 mode dhcp vlan-profile SMARTOLT-vlan400 host 1',
+        'wan-ip 2 mode dhcp vlan-profile SMARTOLT-vlan4069 host 2',
+        'end',
+        'write',
+      ]);
+    });
+
+    it('omite "wan-ip 2" si la ONU no tiene VLAN de gestión (solo canal de servicio)', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      await driver.applyWanIpFix(connParams, 'gpon-olt_1/2/6', 2, { serviceVlan: 400 });
+
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('wan-ip 2'));
+    });
+
+    it('responde ok:false con el mensaje de la OLT si rechaza "wan-ip 1", sin llegar a "write"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('wan-ip 1')) return Promise.resolve('%Error 10: Invalid parameter!');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyWanIpFix(connParams, 'gpon-olt_1/2/6', 2, { serviceVlan: 400, tr069Vlan: 4069 });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('Invalid parameter');
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+  });
+
+  describe('applyServiceGemportFix() -- Opción B ("último recurso") de recuperación de IP, CONFIRMADA EN VIVO (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B): borra flow/switchport-bind/veip de ambos canales y los reemplaza por "service/gemport"', () => {
+    const connParams = { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' };
+
+    it('manda primero el desmontaje (mejor esfuerzo) y luego "service/gemport", terminando en ok:true', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyServiceGemportFix(connParams, 'gpon-olt_1/2/6', 2, { serviceVlan: 400, tr069Vlan: 4069 });
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'configure terminal',
+        'pon-onu-mng gpon-onu_1/2/6:2',
+        'no gemport 1 flow 1',
+        'no gemport 2 flow 2',
+        'no flow 1 pri 0 vlan 400',
+        'no flow 2 pri 2 vlan 4069',
+        'no flow 2 switch switch_0/1',
+        'no switchport-bind switch_0/1 iphost 1',
+        'no switchport-bind switch_0/1 iphost 2',
+        'no switchport-bind switch_0/1 veip 1',
+        'service 1 gemport 1 vlan 400',
+        'service 2 gemport 2 vlan 4069',
+        'end',
+        'write',
+      ]);
+    });
+
+    it('tolera que la OLT rechace un "no ..." de desmontaje (ej. nada que borrar) sin abortar -- mejor esfuerzo a propósito', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('no flow 2 switch')) return Promise.resolve('%Error: no existe');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyServiceGemportFix(connParams, 'gpon-olt_1/2/6', 2, { serviceVlan: 400, tr069Vlan: 4069 });
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('responde ok:false con el mensaje de la OLT si rechaza "service 1 gemport 1 vlan ..." (comando de reemplazo, no de desmontaje), sin llegar a "write"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('service 1 gemport')) return Promise.resolve('%Error 10: Invalid parameter!');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyServiceGemportFix(connParams, 'gpon-olt_1/2/6', 2, { serviceVlan: 400, tr069Vlan: 4069 });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('Invalid parameter');
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
     });
   });
 

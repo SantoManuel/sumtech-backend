@@ -1,7 +1,7 @@
 import { OnuDetailInfo, OnuIpHostInfo, OnuWanIpInfo, OnuTr069MgmtInfo, OnuProvisioningVerification } from '../ports/olt-driver.port';
 import { ZteSessionLike } from './zte-telnet-session';
 import { toOnuInterfaceName } from './zte-c320-provisioning-scripts';
-import { parseIpHost, parseMacTable, parseOnuDetailInfo } from './zte-c320-parsers';
+import { isOltErrorResponse, parseIpHost, parseMacTable, parseOnuDetailInfo } from './zte-c320-parsers';
 
 /**
  * Lógica de la pestaña de Auditoría de Aprovisionamiento (`show gpon onu
@@ -138,4 +138,126 @@ export async function getOnuTr069MgmtInfoWithSession(
     vlanTag: raw.match(/vlan\s*:?\s*(\d+)/i)?.[1],
     raw,
   };
+}
+
+/**
+ * Opción A de recuperación cuando ninguna IP se obtiene pese a que el
+ * cableado OMCI (flow/switchport-bind/veip) ya existe -- re-aplica "wan-ip"
+ * directamente sobre la ONU, SIN tocar el resto del cableado. CONFIRMADO EN
+ * VIVO (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B): recuperó IP en
+ * ambos hosts. El nombre del vlan-profile sigue la convención real
+ * "SMARTOLT-vlan<VLAN>" ya usada en esta OLT. Disparado a propósito desde la
+ * Auditoría de Aprovisionamiento ("Opción A"), nunca automáticamente.
+ */
+export async function applyWanIpFixWithSession(
+  session: ZteSessionLike,
+  ponInterface: string,
+  onuId: number,
+  config: { serviceVlan: number; tr069Vlan?: number },
+): Promise<void> {
+  const onuInterface = toOnuInterfaceName(ponInterface, onuId);
+
+  await session.executeCommand('configure terminal');
+  const mngOutput = await session.executeCommand(`pon-onu-mng ${onuInterface}`);
+  if (isOltErrorResponse(mngOutput)) {
+    try {
+      await session.executeCommand('end');
+    } catch {
+      /* best-effort */
+    }
+    throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${mngOutput.trim()}`);
+  }
+
+  const host1Output = await session.executeCommand(
+    `wan-ip 1 mode dhcp vlan-profile SMARTOLT-vlan${config.serviceVlan} host 1`,
+  );
+  if (isOltErrorResponse(host1Output)) {
+    try {
+      await session.executeCommand('end');
+    } catch {
+      /* best-effort */
+    }
+    throw new Error(`La OLT rechazó "wan-ip 1" (host de servicio): ${host1Output.trim()}`);
+  }
+
+  if (config.tr069Vlan) {
+    const host2Output = await session.executeCommand(
+      `wan-ip 2 mode dhcp vlan-profile SMARTOLT-vlan${config.tr069Vlan} host 2`,
+    );
+    if (isOltErrorResponse(host2Output)) {
+      try {
+        await session.executeCommand('end');
+      } catch {
+        /* best-effort */
+      }
+      throw new Error(`La OLT rechazó "wan-ip 2" (host de gestión): ${host2Output.trim()}`);
+    }
+  }
+
+  await session.executeCommand('end');
+  await session.executeCommand('write');
+}
+
+/**
+ * Opción B ("último recurso") cuando la Opción A (`applyWanIpFixWithSession`)
+ * tampoco resuelve el problema de IP -- DESTRUCTIVA: borra el cableado
+ * flow/switchport-bind/veip existente de AMBOS canales (servicio y gestión)
+ * y lo reemplaza por el mecanismo "service <id> gemport <id> vlan <vlan>".
+ * CONFIRMADO EN VIVO (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B) que
+ * esto NO deja a la ONU sin servicio. Los comandos "no ..." de desmontaje
+ * son mejor-esfuerzo (una entrada que ya no existe no debe abortar el
+ * resto) -- solo los comandos "service ..." de reemplazo, que sí deben
+ * tener éxito, se tratan como fatales si la OLT los rechaza.
+ */
+export async function applyServiceGemportFixWithSession(
+  session: ZteSessionLike,
+  ponInterface: string,
+  onuId: number,
+  config: { serviceVlan: number; tr069Vlan?: number },
+): Promise<void> {
+  const onuInterface = toOnuInterfaceName(ponInterface, onuId);
+
+  await session.executeCommand('configure terminal');
+  const mngOutput = await session.executeCommand(`pon-onu-mng ${onuInterface}`);
+  if (isOltErrorResponse(mngOutput)) {
+    try {
+      await session.executeCommand('end');
+    } catch {
+      /* best-effort */
+    }
+    throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${mngOutput.trim()}`);
+  }
+
+  const teardownCommands = [
+    'no gemport 1 flow 1',
+    'no gemport 2 flow 2',
+    `no flow 1 pri 0 vlan ${config.serviceVlan}`,
+    ...(config.tr069Vlan ? [`no flow 2 pri 2 vlan ${config.tr069Vlan}`] : []),
+    'no flow 2 switch switch_0/1',
+    'no switchport-bind switch_0/1 iphost 1',
+    'no switchport-bind switch_0/1 iphost 2',
+    'no switchport-bind switch_0/1 veip 1',
+  ];
+  for (const cmd of teardownCommands) {
+    await session.executeCommand(cmd);
+  }
+
+  const serviceCommands = [
+    `service 1 gemport 1 vlan ${config.serviceVlan}`,
+    ...(config.tr069Vlan ? [`service 2 gemport 2 vlan ${config.tr069Vlan}`] : []),
+  ];
+  for (const cmd of serviceCommands) {
+    const output = await session.executeCommand(cmd);
+    if (isOltErrorResponse(output)) {
+      try {
+        await session.executeCommand('end');
+      } catch {
+        /* best-effort */
+      }
+      throw new Error(`La OLT rechazó "${cmd}": ${output.trim()}`);
+    }
+  }
+
+  await session.executeCommand('end');
+  await session.executeCommand('write');
 }
