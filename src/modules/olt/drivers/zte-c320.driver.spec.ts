@@ -124,12 +124,19 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('flow 2 switch switch_0/1');
     expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('flow 2 pri 2 vlan 46');
+    // "no flow 2 pri 2 vlan 46"/"no vlan-filter iphost 2 pri 2 vlan 46" ANTES
+    // de asignarlos -- mismo criterio que "no service-port 2": valor de VLAN
+    // embebido, mismo riesgo (no verificado) que el bug real de service-port.
+    expect(commands.indexOf('no flow 2 pri 2 vlan 46')).toBeLessThan(commands.indexOf('flow 2 pri 2 vlan 46'));
     expect(commands).toContain('gemport 2 flow 2');
     expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
     expect(commands).toContain('switchport-bind switch_0/1 veip 1');
     expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
     expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('vlan-filter iphost 2 pri 2 vlan 46');
+    expect(commands.indexOf('no vlan-filter iphost 2 pri 2 vlan 46')).toBeLessThan(
+      commands.indexOf('vlan-filter iphost 2 pri 2 vlan 46'),
+    );
     expect(commands).toContain('veip 1 port udp 1232 host 2');
 
     // CONFIRMADO EN VIVO (2026-10-29): primero se activan AMBOS ip-host
@@ -153,6 +160,9 @@ describe('ZteC320Driver', () => {
     // Sin tr069AcsUsername/Password en este config, "validate" se omite.
     expect(commands).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
     expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
+    expect(commands.indexOf('no tr069-mgmt 1 tag pri 2 vlan 46')).toBeLessThan(
+      commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46'),
+    );
     expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
     expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
     expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
@@ -347,6 +357,11 @@ describe('ZteC320Driver', () => {
       // referencias reales de arriba, consistente con "tr069-mgmt 1 tag pri
       // 2 vlan ...".
       expect(commands).toContain('flow 2 pri 2 vlan 46');
+      // "no flow 2 pri 2 vlan 46" ANTES de asignarlo -- mismo criterio que
+      // "no service-port 2" (destruir y recrear limpio): este valor de VLAN
+      // está embebido igual que "service-port ... vlan ..." (el bug real
+      // confirmado en vivo, 2026-10-30), riesgo no verificado pero análogo.
+      expect(commands.indexOf('no flow 2 pri 2 vlan 46')).toBeLessThan(commands.indexOf('flow 2 pri 2 vlan 46'));
       expect(commands).toContain('gemport 2 flow 2');
       expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
       // CONFIRMADO EN VIVO (2026-10-22) contra un running-config real y
@@ -359,6 +374,11 @@ describe('ZteC320Driver', () => {
       expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
       expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
       expect(commands).toContain('vlan-filter iphost 2 pri 2 vlan 46');
+      // "no vlan-filter iphost 2 pri 2 vlan 46" ANTES de asignarlo -- mismo
+      // riesgo de valor VLAN embebido que "flow 2 pri 2 vlan 46" de arriba.
+      expect(commands.indexOf('no vlan-filter iphost 2 pri 2 vlan 46')).toBeLessThan(
+        commands.indexOf('vlan-filter iphost 2 pri 2 vlan 46'),
+      );
       // Confirmado en vivo (2026-10-22) presente en ambas referencias reales
       // -- rige la asignación de IP de los 4 puertos LAN de la ONU.
       expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
@@ -378,6 +398,12 @@ describe('ZteC320Driver', () => {
       // running-config reales y funcionando de SmartOLT (X2251, M1382); usa
       // tr069Vlan (46 en baseConfig), nunca un valor fijo.
       expect(commands).toContain('tr069-mgmt 1 tag pri 2 vlan 46');
+      // "no tr069-mgmt 1 tag pri 2 vlan 46" ANTES de asignarlo -- mismo
+      // riesgo de valor VLAN embebido que "flow 2 pri 2 vlan 46"/
+      // "vlan-filter iphost 2 pri 2 vlan 46" de arriba.
+      expect(commands.indexOf('no tr069-mgmt 1 tag pri 2 vlan 46')).toBeLessThan(
+        commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46'),
+      );
       // Confirmado por comparación directa (2026-10-23) contra running-config
       // reales y funcionando de SmartOLT en la misma OLT -- debe ser el
       // PRIMER comando dentro de "pon-onu-mng" (antes de flow/gemport/iphost).
@@ -2657,6 +2683,97 @@ No.15 profile : TRAFFIC-977M
 
       expect(result.ok).toBe(true);
       expect(result.warning).toContain('flow 2 switch switch_0/1');
+    });
+  });
+
+  describe('applyTr069Management()/authorizeOnu() tratan "no flow 2 pri 2 vlan"/"no vlan-filter iphost 2 pri 2 vlan"/"no tr069-mgmt 1 tag pri 2 vlan" como PURAMENTE PREPARATORIOS (isPreparatoryTeardownCommand) -- mismo criterio que "no service-port N": nunca generan warning ni abortan, sin importar lo que responda la OLT (típicamente "no existe" la primera vez que se aplica TR-069 a esta ONU)', () => {
+    const tr069Config = {
+      ponInterface: 'gpon-olt_1/2/15',
+      onuId: 1,
+      modelTypeName: 'HUAWEY-HG8546M',
+      serialNumber: 'CMDCDD4D131E',
+      serviceVlan: 400,
+      tr069Url: 'http://acs.sumtech.com.do:7547',
+      tr069Vlan: 46,
+      managementMethod: 'TR069' as const,
+      operationMode: 'ROUTER' as const,
+    };
+
+    beforeEach(() => {
+      jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
+    });
+
+    it('applyTr069Management(): un rechazo en "no flow 2 pri 2 vlan 46"/"no vlan-filter iphost 2 pri 2 vlan 46"/"no tr069-mgmt 1 tag pri 2 vlan 46" (ej. "no existe" en la primera aplicación) NO genera warning', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (
+          cmd === 'no flow 2 pri 2 vlan 46' ||
+          cmd === 'no vlan-filter iphost 2 pri 2 vlan 46' ||
+          cmd === 'no tr069-mgmt 1 tag pri 2 vlan 46'
+        ) {
+          return Promise.resolve('%Error 10: Invalid parameter!');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      expect(calledCommands).toContain('no flow 2 pri 2 vlan 46');
+      expect(calledCommands).toContain('no vlan-filter iphost 2 pri 2 vlan 46');
+      expect(calledCommands).toContain('no tr069-mgmt 1 tag pri 2 vlan 46');
+    });
+
+    it('authorizeOnu(): el mismo rechazo en esos 3 comandos "no ..." (canal de gestión fusionado, ruta heredada) tampoco genera warning', async () => {
+      const authConfig = {
+        ponInterface: 'gpon-olt_1/1/1',
+        onuId: 1,
+        modelTypeName: 'ZTE-F660',
+        serialNumber: 'ZTEGC0123456',
+        serviceVlan: 400,
+        tr069Url: 'http://acs.sumtech.com.do:7547',
+        tr069Vlan: 46,
+        managementMethod: 'TR069' as const,
+        operationMode: 'ROUTER' as const,
+      };
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        if (
+          cmd === 'no flow 2 pri 2 vlan 46' ||
+          cmd === 'no vlan-filter iphost 2 pri 2 vlan 46' ||
+          cmd === 'no tr069-mgmt 1 tag pri 2 vlan 46'
+        ) {
+          return Promise.resolve('%Error 10: Invalid parameter!');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        authConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      expect(calledCommands).toContain('no flow 2 pri 2 vlan 46');
+      expect(calledCommands).toContain('no vlan-filter iphost 2 pri 2 vlan 46');
+      expect(calledCommands).toContain('no tr069-mgmt 1 tag pri 2 vlan 46');
     });
   });
 

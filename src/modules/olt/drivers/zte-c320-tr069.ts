@@ -9,6 +9,7 @@ import {
   getHumanPacingDelay,
   REBOOT_ONU_SENTINEL,
   FLOW_SWITCH_BIND_RE,
+  isPreparatoryTeardownCommand,
 } from './zte-c320-provisioning-scripts';
 import { ensureTcontProfileWithSession, ensureTrafficProfileWithSession } from './zte-c320-profiles';
 
@@ -209,6 +210,17 @@ export async function applyTr069ManagementWithSession(
       if (acsResult.warningMessage) {
         warnings.push(acsResult.warningMessage);
       }
+      continue;
+    }
+
+    // Comandos "no ..." puramente preparatorios (destruir antes de
+    // recrear, ver isPreparatoryTeardownCommand) -- mismo criterio que
+    // "no service-port 2" en ensureTr069TransportWithSession: nunca deben
+    // generar un `warning` confuso, sin importar lo que responda la OLT
+    // (típicamente "no existe" la primera vez que se aplica el perfil
+    // TR-069 a esta ONU).
+    if (isPreparatoryTeardownCommand(cmd)) {
+      await session.executeCommand(cmd);
       continue;
     }
 

@@ -27,11 +27,24 @@ export function toOnuInterfaceName(ponInterface: string, onuId: number): string 
   return `${ponInterface.replace(/^gpon-olt_/, 'gpon-onu_')}:${onuId}`;
 }
 
-/** FASE 3 (parcial) del canal de gestión: flow 2 + gemport 2 flow 2. */
+/**
+ * FASE 3 (parcial) del canal de gestión: flow 2 + gemport 2 flow 2.
+ *
+ * "no flow 2 pri 2 vlan <N>" ANTES de asignarlo -- mismo criterio que "no
+ * service-port <N>" (destruir y recrear limpio, ver generateAuthorizationScript):
+ * este comando carga un valor de VLAN embebido igual que "service-port ...
+ * vlan ..." (el bug real confirmado en vivo, 2026-10-30), y la OLT ya
+ * documentó tolerar "flow <n> switch switch_0/1 y comandos similares del
+ * bloque OMCI" como "ya existe" sin verificar el valor -- el mismo riesgo no
+ * verificado se extiende a esta sub-asignación de "pri"/"vlan" del mismo
+ * objeto flow. Sintaxis "no flow <N> pri <P> vlan <V>" ya usada y
+ * confirmada en vivo en `applyServiceGemportFixWithSession` (Opción B).
+ */
 export function buildTr069FlowCommands(config: AuthorizeOnuParams): string[] {
   return [
     'flow 2 switch switch_0/1',
     'flow mode 2 tag-filter vlan-filter untag-filter discard',
+    `no flow 2 pri 2 vlan ${config.tr069Vlan}`,
     `flow 2 pri 2 vlan ${config.tr069Vlan}`,
     'gemport 2 flow 2',
   ];
@@ -47,10 +60,16 @@ export function buildTr069IpHostEnableCommand(): string[] {
   return ['ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable'];
 }
 
-/** FASE 5b (parcial) del canal de gestión: vlan-filter-mode + vlan-filter de iphost 2. */
+/**
+ * FASE 5b (parcial) del canal de gestión: vlan-filter-mode + vlan-filter de
+ * iphost 2. "no vlan-filter iphost 2 pri 2 vlan <N>" antes de asignarlo --
+ * mismo riesgo (sin verificar en vivo todavía) de valor VLAN embebido que
+ * "flow 2 pri 2 vlan <N>" de arriba; ver esa nota.
+ */
 export function buildTr069IpHostVlanFilterCommands(config: AuthorizeOnuParams): string[] {
   return [
     'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
+    `no vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
     `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
   ];
 }
@@ -97,6 +116,11 @@ export function buildTr069ApplicationCommands(config: AuthorizeOnuParams): strin
     config.tr069AcsUsername && config.tr069AcsPassword
       ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
       : `tr069-mgmt 1 acs ${config.tr069Url}`,
+    // "no tr069-mgmt 1 tag pri 2 vlan <N>" antes de asignarlo -- mismo
+    // riesgo (sin verificar en vivo todavía) de valor VLAN embebido que
+    // "flow 2 pri 2 vlan <N>"/"vlan-filter iphost 2 pri 2 vlan <N>" de
+    // arriba; ver esa nota en buildTr069FlowCommands.
+    `no tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
     `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
   ];
 
@@ -131,6 +155,26 @@ export function isManagementOrTr069Command(cmd: string): boolean {
     cmd.startsWith('veip') ||
     cmd.startsWith('tr069-mgmt') ||
     cmd.startsWith('security-mgmt')
+  );
+}
+
+/**
+ * Reconoce los comandos "no ..." puramente preparatorios (destruir antes de
+ * recrear) que preceden a una asignación con valor embebido (VLAN) -- mismo
+ * criterio que "no onu <id>"/"no service-port <N>": nunca deben tratarse
+ * como rechazo real ni generar un `warning` confuso en la primera
+ * autorización de una ONU (cuando el objeto todavía no existe y la OLT
+ * responde "no existe" en vez de silencio). Usado por `authorizeOnu()`
+ * (zte-c320.driver.ts) y `applyTr069ManagementWithSession()`
+ * (zte-c320-tr069.ts) para ejecutarlos sin verificar su respuesta, igual que
+ * ya se hace con "no service-port <N>".
+ */
+export function isPreparatoryTeardownCommand(cmd: string): boolean {
+  return (
+    cmd.startsWith('no service-port ') ||
+    /^no flow \d+ pri \d+ vlan \d+$/.test(cmd) ||
+    /^no vlan-filter iphost \d+ pri \d+ vlan \d+$/.test(cmd) ||
+    /^no tr069-mgmt \d+ tag pri \d+ vlan \d+$/.test(cmd)
   );
 }
 

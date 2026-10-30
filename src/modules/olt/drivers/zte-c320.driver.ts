@@ -14,6 +14,7 @@ import {
   generateTr069ProfileScript as generateTr069ProfileScriptImpl,
   hasTr069Channel,
   isManagementOrTr069Command,
+  isPreparatoryTeardownCommand,
   getHumanPacingDelay,
   REBOOT_ONU_SENTINEL,
   FLOW_SWITCH_BIND_RE,
@@ -423,12 +424,12 @@ export class ZteC320Driver implements IOltDriver {
           continue;
         }
 
-        // "no service-port <N>" es puramente preparatorio (destruir antes de
-        // recrear, ver generateAuthorizationScript) -- mismo criterio que
-        // "no onu": nunca debe tratarse como rechazo fatal, sin importar lo
+        // Comandos "no ..." puramente preparatorios (destruir antes de
+        // recrear, ver isPreparatoryTeardownCommand) -- mismo criterio que
+        // "no onu": nunca deben tratarse como rechazo fatal, sin importar lo
         // que responda la OLT (típicamente "no existe" la primera vez que se
         // autoriza esta ONU).
-        if (cmd.startsWith('no service-port ')) {
+        if (isPreparatoryTeardownCommand(cmd)) {
           await session.executeCommand(cmd);
           continue;
         }
