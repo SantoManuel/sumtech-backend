@@ -40,8 +40,25 @@ function defaultDelay(ms: number): Promise<void> {
  * service-port 2" antes de recrearlo igual que Etapa 1 (ver
  * generateAuthorizationScript) para evitar el desajuste de VLAN entre
  * capas confirmado en vivo el 2026-10-30.
+ *
+ * Ejecuta "configure terminal"/"write" con el MISMO pacing humano
+ * (`getHumanPacingDelay`) y el mismo reintento ante glitch de buffer
+ * (`%Error 20200`) que ya usan `authorizeOnu()` y el bucle OMCI de abajo --
+ * BUG REAL CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E): esta función
+ * no tenía NINGÚN pacing entre comandos, así que su "write" final (que
+ * puede tardar en asentarse, igual que el de `authorizeOnu()`) quedaba
+ * seguido INMEDIATAMENTE por el "configure terminal" del bloque OMCI de
+ * `applyTr069ManagementWithSession` -- la OLT rechazó ese "configure
+ * terminal" con "%Error 20200: Invalid input detected at '^' marker",
+ * dejando el resto del bloque OMCI sin aplicarse de verdad pese a que
+ * ningún comando individual fue reportado como rechazo fatal (tratado como
+ * mejor esfuerzo por estar `inTr069Block`).
  */
-export async function ensureTr069TransportWithSession(session: ZteSessionLike, config: AuthorizeOnuParams): Promise<void> {
+export async function ensureTr069TransportWithSession(
+  session: ZteSessionLike,
+  config: AuthorizeOnuParams,
+  delay: DelayFn = defaultDelay,
+): Promise<void> {
   if (!config.tr069Vlan) {
     throw new Error('No se puede preparar el canal de gestión/TR-069: falta la VLAN de TR-069 (tr069Vlan).');
   }
@@ -65,8 +82,24 @@ export async function ensureTr069TransportWithSession(session: ZteSessionLike, c
     cmdWrite,
   ] = generateTr069TransportScript(config);
 
-  await session.executeCommand(cmdConfigTerminal);
-  const ifaceOutput = await session.executeCommand(cmdInterface);
+  const runPaced = async (cmd: string): Promise<string> => {
+    let output = await session.executeCommand(cmd);
+    // Mismo reintento ante glitch de buffer que authorizeOnu() -- un
+    // "%Error 20200" no es un rechazo lógico real, es una colisión de
+    // entrada (ver nota de getHumanPacingDelay sobre el banner %Info 20272).
+    if (output.includes('%Error 20200')) {
+      await delay(350);
+      output = await session.executeCommand(cmd);
+    }
+    const pacingMs = getHumanPacingDelay(cmd);
+    if (pacingMs > 0) {
+      await delay(pacingMs);
+    }
+    return output;
+  };
+
+  await runPaced(cmdConfigTerminal);
+  const ifaceOutput = await runPaced(cmdInterface);
   if (isOltErrorResponse(ifaceOutput)) {
     try {
       await session.executeCommand('end');
@@ -76,7 +109,7 @@ export async function ensureTr069TransportWithSession(session: ZteSessionLike, c
     throw new Error(`La OLT rechazó entrar a "${cmdInterface}": ${ifaceOutput.trim()}`);
   }
 
-  const tcontOutput = await session.executeCommand(cmdTcont);
+  const tcontOutput = await runPaced(cmdTcont);
   if (isOltErrorResponse(tcontOutput) && !isAlreadyAppliedResponse(tcontOutput)) {
     try {
       await session.executeCommand('exit');
@@ -86,16 +119,16 @@ export async function ensureTr069TransportWithSession(session: ZteSessionLike, c
     throw new Error(`La OLT rechazó "${cmdTcont}": ${tcontOutput.trim()}`);
   }
 
-  await session.executeCommand(cmdGemportTcont);
-  await session.executeCommand(cmdGemportTrafficLimit);
+  await runPaced(cmdGemportTcont);
+  await runPaced(cmdGemportTrafficLimit);
 
   // "no service-port 2" ANTES de crearlo -- mismo criterio que
   // generateAuthorizationScript (CONFIRMADO EN VIVO, 2026-10-30, ONU
   // CMDCDD4D131E): destruir y recrear limpio evita que quede apuntando a
   // una VLAN vieja de un intento anterior con otra Red TR-069. Puramente
   // preparatorio -- nunca fatal, sin importar lo que responda la OLT.
-  await session.executeCommand(cmdNoServicePort);
-  const servicePortOutput = await session.executeCommand(cmdServicePort);
+  await runPaced(cmdNoServicePort);
+  const servicePortOutput = await runPaced(cmdServicePort);
   if (isOltErrorResponse(servicePortOutput) && !isAlreadyAppliedResponse(servicePortOutput)) {
     try {
       await session.executeCommand('exit');
@@ -105,8 +138,8 @@ export async function ensureTr069TransportWithSession(session: ZteSessionLike, c
     throw new Error(`La OLT rechazó "${cmdServicePort}": ${servicePortOutput.trim()}`);
   }
 
-  await session.executeCommand(cmdExit);
-  await session.executeCommand(cmdWrite);
+  await runPaced(cmdExit);
+  await runPaced(cmdWrite);
 }
 
 /**
@@ -145,7 +178,7 @@ export async function applyTr069ManagementWithSession(
   // su propia sesión -- autosuficiente, sin depender de que Etapa 1 la haya
   // tocado antes. Si esto falla, es fatal (no mejor esfuerzo): el resto del
   // bloque OMCI de abajo referencia "gemport 2", que no existe sin esto.
-  await ensureTr069TransportWithSession(session, config);
+  await ensureTr069TransportWithSession(session, config, delay);
 
   const commands = generateTr069ManagementScript(config);
   // Acumula TODOS los rechazos de la corrida, no solo el primero -- antes
@@ -224,7 +257,19 @@ export async function applyTr069ManagementWithSession(
       continue;
     }
 
-    const output = await session.executeCommand(cmd);
+    let output = await session.executeCommand(cmd);
+
+    // Simulación humana: si hubo un choque de buffer de entrada (%Error
+    // 20200), reintentar una vez -- mismo criterio que authorizeOnu().
+    // CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E): sin este reintento,
+    // un glitch de buffer entre la capa de transporte (ensureTr069Transport-
+    // WithSession) y este bloque OMCI dejaba "configure terminal" rechazado
+    // y el resto del bloque sin aplicarse de verdad (Config state: fail).
+    if (output.includes('%Error 20200')) {
+      logger.warn(`[human-sim] applyTr069Management: reintentando comando "${cmd}" tras detectar glitch de input %Error 20200`);
+      await delay(350);
+      output = await session.executeCommand(cmd);
+    }
 
     // Pacing humano entre comandos
     const pacingMs = getHumanPacingDelay(cmd);

@@ -2608,6 +2608,96 @@ No.15 profile : TRAFFIC-977M
       expect(result.error).toContain('tr069Vlan');
       expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
     });
+
+    it('aplica pacing humano (this.delay) entre CADA comando de la capa de transporte -- BUG REAL CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E): antes ensureTr069TransportWithSession no tenía NINGÚN pacing, así que su "write" final quedaba seguido de inmediato por el "configure terminal" del bloque OMCI y la OLT lo rechazaba con "%Error 20200: Invalid input detected at \'^\' marker"', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+      const delaySpy = jest.spyOn<any, any>(driver, 'delay');
+
+      await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      // Antes del fix, "delay" nunca se llamaba durante la capa de
+      // transporte -- ahora debe llamarse al menos una vez por cada
+      // comando real de esa capa (configure terminal/interface/tcont/
+      // gemport/no service-port/service-port/exit/write).
+      expect(delaySpy.mock.calls.length).toBeGreaterThanOrEqual(9);
+    });
+
+    it('reintenta UNA vez un comando de la capa de transporte si la OLT responde "%Error 20200" (glitch de buffer, no un rechazo lógico real)', async () => {
+      let ifaceAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'interface gpon-onu_1/2/15:1') {
+          ifaceAttempts += 1;
+          if (ifaceAttempts === 1) {
+            return Promise.resolve("^ %Error 20200: Invalid input detected at '^' marker.Invalid command.");
+          }
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+      jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(ifaceAttempts).toBe(2);
+    });
+
+    it('reintenta UNA vez el "configure terminal" del bloque OMCI si la OLT responde "%Error 20200" justo después de la capa de transporte -- reproduce EXACTAMENTE el error real reportado en producción', async () => {
+      let transportConfigTerminalSeen = false;
+      let omciConfigTerminalAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        // Perfiles ya existentes -- ensureTcontProfileWithSession/
+        // ensureTrafficProfileWithSession no deben mandar su PROPIO
+        // "configure terminal" (solo nos interesa contar el de la capa de
+        // transporte y el del bloque OMCI).
+        if (cmd === 'show gpon profile tcont') return Promise.resolve('Profile name :SMARTOLT-VOIPMNG-10M\r\n5 64 64 10240 1 low\r\n');
+        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-VOIPMNG-10M');
+        if (cmd === 'configure terminal') {
+          if (!transportConfigTerminalSeen) {
+            transportConfigTerminalSeen = true;
+            return Promise.resolve('');
+          }
+          omciConfigTerminalAttempts += 1;
+          if (omciConfigTerminalAttempts === 1) {
+            return Promise.resolve("^ %Error 20200: Invalid input detected at '^' marker.Invalid command.");
+          }
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+      jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      expect(omciConfigTerminalAttempts).toBe(2);
+    });
   });
 
   describe('applyTr069Management() re-enlaza "flow 2 switch switch_0/1" si la OLT lo tolera como "ya existe" -- mismo criterio que authorizeOnu() para "flow 1" (ver FLOW_SWITCH_BIND_RE, compartido vía zte-c320-provisioning-scripts.ts). Tras el desacople de Etapa 1/Etapa 2 (2026-10-30), esta es la ÚNICA sesión donde "flow 2" se aplica, así que necesita la misma protección contra un bind sin re-enlazar de un intento anterior', () => {
