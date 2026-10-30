@@ -29,6 +29,7 @@ import {
   ensureTcontProfileWithSession,
   ensureTrafficProfileWithSession,
   ensureOnuTypeProfileWithSession,
+  verifyOnuTypeProfileWithSession,
 } from './zte-c320-profiles';
 import { getSystemInfoWithSession, getSystemHealthWithSession, getCardsWithSession } from './zte-c320-system';
 import {
@@ -345,15 +346,14 @@ export class ZteC320Driver implements IOltDriver {
     try {
       await session.connectAndLogin();
 
-      await ensureOnuTypeProfileWithSession(
-        session,
-        {
-          name: config.modelTypeName,
-          ethPorts: config.ethPorts,
-          potsPorts: config.potsPorts,
-        },
-        this.logger,
-      );
+      // Decisión de negocio (2026-10-29): ya NO se crea el onu-type a
+      // ciegas aquí si falta -- ver `verifyOnuTypeProfileWithSession`.
+      // Crear un perfil con límites OMCI genéricos adivinados es un paso
+      // que merece revisión humana deliberada (catálogo de Tipos de ONU,
+      // "Sincronizar con la OLT"), no un efecto secundario silencioso de
+      // autorizar. Esto SÍ falla rápido y claro si el onu-type no existe
+      // todavía, en vez de crear uno nuevo y seguir.
+      await verifyOnuTypeProfileWithSession(session, config.modelTypeName, this.logger);
 
       if (config.upKbps) {
         const effectiveTcontProfile = config.tcontProfile || 'SMARTOLT-100M-UP';

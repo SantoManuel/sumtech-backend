@@ -672,6 +672,97 @@ describe('OltCatalogsService', () => {
     });
   });
 
+  describe('syncOnuTypeToOlt (acción deliberada del catálogo -- decisión de negocio 2026-10-29: authorizeOnu() ya no crea onu-types a ciegas, esta es ahora la única vía de creación)', () => {
+    const olt = { id: 'olt-1', name: 'OLT Central ZTE', vendor: 'ZTE', host: '10.0.0.10', port: 23, username: 'admin', passwordEnc: 'enc' };
+    const onuType = { id: 'type-1', model: 'HG8546M', vendorTypeName: 'HUAWEY-HG8546M', ethPorts: 4, potsPorts: 2 };
+
+    it('lanza NotFoundException si la OLT no existe', async () => {
+      oltRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.syncOnuTypeToOlt('olt-x', 'type-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('lanza NotFoundException si el tipo de ONU no existe', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      onuTypeRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.syncOnuTypeToOlt('olt-1', 'type-x')).rejects.toThrow(NotFoundException);
+    });
+
+    it('lanza BadRequestException si el tipo no tiene vendorTypeName configurado', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      onuTypeRepo.findOneBy.mockResolvedValue({ ...onuType, vendorTypeName: null });
+      await expect(service.syncOnuTypeToOlt('olt-1', 'type-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('llama driver.ensureOnuTypeProfile con el nombre real y los puertos eth/pots del tipo', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      onuTypeRepo.findOneBy.mockResolvedValue(onuType);
+      const ensureOnuTypeProfile = jest.fn().mockResolvedValue({ ok: true });
+      driverRegistry.resolve.mockReturnValue({ ensureOnuTypeProfile });
+
+      const result = await service.syncOnuTypeToOlt('olt-1', 'type-1');
+
+      expect(ensureOnuTypeProfile).toHaveBeenCalledWith(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: expect.any(String) },
+        { name: 'HUAWEY-HG8546M', ethPorts: 4, potsPorts: 2 },
+      );
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('HUAWEY-HG8546M');
+    });
+
+    it('lanza BadRequestException con el mensaje del driver si la OLT rechaza el comando', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      onuTypeRepo.findOneBy.mockResolvedValue(onuType);
+      driverRegistry.resolve.mockReturnValue({
+        ensureOnuTypeProfile: jest.fn().mockResolvedValue({ ok: false, error: '% Unknown command' }),
+      });
+
+      await expect(service.syncOnuTypeToOlt('olt-1', 'type-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza BadRequestException si el vendor de la OLT no está registrado', async () => {
+      oltRepo.findOneBy.mockResolvedValue(olt);
+      onuTypeRepo.findOneBy.mockResolvedValue(onuType);
+      driverRegistry.resolve.mockImplementation(() => {
+        throw new UnknownOltVendorError('RARO');
+      });
+
+      await expect(service.syncOnuTypeToOlt('olt-1', 'type-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('OLT VIA_MIKROTIK: usa el host/puerto resueltos por OltConnectionResolverService, no la IP privada cruda de la OLT', async () => {
+      const viaMikrotikOlt = {
+        id: 'olt-azua',
+        name: 'OLT-Azua_',
+        vendor: 'HIOSO',
+        host: '192.168.0.88',
+        port: 23,
+        connectionMethod: 'VIA_MIKROTIK',
+        viaNodeId: 'node-azua-centro',
+        natPort: 2324,
+        username: 'admin',
+        passwordEnc: 'enc',
+      };
+      oltRepo.findOneBy.mockResolvedValue(viaMikrotikOlt);
+      onuTypeRepo.findOneBy.mockResolvedValue(onuType);
+      connectionResolver.resolve.mockResolvedValue({
+        host: '172.16.100.5',
+        port: 2324,
+        username: 'admin',
+        password: 'decrypted-password',
+      });
+      const ensureOnuTypeProfile = jest.fn().mockResolvedValue({ ok: true });
+      driverRegistry.resolve.mockReturnValue({ ensureOnuTypeProfile });
+
+      await service.syncOnuTypeToOlt('olt-1', 'type-1');
+
+      expect(connectionResolver.resolve).toHaveBeenCalledWith(viaMikrotikOlt);
+      expect(ensureOnuTypeProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ host: '172.16.100.5', port: 2324 }),
+        { name: 'HUAWEY-HG8546M', ethPorts: 4, potsPorts: 2 },
+      );
+    });
+  });
+
   describe('assignVlanToInterface', () => {
     const mockIface = {
       id: 'iface-1',

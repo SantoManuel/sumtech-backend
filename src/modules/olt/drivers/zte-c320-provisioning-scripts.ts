@@ -180,13 +180,16 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
     );
   }
 
-  if (config.trafficProfile) {
-    commands.push(`traffic-profile ${config.trafficProfile} vport 1 direction egress`);
-  }
-
   commands.push(`service-port 1 vport 1 user-vlan ${config.serviceVlan} vlan ${config.serviceVlan}`);
   if (hasTr069) {
     commands.push(`service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`);
+  }
+
+  // "traffic-profile ... vport 1 ..." va DESPUÉS de crear los service-port
+  // (no antes) -- CONFIRMADO EN VIVO (2026-10-29): el vport que referencia
+  // solo queda enlazado una vez que "service-port 1 vport 1 ..." lo crea.
+  if (config.trafficProfile) {
+    commands.push(`traffic-profile ${config.trafficProfile} vport 1 direction egress`);
   }
 
   commands.push(

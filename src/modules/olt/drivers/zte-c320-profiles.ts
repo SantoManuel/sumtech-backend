@@ -129,6 +129,94 @@ export async function ensureTrafficProfileWithSession(session: ZteSessionLike, p
  * `alreadyExists` más abajo, que ahora repara ese campo en caliente en vez
  * de salir sin tocar nada.
  */
+/**
+ * Verifica que el "onu-type" exista YA en la OLT antes de autorizar -- a
+ * diferencia de `ensureOnuTypeProfileWithSession`, NUNCA lo crea. Decisión
+ * de negocio (2026-10-29): crear perfiles de onu-type a ciegas durante la
+ * autorización -- con límites OMCI genéricos adivinados (max-tcont 8,
+ * max-gemport 32, etc., nunca confirmados contra el datasheet real del
+ * modelo) -- es un paso importante que merece revisión humana deliberada,
+ * no un efecto secundario silencioso de autorizar una ONU. Crear el
+ * perfil es ahora una acción aparte (`ensureOnuTypeProfile` / endpoint
+ * `POST /olt/olts/:oltId/onu-types/:onuTypeId/sync`) que un admin dispara
+ * a propósito desde el catálogo. Si el perfil no existe, `authorizeOnu()`
+ * falla rápido y claro ANTES de tocar el puerto físico, en vez de crear
+ * uno nuevo con valores genéricos y seguir adelante.
+ *
+ * Sí conserva la reparación de "Max VEIP" sobre un perfil YA EXISTENTE
+ * (ver el bloque de abajo) -- eso es mantenimiento de un perfil que un
+ * humano ya decidió crear, no creación nueva.
+ */
+export async function verifyOnuTypeProfileWithSession(session: ZteSessionLike, onuTypeName: string, logger: Logger): Promise<void> {
+  const checkOutput = await session.executeCommand(`show onu-type gpon ${onuTypeName}`);
+  const alreadyExists = !isOltErrorResponse(checkOutput) && checkOutput.includes(onuTypeName);
+  if (!alreadyExists) {
+    throw new Error(
+      `El onu-type "${onuTypeName}" no existe en esta OLT. Créalo primero desde el catálogo de Tipos de ONU ` +
+        `("Sincronizar con la OLT") antes de autorizar esta ONU -- Sumtech ya no lo crea automáticamente a ciegas.`,
+    );
+  }
+
+  // CONFIRMADO EN VIVO (2026-10-22) contra OLT_Tabara_Abajo: un onu-type
+  // PREEXISTENTE (creado antes de que este método supiera de "max-veip",
+  // ej. HUAWEY-HG8145V5) puede quedar con "Max VEIP: 0" -- esto bloquea a
+  // nivel OMCI el comando "veip 1 port udp 1232 host 2" del bloque TR-069
+  // con "%Code 63990-GPONRM : ONT return error: command processing
+  // error.". Se repara en caliente -- MEJOR ESFUERZO, nunca debe tumbar la
+  // autorización (puede rechazarse con "%Code 70296 : Profile is being
+  // used." si el tipo ya tiene otras ONUs reales asignadas).
+  const maxVeipMatch = checkOutput.match(/Max VEIP:\s*(\d+)/i);
+  const maxVeip = maxVeipMatch ? parseInt(maxVeipMatch[1], 10) : undefined;
+  if (maxVeip === undefined || maxVeip >= 1) {
+    return;
+  }
+
+  let fixSucceeded = false;
+  try {
+    await session.executeCommand('configure terminal');
+    await session.executeCommand('pon');
+    const fixOutput = await session.executeCommand(`onu-type ${onuTypeName} gpon max-veip 1`);
+    if (isOltErrorResponse(fixOutput)) {
+      logger.warn(
+        `[diag] verifyOnuTypeProfileWithSession: no se pudo corregir "max-veip" del onu-type "${onuTypeName}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
+      );
+    } else {
+      fixSucceeded = true;
+    }
+  } catch (err: any) {
+    logger.warn(
+      `[diag] verifyOnuTypeProfileWithSession: excepción corrigiendo "max-veip" del onu-type "${onuTypeName}" (mejor esfuerzo, no bloquea la autorización): ${err.message}`,
+    );
+  } finally {
+    try {
+      await session.executeCommand('exit');
+    } catch {
+      /* best-effort */
+    }
+    try {
+      await session.executeCommand('exit');
+    } catch {
+      /* best-effort */
+    }
+  }
+  if (fixSucceeded) {
+    try {
+      await session.executeCommand('write');
+    } catch (err: any) {
+      logger.warn(
+        `[diag] verifyOnuTypeProfileWithSession: no se pudo guardar "write" tras corregir max-veip (mejor esfuerzo): ${err.message}`,
+      );
+    }
+  }
+}
+
+/**
+ * Crea (o verifica/repara) el "onu-type" en la OLT -- a diferencia de
+ * `verifyOnuTypeProfileWithSession`, SÍ lo crea si falta. Reservado para la
+ * acción deliberada de catálogo (`POST /olt/olts/:oltId/onu-types/:onuTypeId/sync`),
+ * nunca se llama automáticamente desde `authorizeOnu()` (ver nota de
+ * `verifyOnuTypeProfileWithSession`).
+ */
 export async function ensureOnuTypeProfileWithSession(session: ZteSessionLike, profile: OnuTypeProfile, logger: Logger): Promise<void> {
   const checkOutput = await session.executeCommand(`show onu-type gpon ${profile.name}`);
   const alreadyExists = !isOltErrorResponse(checkOutput) && checkOutput.includes(profile.name);

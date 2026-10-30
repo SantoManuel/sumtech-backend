@@ -348,6 +348,55 @@ export class OltCatalogsService {
     };
   }
 
+  /**
+   * Crea (o repara) el "onu-type" de este catálogo directamente en la OLT --
+   * acción DELIBERADA, disparada a propósito por un admin desde el catálogo
+   * de Tipos de ONU. Decisión de negocio (2026-10-29): `authorizeOnu()` ya
+   * NO crea onu-types a ciegas con límites OMCI genéricos adivinados
+   * (max-tcont 8, max-gemport 32, etc., nunca confirmados contra el
+   * datasheet real del modelo) -- ahora falla rápido y claro si el
+   * onu-type no existe todavía en la OLT, pidiendo que se sincronice
+   * primero desde aquí. Mismo patrón que `syncSpeedProfileToOlt`.
+   */
+  async syncOnuTypeToOlt(oltId: string, onuTypeId: string) {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException('OLT no encontrada.');
+
+    const onuType = await this.onuTypeRepository.findOneBy({ id: onuTypeId });
+    if (!onuType) throw new NotFoundException('Tipo de ONU no encontrado.');
+    if (!onuType.vendorTypeName) {
+      throw new BadRequestException(
+        `El tipo "${onuType.model}" no tiene un nombre real de onu-type configurado (vendorTypeName) — asígnalo antes de sincronizar.`,
+      );
+    }
+
+    let driver;
+    try {
+      driver = this.driverRegistry.resolve(olt.vendor);
+    } catch (err) {
+      if (err instanceof UnknownOltVendorError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
+
+    const connParams = await this.connectionResolver.resolve(olt);
+    const result = await driver.ensureOnuTypeProfile(connParams, {
+      name: onuType.vendorTypeName,
+      ethPorts: onuType.ethPorts,
+      potsPorts: onuType.potsPorts,
+    });
+
+    if (!result.ok) {
+      throw new BadRequestException(`No se pudo sincronizar el onu-type en la OLT: ${result.error}`);
+    }
+
+    return {
+      success: true,
+      message: `onu-type "${onuType.vendorTypeName}" asegurado en la OLT "${olt.name}" -- ya se puede autorizar ONUs de este tipo.`,
+    };
+  }
+
   // ══════════════════════════════════════════════════
   // 3. Perfiles de Velocidad OLT (RF-OLT-008)
   // ══════════════════════════════════════════════════

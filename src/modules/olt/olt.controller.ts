@@ -353,6 +353,18 @@ export class OltController {
     return this.catalogsService.deleteOnuType(id);
   }
 
+  /**
+   * Crea (o repara) este onu-type directamente en la OLT -- acción
+   * deliberada, ya NO ocurre automáticamente al autorizar una ONU (ver
+   * `verifyOnuTypeProfileWithSession` en zte-c320-profiles.ts). Mismo
+   * patrón que `syncSpeedProfileToOlt`.
+   */
+  @Post('olts/:oltId/onu-types/:onuTypeId/sync')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async syncOnuTypeToOlt(@Param('oltId') oltId: string, @Param('onuTypeId') onuTypeId: string) {
+    return this.catalogsService.syncOnuTypeToOlt(oltId, onuTypeId);
+  }
+
   // ══════════════════════════════════════════════════
   // Redes TR-069 (RF-OLT-013)
   // ══════════════════════════════════════════════════

@@ -1,4 +1,7 @@
 import { ZteC320Driver, ZteTelnetSession, REBOOT_ONU_SENTINEL } from './zte-c320.driver';
+import { verifyOnuTypeProfileWithSession } from './zte-c320-profiles';
+import { ZteSessionLike } from './zte-telnet-session';
+import { Logger } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
@@ -453,6 +456,12 @@ describe('ZteC320Driver', () => {
       operationMode: 'ROUTER',
     });
     expect(withTraffic).toContain('traffic-profile TRAFFIC-50M vport 1 direction egress');
+    // CONFIRMADO EN VIVO (2026-10-29): "traffic-profile ..." debe mandarse
+    // DESPUÉS de crear "service-port 1 vport 1 ...", no antes -- el vport
+    // que referencia solo queda enlazado una vez que el service-port lo crea.
+    expect(withTraffic.indexOf('traffic-profile TRAFFIC-50M vport 1 direction egress')).toBeGreaterThan(
+      withTraffic.indexOf('service-port 1 vport 1 user-vlan 200 vlan 200'),
+    );
 
     const withoutTraffic = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',
@@ -1331,9 +1340,102 @@ No.15 profile : TRAFFIC-977M
     });
   });
 
+  describe('verifyOnuTypeProfileWithSession (verificación SIN creación -- decisión de negocio 2026-10-29: authorizeOnu() ya no crea onu-types a ciegas, ver ensureOnuTypeProfile arriba para la creación deliberada)', () => {
+    const makeSession = (executeCommand: jest.Mock): ZteSessionLike => ({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      rebootOnu: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+    });
+    const silentLogger = { log: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() } as unknown as Logger;
+
+    it('no lanza y no manda ningún comando de creación si "show onu-type gpon <nombre>" ya reporta el perfil existente', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-HG8546M') {
+          return Promise.resolve('Onu Type Name :HUAWEY-HG8546M\r\nMax VEIP: 1\r\n');
+        }
+        return Promise.resolve('');
+      });
+
+      await expect(
+        verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'HUAWEY-HG8546M', silentLogger),
+      ).resolves.toBeUndefined();
+
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('onu-type-if'));
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
+    });
+
+    it('lanza un error claro mencionando el nombre del tipo si "show onu-type gpon <nombre>" no lo reporta -- NUNCA lo crea', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('\r\n%Error: no such onu-type\r\nOLT#');
+
+      await expect(
+        verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'INEXISTENTE-999', silentLogger),
+      ).rejects.toThrow(/INEXISTENTE-999/);
+
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('onu-type-if'));
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
+    });
+
+    it('repara "Max VEIP" en caliente si el tipo existe pero reporta "Max VEIP: 0"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-HG8145V5') {
+          return Promise.resolve(
+            'ONU type name:          HUAWEY-HG8145V5\r\nPON type:               gpon\r\nMax VEIP:               0(default: 1 VEIP)\r\n',
+          );
+        }
+        return Promise.resolve('');
+      });
+
+      await verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'HUAWEY-HG8145V5', silentLogger);
+
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'show onu-type gpon HUAWEY-HG8145V5',
+        'configure terminal',
+        'pon',
+        'onu-type HUAWEY-HG8145V5 gpon max-veip 1',
+        'exit',
+        'exit',
+        'write',
+      ]);
+    });
+
+    it('no toca nada si el tipo existe y ya tiene "Max VEIP: 1" o más', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon ZTEG-F660') {
+          return Promise.resolve('ONU type name:          ZTEG-F660\r\nMax VEIP:               1\r\n');
+        }
+        return Promise.resolve('');
+      });
+
+      await verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'ZTEG-F660', silentLogger);
+
+      expect(executeCommand).toHaveBeenCalledTimes(1);
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
+    });
+
+    it('nunca lanza (mejor esfuerzo) aunque la OLT rechace la reparación de "Max VEIP" -- ej. "Profile is being used" porque otras ONUs ya usan ese onu-type', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-HG8145V5') {
+          return Promise.resolve('ONU type name:          HUAWEY-HG8145V5\r\nMax VEIP:               0(default: 1 VEIP)\r\n');
+        }
+        if (cmd === 'onu-type HUAWEY-HG8145V5 gpon max-veip 1') {
+          return Promise.resolve('%Code 70296 : Profile is being used.');
+        }
+        return Promise.resolve('');
+      });
+
+      await expect(
+        verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'HUAWEY-HG8145V5', silentLogger),
+      ).resolves.toBeUndefined();
+
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+  });
+
   describe('authorizeOnu() + TCONT', () => {
     it('asegura el perfil TCONT antes de correr el script de autorización cuando hay tcontProfile + upKbps', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
         if (cmd === 'show gpon profile tcont') return Promise.resolve('PROFILE NAME   TYPE   FIXED');
         return Promise.resolve('');
       });
@@ -1367,7 +1469,10 @@ No.15 profile : TRAFFIC-977M
     });
 
     it('no intenta asegurar ningún perfil TCONT si no se provee tcontProfile/upKbps', async () => {
-      const executeCommand = jest.fn().mockResolvedValue('');
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        return Promise.resolve('');
+      });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
@@ -1391,7 +1496,10 @@ No.15 profile : TRAFFIC-977M
     });
 
     it('asegura también el traffic-profile de bajada cuando hay trafficProfile + downKbps', async () => {
-      const executeCommand = jest.fn().mockResolvedValue('');
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        return Promise.resolve('');
+      });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
@@ -1418,7 +1526,10 @@ No.15 profile : TRAFFIC-977M
     });
 
     it('no intenta asegurar ningún traffic-profile si no se provee trafficProfile/downKbps', async () => {
-      const executeCommand = jest.fn().mockResolvedValue('');
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        return Promise.resolve('');
+      });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
@@ -1480,6 +1591,7 @@ No.15 profile : TRAFFIC-977M
 
     it('falla con ok:false si la OLT rechaza con formato "%Error <n>: <mensaje>"', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
         if (cmd.startsWith('onu ')) return Promise.resolve('\r\n%Error 10: Invalid parameter!\r\nOLT#');
         return Promise.resolve('');
       });
@@ -1614,7 +1726,10 @@ No.15 profile : TRAFFIC-977M
     });
 
     it('tiene éxito y ejecuta "write" cuando ningún comando es rechazado', async () => {
-      const executeCommand = jest.fn().mockResolvedValue('\r\n.[Successful]\r\nOLT#');
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
@@ -1632,6 +1747,7 @@ No.15 profile : TRAFFIC-977M
 
     it('tolera que la OLT rechace "no onu <id>" (ej. "does not exist" si la ONU nunca existió) sin abortar la autorización -- mejor esfuerzo a propósito: nada que borrar no es un error', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
         if (cmd.startsWith('no onu ')) {
           return Promise.resolve('\r\n%Code 63905-GPONRM : ONU does not exist.\r\nOLT#');
         }
@@ -1657,6 +1773,7 @@ No.15 profile : TRAFFIC-977M
       const callOrder: string[] = [];
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         callOrder.push(cmd);
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
         return Promise.resolve('\r\n.[Successful]\r\nOLT#');
       });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -1678,6 +1795,7 @@ No.15 profile : TRAFFIC-977M
 
     it('trata rechazos en el canal secundario de gestión (ej. flow mode 2 con "%Code 63953 Flow does not exist") como advertencia no fatal, preservando la provisión de internet y ejecutando write', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :HUAWEY-HG8546M');
         if (cmd.startsWith('flow mode 2')) {
           return Promise.resolve('\r\n%Code 63953-GPONRM : Flow does not exist.\r\nOLT#');
         }
@@ -1708,6 +1826,7 @@ No.15 profile : TRAFFIC-977M
     it('simula operador humano y reintenta automáticamente un comando si la OLT devuelve "%Error 20200: Invalid input detected"', async () => {
       let attempts = 0;
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
         if (cmd === 'interface gpon-olt_1/1/1') {
           attempts++;
           if (attempts === 1) {
@@ -2198,8 +2317,11 @@ No.15 profile : TRAFFIC-977M
     expect(driver.getCapabilities().onuTypeProfileProvisioning).toBe(true);
   });
 
-  it('authorizeOnu() asegura el onu-type (modelTypeName + ethPorts/potsPorts) antes de correr el script de autorización', async () => {
-    const executeCommand = jest.fn().mockResolvedValue('');
+  it('authorizeOnu() verifica que el onu-type ya exista en la OLT ANTES de correr el script de autorización, sin crearlo', async () => {
+    const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+      if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :HUAWEY-HG8546M');
+      return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+    });
     jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
       connectAndLogin: jest.fn().mockResolvedValue(undefined),
       executeCommand,
@@ -2224,8 +2346,45 @@ No.15 profile : TRAFFIC-977M
     expect(result.ok).toBe(true);
     const calledCommands = executeCommand.mock.calls.map((c) => c[0]);
     expect(calledCommands.indexOf('show onu-type gpon HUAWEY-HG8546M')).toBe(0);
-    expect(calledCommands).toContain('onu-type-if HUAWEY-HG8546M eth_0/1-4');
-    expect(calledCommands).toContain('onu-type-if HUAWEY-HG8546M pots_0/1-2');
+    // Decisión de negocio (2026-10-29): ya NO se crea el onu-type aquí si
+    // falta -- authorizeOnu() nunca debe mandar "onu-type-if ...".
+    expect(calledCommands).not.toContain('onu-type-if HUAWEY-HG8546M eth_0/1-4');
+    expect(calledCommands).not.toContain('onu-type-if HUAWEY-HG8546M pots_0/1-2');
+  });
+
+  it('authorizeOnu() falla rápido con ok:false si el onu-type NO existe todavía en la OLT -- ya no lo crea a ciegas con límites OMCI genéricos adivinados', async () => {
+    const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+      if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('\r\n%Error: no such onu-type\r\nOLT#');
+      return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+    });
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.authorizeOnu(
+      { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+      {
+        ponInterface: 'gpon-olt_1/1/1',
+        onuId: 1,
+        modelTypeName: 'HUAWEY-HG8546M',
+        ethPorts: 4,
+        potsPorts: 2,
+        serialNumber: 'ZTEGC0123456',
+        serviceVlan: 400,
+        managementMethod: 'OMCI',
+        operationMode: 'ROUTER',
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('HUAWEY-HG8546M');
+    expect(result.error).toContain('no existe');
+    const calledCommands = executeCommand.mock.calls.map((c) => c[0]);
+    // No debe haber intentado crear el onu-type ni tocar el puerto físico.
+    expect(calledCommands).not.toContain('onu-type-if HUAWEY-HG8546M eth_0/1-4');
+    expect(calledCommands).not.toEqual(expect.arrayContaining([expect.stringContaining('onu 1 type')]));
   });
 
   describe('verifyOnuProvisioning()', () => {
