@@ -78,7 +78,8 @@ export async function ensureTr069TransportWithSession(
     cmdGemportTrafficLimit,
     cmdNoServicePort,
     cmdServicePort,
-    cmdExit,
+    cmdExitInterface,
+    cmdExitConfig,
     cmdWrite,
   ] = generateTr069TransportScript(config);
 
@@ -138,7 +139,17 @@ export async function ensureTr069TransportWithSession(
     throw new Error(`La OLT rechazó "${cmdServicePort}": ${servicePortOutput.trim()}`);
   }
 
-  await runPaced(cmdExit);
+  // Cierre ordenado de sub-vistas (interface -> configure terminal -> EXEC)
+  // ANTES de "write" -- BUG REAL CONFIRMADO EN VIVO (2026-10-30, ONU
+  // CMDCDD4D131E): con un solo "exit" la sesión se quedaba en "(config)#" en
+  // vez de volver a EXEC, así que el "configure terminal" del bloque OMCI
+  // (generateTr069ManagementScript, ejecutado justo después en
+  // applyTr069ManagementWithSession) se mandaba estando YA en modo config --
+  // la OLT lo rechazaba ahí con "%Error 20200: Invalid input detected at
+  // '^' marker" (comando ejecutado en el nivel de CLI incorrecto, no un
+  // glitch de timing). Ver generateTr069TransportScript.
+  await runPaced(cmdExitInterface);
+  await runPaced(cmdExitConfig);
   await runPaced(cmdWrite);
 }
 

@@ -399,6 +399,17 @@ export function generateTr069TransportScript(config: AuthorizeOnuParams): string
     'gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M',
     'no service-port 2',
     `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
+    // Cierre ordenado de sub-vistas (interface -> configure terminal -> EXEC)
+    // ANTES de "write" -- mismo criterio que generateAuthorizationScript
+    // ("exit, exit, write"). BUG REAL CONFIRMADO EN VIVO (2026-10-30, ONU
+    // CMDCDD4D131E): con un solo "exit" la sesión se quedaba en "(config)#"
+    // (solo salía de "interface <X>", nunca de "configure terminal"), así
+    // que el "configure terminal" del bloque OMCI (generateTr069ManagementScript,
+    // ejecutado justo después en applyTr069ManagementWithSession) se mandaba
+    // estando YA en modo config -- esta OLT lo rechaza ahí con "%Error 20200:
+    // Invalid input detected at '^' marker" (no es un glitch de timing, es un
+    // comando ejecutado en el nivel de CLI incorrecto).
+    'exit',
     'exit',
     'write',
   ];

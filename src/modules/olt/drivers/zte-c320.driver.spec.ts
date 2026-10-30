@@ -527,6 +527,7 @@ describe('ZteC320Driver', () => {
         'no service-port 2',
         'service-port 2 vport 2 user-vlan 46 vlan 46',
         'exit',
+        'exit',
         'write',
       ];
       expect(commands.slice(0, transport.length)).toEqual(transport);
@@ -2565,6 +2566,19 @@ No.15 profile : TRAFFIC-977M
       expect(servicePortIdx).toBeGreaterThan(noServicePortIdx);
       // La capa de transporte se cierra ("exit") y se escribe ANTES de pasar al bloque OMCI.
       expect(pomIdx).toBeGreaterThan(servicePortIdx);
+
+      // BUG REAL CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E): la capa
+      // de transporte debe cerrar con DOS "exit" (interface -> configure
+      // terminal -> EXEC) antes de "write" -- con uno solo, la sesión se
+      // quedaba en "(config)#" y el "configure terminal" del bloque OMCI de
+      // abajo se rechazaba con "%Error 20200: Invalid input detected at
+      // '^' marker" por ejecutarse en el nivel de CLI incorrecto. El
+      // segmento INMEDIATAMENTE después de crear "service-port 2" (no
+      // cualquier "exit" de la sesión -- ensureTcontProfileWithSession/
+      // ensureTrafficProfileWithSession también usan "exit"/"write" al
+      // crear sus perfiles, antes de este punto) debe ser exactamente
+      // ["exit", "exit", "write"] antes de entrar a "pon-onu-mng".
+      expect(calledCommands.slice(servicePortIdx + 1, pomIdx)).toEqual(['exit', 'exit', 'write', 'configure terminal']);
     });
 
     it('responde ok:false (FATAL, no mejor esfuerzo) si la OLT rechaza "service-port 2 ..." con un error real -- a diferencia del resto del bloque TR-069, esto no puede tratarse como mejor esfuerzo: sin esto "gemport 2" nunca podría existir', async () => {
