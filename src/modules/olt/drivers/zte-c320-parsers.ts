@@ -1,4 +1,4 @@
-import { DiscoveredCard, DiscoveredTcontProfile, DiscoveredTrafficProfile, OnuDetailInfo } from '../ports/olt-driver.port';
+import { DiscoveredCard, DiscoveredTcontProfile, DiscoveredTrafficProfile, DiscoveredVlanProfile, OnuDetailInfo } from '../ports/olt-driver.port';
 
 /**
  * Funciones puras de parseo/clasificación de texto del driver ZTE C320 --
@@ -259,6 +259,25 @@ export function parseTrafficProfilesFromOutput(output: string): DiscoveredTraffi
     const mbMatch = name.match(/TRAFFIC-(\d+)M/i);
     const downKbps = mbMatch ? parseInt(mbMatch[1], 10) * 1024 : undefined;
     profiles.push({ name, downKbps });
+  }
+  return profiles;
+}
+
+/**
+ * Parser de "show gpon onu profile vlan" -- CONFIRMADO EN VIVO (2026-10-30,
+ * OLT_Tabara_Abajo): bloques separados por línea en blanco, cada uno con
+ * "Profile name:", "Tag mode:", "CVLAN:" y "CVLAN priority:". Varios
+ * nombres distintos pueden compartir la misma CVLAN (ej. "datadhcp",
+ * "SMARTOLT-vlan400" y "SMARTOLT-VLAN400" los tres con CVLAN 400 en esta
+ * OLT) -- por eso `resolveVlanProfileNameWithSession` nunca asume un nombre
+ * por convención sin antes verificar contra esta lista real.
+ */
+export function parseVlanProfilesFromOutput(output: string): DiscoveredVlanProfile[] {
+  const regex = /Profile name:\s*(\S+)[\s\S]*?CVLAN:\s*(\d+)/g;
+  const profiles: DiscoveredVlanProfile[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(output)) !== null) {
+    profiles.push({ name: match[1], cvlan: parseInt(match[2], 10) });
   }
   return profiles;
 }

@@ -52,6 +52,42 @@ export class OltCatalogsService {
     return this.vlanRepository.find({ order: { vlanId: 'ASC' } });
   }
 
+  /**
+   * VLANs REALES de una OLT puntual -- a diferencia de `findAllVlans()`
+   * (catálogo global del tenant, usado solo para administrarlo desde
+   * "/dashboard/red"), esta es la fuente correcta para selectores de
+   * aprovisionamiento (ej. "VLAN de Servicio" en OnuAuthorizeModal). Bug
+   * real confirmado (2026-10-30): el modal de autorización mostraba TODAS
+   * las VLANs del tenant sin importar la OLT, así que un operador
+   * autorizando en OLT_Tabara_Abajo veía también VLANs de OTRAS OLTs/nodos
+   * (ej. "Vlan-clientes-ppoe" de un laboratorio distinto) -- un error fácil
+   * de cometer eligiendo la VLAN equivocada.
+   *
+   * "Pertenecer a esta OLT" se define como: estar asignada (`olt_interface_vlans`)
+   * a AL MENOS UNA de las interfaces físicas de esta OLT -- cubre tanto
+   * VLANs tageadas directamente en la OLT como VLANs de gestión que llegan
+   * por el trunk del nodo MikroTik upstream (CONFIRMADO EN VIVO, 2026-10-30:
+   * la VLAN 4069 de TR-069, aunque se importó desde el nodo MikroTik, SÍ
+   * aparece asignada a la interfaz de OLT_Tabara_Abajo).
+   */
+  async getVlansForOlt(oltId: string) {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException(`OLT no encontrada: ${oltId}`);
+
+    const rows = await this.ifaceVlanRepository
+      .createQueryBuilder('ifaceVlan')
+      .innerJoin('ifaceVlan.interface', 'iface')
+      .innerJoinAndSelect('ifaceVlan.vlan', 'vlan')
+      .where('iface.oltId = :oltId', { oltId })
+      .getMany();
+
+    const byId = new Map<string, any>();
+    for (const row of rows) {
+      byId.set(row.vlan.id, row.vlan);
+    }
+    return Array.from(byId.values()).sort((a, b) => a.vlanId - b.vlanId);
+  }
+
   async createVlan(dto: { vlanId: number; name: string; type?: string; description?: string }) {
     const existing = await this.vlanRepository.findOneBy({ vlanId: dto.vlanId });
     if (existing) {
@@ -217,18 +253,22 @@ export class OltCatalogsService {
    */
   async importDiscoveredInterfaceVlan(
     interfaceId: string,
-    discovered: { vlanId: number; mode: 'TAG' | 'UNTAG' },
+    discovered: { vlanId: number; mode: 'TAG' | 'UNTAG'; type?: 'INTERNET' | 'IPTV' | 'MGMT' | 'TR069' | 'VOIP' },
   ): Promise<OltInterfaceVlanEntity> {
     const iface = await this.ifaceRepository.findOne({ where: { id: interfaceId }, relations: ['olt'] });
     if (!iface) throw new NotFoundException('Interfaz OLT no encontrada.');
 
     let vlan = await this.vlanRepository.findOneBy({ vlanId: discovered.vlanId });
     if (!vlan) {
+      // Bug real confirmado (2026-10-30): antes se asumía SIEMPRE "INTERNET"
+      // sin importar el uso real de la VLAN -- mismo bug ya corregido en
+      // `importDiscoveredVlan` (network-node-infrastructure.service.ts) para
+      // el camino de descubrimiento por nodo MikroTik.
       vlan = await this.vlanRepository.save(
         this.vlanRepository.create({
           vlanId: discovered.vlanId,
           name: `VLAN ${discovered.vlanId} (importada de ${iface.olt?.name || iface.name})`,
-          type: 'INTERNET',
+          type: discovered.type || 'INTERNET',
         }),
       );
     }
@@ -734,6 +774,21 @@ export class OltCatalogsService {
   // ══════════════════════════════════════════════════
   async findAllTr069Networks() {
     return this.tr069Repository.find({ relations: ['vlan'], order: { name: 'ASC' } });
+  }
+
+  /**
+   * Redes TR-069 REALES de una OLT puntual -- mismo criterio y mismo bug
+   * real confirmado (2026-10-30) que `getVlansForOlt`: una Red TR-069 "SÍ
+   * pertenece" a esta OLT si su VLAN está asignada a alguna de sus
+   * interfaces. Sin esto, OnuAuthorizeModal mostraba también Redes TR-069
+   * de OTRAS OLTs/laboratorios que nunca deberían ofrecerse acá (ej. "Red
+   * TR-069 Lab Azua_2", cuya VLAN no tiene nada que ver con esta OLT).
+   */
+  async getTr069NetworksForOlt(oltId: string) {
+    const vlans = await this.getVlansForOlt(oltId);
+    const vlanIds = new Set(vlans.map((v: any) => v.id));
+    const all = await this.findAllTr069Networks();
+    return all.filter((net) => vlanIds.has(net.vlanId));
   }
 
   async findTr069NetworkById(id: string): Promise<Tr069NetworkEntity> {

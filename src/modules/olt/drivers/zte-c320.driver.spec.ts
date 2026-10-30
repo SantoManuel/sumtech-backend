@@ -75,7 +75,14 @@ describe('ZteC320Driver', () => {
     // patrón que "gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M"
     // del canal de gestión -- faltaba su equivalente acá.
     expect(commands).toContain('gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN');
-    expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
+    // CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E): "no service-port <N>"
+    // ANTES de crearlo -- sin esto, reautorizar con una VLAN distinta dejaba
+    // el service-port apuntando a la VLAN VIEJA mientras el cableado OMCI ya
+    // usaba la nueva, un desajuste silencioso entre capas.
+    const noServicePort1Idx = commands.indexOf('no service-port 1');
+    const createServicePort1Idx = commands.indexOf('service-port 1 vport 1 user-vlan 200 vlan 200');
+    expect(noServicePort1Idx).toBeGreaterThanOrEqual(0);
+    expect(createServicePort1Idx).toBeGreaterThan(noServicePort1Idx);
     expect(commands).toContain('write');
 
     // Cableado OMCI del canal de INTERNET -- tomado de un running-config real
@@ -103,7 +110,10 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('tcont 2 profile SMARTOLT-VOIPMNG-10M');
     expect(commands).toContain('gemport 2 tcont 2');
     expect(commands).toContain('gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M');
-    expect(commands).toContain('service-port 2 vport 2 user-vlan 46 vlan 46');
+    const noServicePort2Idx = commands.indexOf('no service-port 2');
+    const createServicePort2Idx = commands.indexOf('service-port 2 vport 2 user-vlan 46 vlan 46');
+    expect(noServicePort2Idx).toBeGreaterThanOrEqual(0);
+    expect(createServicePort2Idx).toBeGreaterThan(noServicePort2Idx);
     // NO se usa "switchport mode hybrid vport N" -- ese comando no aparece en
     // la sesión real que funcionó y puede causar rechazo en este firmware.
     expect(commands.some((c) => c.includes('switchport mode hybrid'))).toBe(false);
@@ -1447,6 +1457,146 @@ No.15 profile : TRAFFIC-977M
     });
   });
 
+  describe('authorizeOnu() asegura los perfiles hardcodeados de generateAuthorizationScript() -- bug real confirmado (2026-10-30): se mandaban sin verificar que existieran en la OLT', () => {
+    const baseConfig = {
+      ponInterface: 'gpon-olt_1/1/1',
+      onuId: 1,
+      modelTypeName: 'ZTE-F660',
+      serialNumber: 'ZTEGC0123456',
+      serviceVlan: 400,
+      managementMethod: 'OMCI' as const,
+      operationMode: 'ROUTER' as const,
+    };
+
+    it('siempre asegura "SMARTOLT-1G-DOWN" (techo de bajada del canal de SERVICIO) ANTES del script, incluso sin TR-069', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      expect(calledCommands.indexOf('show traffic-profile')).toBeGreaterThanOrEqual(0);
+      expect(calledCommands.indexOf('traffic-profile SMARTOLT-1G-DOWN ip cir 1048576 cbs 1000 pir 1048576 pbs 1000')).toBeGreaterThan(
+        calledCommands.indexOf('show traffic-profile'),
+      );
+      // Verificado ANTES del script principal (que empieza con "configure terminal" / "interface gpon-olt_...").
+      expect(calledCommands.indexOf('show traffic-profile')).toBeLessThan(calledCommands.indexOf('interface gpon-olt_1/1/1'));
+    });
+
+    it('no vuelve a crear "SMARTOLT-1G-DOWN" si ya existe en la OLT', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      await driver.authorizeOnu({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' }, baseConfig);
+
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('traffic-profile SMARTOLT-1G-DOWN ip cir'));
+    });
+
+    it('responde ok:false si la OLT rechaza crear "SMARTOLT-1G-DOWN" -- fatal, igual que antes (ese perfil nunca estuvo en la zona de mejor esfuerzo)', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        if (cmd.startsWith('traffic-profile SMARTOLT-1G-DOWN')) return Promise.resolve('%Error 10: Invalid parameter!');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('SMARTOLT-1G-DOWN');
+      // Nunca llegó a tocar el puerto físico de la ONU.
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('onu 1 type'));
+    });
+
+    it('con TR-069, además asegura "SMARTOLT-VOIPMNG-10M" como TCONT y como Traffic Profile', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { ...baseConfig, managementMethod: 'TR069', tr069Url: 'http://acs.sumtech.com.do:7547', tr069Vlan: 46 },
+      );
+
+      expect(result.ok).toBe(true);
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      expect(calledCommands).toContain('profile tcont SMARTOLT-VOIPMNG-10M type 5 fixed 64 assured 64 maximum 10240');
+      expect(calledCommands).toContain('traffic-profile SMARTOLT-VOIPMNG-10M ip cir 10240 cbs 1000 pir 10240 pbs 1000');
+    });
+
+    it('sin TR-069 (OMCI), NO intenta asegurar "SMARTOLT-VOIPMNG-10M"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      await driver.authorizeOnu({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' }, baseConfig);
+
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('SMARTOLT-VOIPMNG-10M'));
+    });
+
+    it('si la OLT rechaza crear "SMARTOLT-VOIPMNG-10M" (TCONT o Traffic), es MEJOR ESFUERZO -- no aborta la autorización, devuelve ok:true con warning', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        if (cmd.startsWith('profile tcont SMARTOLT-VOIPMNG-10M')) return Promise.resolve('%Error 10: Invalid parameter!');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { ...baseConfig, managementMethod: 'TR069', tr069Url: 'http://acs.sumtech.com.do:7547', tr069Vlan: 46 },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('SMARTOLT-VOIPMNG-10M');
+      expect(result.warning).toContain('canal de internet sí quedó activo');
+      // Sigue intentando asegurar el traffic-profile y corriendo el resto del script.
+      expect(executeCommand).toHaveBeenCalledWith(expect.stringContaining('traffic-profile SMARTOLT-VOIPMNG-10M'));
+    });
+  });
+
   describe('authorizeOnu() + TCONT', () => {
     it('asegura el perfil TCONT antes de correr el script de autorización cuando hay tcontProfile + upKbps', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
@@ -1540,9 +1690,10 @@ No.15 profile : TRAFFIC-977M
       expect(executeCommand).toHaveBeenCalledWith('traffic-profile TRAFFIC5M ip cir 5000 cbs 1000 pir 5000 pbs 1000');
     });
 
-    it('no intenta asegurar ningún traffic-profile si no se provee trafficProfile/downKbps', async () => {
+    it('no intenta asegurar ningún traffic-profile DEL PLAN si no se provee trafficProfile/downKbps -- el techo "SMARTOLT-1G-DOWN" SÍ se verifica siempre (ver describe aparte), pero ya existe en este mock y no se crea de nuevo', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
+        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
         return Promise.resolve('');
       });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -1564,7 +1715,7 @@ No.15 profile : TRAFFIC-977M
         },
       );
 
-      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('traffic-profile'));
+      expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('traffic-profile SMARTOLT-1G-DOWN ip cir'));
     });
   });
 
@@ -1581,9 +1732,11 @@ No.15 profile : TRAFFIC-977M
 
     it('falla con ok:false si la OLT rechaza con formato "%Code <n>-<módulo> : <mensaje>" (ej. Tipo de ONU inválido)', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        // El onu-type ya existe -- esta prueba es sobre el rechazo del script
-        // principal de autorización, no sobre el aprovisionamiento del tipo.
+        // El onu-type y el techo "SMARTOLT-1G-DOWN" ya existen -- esta
+        // prueba es sobre el rechazo del script principal de autorización,
+        // no sobre el aprovisionamiento de tipo/perfiles.
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
         if (cmd.startsWith('onu ')) return Promise.resolve('\r\n%Code 63904-GPONRM : Not support this ONU.\r\nOLT#');
         return Promise.resolve('');
       });
@@ -1671,6 +1824,30 @@ No.15 profile : TRAFFIC-977M
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
+    it('CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E): "no service-port <N>" nunca es fatal, sin importar lo que responda la OLT -- es puramente preparatorio para destruir y recrear el service-port con la VLAN correcta, evitando el desajuste silencioso entre capas (service-port en una VLAN vieja mientras el cableado OMCI ya usa la nueva)', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'no service-port 1') return Promise.resolve('%Error 10: Invalid parameter!');
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('no service-port 1');
+      // Sigue creando el service-port de todas formas, pese al rechazo del "no" previo.
+      expect(executeCommand).toHaveBeenCalledWith('service-port 1 vport 1 user-vlan 400 vlan 400');
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
     it('tolera "%Code 63869-GPONRM : Record already exists." en "flow <n> switch switch_0/1" (y comandos similares del cableado OMCI) -- bug real confirmado en producción (2026-10-22): un reintento de autorización que ya había cableado el canal de internet (ver generateAuthorizationScript) abortaba aquí mismo en vez de tolerarlo, pese a ser el mismo significado que "is existed"', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
@@ -1691,6 +1868,90 @@ No.15 profile : TRAFFIC-977M
       );
 
       expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E): si "flow 1 switch switch_0/1" ya existía, fuerza un re-enlace limpio (no flow 1 switch ... -> flow 1 switch ...) en vez de confiar ciegamente -- el running-config real de esta ONU no traía ese enlace pese a que la OLT había tolerado "already exists"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'flow 1 switch switch_0/1') {
+          return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
+        }
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      const firstAttemptIdx = calledCommands.indexOf('flow 1 switch switch_0/1');
+      const noFlowIdx = calledCommands.indexOf('no flow 1 switch switch_0/1');
+      expect(firstAttemptIdx).toBeGreaterThanOrEqual(0);
+      expect(noFlowIdx).toBeGreaterThan(firstAttemptIdx);
+      // Debe reintentar "flow 1 switch switch_0/1" una SEGUNDA vez después del "no".
+      expect(calledCommands.filter((c) => c === 'flow 1 switch switch_0/1')).toHaveLength(2);
+    });
+
+    it('responde ok:false si el re-enlace de "flow 1 switch switch_0/1" (canal de SERVICIO) también es rechazado con un error real (no "already exists")', async () => {
+      let flowAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd === 'flow 1 switch switch_0/1') {
+          flowAttempts++;
+          if (flowAttempts === 1) return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
+          return Promise.resolve('\r\n%Error 10: Invalid parameter!\r\nOLT#');
+        }
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('flow 1 switch switch_0/1');
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+
+    it('si el re-enlace de "flow 2 switch switch_0/1" (canal de GESTIÓN/TR-069) también es rechazado, es mejor esfuerzo -- no aborta, devuelve ok:true con warning', async () => {
+      let flowAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :HUAWEY-HG8546M');
+        if (cmd === 'flow 2 switch switch_0/1') {
+          flowAttempts++;
+          if (flowAttempts === 1) return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
+          return Promise.resolve('\r\n%Error 10: Invalid parameter!\r\nOLT#');
+        }
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { ...baseConfig, modelTypeName: 'HUAWEY-HG8546M', managementMethod: 'TR069', tr069Url: 'http://acs.sumtech.com.do:7547', tr069Vlan: 46 },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('flow 2 switch switch_0/1');
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
@@ -1720,6 +1981,7 @@ No.15 profile : TRAFFIC-977M
     it('un "%Code" que NO menciona "existed" sigue tratándose como rechazo fatal, sin importar el comando', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
         if (cmd.startsWith('tcont ')) {
           return Promise.resolve('\r\n%Code 10: Invalid parameter!\r\nOLT#');
         }
@@ -2173,6 +2435,98 @@ No.15 profile : TRAFFIC-977M
 
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
+    });
+  });
+
+  describe('applyTr069Management() es AUTOSUFICIENTE: asegura tcont2/gemport2/service-port2 ella misma (ensureTr069TransportWithSession) -- decisión de negocio (2026-10-30): "Autorizar ONU en la OLT" (Etapa 1) ya no crea esta capa (se quitó el selector de Red TR-069 de ese modal para que Etapa 1 sea siempre solo Internet), así que Etapa 2 ya no puede asumir que existe', () => {
+    const tr069Config = {
+      ponInterface: 'gpon-olt_1/2/15',
+      onuId: 1,
+      modelTypeName: 'HUAWEY-HG8546M',
+      serialNumber: 'CMDCDD4D131E',
+      serviceVlan: 400,
+      tr069Url: 'http://acs.sumtech.com.do:7547',
+      tr069Vlan: 46,
+      managementMethod: 'TR069' as const,
+      operationMode: 'ROUTER' as const,
+    };
+
+    beforeEach(() => {
+      jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
+    });
+
+    it('crea tcont2/gemport2/service-port2 ANTES de entrar a "pon-onu-mng", con "no service-port 2" antes de crearlo (mismo criterio que Etapa 1)', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      const ifaceIdx = calledCommands.indexOf('interface gpon-onu_1/2/15:1');
+      const tcontIdx = calledCommands.indexOf('tcont 2 profile SMARTOLT-VOIPMNG-10M');
+      const gemportIdx = calledCommands.indexOf('gemport 2 tcont 2');
+      const noServicePortIdx = calledCommands.indexOf('no service-port 2');
+      const servicePortIdx = calledCommands.indexOf('service-port 2 vport 2 user-vlan 46 vlan 46');
+      const pomIdx = calledCommands.indexOf('pon-onu-mng gpon-onu_1/2/15:1');
+
+      expect(ifaceIdx).toBeGreaterThanOrEqual(0);
+      expect(tcontIdx).toBeGreaterThan(ifaceIdx);
+      expect(gemportIdx).toBeGreaterThan(tcontIdx);
+      expect(noServicePortIdx).toBeGreaterThan(gemportIdx);
+      expect(servicePortIdx).toBeGreaterThan(noServicePortIdx);
+      // La capa de transporte se cierra ("exit") y se escribe ANTES de pasar al bloque OMCI.
+      expect(pomIdx).toBeGreaterThan(servicePortIdx);
+    });
+
+    it('responde ok:false (FATAL, no mejor esfuerzo) si la OLT rechaza "service-port 2 ..." con un error real -- a diferencia del resto del bloque TR-069, esto no puede tratarse como mejor esfuerzo: sin esto "gemport 2" nunca podría existir', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('service-port 2')) return Promise.resolve('%Error 10: Invalid parameter!');
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('service-port 2');
+      // Nunca debe haber llegado a entrar al bloque OMCI.
+      expect(executeCommand).not.toHaveBeenCalledWith('pon-onu-mng gpon-onu_1/2/15:1');
+    });
+
+    it('responde ok:false si falta tr069Vlan -- no se puede crear "service-port 2 vport 2 user-vlan ... vlan ..." sin saber qué VLAN usar', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        { ...tr069Config, tr069Vlan: undefined },
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('tr069Vlan');
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
     });
   });
 
@@ -2705,8 +3059,48 @@ OLT#`);
   describe('applyWanIpFix() -- Opción A de recuperación de IP, CONFIRMADA EN VIVO (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B): re-aplica "wan-ip" sin tocar el resto del cableado', () => {
     const connParams = { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' };
 
-    it('manda la secuencia exacta confirmada en vivo y termina en ok:true', async () => {
+    // Salida real confirmada en vivo (2026-10-30, OLT_Tabara_Abajo): CVLAN
+    // 400 tiene TRES nombres distintos de vlan-profile.
+    const realVlanProfilesOutput = `
+Profile name:  datavlan
+Tag mode:      tag
+CVLAN:         500
+CVLAN priority:0
+
+Profile name:  datadhcp
+Tag mode:      tag
+CVLAN:         400
+CVLAN priority:0
+
+Profile name:  videodhcp
+Tag mode:      tag
+CVLAN:         101
+CVLAN priority:0
+
+Profile name:  SMARTOLT-vlan46
+Tag mode:      tag
+CVLAN:         46
+CVLAN priority:0
+
+Profile name:  SMARTOLT-vlan400
+Tag mode:      tag
+CVLAN:         400
+CVLAN priority:0
+
+Profile name:  SMARTOLT-vlan4069
+Tag mode:      tag
+CVLAN:         4069
+CVLAN priority:0
+
+Profile name:  SMARTOLT-VLAN400
+Tag mode:      tag
+CVLAN:         400
+CVLAN priority:0
+`;
+
+    it('lee "show gpon onu profile vlan" primero, prefiere el nombre que sigue la convención "SMARTOLT-vlan<N>" pese a que hay otros nombres para la misma CVLAN, y manda la secuencia exacta confirmada en vivo', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show gpon onu profile vlan') return Promise.resolve(realVlanProfilesOutput);
         if (cmd === 'configure terminal') return Promise.resolve('%Info 20272: Enter configuration commands, one per line. End with CTRL/Z.');
         if (cmd.startsWith('pon-onu-mng')) return Promise.resolve('');
         if (cmd.startsWith('wan-ip')) return Promise.resolve('');
@@ -2722,6 +3116,8 @@ OLT#`);
 
       expect(result.ok).toBe(true);
       expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'show gpon onu profile vlan',
+        'show gpon onu profile vlan',
         'configure terminal',
         'pon-onu-mng gpon-onu_1/2/6:2',
         'wan-ip 1 mode dhcp vlan-profile SMARTOLT-vlan400 host 1',
@@ -2732,7 +3128,10 @@ OLT#`);
     });
 
     it('omite "wan-ip 2" si la ONU no tiene VLAN de gestión (solo canal de servicio)', async () => {
-      const executeCommand = jest.fn().mockResolvedValue('');
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show gpon onu profile vlan') return Promise.resolve(realVlanProfilesOutput);
+        return Promise.resolve('');
+      });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
@@ -2746,6 +3145,7 @@ OLT#`);
 
     it('responde ok:false con el mensaje de la OLT si rechaza "wan-ip 1", sin llegar a "write"', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show gpon onu profile vlan') return Promise.resolve(realVlanProfilesOutput);
         if (cmd.startsWith('wan-ip 1')) return Promise.resolve('%Error 10: Invalid parameter!');
         return Promise.resolve('');
       });
@@ -2760,6 +3160,53 @@ OLT#`);
       expect(result.ok).toBe(false);
       expect(result.error).toContain('Invalid parameter');
       expect(executeCommand).not.toHaveBeenCalledWith('write');
+    });
+
+    it('responde ok:false SIN tocar la ONU si no existe ningún vlan-profile para la VLAN de servicio -- falla rápido antes de "configure terminal"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show gpon onu profile vlan') return Promise.resolve(realVlanProfilesOutput);
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyWanIpFix(connParams, 'gpon-olt_1/2/6', 2, { serviceVlan: 999 });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('999');
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
+    });
+
+    it('responde ok:false si hay varios vlan-profiles para la misma CVLAN y ninguno sigue la convención "SMARTOLT-vlan<N>" -- no adivina cuál usar', async () => {
+      const ambiguousOutput = `
+Profile name:  datavlan
+Tag mode:      tag
+CVLAN:         500
+CVLAN priority:0
+
+Profile name:  otravlan500
+Tag mode:      tag
+CVLAN:         500
+CVLAN priority:0
+`;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show gpon onu profile vlan') return Promise.resolve(ambiguousOutput);
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyWanIpFix(connParams, 'gpon-olt_1/2/6', 2, { serviceVlan: 500 });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('datavlan');
+      expect(result.error).toContain('otravlan500');
     });
   });
 
@@ -2784,6 +3231,7 @@ OLT#`);
         'no gemport 2 flow 2',
         'no flow 1 pri 0 vlan 400',
         'no flow 2 pri 2 vlan 4069',
+        'no flow 1 switch switch_0/1',
         'no flow 2 switch switch_0/1',
         'no switchport-bind switch_0/1 iphost 1',
         'no switchport-bind switch_0/1 iphost 2',
@@ -2810,6 +3258,25 @@ OLT#`);
 
       expect(result.ok).toBe(true);
       expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('CONFIRMADO EN VIVO (2026-10-30, ONU 699addf7-a473-430c-aa38-8ecc1ecaecd9): desenlaza "flow 1 switch switch_0/1" ADEMÁS de "flow 2" -- bug real: faltaba el de flow 1, dejando datos de flow asociados al gemport 1 y causando que la OLT rechazara "service 1 gemport 1 vlan ..." con "%Code 64010-GPONRM : Operation is forbidden for conflicting with flow data" (ZTE no permite mezclar flow-based y service/gemport-based en el mismo gemport)', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyServiceGemportFix(connParams, 'gpon-olt_1/2/6', 2, { serviceVlan: 400, tr069Vlan: 4069 });
+
+      expect(result.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('no flow 1 switch switch_0/1');
+      // Debe desenlazarse ANTES de intentar crear "service 1 gemport 1 ...".
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      expect(calledCommands.indexOf('no flow 1 switch switch_0/1')).toBeLessThan(
+        calledCommands.indexOf('service 1 gemport 1 vlan 400'),
+      );
     });
 
     it('responde ok:false con el mensaje de la OLT si rechaza "service 1 gemport 1 vlan ..." (comando de reemplazo, no de desmontaje), sin llegar a "write"', async () => {

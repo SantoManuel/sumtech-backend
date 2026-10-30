@@ -158,11 +158,23 @@ export function getHumanPacingDelay(cmd: string): number {
 }
 
 /**
+ * ¿Esta autorización incluye el canal de gestión/TR-069 en la misma sesión?
+ * Extraído a función compartida para que `authorizeOnu()` (que necesita
+ * saberlo ANTES de generar el script, para asegurar los perfiles TCONT/
+ * Traffic hardcodeados de este canal) use exactamente el mismo criterio que
+ * `generateAuthorizationScript()`, sin duplicar la condición y arriesgarse
+ * a que diverjan.
+ */
+export function hasTr069Channel(config: AuthorizeOnuParams): boolean {
+  return config.managementMethod === 'TR069' && Boolean(config.tr069Url);
+}
+
+/**
  * Genera la lista de comandos Telnet de autorización y aprovisionamiento (RF-OLT-016 / RF-ONU-001..007)
  * respetando el orden jerárquico estricto de entidades OMCI (Bottom-Up).
  */
 export function generateAuthorizationScript(config: AuthorizeOnuParams): string[] {
-  const hasTr069 = config.managementMethod === 'TR069' && Boolean(config.tr069Url);
+  const hasTr069 = hasTr069Channel(config);
   const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
 
   const commands: string[] = [
@@ -196,9 +208,24 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
     );
   }
 
-  commands.push(`service-port 1 vport 1 user-vlan ${config.serviceVlan} vlan ${config.serviceVlan}`);
+  // "no service-port <N>" ANTES de crearlo -- bug real confirmado en vivo
+  // (2026-10-30, ONU CMDCDD4D131E): al reautorizar con una Red TR-069
+  // distinta (VLAN nueva), la OLT toleraba "service-port 2 ..." como "ya
+  // existe" y dejaba el service-port apuntando a la VLAN VIEJA (444)
+  // mientras el cableado OMCI (flow/vlan-filter) ya usaba la VLAN nueva
+  // (46) -- un desajuste silencioso entre capas que impedía para siempre
+  // que el canal de gestión cruzara tráfico. Mismo criterio que "no onu
+  // <id>" antes de recrear la ONU: destruir y recrear limpio en vez de
+  // confiar en el estado existente.
+  commands.push(
+    `no service-port 1`,
+    `service-port 1 vport 1 user-vlan ${config.serviceVlan} vlan ${config.serviceVlan}`,
+  );
   if (hasTr069) {
-    commands.push(`service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`);
+    commands.push(
+      `no service-port 2`,
+      `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
+    );
   }
 
   // "traffic-profile ... vport 1 ..." va DESPUÉS de crear los service-port

@@ -11,6 +11,7 @@ import {
   toOnuInterfaceName,
   generateAuthorizationScript as generateAuthorizationScriptImpl,
   generateTr069ManagementScript as generateTr069ManagementScriptImpl,
+  hasTr069Channel,
   isManagementOrTr069Command,
   getHumanPacingDelay,
   REBOOT_ONU_SENTINEL,
@@ -73,6 +74,9 @@ import {
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
+
+/** Reconoce "flow <N> switch switch_0/1" -- ver el re-enlace forzado en `authorizeOnu()`. */
+const FLOW_SWITCH_BIND_RE = /^flow \d+ switch switch_0\/1$/;
 
 // `REBOOT_ONU_SENTINEL` se extrajo a `zte-c320-provisioning-scripts.ts`
 // (Fase 3 de Plan_Implementacion_Refactor_ZteC320Driver.md), reexportado
@@ -366,14 +370,56 @@ export class ZteC320Driver implements IOltDriver {
         await ensureTrafficProfileWithSession(session, { name: config.trafficProfile, downKbps: config.downKbps });
       }
 
-      const commands = this.generateAuthorizationScript(config);
-
       let warning: string | undefined;
+
+      // Perfiles hardcodeados que `generateAuthorizationScript()` manda SIN
+      // verificar que existan en la OLT -- bug real confirmado (2026-10-30).
+      // "SMARTOLT-1G-DOWN" (techo de bajada del canal de SERVICIO, gemport 1)
+      // ni siquiera está en la zona de "mejor esfuerzo" del bucle de abajo --
+      // si faltaba en una OLT, abortaba TODA la autorización por un perfil
+      // que nada tiene que ver con el plan real del cliente. Se asegura
+      // igual que tcontProfile/trafficProfile arriba: si la OLT rechaza
+      // crearlo, el error aborta la autorización (mismo comportamiento que
+      // antes, solo que ahora con un mensaje claro y ANTES de tocar la ONU).
+      await ensureTrafficProfileWithSession(session, { name: 'SMARTOLT-1G-DOWN', downKbps: 1048576 });
+
+      // "SMARTOLT-VOIPMNG-10M" (TCONT y Traffic) son del canal de gestión/
+      // TR-069 -- a diferencia del de arriba, SÍ deben tratarse como mejor
+      // esfuerzo (igual que el resto del canal de gestión en el bucle de
+      // abajo, ver `isManagementOrTr069Command`): que falte este perfil
+      // nunca debe abortar un canal de Internet que sí funciona.
+      if (hasTr069Channel(config)) {
+        try {
+          await ensureTcontProfileWithSession(session, { name: 'SMARTOLT-VOIPMNG-10M', fixedKbps: 10240 });
+        } catch (err: any) {
+          warning = `No se pudo asegurar el perfil TCONT "SMARTOLT-VOIPMNG-10M" del canal de gestión: ${err.message}. El canal de internet sí quedó activo.`;
+          this.logger.warn(`[diag] authorizeOnu: ${warning}`);
+        }
+        try {
+          await ensureTrafficProfileWithSession(session, { name: 'SMARTOLT-VOIPMNG-10M', downKbps: 10240 });
+        } catch (err: any) {
+          const msg = `No se pudo asegurar el traffic-profile "SMARTOLT-VOIPMNG-10M" del canal de gestión: ${err.message}. El canal de internet sí quedó activo.`;
+          if (!warning) warning = msg;
+          this.logger.warn(`[diag] authorizeOnu: ${msg}`);
+        }
+      }
+
+      const commands = this.generateAuthorizationScript(config);
 
       for (const cmd of commands) {
         if (cmd.startsWith('no onu ')) {
           await session.executeCommand(cmd);
           await this.delay(200);
+          continue;
+        }
+
+        // "no service-port <N>" es puramente preparatorio (destruir antes de
+        // recrear, ver generateAuthorizationScript) -- mismo criterio que
+        // "no onu": nunca debe tratarse como rechazo fatal, sin importar lo
+        // que responda la OLT (típicamente "no existe" la primera vez que se
+        // autoriza esta ONU).
+        if (cmd.startsWith('no service-port ')) {
+          await session.executeCommand(cmd);
           continue;
         }
 
@@ -406,6 +452,34 @@ export class ZteC320Driver implements IOltDriver {
           } else {
             // Canal primario de Internet (Fase 1/2/3 datos): error fatal
             throw new Error(`La OLT rechazó el comando "${cmd}": ${errMsg}`);
+          }
+        } else if (isOltErrorResponse(output) && isAlreadyAppliedResponse(output) && FLOW_SWITCH_BIND_RE.test(cmd)) {
+          // Bug real confirmado (2026-10-30, ONU CMDCDD4D131E): tolerar "ya
+          // existe" a ciegas en "flow <N> switch switch_0/1" puede dejar un
+          // enlace de un intento de autorización ANTERIOR sin verificar --
+          // el running-config terminaba sin ese enlace pese a que las demás
+          // líneas de ese flow (pri/vlan, gemport) sí se aplicaban, porque
+          // referenciaban un "flow <N>" que ya existía pero no estaba
+          // realmente conmutando tráfico. En vez de confiar ciegamente, se
+          // fuerza un re-enlace limpio (no flow N switch ... -> flow N
+          // switch ...), mismo criterio que "no onu" antes de recrear la ONU.
+          this.logger.warn(`[diag] authorizeOnu: "${cmd}" ya existía -- forzando re-enlace limpio por si quedó de un intento anterior`);
+          try {
+            await session.executeCommand(cmd.replace(/^flow (\d+) switch/, 'no flow $1 switch'));
+          } catch {
+            /* best-effort */
+          }
+          const retryOutput = await session.executeCommand(cmd);
+          if (isOltErrorResponse(retryOutput) && !isAlreadyAppliedResponse(retryOutput)) {
+            const errMsg = retryOutput.trim();
+            this.logger.warn(`[diag] authorizeOnu: re-enlace de "${cmd}" también fue rechazado: ${errMsg}`);
+            if (isManagementOrTr069Command(cmd)) {
+              if (!warning) {
+                warning = `La OLT rechazó re-enlazar la configuración secundaria de gestión ("${cmd}"): ${errMsg}. El canal de internet sí quedó activo.`;
+              }
+            } else {
+              throw new Error(`La OLT rechazó re-enlazar el comando "${cmd}" tras detectar un enlace previo: ${errMsg}`);
+            }
           }
         }
       }

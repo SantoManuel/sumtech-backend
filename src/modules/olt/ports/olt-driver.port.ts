@@ -56,6 +56,20 @@ export interface DiscoveredTrafficProfile {
   downKbps?: number;
 }
 
+/**
+ * Perfil "vlan-profile" real de la OLT (`show gpon onu profile vlan`) --
+ * objeto distinto de `net.vlans` (el catálogo de Sumtech): este es el
+ * nombre que el comando "wan-ip ... vlan-profile <nombre> host ..." exige
+ * en la OLT. CONFIRMADO EN VIVO (2026-10-30, OLT_Tabara_Abajo) que varios
+ * nombres pueden apuntar a la MISMA CVLAN (ej. "datadhcp", "SMARTOLT-vlan400"
+ * y "SMARTOLT-VLAN400" los tres con CVLAN 400) -- nunca asumir el nombre por
+ * convención sin verificar, ver `applyWanIpFix`.
+ */
+export interface DiscoveredVlanProfile {
+  name: string;
+  cvlan: number;
+}
+
 
 export interface DiscoveredInterface {
   name: string; // ej: 'gpon-olt_1/1/1', 'gei_1/3/1'

@@ -1,4 +1,4 @@
-import { IsInt, IsString, IsOptional, IsNotEmpty, Min, Max } from 'class-validator';
+import { IsInt, IsString, IsOptional, IsNotEmpty, IsIn, Min, Max } from 'class-validator';
 
 export class ImportDiscoveredVlanDto {
   /** Número de VLAN real descubierto en el router (ver scanRealVlans). */
@@ -6,6 +6,18 @@ export class ImportDiscoveredVlanDto {
   @Min(1)
   @Max(4094)
   vlanId: number;
+
+  /**
+   * Tipo real de la VLAN (ver VlanEntity.type) -- el operador lo elige al
+   * importar, en vez de que el backend asuma siempre "INTERNET". Bug real
+   * confirmado (2026-10-30): una VLAN de gestión TR-069 importada así
+   * quedaba mal clasificada como "INTERNET", lo que podía confundir el
+   * autoselect de "VLAN de Servicio" en OnuAuthorizeModal.
+   */
+  @IsString()
+  @IsOptional()
+  @IsIn(['INTERNET', 'IPTV', 'MGMT', 'TR069', 'VOIP'])
+  type?: 'INTERNET' | 'IPTV' | 'MGMT' | 'TR069' | 'VOIP';
 
   /** Interfaz física real sobre la que vive esa sub-interfaz VLAN en el router (ej. "ether5"). */
   @IsString()

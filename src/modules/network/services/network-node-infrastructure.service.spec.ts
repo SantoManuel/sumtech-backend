@@ -808,6 +808,30 @@ describe('NetworkNodeInfrastructureService', () => {
       );
     });
 
+    it('respeta el "type" real que manda el operador en vez de asumir siempre "INTERNET" -- bug real confirmado (2026-10-30): una VLAN de gestión TR-069 importada así quedaba mal clasificada', async () => {
+      vlanRepo.findOneBy.mockResolvedValue(null);
+      nodeVlanRepo.findOneBy.mockResolvedValue(null);
+
+      await service.importDiscoveredVlan(
+        'node-1',
+        { vlanId: 4069, interfaceName: 'ether6', type: 'TR069' },
+        'admin-1',
+      );
+
+      expect(vlanRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ vlanId: 4069, type: 'TR069' }),
+      );
+    });
+
+    it('usa "INTERNET" como default si no se especifica "type" (compatibilidad hacia atrás)', async () => {
+      vlanRepo.findOneBy.mockResolvedValue(null);
+      nodeVlanRepo.findOneBy.mockResolvedValue(null);
+
+      await service.importDiscoveredVlan('node-1', { vlanId: 888, interfaceName: 'ether7' }, 'admin-1');
+
+      expect(vlanRepo.save).toHaveBeenCalledWith(expect.objectContaining({ vlanId: 888, type: 'INTERNET' }));
+    });
+
     it('reutiliza el catálogo VLAN existente en vez de crear uno duplicado', async () => {
       vlanRepo.findOneBy.mockResolvedValue(vlan); // vlanId 400 ya existe
       nodeVlanRepo.findOneBy.mockResolvedValue(null);

@@ -265,7 +265,13 @@ export class NetworkNodeInfrastructureService {
    */
   async importDiscoveredVlan(
     nodeId: string,
-    discovered: { vlanId: number; interfaceName: string; vlanInterfaceName?: string; gatewayCidr?: string | null },
+    discovered: {
+      vlanId: number;
+      interfaceName: string;
+      vlanInterfaceName?: string;
+      gatewayCidr?: string | null;
+      type?: 'INTERNET' | 'IPTV' | 'MGMT' | 'TR069' | 'VOIP';
+    },
     actorUserId?: string,
   ): Promise<NetworkNodeVlanEntity> {
     const node = await this.nodeRepository.findOneBy({ id: nodeId });
@@ -275,11 +281,16 @@ export class NetworkNodeInfrastructureService {
 
     let vlan = await this.vlanRepository.findOneBy({ vlanId: discovered.vlanId });
     if (!vlan) {
+      // Bug real confirmado (2026-10-30): antes se asumía SIEMPRE "INTERNET"
+      // sin importar el uso real de la VLAN (ej. una VLAN de gestión TR-069
+      // terminaba mal clasificada) -- ahora el operador lo elige al importar
+      // desde NodeInfrastructureModal, con "INTERNET" como default razonable
+      // si no se especifica (compatibilidad hacia atrás).
       vlan = await this.vlanRepository.save(
         this.vlanRepository.create({
           vlanId: discovered.vlanId,
           name: `VLAN ${discovered.vlanId} (importada de ${node.name})`,
-          type: 'INTERNET',
+          type: discovered.type || 'INTERNET',
         }),
       );
     }

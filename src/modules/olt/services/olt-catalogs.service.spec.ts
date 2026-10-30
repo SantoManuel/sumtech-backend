@@ -44,6 +44,7 @@ describe('OltCatalogsService', () => {
       find: jest.fn().mockResolvedValue([]),
       create: jest.fn((dto) => dto),
       save: jest.fn((dto) => Promise.resolve(dto)),
+      createQueryBuilder: jest.fn(),
     };
     tr069Repo = {
       count: jest.fn(),
@@ -162,6 +163,67 @@ describe('OltCatalogsService', () => {
 
       expect(res.success).toBe(true);
       expect(vlanRepo.delete).toHaveBeenCalledWith('vlan-1');
+    });
+  });
+
+  describe('getVlansForOlt -- VLANs REALES de una OLT puntual, no el catálogo global (bug real confirmado 2026-10-30: OnuAuthorizeModal mostraba VLANs de otras OLTs/nodos)', () => {
+    const makeQueryBuilder = (rows: any[]) => ({
+      innerJoin: jest.fn().mockReturnThis(),
+      innerJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue(rows),
+    });
+
+    it('lanza NotFoundException si la OLT no existe', async () => {
+      oltRepo.findOneBy.mockResolvedValue(null);
+      await expect(service.getVlansForOlt('olt-x')).rejects.toThrow(NotFoundException);
+    });
+
+    it('devuelve solo las VLANs asignadas a interfaces de esta OLT, ordenadas por número de VLAN', async () => {
+      oltRepo.findOneBy.mockResolvedValue({ id: 'olt-1', name: 'OLT_Tabara_Abajo' });
+      const qb = makeQueryBuilder([
+        { vlan: { id: 'v-400', vlanId: 400, name: 'VLAN 400' } },
+        { vlan: { id: 'v-46', vlanId: 46, name: 'VLAN 46' } },
+      ]);
+      ifaceVlanRepo.createQueryBuilder.mockReturnValue(qb);
+
+      const result = await service.getVlansForOlt('olt-1');
+
+      expect(qb.where).toHaveBeenCalledWith('iface.oltId = :oltId', { oltId: 'olt-1' });
+      expect(result.map((v: any) => v.vlanId)).toEqual([46, 400]);
+    });
+
+    it('deduplica cuando la misma VLAN está asignada a varias interfaces de la misma OLT', async () => {
+      oltRepo.findOneBy.mockResolvedValue({ id: 'olt-1', name: 'OLT_Tabara_Abajo' });
+      const qb = makeQueryBuilder([
+        { vlan: { id: 'v-1', vlanId: 1, name: 'VLAN 1' } },
+        { vlan: { id: 'v-1', vlanId: 1, name: 'VLAN 1' } },
+      ]);
+      ifaceVlanRepo.createQueryBuilder.mockReturnValue(qb);
+
+      const result = await service.getVlansForOlt('olt-1');
+
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('getTr069NetworksForOlt -- Redes TR-069 REALES de una OLT puntual (mismo bug real confirmado 2026-10-30 que getVlansForOlt): OnuAuthorizeModal mostraba Redes TR-069 de otras OLTs/laboratorios', () => {
+    it('solo devuelve redes TR-069 cuya VLAN está asignada a interfaces de esta OLT', async () => {
+      oltRepo.findOneBy.mockResolvedValue({ id: 'olt-1', name: 'OLT_Tabara_Abajo' });
+      ifaceVlanRepo.createQueryBuilder.mockReturnValue({
+        innerJoin: jest.fn().mockReturnThis(),
+        innerJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([{ vlan: { id: 'vlan-4069', vlanId: 4069 } }]),
+      });
+      tr069Repo.find.mockResolvedValue([
+        { id: 'net-tabara', name: 'RedTR-069', vlanId: 'vlan-4069' },
+        { id: 'net-otra-olt', name: 'Red TR-069 Lab Azua_2', vlanId: 'vlan-100-otra-olt' },
+      ]);
+
+      const result = await service.getTr069NetworksForOlt('olt-1');
+
+      expect(result).toEqual([{ id: 'net-tabara', name: 'RedTR-069', vlanId: 'vlan-4069' }]);
     });
   });
 
@@ -952,6 +1014,16 @@ describe('OltCatalogsService', () => {
       await service.importDiscoveredInterfaceVlan('iface-1', { vlanId: 46, mode: 'TAG' });
 
       expect(vlanRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('respeta el "type" real que manda el operador en vez de asumir siempre "INTERNET" -- mismo bug real confirmado (2026-10-30) que en importDiscoveredVlan (descubrimiento por nodo MikroTik)', async () => {
+      ifaceRepo.findOne.mockResolvedValue(mockIface);
+      vlanRepo.findOneBy.mockResolvedValue(null);
+      ifaceVlanRepo.findOneBy.mockResolvedValue(null);
+
+      await service.importDiscoveredInterfaceVlan('iface-1', { vlanId: 4069, mode: 'TAG', type: 'TR069' });
+
+      expect(vlanRepo.save).toHaveBeenCalledWith(expect.objectContaining({ vlanId: 4069, type: 'TR069' }));
     });
 
     it('rechaza con ConflictException si esa VLAN+modo ya estaba registrada para esta interfaz', async () => {

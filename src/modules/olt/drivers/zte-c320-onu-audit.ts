@@ -1,7 +1,7 @@
 import { OnuDetailInfo, OnuIpHostInfo, OnuWanIpInfo, OnuTr069MgmtInfo, OnuProvisioningVerification } from '../ports/olt-driver.port';
 import { ZteSessionLike } from './zte-telnet-session';
 import { toOnuInterfaceName } from './zte-c320-provisioning-scripts';
-import { isOltErrorResponse, parseIpHost, parseMacTable, parseOnuDetailInfo } from './zte-c320-parsers';
+import { isOltErrorResponse, parseIpHost, parseMacTable, parseOnuDetailInfo, parseVlanProfilesFromOutput } from './zte-c320-parsers';
 
 /**
  * Lógica de la pestaña de Auditoría de Aprovisionamiento (`show gpon onu
@@ -141,13 +141,58 @@ export async function getOnuTr069MgmtInfoWithSession(
 }
 
 /**
+ * Resuelve el nombre REAL del "vlan-profile" para una CVLAN dada, leyendo
+ * "show gpon onu profile vlan" -- NUNCA asume el nombre por convención sin
+ * verificar primero. CONFIRMADO EN VIVO (2026-10-30, OLT_Tabara_Abajo): en
+ * esa OLT, la CVLAN 400 tiene TRES nombres distintos ("datadhcp",
+ * "SMARTOLT-vlan400", "SMARTOLT-VLAN400") -- asumir ciegamente
+ * "SMARTOLT-vlan<N>" funciona solo quando esa convención realmente existe,
+ * y puede fallar en otra OLT sin ningún aviso previo.
+ *
+ * Criterio de desambiguación cuando hay más de un nombre para la misma
+ * CVLAN: 1° preferir el que siga la convención "SMARTOLT-vlan<N>" (case-
+ * insensitive) si existe -- es la que ya usa el resto del sistema; 2° si no
+ * hay convención pero hay un único nombre, usar ese; 3° si hay varios y
+ * ninguno sigue la convención, fallar con un mensaje claro en vez de
+ * adivinar cuál es el correcto.
+ */
+export async function resolveVlanProfileNameWithSession(session: ZteSessionLike, cvlan: number): Promise<string> {
+  const raw = await session.executeCommand('show gpon onu profile vlan');
+  const profiles = parseVlanProfilesFromOutput(raw);
+  const matches = profiles.filter((p) => p.cvlan === cvlan);
+
+  if (matches.length === 0) {
+    throw new Error(
+      `No existe ningún "vlan-profile" en esta OLT para la VLAN ${cvlan} (ver "show gpon onu profile vlan"). ` +
+        'Créalo primero en la OLT antes de aplicar esta corrección.',
+    );
+  }
+
+  const conventionMatch = matches.find((p) => p.name.toLowerCase() === `smartolt-vlan${cvlan}`.toLowerCase());
+  if (conventionMatch) {
+    return conventionMatch.name;
+  }
+
+  if (matches.length === 1) {
+    return matches[0].name;
+  }
+
+  throw new Error(
+    `Hay ${matches.length} vlan-profiles distintos para la VLAN ${cvlan} en esta OLT (${matches
+      .map((m) => m.name)
+      .join(', ')}) y ninguno sigue la convención "SMARTOLT-vlan${cvlan}" -- indica manualmente cuál usar.`,
+  );
+}
+
+/**
  * Opción A de recuperación cuando ninguna IP se obtiene pese a que el
  * cableado OMCI (flow/switchport-bind/veip) ya existe -- re-aplica "wan-ip"
  * directamente sobre la ONU, SIN tocar el resto del cableado. CONFIRMADO EN
  * VIVO (2026-10-30, OLT_Tabara_Abajo, ONU ECOM0F91DF9B): recuperó IP en
- * ambos hosts. El nombre del vlan-profile sigue la convención real
- * "SMARTOLT-vlan<VLAN>" ya usada en esta OLT. Disparado a propósito desde la
- * Auditoría de Aprovisionamiento ("Opción A"), nunca automáticamente.
+ * ambos hosts. El nombre del vlan-profile se VERIFICA leyendo
+ * "show gpon onu profile vlan" (ver `resolveVlanProfileNameWithSession`) en
+ * vez de asumirlo por convención. Disparado a propósito desde la Auditoría
+ * de Aprovisionamiento ("Opción A"), nunca automáticamente.
  */
 export async function applyWanIpFixWithSession(
   session: ZteSessionLike,
@@ -156,6 +201,13 @@ export async function applyWanIpFixWithSession(
   config: { serviceVlan: number; tr069Vlan?: number },
 ): Promise<void> {
   const onuInterface = toOnuInterfaceName(ponInterface, onuId);
+
+  // Verificación real ANTES de tocar la ONU -- si falta un vlan-profile,
+  // falla rápido y claro sin haber entrado siquiera a "pon-onu-mng".
+  const serviceVlanProfile = await resolveVlanProfileNameWithSession(session, config.serviceVlan);
+  const mgmtVlanProfile = config.tr069Vlan
+    ? await resolveVlanProfileNameWithSession(session, config.tr069Vlan)
+    : undefined;
 
   await session.executeCommand('configure terminal');
   const mngOutput = await session.executeCommand(`pon-onu-mng ${onuInterface}`);
@@ -168,9 +220,7 @@ export async function applyWanIpFixWithSession(
     throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${mngOutput.trim()}`);
   }
 
-  const host1Output = await session.executeCommand(
-    `wan-ip 1 mode dhcp vlan-profile SMARTOLT-vlan${config.serviceVlan} host 1`,
-  );
+  const host1Output = await session.executeCommand(`wan-ip 1 mode dhcp vlan-profile ${serviceVlanProfile} host 1`);
   if (isOltErrorResponse(host1Output)) {
     try {
       await session.executeCommand('end');
@@ -180,10 +230,8 @@ export async function applyWanIpFixWithSession(
     throw new Error(`La OLT rechazó "wan-ip 1" (host de servicio): ${host1Output.trim()}`);
   }
 
-  if (config.tr069Vlan) {
-    const host2Output = await session.executeCommand(
-      `wan-ip 2 mode dhcp vlan-profile SMARTOLT-vlan${config.tr069Vlan} host 2`,
-    );
+  if (mgmtVlanProfile) {
+    const host2Output = await session.executeCommand(`wan-ip 2 mode dhcp vlan-profile ${mgmtVlanProfile} host 2`);
     if (isOltErrorResponse(host2Output)) {
       try {
         await session.executeCommand('end');
@@ -233,6 +281,14 @@ export async function applyServiceGemportFixWithSession(
     'no gemport 2 flow 2',
     `no flow 1 pri 0 vlan ${config.serviceVlan}`,
     ...(config.tr069Vlan ? [`no flow 2 pri 2 vlan ${config.tr069Vlan}`] : []),
+    // Bug real confirmado en vivo (2026-10-30, ONU 699addf7-a473-430c-aa38-8ecc1ecaecd9):
+    // faltaba desenlazar "flow 1 switch switch_0/1" -- solo se quitaba el de
+    // flow 2. Sin esto, el gemport 1 seguía con datos de "flow" asociados y
+    // la OLT rechazaba "service 1 gemport 1 vlan ..." con "%Code 64010-GPONRM :
+    // Operation is forbidden for conflicting with flow data" (ZTE no permite
+    // mezclar los dos mecanismos -- flow-based y service/gemport-based -- en
+    // el mismo gemport).
+    'no flow 1 switch switch_0/1',
     'no flow 2 switch switch_0/1',
     'no switchport-bind switch_0/1 iphost 1',
     'no switchport-bind switch_0/1 iphost 2',

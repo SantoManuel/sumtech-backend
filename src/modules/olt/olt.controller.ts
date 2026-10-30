@@ -201,6 +201,18 @@ export class OltController {
     return this.catalogsService.findAllVlans();
   }
 
+  /**
+   * VLANs REALES de una OLT puntual (ver `getVlansForOlt`) -- usar esta, NO
+   * `GET /olt/vlans`, para selectores de aprovisionamiento como "VLAN de
+   * Servicio" en OnuAuthorizeModal. Bug real confirmado (2026-10-30): el
+   * modal mostraba TODAS las VLANs del tenant sin filtrar por OLT.
+   */
+  @Get('olts/:id/vlans')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
+  async findVlansForOlt(@Param('id') id: string) {
+    return this.catalogsService.getVlansForOlt(id);
+  }
+
   @Post('vlans')
   @Roles(Role.ADMIN, Role.GERENTE)
   async createVlan(@Body() dto: any) {
@@ -245,7 +257,7 @@ export class OltController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   async importInterfaceDiscoveredVlan(
     @Param('id') interfaceId: string,
-    @Body() body: { vlanId: number; mode: 'TAG' | 'UNTAG' },
+    @Body() body: { vlanId: number; mode: 'TAG' | 'UNTAG'; type?: 'INTERNET' | 'IPTV' | 'MGMT' | 'TR069' | 'VOIP' },
   ) {
     return this.catalogsService.importDiscoveredInterfaceVlan(interfaceId, body);
   }
@@ -372,6 +384,16 @@ export class OltController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
   async findAllTr069Networks() {
     return this.catalogsService.findAllTr069Networks();
+  }
+
+  /**
+   * Redes TR-069 REALES de una OLT puntual (ver `getTr069NetworksForOlt`) --
+   * usar esta, NO `GET /olt/tr069-networks`, en OnuAuthorizeModal.
+   */
+  @Get('olts/:id/tr069-networks')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
+  async findTr069NetworksForOlt(@Param('id') id: string) {
+    return this.catalogsService.getTr069NetworksForOlt(id);
   }
 
   @Post('tr069-networks')

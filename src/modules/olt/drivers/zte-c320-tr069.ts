@@ -8,6 +8,7 @@ import {
   getHumanPacingDelay,
   REBOOT_ONU_SENTINEL,
 } from './zte-c320-provisioning-scripts';
+import { ensureTcontProfileWithSession, ensureTrafficProfileWithSession } from './zte-c320-profiles';
 
 /**
  * Etapa 2 del flujo de 3 etapas (apuntar la ONU al ACS/TR-069) -- extraído
@@ -19,6 +20,79 @@ type DelayFn = (ms: number) => Promise<void>;
 
 function defaultDelay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Prepara la capa de TRANSPORTE del canal de gestión/TR-069 (tcont 2/
+ * gemport 2/service-port 2) -- necesario desde que "Autorizar ONU en la
+ * OLT" (Etapa 1) dejó de crearla (decisión de negocio 2026-10-30: se quitó
+ * el selector de Red TR-069 de ese modal para que Etapa 1 sea siempre SOLO
+ * Internet, evitando la confusión de no saber qué paso falló dentro de una
+ * sesión atómica mezclando dos canales). Sin esto, Etapa 2 asumía que esta
+ * capa ya existía (ver la nota de `updateTr069AcsUrlWithSession`) y fallaba
+ * en seco al referenciar un "gemport 2" que nunca se creó -- el mismo bug
+ * que originalmente motivó fusionar ambas etapas en una sola sesión
+ * (CONFIRMADO EN VIVO, 2026-10-24, ONU CMDCDD4D131E). Ahora Etapa 2 es
+ * autosuficiente: crea esta capa ella misma, en su PROPIA sesión, "no
+ * service-port 2" antes de recrearlo igual que Etapa 1 (ver
+ * generateAuthorizationScript) para evitar el desajuste de VLAN entre
+ * capas confirmado en vivo el 2026-10-30.
+ */
+export async function ensureTr069TransportWithSession(session: ZteSessionLike, config: AuthorizeOnuParams): Promise<void> {
+  if (!config.tr069Vlan) {
+    throw new Error('No se puede preparar el canal de gestión/TR-069: falta la VLAN de TR-069 (tr069Vlan).');
+  }
+
+  await ensureTcontProfileWithSession(session, { name: 'SMARTOLT-VOIPMNG-10M', fixedKbps: 10240 });
+  await ensureTrafficProfileWithSession(session, { name: 'SMARTOLT-VOIPMNG-10M', downKbps: 10240 });
+
+  const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
+  await session.executeCommand('configure terminal');
+  const ifaceOutput = await session.executeCommand(`interface ${onuInterface}`);
+  if (isOltErrorResponse(ifaceOutput)) {
+    try {
+      await session.executeCommand('end');
+    } catch {
+      /* best-effort */
+    }
+    throw new Error(`La OLT rechazó entrar a "interface ${onuInterface}": ${ifaceOutput.trim()}`);
+  }
+
+  const tcontOutput = await session.executeCommand('tcont 2 profile SMARTOLT-VOIPMNG-10M');
+  if (isOltErrorResponse(tcontOutput) && !isAlreadyAppliedResponse(tcontOutput)) {
+    try {
+      await session.executeCommand('exit');
+    } catch {
+      /* best-effort */
+    }
+    throw new Error(`La OLT rechazó "tcont 2 profile SMARTOLT-VOIPMNG-10M": ${tcontOutput.trim()}`);
+  }
+
+  await session.executeCommand('gemport 2 tcont 2');
+  await session.executeCommand('gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M');
+
+  // "no service-port 2" ANTES de crearlo -- mismo criterio que
+  // generateAuthorizationScript (CONFIRMADO EN VIVO, 2026-10-30, ONU
+  // CMDCDD4D131E): destruir y recrear limpio evita que quede apuntando a
+  // una VLAN vieja de un intento anterior con otra Red TR-069. Puramente
+  // preparatorio -- nunca fatal, sin importar lo que responda la OLT.
+  await session.executeCommand('no service-port 2');
+  const servicePortOutput = await session.executeCommand(
+    `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
+  );
+  if (isOltErrorResponse(servicePortOutput) && !isAlreadyAppliedResponse(servicePortOutput)) {
+    try {
+      await session.executeCommand('exit');
+    } catch {
+      /* best-effort */
+    }
+    throw new Error(
+      `La OLT rechazó "service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}": ${servicePortOutput.trim()}`,
+    );
+  }
+
+  await session.executeCommand('exit');
+  await session.executeCommand('write');
 }
 
 /**
@@ -49,6 +123,16 @@ export async function applyTr069ManagementWithSession(
   logger: Logger,
   delay: DelayFn = defaultDelay,
 ): Promise<{ ok: boolean; error?: string; warning?: string }> {
+  // Decisión de negocio (2026-10-30): "Autorizar ONU en la OLT" (Etapa 1)
+  // ya NO crea tcont2/gemport2/service-port2 -- se quitó el selector de Red
+  // TR-069 de ese modal para que Etapa 1 sea SIEMPRE solo Internet (menos
+  // confuso: una sola sesión mezclando dos canales dificultaba saber cuál
+  // paso había fallado). Etapa 2 ahora se asegura esta capa ELLA MISMA, en
+  // su propia sesión -- autosuficiente, sin depender de que Etapa 1 la haya
+  // tocado antes. Si esto falla, es fatal (no mejor esfuerzo): el resto del
+  // bloque OMCI de abajo referencia "gemport 2", que no existe sin esto.
+  await ensureTr069TransportWithSession(session, config);
+
   const commands = generateTr069ManagementScript(config);
   // Acumula TODOS los rechazos de la corrida, no solo el primero -- antes
   // `warning` se fijaba una sola vez (`if (!warning)`) y cualquier
