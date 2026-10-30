@@ -32,6 +32,12 @@ import {
 } from './zte-c320-onu-audit';
 import { applyTr069ManagementWithSession, updateTr069AcsUrlWithSession } from './zte-c320-tr069';
 import {
+  findTcontProfileByNameWithSession,
+  ensureTcontProfileWithSession,
+  ensureTrafficProfileWithSession,
+  ensureOnuTypeProfileWithSession,
+} from './zte-c320-profiles';
+import {
   IOltDriver,
   AuthorizeOnuParams,
   OltConnectionParams,
@@ -664,19 +670,23 @@ export class ZteC320Driver implements IOltDriver {
     try {
       await session.connectAndLogin();
 
-      await this.ensureOnuTypeProfileWithSession(session, {
-        name: config.modelTypeName,
-        ethPorts: config.ethPorts,
-        potsPorts: config.potsPorts,
-      });
+      await ensureOnuTypeProfileWithSession(
+        session,
+        {
+          name: config.modelTypeName,
+          ethPorts: config.ethPorts,
+          potsPorts: config.potsPorts,
+        },
+        this.logger,
+      );
 
       if (config.upKbps) {
         const effectiveTcontProfile = config.tcontProfile || 'SMARTOLT-100M-UP';
-        await this.ensureTcontProfileWithSession(session, { name: effectiveTcontProfile, fixedKbps: config.upKbps });
+        await ensureTcontProfileWithSession(session, { name: effectiveTcontProfile, fixedKbps: config.upKbps });
       }
 
       if (config.trafficProfile && config.downKbps) {
-        await this.ensureTrafficProfileWithSession(session, { name: config.trafficProfile, downKbps: config.downKbps });
+        await ensureTrafficProfileWithSession(session, { name: config.trafficProfile, downKbps: config.downKbps });
       }
 
       const commands = this.generateAuthorizationScript(config);
@@ -919,9 +929,7 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const output = await session.executeCommand('show gpon profile tcont');
-      const found = parseTcontProfilesFromOutput(output).find((p) => p.name === name);
-      return found ? { name: found.name, fixedKbps: found.speedKbps } : null;
+      return await findTcontProfileByNameWithSession(session, name);
     } finally {
       await session.close();
     }
@@ -953,35 +961,13 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      await this.ensureTcontProfileWithSession(session, profile);
+      await ensureTcontProfileWithSession(session, profile);
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
       await session.close();
     }
-  }
-
-  private async ensureTcontProfileWithSession(
-    session: { executeCommand(cmd: string, timeoutMs?: number): Promise<string> },
-    profile: TcontProfile,
-  ): Promise<void> {
-    const output = await session.executeCommand('show gpon profile tcont');
-    const existing = parseTcontProfilesFromOutput(output).find((p) => p.name === profile.name);
-    if (existing) {
-      return;
-    }
-    await session.executeCommand('configure terminal');
-    await session.executeCommand('gpon');
-    const createOutput = await session.executeCommand(
-      `profile tcont ${profile.name} type 5 fixed 64 assured 64 maximum ${profile.fixedKbps}`,
-    );
-    if (isOltErrorResponse(createOutput)) {
-      throw new Error(`La OLT rechazó el perfil TCONT "${profile.name}": ${createOutput.trim()}`);
-    }
-    await session.executeCommand('exit');
-    await session.executeCommand('exit');
-    await session.executeCommand('write');
   }
 
   /**
@@ -998,40 +984,13 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      await this.ensureTrafficProfileWithSession(session, profile);
+      await ensureTrafficProfileWithSession(session, profile);
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
       await session.close();
     }
-  }
-
-  private async ensureTrafficProfileWithSession(
-    session: { executeCommand(cmd: string, timeoutMs?: number): Promise<string> },
-    profile: TrafficProfile,
-  ): Promise<void> {
-    const listOutput = await session.executeCommand('show traffic-profile');
-    const existing = this.parseTrafficProfilesFromOutput(listOutput).find((p) => p.name === profile.name);
-    if (existing) {
-      return;
-    }
-
-    await session.executeCommand('configure terminal');
-    const createOutput = await session.executeCommand(
-      `traffic-profile ${profile.name} ip cir ${profile.downKbps} cbs 1000 pir ${profile.downKbps} pbs 1000`,
-    );
-    if (isOltErrorResponse(createOutput)) {
-      // Salir de "(config)#" antes de lanzar
-      try {
-        await session.executeCommand('exit');
-      } catch {
-        /* best-effort */
-      }
-      throw new Error(`La OLT rechazó el traffic-profile "${profile.name}": ${createOutput.trim()}`);
-    }
-    await session.executeCommand('exit');
-    await session.executeCommand('write');
   }
 
   /** Expuesto como método público porque las pruebas lo ejercitan directo (`driver.parseTrafficProfilesFromOutput(...)`). */
@@ -1093,145 +1052,13 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      await this.ensureOnuTypeProfileWithSession(session, profile);
+      await ensureOnuTypeProfileWithSession(session, profile, this.logger);
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {
       await session.close();
     }
-  }
-
-  private async ensureOnuTypeProfileWithSession(
-    session: { executeCommand(cmd: string, timeoutMs?: number): Promise<string> },
-    profile: OnuTypeProfile,
-  ): Promise<void> {
-    const checkOutput = await session.executeCommand(`show onu-type gpon ${profile.name}`);
-    const alreadyExists = !isOltErrorResponse(checkOutput) && checkOutput.includes(profile.name);
-    if (alreadyExists) {
-      // CONFIRMADO EN VIVO (2026-10-22) contra OLT_Tabara_Abajo: un onu-type
-      // PREEXISTENTE (creado antes de que este método supiera de "max-veip",
-      // ej. HUAWEY-HG8145V5) puede quedar con "Max VEIP: 0" -- esto bloquea a
-      // nivel OMCI el comando "veip 1 port udp 1232 host 2" del bloque TR-069
-      // con "%Code 63990-GPONRM : ONT return error: command processing
-      // error.", sin importar cuántas veces se reautorice la ONU, porque
-      // antes este método se salía aquí sin tocar un onu-type ya existente.
-      // "show onu-type gpon <nombre>" reporta "Max VEIP:   0(default: 1
-      // VEIP)" -- se repara en caliente con "onu-type <nombre> gpon max-veip
-      // 1". Según la gramática real de este comando (confirmada vía ayuda
-      // contextual: todos los parámetros de "onu-type <nombre> gpon ..." son
-      // opcionales e independientes entre sí), esto debería actualizar SOLO
-      // "max-veip" sin tocar el resto -- AÚN NO reconfirmado en vivo (el
-      // sandbox bloqueó el intento de probarlo manualmente), así que sigue
-      // sin ser 100% seguro hasta la próxima autorización real.
-      //
-      // MEJOR ESFUERZO, nunca debe tumbar la autorización -- CONFIRMADO EN
-      // VIVO (2026-10-22) que la OLT puede rechazar esta corrección con
-      // "%Code 70296 : Profile is being used." cuando el onu-type ya tiene
-      // OTRAS ONUs reales asignadas (caso normal: un modelo común como
-      // HUAWEY-HG8145V5 suele ser compartido por varias ONUs en la misma
-      // OLT) -- un primer intento de este fix lo trataba como error duro y
-      // tumbaba la autorización óptica completa, rompiendo algo que antes
-      // funcionaba. Si la corrección falla, se registra un warning y se
-      // sigue -- el TR-069 de la Etapa 2 seguirá fallando para este
-      // onu-type hasta que se libere (ningún ONU usándolo) o se corrija a
-      // mano, pero eso nunca debe bloquear que el cliente quede con internet
-      // (Etapa 1).
-      const maxVeipMatch = checkOutput.match(/Max VEIP:\s*(\d+)/i);
-      const maxVeip = maxVeipMatch ? parseInt(maxVeipMatch[1], 10) : undefined;
-      if (maxVeip !== undefined && maxVeip < 1) {
-        let fixSucceeded = false;
-        try {
-          await session.executeCommand('configure terminal');
-          await session.executeCommand('pon');
-          const fixOutput = await session.executeCommand(`onu-type ${profile.name} gpon max-veip 1`);
-          if (isOltErrorResponse(fixOutput)) {
-            this.logger.warn(
-              `[diag] ensureOnuTypeProfileWithSession: no se pudo corregir "max-veip" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
-            );
-          } else {
-            fixSucceeded = true;
-          }
-        } catch (err: any) {
-          // De verdad "mejor esfuerzo": antes, una excepción acá (timeout,
-          // socket cerrado) se propagaba sin ningún catch y abortaba TODA la
-          // autorización óptica, contradiciendo este mismo comentario (bug
-          // real confirmado por revisión de código, 2026-10-23).
-          this.logger.warn(
-            `[diag] ensureOnuTypeProfileWithSession: excepción corrigiendo "max-veip" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${err.message}`,
-          );
-        } finally {
-          // "write" EXIGE estar en el prompt top-level "#" (mismo criterio
-          // que el resto de este archivo) -- nunca dentro de "configure
-          // terminal"/"pon", por eso corre DESPUÉS de los dos "exit", no antes.
-          // Cada "exit" también es best-effort: si el socket ya quedó en mal
-          // estado por la excepción de arriba, no debe enmascararla ni
-          // lanzar una nueva.
-          try {
-            await session.executeCommand('exit');
-          } catch {
-            /* best-effort */
-          }
-          try {
-            await session.executeCommand('exit');
-          } catch {
-            /* best-effort */
-          }
-        }
-        if (fixSucceeded) {
-          try {
-            await session.executeCommand('write');
-          } catch (err: any) {
-            this.logger.warn(
-              `[diag] ensureOnuTypeProfileWithSession: no se pudo guardar "write" tras corregir max-veip (mejor esfuerzo): ${err.message}`,
-            );
-          }
-        }
-      }
-      return;
-    }
-
-    await session.executeCommand('configure terminal');
-    await session.executeCommand('pon');
-    const description = `${profile.ethPorts ?? 0}ETH,${profile.potsPorts ?? 0}POTS`;
-    // "max-veip 1" -- CONFIRMADO EN VIVO (2026-10-22) contra OLT_Tabara_Abajo:
-    // sin este parámetro, el onu-type queda con "Max VEIP: 0" (confirmado vía
-    // "show onu-type gpon <nombre>"), lo que hace que el ONT rechace a nivel
-    // OMCI el comando "veip 1 port udp 1232 host 2" del bloque TR-069
-    // (generateTr069ManagementScript) con "%Code 63990-GPONRM : ONT return
-    // error: command processing error." -- la Etapa 2 del flujo de 3 etapas
-    // (applyTr069Profile) nunca llega a apuntar el ONT al ACS para ningún
-    // onu-type creado por este método. "max-veip" confirmado como keyword
-    // real vía ayuda contextual ("onu-type <nombre> gpon ... ?").
-    const createOutput = await session.executeCommand(
-      `onu-type ${profile.name} gpon description ${description} max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8 max-veip 1`,
-    );
-    if (isOltErrorResponse(createOutput)) {
-      await session.executeCommand('exit');
-      await session.executeCommand('exit');
-      throw new Error(`La OLT rechazó el onu-type "${profile.name}": ${createOutput.trim()}`);
-    }
-
-    if (profile.ethPorts && profile.ethPorts > 0) {
-      const ethOutput = await session.executeCommand(`onu-type-if ${profile.name} eth_0/1-${profile.ethPorts}`);
-      if (isOltErrorResponse(ethOutput)) {
-        await session.executeCommand('exit');
-        await session.executeCommand('exit');
-        throw new Error(`La OLT rechazó los puertos ETH del onu-type "${profile.name}": ${ethOutput.trim()}`);
-      }
-    }
-    if (profile.potsPorts && profile.potsPorts > 0) {
-      const potsOutput = await session.executeCommand(`onu-type-if ${profile.name} pots_0/1-${profile.potsPorts}`);
-      if (isOltErrorResponse(potsOutput)) {
-        await session.executeCommand('exit');
-        await session.executeCommand('exit');
-        throw new Error(`La OLT rechazó los puertos POTS del onu-type "${profile.name}": ${potsOutput.trim()}`);
-      }
-    }
-
-    await session.executeCommand('exit');
-    await session.executeCommand('exit');
-    await session.executeCommand('write');
   }
 
   /**
