@@ -15,7 +15,16 @@ import {
   parseTrafficProfilesFromOutput,
 } from './zte-c320-parsers';
 import {
+  toOnuInterfaceName,
+  generateAuthorizationScript as generateAuthorizationScriptImpl,
+  generateTr069ManagementScript as generateTr069ManagementScriptImpl,
+  isManagementOrTr069Command,
+  getHumanPacingDelay,
+  REBOOT_ONU_SENTINEL,
+} from './zte-c320-provisioning-scripts';
+import {
   IOltDriver,
+  AuthorizeOnuParams,
   OltConnectionParams,
   OltSystemInfo,
   OltSystemHealth,
@@ -40,14 +49,10 @@ import {
 
 const VENDOR = 'ZTE';
 
-/**
- * Sentinel reconocido por `authorizeOnu()` dentro del array de comandos que
- * devuelve `generateAuthorizationScript()` -- un reinicio OMCI del ONT exige
- * confirmar un prompt interactivo ("Confirm to reboot? [yes/no]:") que no es
- * un comando CLI plano, así que no puede representarse como una cadena normal
- * en ese array. Ver `ZteTelnetSession.rebootOnu()`.
- */
-export const REBOOT_ONU_SENTINEL = '__SUMTECH_REBOOT_ONU__';
+// `REBOOT_ONU_SENTINEL` se extrajo a `zte-c320-provisioning-scripts.ts`
+// (Fase 3 de Plan_Implementacion_Refactor_ZteC320Driver.md), reexportado
+// aquí para no romper `import { REBOOT_ONU_SENTINEL } from './zte-c320.driver'`.
+export { REBOOT_ONU_SENTINEL } from './zte-c320-provisioning-scripts';
 
 @Injectable()
 export class ZteC320Driver implements IOltDriver {
@@ -617,267 +622,21 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
-   * Deriva el nombre de la sub-interfaz lógica de la ONU (ej.
-   * "gpon-onu_1/2/15:1") a partir del puerto físico PON (ej.
-   * "gpon-olt_1/2/15") -- CONFIRMADO CONTRA EL MANUAL OFICIAL (ZXA10 C300
-   * Configuration Manual (CLI), §3.1: "interface gpon-olt_1/5/1" / "onu 2
-   * type ... sn ..." / "exit" / "interface gpon-onu_1/5/1:2") que son DOS
-   * prefijos distintos ("olt" para el puerto físico, "onu" para la
-   * sub-interfaz de cada ONU autorizada en ese puerto), no el mismo nombre
-   * con ":<id>" pegado. Bug real confirmado en vivo contra OLT_Tabara_Abajo
-   * (2026-10-20): "interface gpon-olt_1/2/15:1" rechazado con "%Error
-   * 20202: Invalid input detected ... Invalid parameter".
-   */
-  private toOnuInterfaceName(ponInterface: string, onuId: number): string {
-    return `${ponInterface.replace(/^gpon-olt_/, 'gpon-onu_')}:${onuId}`;
-  }
-
-  /**
    * Genera la lista de comandos Telnet de autorización y aprovisionamiento (RF-OLT-016 / RF-ONU-001..007)
    * respetando el orden jerárquico estricto de entidades OMCI (Bottom-Up).
+   * Ver `generateAuthorizationScript` en zte-c320-provisioning-scripts.ts.
    */
-  generateAuthorizationScript(config: import('../ports/olt-driver.port').AuthorizeOnuParams): string[] {
-    const hasTr069 = config.managementMethod === 'TR069' && Boolean(config.tr069Url);
-    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
-
-    const commands: string[] = [
-      // === FASE 1: Registro Físico en Puerto PON ===
-      'configure terminal',
-      `interface ${config.ponInterface}`,
-      `no onu ${config.onuId}`,
-      `onu ${config.onuId} type ${config.modelTypeName} sn ${config.serialNumber}`,
-      'exit',
-
-      // === FASE 2: Capa de Transporte GPON (T-CONT -> GEM -> Service-Port) ===
-      `interface ${onuInterface}`,
-      `name ${config.clientName ? config.clientName.replace(/\s+/g, '_') : `ONU-${config.onuId}`}`,
-      ...(config.description ? [`description ${config.description.replace(/\s+/g, '_')}`] : []),
-      `tcont 1 profile ${config.tcontProfile}`,
-    ];
-
-    if (hasTr069) {
-      commands.push('tcont 2 profile SMARTOLT-VOIPMNG-10M');
-    }
-
-    commands.push(
-      'gemport 1 tcont 1',
-      'gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN',
-    );
-
-    if (hasTr069) {
-      commands.push(
-        'gemport 2 tcont 2',
-        'gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M',
-      );
-    }
-
-    if (config.trafficProfile) {
-      commands.push(`traffic-profile ${config.trafficProfile} vport 1 direction egress`);
-    }
-
-    commands.push(`service-port 1 vport 1 user-vlan ${config.serviceVlan} vlan ${config.serviceVlan}`);
-    if (hasTr069) {
-      commands.push(`service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`);
-    }
-
-    commands.push(
-      'exit',
-
-      // === FASE 3: Inicialización de Flows y Mapeo GEM (pon-onu-mng) ===
-      // Orden estricto ZTE GPONRM:
-      // 1° Instanciar flow en el switch: flow <id> switch switch_0/1 (sin esto, OLT rechaza con %Code 63953 "Flow does not exist")
-      // 2° flow mode <id> tag-filter vlan-filter untag-filter discard
-      // 3° flow <id> pri <prio> vlan <vlan>
-      // 4° gemport <id> flow <id>
-      `pon-onu-mng ${onuInterface}`,
-      'flow 1 switch switch_0/1',
-      'flow mode 1 tag-filter vlan-filter untag-filter discard',
-      `flow 1 pri 0 vlan ${config.serviceVlan}`,
-      'gemport 1 flow 1',
-    );
-
-    if (hasTr069) {
-      commands.push(
-        'flow 2 switch switch_0/1',
-        'flow mode 2 tag-filter vlan-filter untag-filter discard',
-        `flow 2 pri 2 vlan ${config.tr069Vlan}`,
-        'gemport 2 flow 2',
-      );
-    }
-
-    // === FASE 4: Vinculación del Switch Virtual (switchport-bind) ===
-    // Debe ejecutarse después de los flows y ANTES de configurar ip-host o veip
-    commands.push('switchport-bind switch_0/1 iphost 1');
-    if (hasTr069) {
-      commands.push(
-        'switchport-bind switch_0/1 iphost 2',
-        'switchport-bind switch_0/1 veip 1',
-      );
-    }
-
-    // === FASE 5: Configuración de IP-Host y Filtros de VLAN ===
-    // Orden estricto: 1° activar ip-host -> 2° vlan-filter-mode -> 3° vlan-filter
-    commands.push(
-      'ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable',
-      'vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard',
-      `vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`,
-    );
-
-    if (hasTr069) {
-      commands.push(
-        'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
-        'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
-        `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
-      );
-    }
-
-    // === FASE 6: Capa de Aplicación (Puertos ETH, VoIP, VEIP, TR-069 y Seguridad) ===
-    // "dhcp-ip ethuni ... from-onu" solo si el modelo lo soporta por OMCI --
-    // algunos modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 :
-    // unknown ME", lo que deja el resto de la transacción OMCI en "fail".
-    if (config.ethuniDhcpDelegationSupported !== false) {
-      commands.push(
-        ...Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`),
-      );
-    }
-
-    if (hasTr069) {
-      commands.push(
-        'voip protocol sip',
-        'veip 1 port udp 1232 host 2',
-        'tr069-mgmt 1 state unlock',
-        config.tr069AcsUsername && config.tr069AcsPassword
-          ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
-          : `tr069-mgmt 1 acs ${config.tr069Url}`,
-        `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
-      );
-      // "security-mgmt ..." solo si el modelo lo soporta por OMCI -- algunos
-      // modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 : unknown
-      // ME", lo que deja el resto de la transacción OMCI en "fail". No es
-      // necesario para que el ONT se registre en el ACS (eso ya quedó
-      // cableado arriba vía iphost 2/VEIP) -- solo habilita acceso remoto
-      // HTTPS/SSH/Telnet/FTP/SNMP al propio router desde la OLT.
-      if (config.securityMgmtSupported !== false) {
-        commands.push(
-          'security-mgmt 5 state enable mode forward protocol web https',
-          'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
-          'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
-        );
-      }
-    }
-
-    // Cierre ordenado de sub-vistas (pon-onu-mng -> configure terminal -> EXEC) y persistencia
-    commands.push('exit', 'exit', 'write');
-    return commands;
+  generateAuthorizationScript(config: AuthorizeOnuParams): string[] {
+    return generateAuthorizationScriptImpl(config);
   }
 
   /**
    * Script CLI del bloque OMCI que apunta la ONU al ACS (TR-069) -- Etapa 2 (Reintento aislado).
-   * Mantiene el mismo orden jerárquico Bottom-Up para no corromper las entidades ME.
+   * Ver `generateTr069ManagementScript` en zte-c320-provisioning-scripts.ts.
    */
-  generateTr069ManagementScript(config: import('../ports/olt-driver.port').AuthorizeOnuParams): string[] {
-    if (!config.tr069Url) {
-      throw new Error(
-        'No se puede generar el bloque TR-069/ACS: falta la URL del ACS (tr069Url). Revisa que la Red TR-069 seleccionada tenga "acsUrl" configurado.',
-      );
-    }
-
-    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
-    const commands: string[] = [
-      'configure terminal',
-      `pon-onu-mng ${onuInterface}`,
-      // 1. Inicializar Flow 2 en orden jerárquico ZTE GPONRM
-      'flow 2 switch switch_0/1',
-      'flow mode 2 tag-filter vlan-filter untag-filter discard',
-      `flow 2 pri 2 vlan ${config.tr069Vlan}`,
-      'gemport 2 flow 2',
-      // 2. Vincular puertos al switch_0/1 antes de filtrarlos
-      'switchport-bind switch_0/1 iphost 2',
-      'switchport-bind switch_0/1 veip 1',
-      // 3. Configurar IP-Host 2 y su filtro de VLAN en orden
-      'ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
-      'vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
-      `vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`,
-      // 4. Puertos LAN, VoIP, VEIP, TR-069 y Firewall al final
-      // "dhcp-ip ethuni ... from-onu" solo si el modelo lo soporta por OMCI --
-      // algunos modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 :
-      // unknown ME", lo que deja el resto de la transacción OMCI en "fail".
-      ...(config.ethuniDhcpDelegationSupported !== false
-        ? Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`)
-        : []),
-      'voip protocol sip',
-      'veip 1 port udp 1232 host 2',
-      'tr069-mgmt 1 state unlock',
-      config.tr069AcsUsername && config.tr069AcsPassword
-        ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
-        : `tr069-mgmt 1 acs ${config.tr069Url}`,
-      `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
-      // "security-mgmt ..." solo si el modelo lo soporta por OMCI -- algunos
-      // modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 : unknown
-      // ME". No es necesario para el registro TR-069 (ya cableado arriba vía
-      // iphost 2/VEIP), solo habilita acceso remoto HTTPS/SSH/Telnet/FTP/SNMP.
-      ...(config.securityMgmtSupported !== false
-        ? [
-            'security-mgmt 5 state enable mode forward protocol web https',
-            'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
-            'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
-          ]
-        : []),
-      // 5. Reinicio OMCI ÚNICAMENTE cuando ya se enviaron tag y security-mgmt
-      REBOOT_ONU_SENTINEL,
-      'end',
-      'write',
-    ];
-
-    return commands;
+  generateTr069ManagementScript(config: AuthorizeOnuParams): string[] {
+    return generateTr069ManagementScriptImpl(config);
   }
-
-  /**
-   * Determina si un comando pertenece al canal de gestión secundario (TR-069, VoIP, VEIP, Firewall)
-   * que debe tratarse como mejor esfuerzo (no crítico) para no abortar la provisión de Internet.
-   */
-  private isManagementOrTr069Command(cmd: string): boolean {
-    return (
-      cmd.startsWith('tcont 2') ||
-      cmd.startsWith('gemport 2') ||
-      cmd.startsWith('service-port 2') ||
-      cmd.startsWith('flow 2') ||
-      cmd.startsWith('flow mode 2') ||
-      cmd.startsWith('switchport-bind switch_0/1 iphost 2') ||
-      cmd.startsWith('switchport-bind switch_0/1 veip') ||
-      cmd.startsWith('ip-host 2') ||
-      cmd.startsWith('vlan-filter-mode iphost 2') ||
-      cmd.startsWith('vlan-filter iphost 2') ||
-      cmd.startsWith('voip') ||
-      cmd.startsWith('veip') ||
-      cmd.startsWith('tr069-mgmt') ||
-      cmd.startsWith('security-mgmt')
-    );
-  }
-
-  /**
-   * Pausa de simulación humana (Human Pacing) adaptada al tiempo de convergencia
-   * del hardware óptico, buffers del procesador de control y demonios OMCI de ZTE.
-   */
-  private getHumanPacingDelay(cmd: string): number {
-    if (cmd.startsWith('onu ') && cmd.includes('type ') && cmd.includes('sn ')) {
-      return 1500; // Registro de transceptor óptico y espera de .[Successful]
-    }
-    if (cmd.startsWith('pon-onu-mng ')) {
-      return 1500; // Negociación y apertura de sesión de switch virtual OMCI
-    }
-    if (cmd === 'configure terminal') {
-      return 350; // Asentamiento tras banner informativo %Info 20272
-    }
-    if (cmd === 'write') {
-      return 1200; // Escritura en memoria no volátil
-    }
-    if (cmd === 'exit' || cmd === 'end') {
-      return 250; // Cambio de contexto de sub-modo
-    }
-    return 120; // Pausa humana estándar entre comandos CLI
-  }
-
 
   /**
    * Ejecuta el aprovisionamiento de la ONU en la OLT respetando los tiempos de
@@ -932,7 +691,7 @@ export class ZteC320Driver implements IOltDriver {
         }
 
         // Pacing humano entre comandos
-        const pacingMs = this.getHumanPacingDelay(cmd);
+        const pacingMs = getHumanPacingDelay(cmd);
         if (pacingMs > 0) {
           await this.delay(pacingMs);
         }
@@ -941,7 +700,7 @@ export class ZteC320Driver implements IOltDriver {
           const errMsg = output.trim();
           this.logger.warn(`[diag] authorizeOnu: OLT reportó respuesta no exitosa en comando "${cmd}": ${errMsg}`);
 
-          if (this.isManagementOrTr069Command(cmd)) {
+          if (isManagementOrTr069Command(cmd)) {
             // Canal secundario de gestión / TR-069: MEJOR ESFUERZO, nunca abortar la provisión de internet
             if (!warning) {
               warning = `La OLT rechazó la configuración secundaria de gestión ("${cmd}"): ${errMsg}. El canal de internet sí quedó activo.`;
@@ -1001,7 +760,7 @@ export class ZteC320Driver implements IOltDriver {
     onuId: number,
     options?: { expectedVlans?: number[] },
   ): Promise<import('../ports/olt-driver.port').OnuProvisioningVerification> {
-    const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+    const onuInterface = toOnuInterfaceName(ponInterface, onuId);
     const warnings: string[] = [];
 
     // 1. show gpon remote-onu ip-host gpon-onu_{port}:{onu_id}
@@ -1041,7 +800,7 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
       const raw = await session.executeCommand(`show gpon remote-onu ip-host ${onuInterface}`);
       return { ...parseIpHost(raw), raw };
     } finally {
@@ -1058,7 +817,7 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
       const raw = await session.executeCommand(`show mac gpon onu ${onuInterface}`);
       return parseMacTable(raw);
     } finally {
@@ -1080,7 +839,7 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
       const raw = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
       return parseOnuDetailInfo(raw);
     } finally {
@@ -1100,7 +859,7 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
       const raw = await session.executeCommand(`show gpon remote-onu wan-ip ${onuInterface}`);
 
       const ipMatches = [...raw.matchAll(/(\d{1,3}(?:\.\d{1,3}){3})/g)].map((m) => m[1]);
@@ -1129,7 +888,7 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
+      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
       const raw = await session.executeCommand(`show gpon remote-onu tr069-mgmt ${onuInterface}`);
 
       return {
@@ -1242,7 +1001,7 @@ export class ZteC320Driver implements IOltDriver {
         const output = await session.executeCommand(cmd);
 
         // Pacing humano entre comandos
-        const pacingMs = this.getHumanPacingDelay(cmd);
+        const pacingMs = getHumanPacingDelay(cmd);
         if (pacingMs > 0) {
           await this.delay(pacingMs);
         }
@@ -1278,7 +1037,7 @@ export class ZteC320Driver implements IOltDriver {
       // de si el ONT aceptó TODO el bloque OMCI, no solo el comando puntual
       // del ACS -- se revisa acá, después del reinicio final, en vez de
       // confiar en que "ningún comando devolvió error" sea suficiente.
-      const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
+      const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
       try {
         const detailOutput = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
         const configState = parseOnuDetailInfo(detailOutput).configState;
@@ -1395,7 +1154,7 @@ export class ZteC320Driver implements IOltDriver {
       tr069AcsPassword?: string;
     },
   ): Promise<{ ok: boolean; error?: string; warning?: string }> {
-    const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
+    const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
