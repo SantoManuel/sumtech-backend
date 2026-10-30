@@ -1222,6 +1222,58 @@ export class OnuManagementService {
    * reintentar este paso de forma independiente, sin re-autorizar la ONU
    * en la OLT cada vez.
    */
+  /**
+   * Vista previa (dry-run) del script CLI que generará "Aplicar Perfil
+   * TR-069" (Etapa 2) -- misma funcionalidad que `previewAuthorizationScript`
+   * para la Etapa 1 (RF-OLT-018), pedida explícitamente para este modal tras
+   * confundir cuál paso de Etapa 2 estaba fallando. Reutiliza la MISMA
+   * validación que `applyTr069Profile` (config de servicio previa + acsUrl no
+   * vacío) para que la previsualización nunca muestre un script que la
+   * ejecución real rechazaría de entrada.
+   */
+  async previewTr069ProfileScript(id: string, dto: { tr069NetworkId: string }) {
+    const onu = await this.findById(id);
+    const driver = this.resolveDriver(onu.olt);
+
+    const config = await this.configRepository.findOneBy({ onuId: onu.id });
+    if (!config) {
+      throw new BadRequestException(
+        'Esta ONU no tiene configuración de servicio previa en el sistema. Autorízala en la OLT primero (Etapa 1).',
+      );
+    }
+    if (!dto.tr069NetworkId) {
+      throw new BadRequestException('Selecciona una Red TR-069.');
+    }
+
+    const authParams = await this.buildAuthorizeParams(onu, {
+      onuTypeId: onu.onuTypeId,
+      serviceVlanId: config.serviceVlanId,
+      speedProfileId: config.speedProfileId,
+      tr069NetworkId: dto.tr069NetworkId,
+      managementMethod: 'TR069',
+      operationMode: config.operationMode,
+    });
+
+    if (!authParams.tr069Url) {
+      throw new BadRequestException(
+        'La Red TR-069 seleccionada no tiene una URL de ACS configurada (acsUrl vacío). Corrígela en "Redes TR-069" antes de aplicar el perfil.',
+      );
+    }
+
+    if (typeof driver.generateTr069ProfileScript !== 'function') {
+      throw new BadRequestException(`[${onu.olt.vendor}] esta previsualización todavía no está implementada para este fabricante.`);
+    }
+
+    const commands = await this.callDriver(async () => driver.generateTr069ProfileScript!(authParams));
+
+    return {
+      onuId: onu.id,
+      serialNumber: onu.serialNumber,
+      commands,
+      totalCommands: commands.length,
+    };
+  }
+
   async applyTr069Profile(id: string, dto: { tr069NetworkId: string }, actorUserId?: string) {
     const onu = await this.findById(id);
     const olt = onu.olt;

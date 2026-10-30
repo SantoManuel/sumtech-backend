@@ -336,6 +336,47 @@ export function generateTr069ManagementScript(config: AuthorizeOnuParams): strin
 }
 
 /**
+ * Script CLI de la capa de TRANSPORTE del canal de gestión/TR-069 (tcont 2/
+ * gemport 2/service-port 2) -- fuente única de verdad de los literales de
+ * comando que ejecuta `ensureTr069TransportWithSession()` (zte-c320-tr069.ts)
+ * contra una sesión real, reutilizada aquí SOLO para previsualización (sin
+ * tocar la OLT). "no service-port 2" antes de crearlo, mismo criterio que
+ * `generateAuthorizationScript` (CONFIRMADO EN VIVO, 2026-10-30, ONU
+ * CMDCDD4D131E): destruir y recrear limpio evita una VLAN vieja de un
+ * intento anterior con otra Red TR-069.
+ */
+export function generateTr069TransportScript(config: AuthorizeOnuParams): string[] {
+  const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
+  return [
+    'configure terminal',
+    `interface ${onuInterface}`,
+    'tcont 2 profile SMARTOLT-VOIPMNG-10M',
+    'gemport 2 tcont 2',
+    'gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M',
+    'no service-port 2',
+    `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
+    'exit',
+    'write',
+  ];
+}
+
+/**
+ * Script CLI COMPLETO que ejecutará "Aplicar Perfil TR-069" (Etapa 2) --
+ * capa de transporte (`generateTr069TransportScript`, su propia sesión
+ * configure-terminal/write) seguida de la capa OMCI
+ * (`generateTr069ManagementScript`, otra sesión aparte) -- mismo orden que
+ * `applyTr069ManagementWithSession()`. Usado SOLO para la vista previa
+ * (dry-run) del botón "Previsualizar Script CLI", igual que
+ * `generateAuthorizationScript` para la Etapa 1 -- no incluye los comandos
+ * de verificación/creación de perfiles TCONT/Traffic (`ensureTcontProfileWithSession`/
+ * `ensureTrafficProfileWithSession`), que dependen de consultar la OLT en
+ * vivo y no son parte del script determinista.
+ */
+export function generateTr069ProfileScript(config: AuthorizeOnuParams): string[] {
+  return [...generateTr069TransportScript(config), ...generateTr069ManagementScript(config)];
+}
+
+/**
  * Sentinel reconocido por `authorizeOnu()` dentro del array de comandos que
  * devuelve `generateAuthorizationScript()` -- un reinicio OMCI del ONT exige
  * confirmar un prompt interactivo ("Confirm to reboot? [yes/no]:") que no es

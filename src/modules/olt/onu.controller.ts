@@ -188,6 +188,19 @@ export class OnuController {
   }
 
   /**
+   * Vista previa (dry-run) del script CLI de "Aplicar Perfil TR-069" (Etapa
+   * 2) antes de ejecutarlo -- mismo propósito que "preview-script" (Etapa 1,
+   * RF-OLT-018).
+   */
+  @Post(':id/preview-tr069-script')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async previewTr069Script(@Param('id') id: string, @Body() dto: any) {
+    return this.onuService.previewTr069ProfileScript(id, dto);
+  }
+
+  /**
    * Etapa 2 (flujo de 3 etapas): apunta una ONU ya autorizada ópticamente al
    * ACS (TR-069), sin tocar GenieACS/WAN todavía.
    */

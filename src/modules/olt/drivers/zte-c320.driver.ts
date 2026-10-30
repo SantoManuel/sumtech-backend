@@ -11,6 +11,7 @@ import {
   toOnuInterfaceName,
   generateAuthorizationScript as generateAuthorizationScriptImpl,
   generateTr069ManagementScript as generateTr069ManagementScriptImpl,
+  generateTr069ProfileScript as generateTr069ProfileScriptImpl,
   hasTr069Channel,
   isManagementOrTr069Command,
   getHumanPacingDelay,
@@ -331,6 +332,17 @@ export class ZteC320Driver implements IOltDriver {
    */
   generateTr069ManagementScript(config: AuthorizeOnuParams): string[] {
     return generateTr069ManagementScriptImpl(config);
+  }
+
+  /**
+   * Script CLI COMPLETO que ejecutará "Aplicar Perfil TR-069" (Etapa 2):
+   * capa de transporte (tcont 2/gemport 2/service-port 2) + capa OMCI --
+   * usado por el botón "Previsualizar Script CLI" de ese modal, igual que
+   * `generateAuthorizationScript` para la Etapa 1. Ver
+   * `generateTr069ProfileScript` en zte-c320-provisioning-scripts.ts.
+   */
+  generateTr069ProfileScript(config: AuthorizeOnuParams): string[] {
+    return generateTr069ProfileScriptImpl(config);
   }
 
   /**

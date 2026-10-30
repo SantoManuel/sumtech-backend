@@ -454,6 +454,60 @@ describe('ZteC320Driver', () => {
     });
   });
 
+  describe('generateTr069ProfileScript (vista previa COMPLETA de Etapa 2 -- pedida explícitamente para el modal "Aplicar Perfil TR-069", igual que "Previsualizar Script CLI" ya existe en Etapa 1/OnuAuthorizeModal): capa de transporte (tcont2/gemport2/service-port2) + capa OMCI, en ese orden, cada una con su propio ciclo configure-terminal/write', () => {
+    const tr069Config = {
+      ponInterface: 'gpon-olt_1/2/15',
+      onuId: 1,
+      modelTypeName: 'HUAWEY-HG8546M',
+      serialNumber: 'CMDCDD4D131E',
+      serviceVlan: 400,
+      tr069Url: 'http://acs.sumtech.com.do:7547',
+      tr069Vlan: 46,
+      managementMethod: 'TR069' as const,
+      operationMode: 'ROUTER' as const,
+    };
+
+    it('concatena la capa de transporte (con "no service-port 2" antes de crearlo) y luego la capa OMCI, cada una con su propio "configure terminal"/"write"', () => {
+      const commands = driver.generateTr069ProfileScript!(tr069Config);
+
+      // Capa de transporte primero.
+      const ifaceIdx = commands.indexOf('interface gpon-onu_1/2/15:1');
+      const tcontIdx = commands.indexOf('tcont 2 profile SMARTOLT-VOIPMNG-10M');
+      const noServicePortIdx = commands.indexOf('no service-port 2');
+      const servicePortIdx = commands.indexOf('service-port 2 vport 2 user-vlan 46 vlan 46');
+      expect(ifaceIdx).toBeGreaterThanOrEqual(0);
+      expect(tcontIdx).toBeGreaterThan(ifaceIdx);
+      expect(noServicePortIdx).toBeGreaterThan(tcontIdx);
+      expect(servicePortIdx).toBeGreaterThan(noServicePortIdx);
+
+      // Luego la capa OMCI, en una sesión aparte (otro "configure terminal").
+      const pomIdx = commands.indexOf('pon-onu-mng gpon-onu_1/2/15:1');
+      expect(pomIdx).toBeGreaterThan(servicePortIdx);
+      expect(commands).toContain('tr069-mgmt 1 acs http://acs.sumtech.com.do:7547');
+
+      // Exactamente dos "configure terminal" -- uno por capa, igual que las
+      // dos sesiones reales que ejecuta applyTr069ManagementWithSession().
+      expect(commands.filter((c) => c === 'configure terminal')).toHaveLength(2);
+    });
+
+    it('es exactamente la concatenación de generateTr069TransportScript() + generateTr069ManagementScript() -- fuente única de verdad, sin duplicar literales de comando', () => {
+      const commands = driver.generateTr069ProfileScript!(tr069Config);
+      const transport = [
+        'configure terminal',
+        'interface gpon-onu_1/2/15:1',
+        'tcont 2 profile SMARTOLT-VOIPMNG-10M',
+        'gemport 2 tcont 2',
+        'gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M',
+        'no service-port 2',
+        'service-port 2 vport 2 user-vlan 46 vlan 46',
+        'exit',
+        'write',
+      ];
+      expect(commands.slice(0, transport.length)).toEqual(transport);
+      expect(commands.slice(transport.length)).toEqual(driver.generateTr069ManagementScript(tr069Config));
+    });
+  });
+
   it('sin "description", no agrega esa línea -- opcional, no rompe compatibilidad con llamadas existentes', () => {
     const commands = driver.generateAuthorizationScript({
       ponInterface: 'gpon-olt_1/1/1',

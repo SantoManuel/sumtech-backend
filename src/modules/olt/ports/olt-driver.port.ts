@@ -603,6 +603,8 @@ export interface IOltDriver {
   generateAuthorizationScript(config: AuthorizeOnuParams): string[];
   /** Script CLI del bloque OMCI que apunta la ONU al ACS (TR-069) -- ver `applyTr069Management`. Asume `config.managementMethod==='TR069' && config.tr069Url && config.tr069Vlan`. */
   generateTr069ManagementScript(config: AuthorizeOnuParams): string[];
+  /** Vista previa (dry-run) COMPLETA de "Aplicar Perfil TR-069" (Etapa 2): capa de transporte + capa OMCI. Opcional -- solo implementado donde el driver sabe generarlo sin tocar la OLT. */
+  generateTr069ProfileScript?(config: AuthorizeOnuParams): string[];
   /** Verificación post-aprovisionamiento de IP de gestión (Host ID: 2) y MACs aprendidas en VLANs */
   verifyOnuProvisioning?(
     params: OltConnectionParams,

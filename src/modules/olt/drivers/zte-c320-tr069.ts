@@ -4,6 +4,7 @@ import { ZteSessionLike } from './zte-telnet-session';
 import { isOltErrorResponse, isAlreadyAppliedResponse, parseOnuDetailInfo } from './zte-c320-parsers';
 import {
   generateTr069ManagementScript,
+  generateTr069TransportScript,
   toOnuInterfaceName,
   getHumanPacingDelay,
   REBOOT_ONU_SENTINEL,
@@ -47,53 +48,64 @@ export async function ensureTr069TransportWithSession(session: ZteSessionLike, c
   await ensureTcontProfileWithSession(session, { name: 'SMARTOLT-VOIPMNG-10M', fixedKbps: 10240 });
   await ensureTrafficProfileWithSession(session, { name: 'SMARTOLT-VOIPMNG-10M', downKbps: 10240 });
 
-  const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
-  await session.executeCommand('configure terminal');
-  const ifaceOutput = await session.executeCommand(`interface ${onuInterface}`);
+  // Literales de comando sacados de `generateTr069TransportScript()` --
+  // fuente única de verdad compartida con el botón "Previsualizar Script
+  // CLI" de Etapa 2, para que la vista previa nunca pueda divergir de lo
+  // que esta sesión real ejecuta.
+  const [
+    cmdConfigTerminal,
+    cmdInterface,
+    cmdTcont,
+    cmdGemportTcont,
+    cmdGemportTrafficLimit,
+    cmdNoServicePort,
+    cmdServicePort,
+    cmdExit,
+    cmdWrite,
+  ] = generateTr069TransportScript(config);
+
+  await session.executeCommand(cmdConfigTerminal);
+  const ifaceOutput = await session.executeCommand(cmdInterface);
   if (isOltErrorResponse(ifaceOutput)) {
     try {
       await session.executeCommand('end');
     } catch {
       /* best-effort */
     }
-    throw new Error(`La OLT rechazó entrar a "interface ${onuInterface}": ${ifaceOutput.trim()}`);
+    throw new Error(`La OLT rechazó entrar a "${cmdInterface}": ${ifaceOutput.trim()}`);
   }
 
-  const tcontOutput = await session.executeCommand('tcont 2 profile SMARTOLT-VOIPMNG-10M');
+  const tcontOutput = await session.executeCommand(cmdTcont);
   if (isOltErrorResponse(tcontOutput) && !isAlreadyAppliedResponse(tcontOutput)) {
     try {
       await session.executeCommand('exit');
     } catch {
       /* best-effort */
     }
-    throw new Error(`La OLT rechazó "tcont 2 profile SMARTOLT-VOIPMNG-10M": ${tcontOutput.trim()}`);
+    throw new Error(`La OLT rechazó "${cmdTcont}": ${tcontOutput.trim()}`);
   }
 
-  await session.executeCommand('gemport 2 tcont 2');
-  await session.executeCommand('gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M');
+  await session.executeCommand(cmdGemportTcont);
+  await session.executeCommand(cmdGemportTrafficLimit);
 
   // "no service-port 2" ANTES de crearlo -- mismo criterio que
   // generateAuthorizationScript (CONFIRMADO EN VIVO, 2026-10-30, ONU
   // CMDCDD4D131E): destruir y recrear limpio evita que quede apuntando a
   // una VLAN vieja de un intento anterior con otra Red TR-069. Puramente
   // preparatorio -- nunca fatal, sin importar lo que responda la OLT.
-  await session.executeCommand('no service-port 2');
-  const servicePortOutput = await session.executeCommand(
-    `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
-  );
+  await session.executeCommand(cmdNoServicePort);
+  const servicePortOutput = await session.executeCommand(cmdServicePort);
   if (isOltErrorResponse(servicePortOutput) && !isAlreadyAppliedResponse(servicePortOutput)) {
     try {
       await session.executeCommand('exit');
     } catch {
       /* best-effort */
     }
-    throw new Error(
-      `La OLT rechazó "service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}": ${servicePortOutput.trim()}`,
-    );
+    throw new Error(`La OLT rechazó "${cmdServicePort}": ${servicePortOutput.trim()}`);
   }
 
-  await session.executeCommand('exit');
-  await session.executeCommand('write');
+  await session.executeCommand(cmdExit);
+  await session.executeCommand(cmdWrite);
 }
 
 /**

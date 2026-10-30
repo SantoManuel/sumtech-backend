@@ -178,6 +178,7 @@ describe('OnuManagementService', () => {
       getOnuOpticalPower: jest.fn(),
       generateAuthorizationScript: jest.fn(),
       generateTr069ManagementScript: jest.fn(),
+      generateTr069ProfileScript: jest.fn(),
       authorizeOnu: jest.fn(),
       applyTr069Management: jest.fn(),
       updateTr069AcsUrl: jest.fn(),
@@ -1329,6 +1330,81 @@ describe('OnuManagementService', () => {
         service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
       ).rejects.toThrow(BadRequestException);
       expect(configRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('previewTr069ProfileScript (vista previa/dry-run de Etapa 2 -- misma funcionalidad que previewAuthorizationScript para Etapa 1, pedida explícitamente para el modal "Aplicar Perfil TR-069")', () => {
+    const mockConfig = {
+      onuId: 'onu-uuid-1',
+      serviceVlanId: 'vlan-1',
+      managementMethod: 'OMCI',
+      operationMode: 'ROUTER',
+      wanMode: 'PPPOE',
+      appliedVersion: 1,
+      desiredVersion: 1,
+    };
+
+    it('reutiliza la MISMA validación que applyTr069Profile: lanza BadRequestException si la ONU no tiene config previa, sin llamar al driver', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue(null);
+
+      await expect(
+        service.previewTr069ProfileScript('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(zteDriver.generateTr069ProfileScript).not.toHaveBeenCalled();
+    });
+
+    it('lanza BadRequestException si no se selecciona Red TR-069', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+
+      await expect(service.previewTr069ProfileScript('onu-uuid-1', {} as any)).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza BadRequestException SIN llamar al driver si la Red TR-069 tiene "acsUrl" vacío -- misma guarda que applyTr069Profile', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      tr069Repo.findOne.mockResolvedValue({ id: 'tr069-1', vlanId: 46, acsUrl: '', vlan: { vlanId: 46 } });
+
+      await expect(
+        service.previewTr069ProfileScript('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(zteDriver.generateTr069ProfileScript).not.toHaveBeenCalled();
+    });
+
+    it('llama a driver.generateTr069ProfileScript() con los mismos parámetros resueltos que applyTr069Profile, SIN tocar la OLT ni persistir nada', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      zteDriver.generateTr069ProfileScript.mockReturnValue([
+        'configure terminal',
+        'interface gpon-onu_1/1/1:1',
+        'tcont 2 profile SMARTOLT-VOIPMNG-10M',
+      ]);
+
+      const preview = await service.previewTr069ProfileScript('onu-uuid-1', { tr069NetworkId: 'tr069-1' });
+
+      expect(zteDriver.generateTr069ProfileScript).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serviceVlan: 200,
+          managementMethod: 'TR069',
+          tr069Url: 'http://10.46.0.1:7547/',
+          tr069Vlan: 46,
+        }),
+      );
+      expect(preview.commands).toHaveLength(3);
+      expect(preview.totalCommands).toBe(3);
+      expect(configRepo.save).not.toHaveBeenCalled();
+      expect(deviceOperationLogger.logEvent).not.toHaveBeenCalled();
+    });
+
+    it('lanza BadRequestException si el driver no implementa generateTr069ProfileScript (fabricante sin soporte)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      delete (zteDriver as any).generateTr069ProfileScript;
+
+      await expect(
+        service.previewTr069ProfileScript('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
