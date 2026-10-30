@@ -823,7 +823,7 @@ export class ZteC320Driver implements IOltDriver {
             'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
           ]
         : []),
-      // 5. Reinicio OMCI ÚNICAMENTE cuando ya se enviaron tag y security-mgmt "analizaar comportamiento""
+      // 5. Reinicio OMCI ÚNICAMENTE cuando ya se enviaron tag y security-mgmt
       REBOOT_ONU_SENTINEL,
       'end',
       'write',
