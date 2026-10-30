@@ -3,6 +3,19 @@ import { Logger } from '@nestjs/common';
 import { OltConnectionParams } from '../ports/olt-driver.port';
 
 /**
+ * Forma mínima de sesión que consumen las funciones extraídas de
+ * `ZteC320Driver` (auditoría, TR-069, perfiles, etc.) -- les basta con esto,
+ * no necesitan la clase concreta `ZteTelnetSession`. `ZteTelnetSession` la
+ * satisface por tipado estructural, sin declarar `implements` explícito.
+ */
+export interface ZteSessionLike {
+  connectAndLogin(): Promise<void>;
+  executeCommand(cmd: string, timeoutMs?: number): Promise<string>;
+  rebootOnu(timeoutMs?: number): Promise<void>;
+  close(): Promise<void>;
+}
+
+/**
  * Sesión Telnet de bajo nivel para ZTE C320 con protocolo IAC (RFC 854),
  * bypass de paginación (--More--), saneamiento ANSI y detección de prompts.
  *

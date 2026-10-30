@@ -23,6 +23,14 @@ import {
   REBOOT_ONU_SENTINEL,
 } from './zte-c320-provisioning-scripts';
 import {
+  verifyOnuProvisioningWithSession,
+  getOnuIpHostWithSession,
+  getOnuMacTableWithSession,
+  getOnuDetailInfoWithSession,
+  getOnuWanIpWithSession,
+  getOnuTr069MgmtInfoWithSession,
+} from './zte-c320-onu-audit';
+import {
   IOltDriver,
   AuthorizeOnuParams,
   OltConnectionParams,
@@ -718,7 +726,7 @@ export class ZteC320Driver implements IOltDriver {
       let verification: import('../ports/olt-driver.port').OnuProvisioningVerification | undefined;
       if (config.verifyPostProvisioning) {
         await this.delay(3000);
-        verification = await this.verifyOnuProvisioningWithSession(session, config.ponInterface, config.onuId, {
+        verification = await verifyOnuProvisioningWithSession(session, config.ponInterface, config.onuId, {
           expectedVlans: [config.serviceVlan, ...(config.tr069Vlan ? [config.tr069Vlan] : [])],
         });
         if (verification.warnings.length > 0) {
@@ -748,51 +756,10 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      return await this.verifyOnuProvisioningWithSession(session, ponInterface, onuId, options);
+      return await verifyOnuProvisioningWithSession(session, ponInterface, onuId, options);
     } finally {
       await session.close();
     }
-  }
-
-  private async verifyOnuProvisioningWithSession(
-    session: ReturnType<ZteC320Driver['createSession']>,
-    ponInterface: string,
-    onuId: number,
-    options?: { expectedVlans?: number[] },
-  ): Promise<import('../ports/olt-driver.port').OnuProvisioningVerification> {
-    const onuInterface = toOnuInterfaceName(ponInterface, onuId);
-    const warnings: string[] = [];
-
-    // 1. show gpon remote-onu ip-host gpon-onu_{port}:{onu_id}
-    const rawIpHost = await session.executeCommand(`show gpon remote-onu ip-host ${onuInterface}`);
-    const { mgmtIp, ipHostFound } = parseIpHost(rawIpHost);
-
-    if (!mgmtIp) {
-      warnings.push('Host ID: 2 no ha obtenido dirección IP (0.0.0.0 o sin asignar).');
-    }
-
-    // 2. show mac gpon onu gpon-onu_{port}:{onu_id}
-    const rawMac = await session.executeCommand(`show mac gpon onu ${onuInterface}`);
-    const learnedMacs = parseMacTable(rawMac);
-
-    if (options?.expectedVlans && options.expectedVlans.length > 0) {
-      for (const expectedVlan of options.expectedVlans) {
-        const found = learnedMacs.some((lm) => lm.vlan === expectedVlan);
-        if (!found) {
-          warnings.push(`No se han aprendido direcciones MAC en la VLAN configurada ${expectedVlan}.`);
-        }
-      }
-    }
-
-    return {
-      ok: warnings.length === 0,
-      mgmtIp,
-      ipHostFound,
-      learnedMacs,
-      warnings,
-      rawIpHost,
-      rawMac,
-    };
   }
 
   /** "show gpon remote-onu ip-host <interfaz>" como método independiente -- ver `IOltDriver.getOnuIpHost`. */
@@ -800,9 +767,7 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
-      const raw = await session.executeCommand(`show gpon remote-onu ip-host ${onuInterface}`);
-      return { ...parseIpHost(raw), raw };
+      return await getOnuIpHostWithSession(session, ponInterface, onuId);
     } finally {
       await session.close();
     }
@@ -817,9 +782,7 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
-      const raw = await session.executeCommand(`show mac gpon onu ${onuInterface}`);
-      return parseMacTable(raw);
+      return await getOnuMacTableWithSession(session, ponInterface, onuId);
     } finally {
       await session.close();
     }
@@ -828,20 +791,13 @@ export class ZteC320Driver implements IOltDriver {
   /**
    * "show gpon onu detail-info <interfaz>" -- ver `IOltDriver.getOnuDetailInfo`.
    * Campos confirmados en vivo (2026-10-28, OLT_Tabara_Abajo, ONU
-   * ECOM0F91DF9B): "Type: <nombre>", "Config state: <success|fail>". Los
-   * demás campos (`onlineDuration`, `adminState`) se parsean con el mismo
-   * criterio ("Etiqueta: valor") pero sin una muestra en vivo tan completa
-   * como la de Type/Config state -- si el formato real difiere, quedan
-   * `undefined` en vez de inventar un valor; `raw` siempre se devuelve
-   * completo para revisión manual.
+   * ECOM0F91DF9B): "Type: <nombre>", "Config state: <success|fail>".
    */
   async getOnuDetailInfo(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuDetailInfo> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
-      const raw = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
-      return parseOnuDetailInfo(raw);
+      return await getOnuDetailInfoWithSession(session, ponInterface, onuId);
     } finally {
       await session.close();
     }
@@ -849,29 +805,15 @@ export class ZteC320Driver implements IOltDriver {
 
   /**
    * "show gpon remote-onu wan-ip <interfaz>" -- ver `IOltDriver.getOnuWanIp`.
-   * SIN muestra real confirmada en vivo para el formato exacto de esta
-   * salida (ver Plan_Implementacion_WanIp_VlanProfile_HGU.md, Fase 0) --
-   * parseo mejor-esfuerzo por posición (primera IPv4/MAC encontrada = host
-   * 1, segunda = host 2). `raw` siempre se devuelve completo para que el
-   * operador confirme a ojo si el parseo posicional se equivocó.
+   * SIN muestra real confirmada en vivo para el formato exacto (ver
+   * Plan_Implementacion_WanIp_VlanProfile_HGU.md, Fase 0) -- parseo
+   * mejor-esfuerzo, ver `getOnuWanIpWithSession`.
    */
   async getOnuWanIp(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuWanIpInfo> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
-      const raw = await session.executeCommand(`show gpon remote-onu wan-ip ${onuInterface}`);
-
-      const ipMatches = [...raw.matchAll(/(\d{1,3}(?:\.\d{1,3}){3})/g)].map((m) => m[1]);
-      const macMatches = [...raw.matchAll(/([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}|[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})/g)].map(
-        (m) => m[1],
-      );
-
-      return {
-        host1: ipMatches[0] || macMatches[0] ? { ip: ipMatches[0], mac: macMatches[0] } : undefined,
-        host2: ipMatches[1] || macMatches[1] ? { ip: ipMatches[1], mac: macMatches[1] } : undefined,
-        raw,
-      };
+      return await getOnuWanIpWithSession(session, ponInterface, onuId);
     } finally {
       await session.close();
     }
@@ -879,24 +821,15 @@ export class ZteC320Driver implements IOltDriver {
 
   /**
    * "show gpon remote-onu tr069-mgmt <interfaz>" -- ver
-   * `IOltDriver.getOnuTr069MgmtInfo`. Lectura (distinta de los comandos de
-   * escritura "tr069-mgmt N ..." que sí usa `generateTr069ManagementScript`).
-   * SIN muestra real confirmada en vivo para el formato exacto -- parseo
-   * mejor-esfuerzo, `raw` siempre completo.
+   * `IOltDriver.getOnuTr069MgmtInfo`. SIN muestra real confirmada en vivo
+   * para el formato exacto -- parseo mejor-esfuerzo, ver
+   * `getOnuTr069MgmtInfoWithSession`.
    */
   async getOnuTr069MgmtInfo(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuTr069MgmtInfo> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
-      const raw = await session.executeCommand(`show gpon remote-onu tr069-mgmt ${onuInterface}`);
-
-      return {
-        adminStatus: raw.match(/Admin\s*status:\s*(\S+)/i)?.[1],
-        acsUrl: raw.match(/(https?:\/\/\S+)/i)?.[1],
-        vlanTag: raw.match(/vlan\s*:?\s*(\d+)/i)?.[1],
-        raw,
-      };
+      return await getOnuTr069MgmtInfoWithSession(session, ponInterface, onuId);
     } finally {
       await session.close();
     }
