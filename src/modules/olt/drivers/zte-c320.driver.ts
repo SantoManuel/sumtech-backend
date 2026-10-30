@@ -1,5 +1,19 @@
-﻿import * as net from 'net';
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
+import { ZteTelnetSession } from './zte-telnet-session';
+import {
+  isOltErrorResponse,
+  isAlreadyAppliedResponse,
+  parseZteUptimeToSeconds,
+  parseCards,
+  parseVlanList,
+  inferVendorFromSerial,
+  parseOnuRunningConfig,
+  parseIpHost,
+  parseMacTable,
+  parseOnuDetailInfo,
+  parseTcontProfilesFromOutput,
+  parseTrafficProfilesFromOutput,
+} from './zte-c320-parsers';
 import {
   IOltDriver,
   OltConnectionParams,
@@ -46,64 +60,6 @@ export class ZteC320Driver implements IOltDriver {
     close(): Promise<void>;
   } {
     return new ZteTelnetSession(params);
-  }
-
-  /**
-   * Detecta si la OLT rechazó un comando -- CONFIRMADO EN VIVO contra
-   * OLT_Tabara_Abajo (2026-10-19) que existen DOS formatos de error
-   * distintos en este firmware, no uno:
-   *   "%Error <código>: <mensaje>"           (ej. interfaz/puerto inexistente)
-   *   "%Code <código>-<MÓDULO> : <mensaje>"  (ej. "%Code 63904-GPONRM : Not
-   *                                           support this ONU." -- un Tipo
-   *                                           de ONU inválido en
-   *                                           "onu <id> type <X> sn <Y>";
-   *                                           también "%Code 10: Invalid
-   *                                           parameter!" por un serial con
-   *                                           formato inválido)
-   * `authorizeOnu()` nunca revisaba ninguno de los dos antes de este fix:
-   * una autorización rechazada por la OLT (ej. por un Tipo de ONU
-   * placeholder como "Generico", que no existe como perfil real en la OLT)
-   * se reportaba como éxito sin haber escrito nada de verdad.
-   */
-  private isOltErrorResponse(output: string): boolean {
-    return /%Error\b/i.test(output) || /%Code\s+\d+(-\w+)?\s*:/i.test(output);
-  }
-
-  /**
-   * Detecta el idioma recurrente de este firmware para "este paso del script
-   * ya se aplicó en un intento anterior" -- NO es un rechazo real. Confirmado
-   * en vivo contra OLT_Tabara_Abajo (2026-10-20) con DOS mensajes distintos,
-   * mismo significado:
-   *   "%Code 62391-GPONSRV : The entry is existed. This is a re-create
-   *   operation." (en "onu <id> type ... sn ...")
-   *   "%Code 66661: The service is already existed." (en
-   *   "service-port 1 vport 1 user-vlan ... vlan ...")
-   *   "%Code 63869-GPONRM : Record already exists." (en "flow <n> switch
-   *   switch_0/1" y comandos similares del bloque OMCI -- bug real
-   *   confirmado en producción 2026-10-22: reintentar una autorización que ya
-   *   había aplicado el cableado OMCI del canal de internet -- ver
-   *   `generateAuthorizationScript` -- abortaba en el primer "flow" ya
-   *   aplicado en vez de tolerarlo como los demás pasos, porque esta frase
-   *   nunca estaba cubierta por el patrón de abajo, pese a ya haberse visto
-   *   antes en `applyTr069Management` como advertencia).
-   *   "%Code 63873-GPONRM : GEM port already exists." (en "gemport <n> flow <n>"
-   *   y "gemport <n> tcont <n>" -- bug real confirmado en producción 2026-10-22:
-   *   reintentar la configuración TR-069 o una autorización previa reportaba
-   *   una advertencia falsa de fallo de TR-069 ("La OLT rechazó la
-   *   configuración TR-069/ACS ('gemport 2 flow 2'): %Code 63873-GPONRM : GEM
-   *   port already exists.") o abortaba la autorización).
-   * Ambos aparecen cuando una autorización previa de la MISMA ONU falló
-   * DESPUÉS de ese paso (ej. por los bugs reales de "gpon-olt_" vs
-   * "gpon-onu_" y de "tr069-mgmt" ya corregidos), dejando ese paso concreto
-   * ya aplicado en la OLT con el mismo valor que se está volviendo a enviar.
-   * Tratar esto como fatal abortaba el resto del script (los pasos
-   * siguientes nunca llegaban a aplicarse) aunque ese paso puntual ya
-   * estuviera correctamente configurado. Se reconoce en CUALQUIER comando
-   * del script de autorización -- `isOltErrorResponse()` sigue tratando
-   * cualquier otro texto de error como rechazo real.
-   */
-  private isAlreadyAppliedResponse(output: string): boolean {
-    return /\bis\s+(?:already\s+)?existed\b/i.test(output) || /\balready\s+exist(?:s|ed)?\b/i.test(output);
   }
 
   /**
@@ -173,7 +129,7 @@ export class ZteC320Driver implements IOltDriver {
     try {
       await session.connectAndLogin();
       const cardListOutput = await session.executeCommand('show card');
-      const cards = this.parseCards(cardListOutput);
+      const cards = parseCards(cardListOutput);
 
       let cpuUsagePercent: number | undefined;
       let memoryUsagePercent: number | undefined;
@@ -190,7 +146,7 @@ export class ZteC320Driver implements IOltDriver {
         cpuUsagePercent = parseInt(cpuMatch[1], 10);
         memoryUsagePercent = parseInt(memMatch[1], 10);
         const uptimeMatch = detail.match(/Uptime\s*:\s*([^\r\n]+)/i);
-        uptimeSeconds = uptimeMatch ? this.parseZteUptimeToSeconds(uptimeMatch[1].trim()) : undefined;
+        uptimeSeconds = uptimeMatch ? parseZteUptimeToSeconds(uptimeMatch[1].trim()) : undefined;
         rawDetail = detail.slice(0, 500);
         break;
       }
@@ -212,29 +168,6 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
-   * Parsea el formato de uptime real de "show card slotno <N>" en este
-   * equipo: "122 Days, 3 Hours, 37 Minutes, 13 Seconds" (coincide con el
-   * mismo uptime reportado por "show system-group" -- confirmado en vivo).
-   */
-  private parseZteUptimeToSeconds(raw: string): number | undefined {
-    const dayMatch = raw.match(/(\d+)\s*Days?/i);
-    const hourMatch = raw.match(/(\d+)\s*Hours?/i);
-    const minuteMatch = raw.match(/(\d+)\s*Minutes?/i);
-    const secondMatch = raw.match(/(\d+)\s*Seconds?/i);
-
-    if (!dayMatch && !hourMatch && !minuteMatch && !secondMatch) {
-      return undefined;
-    }
-
-    const days = dayMatch ? parseInt(dayMatch[1], 10) : 0;
-    const hours = hourMatch ? parseInt(hourMatch[1], 10) : 0;
-    const minutes = minuteMatch ? parseInt(minuteMatch[1], 10) : 0;
-    const seconds = secondMatch ? parseInt(secondMatch[1], 10) : 0;
-
-    return days * 86400 + hours * 3600 + minutes * 60 + seconds;
-  }
-
-  /**
    * Inventario real de tarjetas/slots del chasis (show card). Usa el mismo
    * comando ya verificado en test/fixtures/zte-c320/show_card.txt.
    */
@@ -243,31 +176,10 @@ export class ZteC320Driver implements IOltDriver {
     try {
       await session.connectAndLogin();
       const output = await session.executeCommand('show card');
-      return this.parseCards(output);
+      return parseCards(output);
     } finally {
       await session.close();
     }
-  }
-
-  private parseCards(output: string): DiscoveredCard[] {
-    const cards: DiscoveredCard[] = [];
-    const rowMatches = output.matchAll(
-      /^\s*\d+\s+\d+\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$/gm,
-    );
-
-    for (const m of rowMatches) {
-      cards.push({
-        slot: parseInt(m[1], 10),
-        cardType: m[2],
-        realType: m[3],
-        portCount: parseInt(m[4], 10),
-        hardVer: m[5],
-        softVer: m[6],
-        status: m[7],
-      });
-    }
-
-    return cards;
   }
 
   /**
@@ -290,7 +202,7 @@ export class ZteC320Driver implements IOltDriver {
       // (tarjeta GPON real: slot 2, tipo GTGH, 16 puertos; "0 puertos
       // detectados" en el escaneo). El número de puertos tampoco se adivina
       // más: se usa `portCount` real de la tabla, no una tabla fija GTGO=8/resto=16.
-      const cards = this.parseCards(cardOutput);
+      const cards = parseCards(cardOutput);
       const gponSlots: Array<{ slot: number; cardType: string; ports: number }> = [];
 
       for (const card of cards) {
@@ -365,7 +277,7 @@ export class ZteC320Driver implements IOltDriver {
           const ifaceName = `gei_1/${card.slot}/${port}`;
           try {
             const ifaceOut = await session.executeCommand(`show interface ${ifaceName}`, 15000);
-            if (this.isOltErrorResponse(ifaceOut) || !ifaceOut.includes(ifaceName)) {
+            if (isOltErrorResponse(ifaceOut) || !ifaceOut.includes(ifaceName)) {
               continue;
             }
 
@@ -443,28 +355,6 @@ export class ZteC320Driver implements IOltDriver {
    * oficial (todos de 1 sola VLAN). Si no se expanden los rangos, "400-405"
    * se interpretaría como solo "400" y "401-404" se perdería silenciosamente.
    */
-  private parseVlanList(text: string): number[] {
-    const result: number[] = [];
-    for (const token of text.split(',')) {
-      const trimmed = token.trim();
-      if (!trimmed) continue;
-      const rangeMatch = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
-      if (rangeMatch) {
-        const start = parseInt(rangeMatch[1], 10);
-        const end = parseInt(rangeMatch[2], 10);
-        for (let v = start; v <= end && v - start < 4094; v++) {
-          result.push(v);
-        }
-        continue;
-      }
-      const single = parseInt(trimmed, 10);
-      if (!Number.isNaN(single)) {
-        result.push(single);
-      }
-    }
-    return result;
-  }
-
   /**
    * VLANs REALES (tag/untag) ya configuradas en una interfaz física, vía
    * "show vlan port <interfaz>" -- confirmado en vivo contra OLT_Tabara_Abajo
@@ -482,7 +372,7 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
       const output = await session.executeCommand(`show vlan port ${interfaceName}`);
 
-      if (this.isOltErrorResponse(output)) {
+      if (isOltErrorResponse(output)) {
         throw new Error(`La OLT rechazó la interfaz "${interfaceName}": ${output.trim()}`);
       }
 
@@ -498,8 +388,8 @@ export class ZteC320Driver implements IOltDriver {
       const untaggedMatch = output.match(/^UntaggedVlan:[ \t]*([\s\S]*?)^[ \t]*TaggedVlan:/im);
       const taggedMatch = output.match(/^TaggedVlan:[ \t]*([\s\S]*)$/im);
 
-      const untagged = untaggedMatch ? this.parseVlanList(untaggedMatch[1]) : [];
-      const tagged = taggedMatch ? this.parseVlanList(taggedMatch[1]) : [];
+      const untagged = untaggedMatch ? parseVlanList(untaggedMatch[1]) : [];
+      const tagged = taggedMatch ? parseVlanList(taggedMatch[1]) : [];
 
       const result: import('../ports/olt-driver.port').DiscoveredInterfaceVlan[] = [];
       for (const vlanId of untagged) result.push({ vlanId, mode: 'UNTAG' });
@@ -540,7 +430,7 @@ export class ZteC320Driver implements IOltDriver {
             ponInterface: ponIface,
             onuIndex,
             serialNumber,
-            vendor: this.inferVendorFromSerial(serialNumber),
+            vendor: inferVendorFromSerial(serialNumber),
           });
         }
       }
@@ -550,17 +440,11 @@ export class ZteC320Driver implements IOltDriver {
       await session.close();
     }
   }
-
-  private inferVendorFromSerial(serialNumber: string): string {
-    const upperSn = serialNumber.toUpperCase();
-    if (upperSn.startsWith('ZTEG')) return 'ZTE';
-    if (upperSn.startsWith('HWTC')) return 'Huawei';
-    if (upperSn.startsWith('VSOL')) return 'VSOL';
-    if (upperSn.startsWith('ALCL')) return 'Nokia/Alcatel';
-    if (upperSn.startsWith('FHTT')) return 'Fiberhome';
-    return 'Desconocido';
-  }
-
+  /*
+  
+  revisar este bloque de condigo y su efecto en el sistema
+  
+  */
   /**
    * Importación pasiva de ONUs ya autorizadas/aprovisionadas en un puerto PON
    * (RF: incorporar un sitio con clientes en producción de otro sistema sin
@@ -597,7 +481,7 @@ export class ZteC320Driver implements IOltDriver {
       // (importar un puerto puntual), no un sondeo frecuente, así que se
       // tolera bastante margen en vez de intentar resolver la contención aquí.
       const baseInfoOutput = await session.executeCommand(`show gpon onu baseinfo ${ponInterface}`, 180000);
-      if (this.isOltErrorResponse(baseInfoOutput)) {
+      if (isOltErrorResponse(baseInfoOutput)) {
         throw new Error(`La OLT no reconoce el puerto PON "${ponInterface}".`);
       }
 
@@ -628,7 +512,7 @@ export class ZteC320Driver implements IOltDriver {
           ponInterface,
           onuIndex,
           serialNumber: base.serialNumber,
-          vendor: this.inferVendorFromSerial(base.serialNumber),
+          vendor: inferVendorFromSerial(base.serialNumber),
           onuType: base.onuType,
           adminState: state?.adminState || 'ENABLE',
           phaseState: state?.phaseState,
@@ -644,18 +528,13 @@ export class ZteC320Driver implements IOltDriver {
   /**
    * Parsea name y description de la salida de "show running-config interface gpon-onu_X/Y/Z:ID".
    */
+  /** Expuesto como método público porque las pruebas lo ejercitan directo (`driver.parseOnuRunningConfig(...)`) sin pasar por una sesión Telnet mock. */
   parseOnuRunningConfig(output: string): { name?: string; description?: string } {
-    if (!output || typeof output !== 'string') return {};
-    const nameMatch = output.match(/^\s*name\s+(\S+)/mi);
-    const descMatch = output.match(/^\s*description\s+(\S+)/mi);
-    return {
-      name: nameMatch ? nameMatch[1] : undefined,
-      description: descMatch ? descMatch[1] : undefined,
-    };
+    return parseOnuRunningConfig(output);
   }
 
   /**
-   * Consulta la configuración activa de una sub-interfaz de ONU (ej. gpon-onu_1/2/15:1)
+   * Consulta la configuración activa de una sub-interfaz de ONU (ej. gpon-onu_1/2/15:1) revisar
    * para extraer name (cliente) y description (zona/fecha) directamente de la OLT.
    */
   async getOnuRunningConfig(
@@ -773,7 +652,7 @@ export class ZteC320Driver implements IOltDriver {
       `interface ${onuInterface}`,
       `name ${config.clientName ? config.clientName.replace(/\s+/g, '_') : `ONU-${config.onuId}`}`,
       ...(config.description ? [`description ${config.description.replace(/\s+/g, '_')}`] : []),
-      `tcont 1 profile ${config.tcontProfile || 'SMARTOLT-100M-UP'}`,
+      `tcont 1 profile ${config.tcontProfile}`,
     ];
 
     if (hasTr069) {
@@ -870,7 +749,7 @@ export class ZteC320Driver implements IOltDriver {
         config.tr069AcsUsername && config.tr069AcsPassword
           ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
           : `tr069-mgmt 1 acs ${config.tr069Url}`,
-        `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
+        `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
       );
       // "security-mgmt ..." solo si el modelo lo soporta por OMCI -- algunos
       // modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 : unknown
@@ -932,7 +811,7 @@ export class ZteC320Driver implements IOltDriver {
       config.tr069AcsUsername && config.tr069AcsPassword
         ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
         : `tr069-mgmt 1 acs ${config.tr069Url}`,
-      `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan || config.serviceVlan}`,
+      `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
       // "security-mgmt ..." solo si el modelo lo soporta por OMCI -- algunos
       // modelos (ej. HUAWEY-BT546XG) lo rechazan con "%Code 63993 : unknown
       // ME". No es necesario para el registro TR-069 (ya cableado arriba vía
@@ -944,7 +823,7 @@ export class ZteC320Driver implements IOltDriver {
             'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
           ]
         : []),
-      // 5. Reinicio OMCI ÚNICAMENTE cuando ya se enviaron tag y security-mgmt
+      // 5. Reinicio OMCI ÚNICAMENTE cuando ya se enviaron tag y security-mgmt "analizaar comportamiento""
       REBOOT_ONU_SENTINEL,
       'end',
       'write',
@@ -1058,7 +937,7 @@ export class ZteC320Driver implements IOltDriver {
           await this.delay(pacingMs);
         }
 
-        if (this.isOltErrorResponse(output) && !this.isAlreadyAppliedResponse(output)) {
+        if (isOltErrorResponse(output) && !isAlreadyAppliedResponse(output)) {
           const errMsg = output.trim();
           this.logger.warn(`[diag] authorizeOnu: OLT reportó respuesta no exitosa en comando "${cmd}": ${errMsg}`);
 
@@ -1127,7 +1006,7 @@ export class ZteC320Driver implements IOltDriver {
 
     // 1. show gpon remote-onu ip-host gpon-onu_{port}:{onu_id}
     const rawIpHost = await session.executeCommand(`show gpon remote-onu ip-host ${onuInterface}`);
-    const { mgmtIp, ipHostFound } = this.parseIpHost(rawIpHost);
+    const { mgmtIp, ipHostFound } = parseIpHost(rawIpHost);
 
     if (!mgmtIp) {
       warnings.push('Host ID: 2 no ha obtenido dirección IP (0.0.0.0 o sin asignar).');
@@ -1135,7 +1014,7 @@ export class ZteC320Driver implements IOltDriver {
 
     // 2. show mac gpon onu gpon-onu_{port}:{onu_id}
     const rawMac = await session.executeCommand(`show mac gpon onu ${onuInterface}`);
-    const learnedMacs = this.parseMacTable(rawMac);
+    const learnedMacs = parseMacTable(rawMac);
 
     if (options?.expectedVlans && options.expectedVlans.length > 0) {
       for (const expectedVlan of options.expectedVlans) {
@@ -1157,55 +1036,6 @@ export class ZteC320Driver implements IOltDriver {
     };
   }
 
-  /**
-   * Parser de "show gpon remote-onu ip-host <interfaz>" -- extraído de
-   * `verifyOnuProvisioningWithSession` para reutilizarlo desde
-   * `getOnuIpHost()`. Esta es la señal REAL de si la ONU obtuvo IP de
-   * gestión para el camino de aprovisionamiento que SÍ usamos hoy
-   * (ip-host + dhcp-ip ethuni) -- a diferencia de `getOnuWanIp` (comando
-   * "wan-ip"), que solo aplica al mecanismo alternativo de
-   * Plan_Implementacion_WanIp_VlanProfile_HGU.md, todavía no implementado.
-   * Confirmado en vivo (2026-10-29, ONU ECOM0F91DF9B): "show ... wan-ip"
-   * devuelve "%Code 64040-GPONRM : No relate information to show" para
-   * cualquier ONU que NO pase por ese mecanismo -- no es evidencia de que
-   * la ONU no tenga IP, solo de que no usa "wan-ip".
-   */
-  private parseIpHost(raw: string): { mgmtIp?: string; ipHostFound: boolean } {
-    let mgmtIp: string | undefined;
-    let ipHostFound = false;
-
-    // Buscar Host ID: 2 (gestión TR-069)
-    const host2Match = raw.match(/Host\s*(?:ID)?\s*:\s*2\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
-    const searchTarget = host2Match ? host2Match[1] : raw;
-
-    if (host2Match) {
-      ipHostFound = true;
-    }
-
-    // CONFIRMADO EN VIVO (2026-10-29, ONU ECOM0F91DF9B): el firmware real usa
-    // "IP addres:" (sin la "s" final -- typo del propio fabricante) y
-    // "Current IP address:" (bien escrito) -- ninguno de los dos coincidía
-    // con el regex anterior (esperaba "IP address:" pegado al ":", bug real
-    // que hacía fallar el parseo silenciosamente para CUALQUIER IP real, no
-    // solo 0.0.0.0). "Current IP address" es el valor realmente negociado
-    // por DHCP (más confiable que "IP addres", que puede quedar en blanco
-    // aun con DHCP activo) -- se prioriza sobre el campo plano "IP:"/
-    // "IP addres:" cuando ambos están presentes. El ancla de línea (^/\n)
-    // en el patrón plano evita que la "IP" dentro de "Current IP address:"
-    // se cuente dos veces.
-    const currentIpMatch = searchTarget.match(/Current\s+IP\s*(?:addr(?:ess|es))?\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/i);
-    const plainIpMatch = searchTarget.match(/(?:^|\n)\s*IP\s*(?:addr(?:ess|es))?\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/im);
-    const ipMatch = currentIpMatch || plainIpMatch;
-    if (ipMatch) {
-      const parsedIp = ipMatch[1];
-      if (parsedIp !== '0.0.0.0') {
-        mgmtIp = parsedIp;
-      }
-    }
-
-    return { mgmtIp, ipHostFound };
-  }
-
   /** "show gpon remote-onu ip-host <interfaz>" como método independiente -- ver `IOltDriver.getOnuIpHost`. */
   async getOnuIpHost(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<OnuIpHostInfo> {
     const session = this.createSession(params);
@@ -1213,28 +1043,10 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
       const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
       const raw = await session.executeCommand(`show gpon remote-onu ip-host ${onuInterface}`);
-      return { ...this.parseIpHost(raw), raw };
+      return { ...parseIpHost(raw), raw };
     } finally {
       await session.close();
     }
-  }
-
-  /**
-   * Parser de "show mac gpon onu <interfaz>" -- extraído de
-   * `verifyOnuProvisioningWithSession` para poder reutilizarlo desde
-   * `getOnuMacTable()` sin duplicar la expresión regular.
-   */
-  private parseMacTable(raw: string): Array<{ mac: string; vlan: number }> {
-    const learnedMacs: Array<{ mac: string; vlan: number }> = [];
-    const macRegex = /([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}|[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s+(?:\S+\s+)?(\d+)/gi;
-    let match: RegExpExecArray | null;
-    while ((match = macRegex.exec(raw)) !== null) {
-      learnedMacs.push({
-        mac: match[1],
-        vlan: parseInt(match[2], 10),
-      });
-    }
-    return learnedMacs;
   }
 
   /** "show mac gpon onu <interfaz>" como método independiente -- ver `IOltDriver.getOnuMacTable`. */
@@ -1248,7 +1060,7 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
       const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
       const raw = await session.executeCommand(`show mac gpon onu ${onuInterface}`);
-      return this.parseMacTable(raw);
+      return parseMacTable(raw);
     } finally {
       await session.close();
     }
@@ -1270,21 +1082,10 @@ export class ZteC320Driver implements IOltDriver {
       await session.connectAndLogin();
       const onuInterface = this.toOnuInterfaceName(ponInterface, onuId);
       const raw = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
-      return this.parseOnuDetailInfo(raw);
+      return parseOnuDetailInfo(raw);
     } finally {
       await session.close();
     }
-  }
-
-  /** Parser de "show gpon onu detail-info <interfaz>" -- ver `getOnuDetailInfo` para las notas sobre qué campos están confirmados en vivo. */
-  private parseOnuDetailInfo(raw: string): OnuDetailInfo {
-    return {
-      type: raw.match(/^\s*Type:\s*(\S+)/im)?.[1],
-      configState: raw.match(/Config state:\s*(\S+)/i)?.[1],
-      onlineDuration: raw.match(/Online\s*Duration:\s*(.+)/i)?.[1]?.trim(),
-      adminState: raw.match(/Admin\s*state:\s*(\S+)/i)?.[1],
-      raw,
-    };
   }
 
   /**
@@ -1446,8 +1247,8 @@ export class ZteC320Driver implements IOltDriver {
           await this.delay(pacingMs);
         }
 
-        if (this.isOltErrorResponse(output)) {
-          if (this.isAlreadyAppliedResponse(output)) {
+        if (isOltErrorResponse(output)) {
+          if (isAlreadyAppliedResponse(output)) {
             // ok, ya aplicado en un intento anterior -- seguir con el resto.
           } else if (inTr069Block) {
             const msg =
@@ -1480,7 +1281,7 @@ export class ZteC320Driver implements IOltDriver {
       const onuInterface = this.toOnuInterfaceName(config.ponInterface, config.onuId);
       try {
         const detailOutput = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
-        const configState = this.parseOnuDetailInfo(detailOutput).configState;
+        const configState = parseOnuDetailInfo(detailOutput).configState;
         if (configState && configState.toLowerCase() !== 'success') {
           const configStateWarning =
             `El "Config state" del ONT quedó en "${configState}" (no "success") tras aplicar el bloque TR-069 -- ` +
@@ -1526,7 +1327,7 @@ export class ZteC320Driver implements IOltDriver {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const output = await session.executeCommand(acsCmd);
-      const accepted = !this.isOltErrorResponse(output) || this.isAlreadyAppliedResponse(output);
+      const accepted = !isOltErrorResponse(output) || isAlreadyAppliedResponse(output);
 
       if (accepted) {
         this.logger.log(`[diag] applyAcsUrlWithRetries: ACS aceptado en el intento ${attempt}/${maxAttempts}.`);
@@ -1601,7 +1402,7 @@ export class ZteC320Driver implements IOltDriver {
 
       await session.executeCommand('configure terminal');
       const pomOutput = await session.executeCommand(`pon-onu-mng ${onuInterface}`);
-      if (this.isOltErrorResponse(pomOutput)) {
+      if (isOltErrorResponse(pomOutput)) {
         throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${pomOutput.trim()}`);
       }
 
@@ -1614,7 +1415,7 @@ export class ZteC320Driver implements IOltDriver {
           ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
           : `tr069-mgmt 1 acs ${config.tr069Url}`;
       const acsOutput = await session.executeCommand(acsCmd);
-      if (this.isOltErrorResponse(acsOutput) && !this.isAlreadyAppliedResponse(acsOutput)) {
+      if (isOltErrorResponse(acsOutput) && !isAlreadyAppliedResponse(acsOutput)) {
         // Error DURO a propósito -- ver el comentario de la interfaz
         // (`updateTr069AcsUrl` en olt-driver.port.ts) sobre por qué esta
         // única pieza no se trata como mejor esfuerzo.
@@ -1656,37 +1457,11 @@ export class ZteC320Driver implements IOltDriver {
     try {
       await session.connectAndLogin();
       const output = await session.executeCommand('show gpon profile tcont');
-      const found = this.parseTcontProfilesFromOutput(output).find((p) => p.name === name);
+      const found = parseTcontProfilesFromOutput(output).find((p) => p.name === name);
       return found ? { name: found.name, fixedKbps: found.speedKbps } : null;
     } finally {
       await session.close();
     }
-  }
-
-  private parseTcontProfilesFromOutput(output: string): DiscoveredTcontProfile[] {
-    // "Profile name :<nombre>" seguido (con ruido de paginación/backspace
-    // posible en medio) de la fila de datos "Type FBW ABW MBW PRIORITY
-    // WEIGHT" -- se salta de forma perezosa hasta la primera fila que calce
-    // el patrón numérico real, sin depender del texto exacto de la cabecera
-    // (que puede variar o llegar fragmentado por "--More--").
-    const profileRegex = /Profile name\s*:\s*(\S+)[\s\S]*?\r?\n\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)/g;
-    const results: DiscoveredTcontProfile[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = profileRegex.exec(output)) !== null) {
-      const [, name, type, fbw, abw, mbw] = match;
-      const fbwKbps = parseInt(fbw, 10);
-      const abwKbps = parseInt(abw, 10);
-      const mbwKbps = parseInt(mbw, 10);
-      results.push({
-        name,
-        type: parseInt(type, 10),
-        fbwKbps,
-        abwKbps,
-        mbwKbps,
-        speedKbps: Math.max(fbwKbps, abwKbps, mbwKbps),
-      });
-    }
-    return results;
   }
 
   /**
@@ -1729,7 +1504,7 @@ export class ZteC320Driver implements IOltDriver {
     profile: TcontProfile,
   ): Promise<void> {
     const output = await session.executeCommand('show gpon profile tcont');
-    const existing = this.parseTcontProfilesFromOutput(output).find((p) => p.name === profile.name);
+    const existing = parseTcontProfilesFromOutput(output).find((p) => p.name === profile.name);
     if (existing) {
       return;
     }
@@ -1738,7 +1513,7 @@ export class ZteC320Driver implements IOltDriver {
     const createOutput = await session.executeCommand(
       `profile tcont ${profile.name} type 5 fixed 64 assured 64 maximum ${profile.fixedKbps}`,
     );
-    if (this.isOltErrorResponse(createOutput)) {
+    if (isOltErrorResponse(createOutput)) {
       throw new Error(`La OLT rechazó el perfil TCONT "${profile.name}": ${createOutput.trim()}`);
     }
     await session.executeCommand('exit');
@@ -1783,7 +1558,7 @@ export class ZteC320Driver implements IOltDriver {
     const createOutput = await session.executeCommand(
       `traffic-profile ${profile.name} ip cir ${profile.downKbps} cbs 1000 pir ${profile.downKbps} pbs 1000`,
     );
-    if (this.isOltErrorResponse(createOutput)) {
+    if (isOltErrorResponse(createOutput)) {
       // Salir de "(config)#" antes de lanzar
       try {
         await session.executeCommand('exit');
@@ -1796,18 +1571,9 @@ export class ZteC320Driver implements IOltDriver {
     await session.executeCommand('write');
   }
 
+  /** Expuesto como método público porque las pruebas lo ejercitan directo (`driver.parseTrafficProfilesFromOutput(...)`). */
   parseTrafficProfilesFromOutput(output: string): DiscoveredTrafficProfile[] {
-    const regex = /No\.\s*\d+\s+profile\s*:\s*([^\r\n]+)/g;
-    const profiles: DiscoveredTrafficProfile[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(output)) !== null) {
-      const name = match[1].trim();
-      if (!name) continue;
-      const mbMatch = name.match(/TRAFFIC-(\d+)M/i);
-      const downKbps = mbMatch ? parseInt(mbMatch[1], 10) * 1024 : undefined;
-      profiles.push({ name, downKbps });
-    }
-    return profiles;
+    return parseTrafficProfilesFromOutput(output);
   }
 
   /**
@@ -1878,7 +1644,7 @@ export class ZteC320Driver implements IOltDriver {
     profile: OnuTypeProfile,
   ): Promise<void> {
     const checkOutput = await session.executeCommand(`show onu-type gpon ${profile.name}`);
-    const alreadyExists = !this.isOltErrorResponse(checkOutput) && checkOutput.includes(profile.name);
+    const alreadyExists = !isOltErrorResponse(checkOutput) && checkOutput.includes(profile.name);
     if (alreadyExists) {
       // CONFIRMADO EN VIVO (2026-10-22) contra OLT_Tabara_Abajo: un onu-type
       // PREEXISTENTE (creado antes de que este método supiera de "max-veip",
@@ -1916,7 +1682,7 @@ export class ZteC320Driver implements IOltDriver {
           await session.executeCommand('configure terminal');
           await session.executeCommand('pon');
           const fixOutput = await session.executeCommand(`onu-type ${profile.name} gpon max-veip 1`);
-          if (this.isOltErrorResponse(fixOutput)) {
+          if (isOltErrorResponse(fixOutput)) {
             this.logger.warn(
               `[diag] ensureOnuTypeProfileWithSession: no se pudo corregir "max-veip" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
             );
@@ -1977,7 +1743,7 @@ export class ZteC320Driver implements IOltDriver {
     const createOutput = await session.executeCommand(
       `onu-type ${profile.name} gpon description ${description} max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8 max-veip 1`,
     );
-    if (this.isOltErrorResponse(createOutput)) {
+    if (isOltErrorResponse(createOutput)) {
       await session.executeCommand('exit');
       await session.executeCommand('exit');
       throw new Error(`La OLT rechazó el onu-type "${profile.name}": ${createOutput.trim()}`);
@@ -1985,7 +1751,7 @@ export class ZteC320Driver implements IOltDriver {
 
     if (profile.ethPorts && profile.ethPorts > 0) {
       const ethOutput = await session.executeCommand(`onu-type-if ${profile.name} eth_0/1-${profile.ethPorts}`);
-      if (this.isOltErrorResponse(ethOutput)) {
+      if (isOltErrorResponse(ethOutput)) {
         await session.executeCommand('exit');
         await session.executeCommand('exit');
         throw new Error(`La OLT rechazó los puertos ETH del onu-type "${profile.name}": ${ethOutput.trim()}`);
@@ -1993,7 +1759,7 @@ export class ZteC320Driver implements IOltDriver {
     }
     if (profile.potsPorts && profile.potsPorts > 0) {
       const potsOutput = await session.executeCommand(`onu-type-if ${profile.name} pots_0/1-${profile.potsPorts}`);
-      if (this.isOltErrorResponse(potsOutput)) {
+      if (isOltErrorResponse(potsOutput)) {
         await session.executeCommand('exit');
         await session.executeCommand('exit');
         throw new Error(`La OLT rechazó los puertos POTS del onu-type "${profile.name}": ${potsOutput.trim()}`);
@@ -2029,7 +1795,7 @@ export class ZteC320Driver implements IOltDriver {
     try {
       await session.connectAndLogin();
       const output = await session.executeCommand('show gpon profile tcont');
-      return this.parseTcontProfilesFromOutput(output);
+      return parseTcontProfilesFromOutput(output);
     } finally {
       await session.close();
     }
@@ -2280,396 +2046,8 @@ export class ZteC320Driver implements IOltDriver {
   }
 }
 
-/**
- * Sesión Telnet de bajo nivel para ZTE C320 con protocolo IAC (RFC 854),
- * bypass de paginación (--More--), saneamiento ANSI y detección de prompts.
- */
-export class ZteTelnetSession {
-  private socket: net.Socket | null = null;
-  private prompt = 'ZXAN#';
-  private buffer = '';
-  /**
-   * Se pone en `true` al entrar a "configure terminal" -- señal de que la
-   * sesión puede tener cambios sin guardar. Usado por `close()` para decidir
-   * si vale la pena esperar un posible prompt interactivo "[yes/no]:" al
-   * salir (ver close() para el porqué). Las sesiones de solo lectura (show *)
-   * nunca lo activan, así que no pagan ningún costo de espera adicional.
-   */
-  private dirty = false;
-  // Instrumentación temporal (RF: bug real en producción, 2026-10-17 --
-  // "show gpon onu baseinfo" se cuelga completo en algunos puertos incluso
-  // ya serializado por OLT -- ver withOltTelnetLock -- y confirmado que la
-  // OLT responde normal en 1-2s cuando se prueba aislado inmediatamente
-  // después de la falla real. Sin visibilidad de HASTA DÓNDE llega la
-  // sesión real que se cuelga, no se puede diferenciar "nunca conectó" de
-  // "conectó pero dejó de recibir datos a mitad de una página". Se deja
-  // este logger hasta diagnosticar la próxima ocurrencia real.)
-  private readonly logger = new Logger(ZteTelnetSession.name);
-
-  constructor(private readonly params: OltConnectionParams) {}
-
-  async connectAndLogin(): Promise<void> {
-    const timeoutMs = this.params.timeoutMs || 15000;
-    const t0 = Date.now();
-
-    await new Promise<void>((resolve, reject) => {
-      const socket = new net.Socket();
-      this.socket = socket;
-
-      let resolved = false;
-      const timer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          this.logger.warn(`[diag] connectAndLogin TIMEOUT a los ${Date.now() - t0}ms en etapa ${loginStep} contra ${this.params.host}:${this.params.port}`);
-          socket.removeListener('data', onData);
-          socket.destroy();
-          reject(new Error(`Timeout de conexión Telnet (${timeoutMs}ms) contra ${this.params.host}:${this.params.port}`));
-        }
-      }, timeoutMs);
-
-      socket.connect(this.params.port, this.params.host, () => {
-        this.logger.log(`[diag] TCP conectado a los ${Date.now() - t0}ms (${this.params.host}:${this.params.port})`);
-      });
-
-      let loginStep: 'WAIT_USER' | 'WAIT_PASS' | 'WAIT_PROMPT' = 'WAIT_USER';
-
-      // Este handler DEBE removerse al terminar el login (éxito o fallo): el
-      // socket se reutiliza después para executeCommand()/rebootOnu(), que
-      // registran sus propios handlers 'data'. Sin remover este, ambos
-      // procesan cada chunk -- cada "--More--" recibía DOS espacios (uno de
-      // este handler zombie, otro del handler real), avanzando dos páginas
-      // de paginación por cada una y perdiendo la intermedia (bug real
-      // confirmado por revisión de código, 2026-10-23).
-      const cleanup = () => socket.removeListener('data', onData);
-
-      const onData = (raw: Buffer) => {
-        const cleaned = this.handleIac(raw);
-        this.buffer += cleaned.toString('ascii');
-
-        // Paginación Telnet ZTE: si aparece --More--, enviar barra espaciadora.
-        // No retornar: esta OLT a veces envía el resto (incl. el prompt) en el
-        // mismo chunk que el "--More--", así que hay que seguir evaluando.
-        if (this.buffer.includes('--More--') || this.buffer.toLowerCase().includes('-- more --')) {
-          this.buffer = this.buffer.replace(/--More--/gi, '');
-          socket.write(' ');
-        }
-
-        if (loginStep === 'WAIT_USER' && /username:\s*$/i.test(this.buffer.trim())) {
-          this.buffer = '';
-          loginStep = 'WAIT_PASS';
-          socket.write(`${this.params.username}\r\n`);
-          return;
-        }
-
-        if (loginStep === 'WAIT_PASS' && /password:\s*$/i.test(this.buffer.trim())) {
-          this.buffer = '';
-          loginStep = 'WAIT_PROMPT';
-          socket.write(`${this.params.password}\r\n`);
-          return;
-        }
-
-        if (loginStep === 'WAIT_PROMPT') {
-          const lines = this.buffer.split('\n');
-          for (const line of lines.reverse()) {
-            const stripped = line.trim();
-            if (stripped.endsWith('#') && stripped.length > 2 && stripped.length < 35) {
-              this.prompt = stripped;
-              if (!resolved) {
-                resolved = true;
-                this.logger.log(`[diag] connectAndLogin OK a los ${Date.now() - t0}ms, prompt="${this.prompt}"`);
-                clearTimeout(timer);
-                cleanup();
-                resolve();
-              }
-              return;
-            }
-          }
-        }
-      };
-
-      socket.on('data', onData);
-
-      socket.on('error', (err) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          cleanup();
-          reject(err);
-        }
-      });
-
-      socket.on('close', () => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          cleanup();
-          reject(new Error('Conexión cerrada por el host remoto durante el handshake Telnet.'));
-        }
-      });
-    });
-
-    // Desactivar paginación CLI ZTE para evitar cuelgues por prompts --More--
-    try {
-      await this.executeCommand('terminal length 0', 3000);
-    } catch (err: any) {
-      this.logger.debug?.(`terminal length 0 no soportado o ignorado: ${err.message}`);
-    }
-  }
-
-  async executeCommand(command: string, timeoutMs = 20000): Promise<string> {
-    const socket = this.socket;
-    if (!socket) {
-      throw new Error('Socket Telnet no inicializado.');
-    }
-
-    if (command === 'configure terminal') {
-      this.dirty = true;
-    }
-
-    const t0 = Date.now();
-    this.logger.log(`[diag] executeCommand INICIO: "${command}" (timeout ${timeoutMs}ms)`);
-
-    return new Promise<string>((resolve, reject) => {
-      let output = '';
-      let chunkCount = 0;
-      let moreCount = 0;
-      this.buffer = '';
-
-      let finished = false;
-      const timer = setTimeout(() => {
-        if (!finished) {
-          finished = true;
-          socket.removeListener('data', onData);
-          this.logger.warn(
-            `[diag] executeCommand TIMEOUT a los ${Date.now() - t0}ms: "${command}" -- ` +
-              `${chunkCount} chunk(s) recibido(s), ${output.length} chars acumulados, ${moreCount} "--More--" visto(s). ` +
-              `Últimos 300 chars: ${JSON.stringify(output.slice(-300))}`,
-          );
-          reject(new Error(`Timeout ejecutando comando OLT: "${command}"`));
-        }
-      }, timeoutMs);
-
-      const onData = (raw: Buffer) => {
-        chunkCount += 1;
-        const cleaned = this.handleIac(raw);
-        const chunk = cleaned.toString('ascii');
-        output += chunk;
-
-        // Confirmación interactiva inesperada (ej. "Confirm to logout
-        // without saving? [yes/no]:" al salir de "pon-onu-mng" con "exit" en
-        // vez de "end" -- ver generateAuthorizationScript). No hay una
-        // respuesta "correcta" genérica (según el comando, "yes" puede
-        // significar "confirmar" o "descartar cambios"), así que en vez de
-        // adivinar, se falla de inmediato con el texto exacto de la OLT en
-        // vez de colgarse hasta agotar el timeout completo.
-        if (/\[yes\/no\]:\s*$/i.test(output.trim())) {
-          finished = true;
-          clearTimeout(timer);
-          socket.removeListener('data', onData);
-          const prompt = output.trim().slice(-200);
-          this.logger.warn(`[diag] executeCommand: confirmación interactiva inesperada en "${command}": "${prompt}"`);
-          reject(
-            new Error(
-              `La OLT pidió una confirmación interactiva que el comando "${command}" no esperaba: "${prompt}". Revisa la secuencia de comandos del driver.`,
-            ),
-          );
-          return;
-        }
-
-        if (output.includes('--More--') || output.toLowerCase().includes('-- more --')) {
-          moreCount += 1;
-          this.logger.log(`[diag] "--More--" #${moreCount} a los ${Date.now() - t0}ms (chunk #${chunkCount}, ${output.length} chars acumulados)`);
-          output = output.replace(/--More--/gi, '');
-          socket.write(' ');
-          // No retornar aquí: esta OLT a veces envía la página final y el
-          // prompt de vuelta en el MISMO chunk que el último "--More--" (no
-          // espera a que el cliente confirme antes de seguir transmitiendo).
-          // Si se retorna sin revisar el prompt, la sesión se queda esperando
-          // un chunk que nunca llega -- esto causaba el cuelgue hasta el
-          // timeout de 180s en puertos con muchas ONUs/páginas.
-        }
-
-        const lines = output.split('\n');
-        const lastLine = lines[lines.length - 1]?.trim() || '';
-
-        if (lastLine.endsWith('#') || lastLine.endsWith(')#' )) {
-          finished = true;
-          clearTimeout(timer);
-          socket.removeListener('data', onData);
-          this.logger.log(`[diag] executeCommand OK a los ${Date.now() - t0}ms: "${command}" -- ${chunkCount} chunk(s), ${output.length} chars, ${moreCount} "--More--"`);
-
-          // Limpiar eco del comando y prompts
-          const cleanLines = lines
-            .map((l) => l.trim())
-            .filter((l) => l.length > 0 && !l.includes(command) && !l.endsWith('#'));
-
-          resolve(cleanLines.join('\n'));
-        }
-      };
-
-      socket.on('data', onData);
-      socket.write(`${command}\r\n`);
-    });
-  }
-
-  /**
-   * Reinicia el ONT por OMCI -- asume que la sesión YA está posicionada
-   * dentro de "pon-onu-mng <iface>" (no entra el submodo por su cuenta). A
-   * diferencia de `executeCommand()`, este comando SÍ espera (y responde) la
-   * confirmación interactiva "Confirm to reboot? [yes/no]:" -- CONFIRMADO EN
-   * VIVO contra OLT_Tabara_Abajo (2026-10-20, ONU CMDCDD4D131E) escribiendo
-   * directo al socket en vez de usar `executeCommand()`, que por diseño
-   * rechaza cualquier prompt "[yes/no]:" inesperado en vez de adivinar.
-   */
-  async rebootOnu(timeoutMs = 20000): Promise<void> {
-    const socket = this.socket;
-    if (!socket) {
-      throw new Error('Socket Telnet no inicializado.');
-    }
-
-    const t0 = Date.now();
-    this.logger.log('[diag] rebootOnu INICIO');
-
-    await new Promise<void>((resolve, reject) => {
-      let output = '';
-      let confirmed = false;
-      let finished = false;
-
-      const timer = setTimeout(() => {
-        if (!finished) {
-          finished = true;
-          socket.removeListener('data', onData);
-          this.logger.warn(`[diag] rebootOnu TIMEOUT a los ${Date.now() - t0}ms. Últimos 300 chars: ${JSON.stringify(output.slice(-300))}`);
-          reject(new Error('Timeout esperando confirmación de reinicio OMCI del ONT.'));
-        }
-      }, timeoutMs);
-
-      const onData = (raw: Buffer) => {
-        const cleaned = this.handleIac(raw);
-        output += cleaned.toString('ascii');
-
-        if (!confirmed && /\[yes\/no\]:\s*$/i.test(output.trim())) {
-          confirmed = true;
-          output = '';
-          socket.write('yes\r\n');
-          return;
-        }
-
-        if (confirmed) {
-          const lines = output.split('\n');
-          const lastLine = lines[lines.length - 1]?.trim() || '';
-          if (lastLine.endsWith('#') || lastLine.endsWith(')#')) {
-            finished = true;
-            clearTimeout(timer);
-            socket.removeListener('data', onData);
-            this.logger.log(`[diag] rebootOnu OK a los ${Date.now() - t0}ms`);
-            resolve();
-          }
-        }
-      };
-
-      socket.on('data', onData);
-      socket.write('reboot\r\n');
-    });
-  }
-
-  /**
-   * CONFIRMADO EN VIVO (logs de producción): "exit" dentro de un submodo con
-   * cambios sin guardar dispara el prompt interactivo "The configuration is
-   * changed,confirm to logout without saving? [yes/no]:" -- antes este
-   * método escribía "exit\r\n" y destruía el socket de inmediato, sin
-   * esperar esa respuesta. Si la OLT se queda esperando un "yes"/"no" que
-   * nunca llega porque el socket ya se cerró, la sesión puede quedar
-   * colgada del lado del equipo (contando contra el límite de sesiones
-   * Telnet concurrentes) en vez de liberarse de inmediato. Mismo patrón ya
-   * probado en `rebootOnu()`: escuchar la respuesta real y solo responder
-   * "yes" si el prompt efectivamente aparece -- nunca se manda "yes" a
-   * ciegas, porque en cualquier otro contexto eso se interpretaría como un
-   * comando literal inválido. Las sesiones de solo lectura (sin
-   * "configure terminal") nunca entran a este camino -- destrucción
-   * inmediata, sin penalidad de espera.
-   */
-  async close(): Promise<void> {
-    const socket = this.socket;
-    this.socket = null;
-    if (!socket) {
-      return;
-    }
-
-    if (!this.dirty) {
-      try {
-        socket.destroy();
-      } catch {
-        // ignore
-      }
-      return;
-    }
-
-    const graceMs = 500;
-    await new Promise<void>((resolve) => {
-      let finished = false;
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        socket.removeListener('data', onData);
-        try {
-          socket.destroy();
-        } catch {
-          // ignore
-        }
-        resolve();
-      };
-
-      const timer = setTimeout(finish, graceMs);
-
-      const onData = (raw: Buffer) => {
-        const cleaned = this.handleIac(raw);
-        const text = cleaned.toString('ascii').trim();
-        if (/\[yes\/no\]:\s*$/i.test(text)) {
-          try {
-            socket.write('yes\r\n');
-          } catch {
-            // ignore
-          }
-          // Pequeño margen para que "yes\r\n" viaje antes de destruir.
-          clearTimeout(timer);
-          setTimeout(finish, 200);
-        }
-      };
-
-      socket.on('data', onData);
-      try {
-        socket.write('exit\r\n');
-      } catch {
-        finish();
-      }
-    });
-  }
-
-  /**
-   * Negociación Telnet IAC (RFC 854)
-   * 0xFF 0xFD (DO) -> 0xFF 0xFC (WON'T)
-   * 0xFF 0xFB (WILL) -> 0xFF 0xFE (DON'T)
-   */
-  private handleIac(data: Buffer): Buffer {
-    const out: number[] = [];
-    let i = 0;
-    while (i < data.length) {
-      if (data[i] === 0xff && i + 2 < data.length) {
-        const cmd = data[i + 1];
-        const opt = data[i + 2];
-        if (cmd === 0xfd && this.socket) {
-          this.socket.write(Buffer.from([0xff, 0xfc, opt]));
-        } else if (cmd === 0xfb && this.socket) {
-          this.socket.write(Buffer.from([0xff, 0xfe, opt]));
-        }
-        i += 3;
-      } else {
-        out.push(data[i]);
-        i += 1;
-      }
-    }
-    return Buffer.from(out);
-  }
-}
+// `ZteTelnetSession` se extrajo a `zte-telnet-session.ts` (Fase 1 de
+// Plan_Implementacion_Refactor_ZteC320Driver.md) -- cliente Telnet genérico
+// sin dependencias de esta clase, reexportado abajo para no romper imports
+// externos existentes (`import { ZteTelnetSession } from './zte-c320.driver'`).
+export { ZteTelnetSession } from './zte-telnet-session';
