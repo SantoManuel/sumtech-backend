@@ -7,6 +7,7 @@ import {
   toOnuInterfaceName,
   getHumanPacingDelay,
   REBOOT_ONU_SENTINEL,
+  FLOW_SWITCH_BIND_RE,
 } from './zte-c320-provisioning-scripts';
 import { ensureTcontProfileWithSession, ensureTrafficProfileWithSession } from './zte-c320-profiles';
 
@@ -208,7 +209,30 @@ export async function applyTr069ManagementWithSession(
     }
 
     if (isOltErrorResponse(output)) {
-      if (isAlreadyAppliedResponse(output)) {
+      if (isAlreadyAppliedResponse(output) && FLOW_SWITCH_BIND_RE.test(cmd)) {
+        // Mismo criterio que `authorizeOnu()` (zte-c320.driver.ts, canal 1)
+        // -- CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E) que tolerar
+        // "ya existe" a ciegas en "flow <N> switch switch_0/1" puede dejar
+        // un enlace de un intento ANTERIOR sin verificar realmente
+        // conmutando tráfico. Tras el desacople de Etapa 1/Etapa 2
+        // (2026-10-30), esta es la ÚNICA sesión donde "flow 2 switch
+        // switch_0/1" se aplica, así que necesita la misma protección que
+        // ya tenía el canal 1.
+        logger.warn(`[diag] applyTr069Management: "${cmd}" ya existía -- forzando re-enlace limpio por si quedó de un intento anterior`);
+        try {
+          await session.executeCommand(cmd.replace(/^flow (\d+) switch/, 'no flow $1 switch'));
+        } catch {
+          /* best-effort */
+        }
+        const retryOutput = await session.executeCommand(cmd);
+        if (isOltErrorResponse(retryOutput) && !isAlreadyAppliedResponse(retryOutput)) {
+          const msg =
+            `La OLT rechazó re-enlazar la configuración TR-069/ACS ("${cmd}"): ${retryOutput.trim()}. ` +
+            'Probablemente debas configurar el WAN manualmente en la ONU.';
+          warnings.push(msg);
+          logger.warn(`[diag] applyTr069Management: ${msg}`);
+        }
+      } else if (isAlreadyAppliedResponse(output)) {
         // ok, ya aplicado en un intento anterior -- seguir con el resto.
       } else if (inTr069Block) {
         const msg =

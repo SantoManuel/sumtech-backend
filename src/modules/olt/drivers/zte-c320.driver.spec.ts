@@ -2530,6 +2530,82 @@ No.15 profile : TRAFFIC-977M
     });
   });
 
+  describe('applyTr069Management() re-enlaza "flow 2 switch switch_0/1" si la OLT lo tolera como "ya existe" -- mismo criterio que authorizeOnu() para "flow 1" (ver FLOW_SWITCH_BIND_RE, compartido vía zte-c320-provisioning-scripts.ts). Tras el desacople de Etapa 1/Etapa 2 (2026-10-30), esta es la ÚNICA sesión donde "flow 2" se aplica, así que necesita la misma protección contra un bind sin re-enlazar de un intento anterior', () => {
+    const tr069Config = {
+      ponInterface: 'gpon-olt_1/2/15',
+      onuId: 1,
+      modelTypeName: 'HUAWEY-HG8546M',
+      serialNumber: 'CMDCDD4D131E',
+      serviceVlan: 400,
+      tr069Url: 'http://acs.sumtech.com.do:7547',
+      tr069Vlan: 46,
+      managementMethod: 'TR069' as const,
+      operationMode: 'ROUTER' as const,
+    };
+
+    beforeEach(() => {
+      jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
+    });
+
+    it('fuerza "no flow 2 switch switch_0/1" y reintenta "flow 2 switch switch_0/1" cuando la OLT responde "ya existe"', async () => {
+      let flowSwitchAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'flow 2 switch switch_0/1') {
+          flowSwitchAttempts += 1;
+          if (flowSwitchAttempts === 1) {
+            return Promise.resolve('%Error 10: The flow already exists!');
+          }
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      expect(calledCommands).toContain('no flow 2 switch switch_0/1');
+      expect(flowSwitchAttempts).toBe(2);
+    });
+
+    it('si el re-enlace también es rechazado con un error real, lo reporta como warning (mejor esfuerzo) en vez de abortar', async () => {
+      let flowSwitchAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'flow 2 switch switch_0/1') {
+          flowSwitchAttempts += 1;
+          if (flowSwitchAttempts === 1) {
+            return Promise.resolve('%Error 10: The flow already exists!');
+          }
+          return Promise.resolve('%Error 20202: Invalid input detected!');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('flow 2 switch switch_0/1');
+    });
+  });
+
   describe('updateTr069AcsUrl() -- a diferencia de applyTr069Management(), un rechazo de "tr069-mgmt ... acs ..." es un error DURO, no un warning (solo toca el ACS, no re-cablea el resto del canal de gestión)', () => {
     const acsConfig = {
       ponInterface: 'gpon-olt_1/2/15',

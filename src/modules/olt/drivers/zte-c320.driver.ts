@@ -15,6 +15,7 @@ import {
   isManagementOrTr069Command,
   getHumanPacingDelay,
   REBOOT_ONU_SENTINEL,
+  FLOW_SWITCH_BIND_RE,
 } from './zte-c320-provisioning-scripts';
 import {
   verifyOnuProvisioningWithSession,
@@ -74,9 +75,6 @@ import {
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
-
-/** Reconoce "flow <N> switch switch_0/1" -- ver el re-enlace forzado en `authorizeOnu()`. */
-const FLOW_SWITCH_BIND_RE = /^flow \d+ switch switch_0\/1$/;
 
 // `REBOOT_ONU_SENTINEL` se extrajo a `zte-c320-provisioning-scripts.ts`
 // (Fase 3 de Plan_Implementacion_Refactor_ZteC320Driver.md), reexportado

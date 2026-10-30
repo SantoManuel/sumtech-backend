@@ -170,6 +170,19 @@ export function hasTr069Channel(config: AuthorizeOnuParams): boolean {
 }
 
 /**
+ * Reconoce "flow <N> switch switch_0/1" -- compartido entre `authorizeOnu()`
+ * (zte-c320.driver.ts, canal 1) y `applyTr069ManagementWithSession()`
+ * (zte-c320-tr069.ts, canal 2 vía Etapa 2) para que ambos bucles de comandos
+ * apliquen el MISMO re-enlace forzado cuando la OLT tolera el bind como "ya
+ * existe" (ver la nota en cada uno). Antes solo vivía en `authorizeOnu()`;
+ * tras el desacople de Etapa 1/Etapa 2 (2026-10-30), Etapa 2 es el único
+ * camino para aplicar el canal de gestión/TR-069, así que necesita la misma
+ * protección contra un bind "flow 2" que quedó de un intento anterior sin
+ * re-enlazar de verdad.
+ */
+export const FLOW_SWITCH_BIND_RE = /^flow \d+ switch switch_0\/1$/;
+
+/**
  * Genera la lista de comandos Telnet de autorización y aprovisionamiento (RF-OLT-016 / RF-ONU-001..007)
  * respetando el orden jerárquico estricto de entidades OMCI (Bottom-Up).
  */
