@@ -50,9 +50,9 @@ export function buildTr069FlowCommands(config: AuthorizeOnuParams): string[] {
   ];
 }
 
-/** FASE 4 (parcial) del canal de gestión: vincula iphost 2 y veip 1 al switch virtual. */
+/** FASE 4 (parcial) del canal de gestión: vincula iphost 2 al switch virtual (desvincula veip 1 para no desviar tráfico DHCP). */
 export function buildTr069SwitchportBindCommands(): string[] {
-  return ['switchport-bind switch_0/1 iphost 2', 'switchport-bind switch_0/1 veip 1'];
+  return ['no switchport-bind switch_0/1 veip 1', 'switchport-bind switch_0/1 iphost 2'];
 }
 
 /** FASE 5a (parcial) del canal de gestión: solo "ip-host 2 dhcp-enable ...". */
@@ -117,20 +117,26 @@ export function buildSecurityMgmtCommands(config: AuthorizeOnuParams): string[] 
 }
 
 /**
- * FASE 6 (parcial) del canal de gestión: VoIP/VEIP/TR-069-mgmt.
+ * Reglas de seguridad OMCI exclusivas de TR-069 para Etapa 2.
+ */
+export function buildTr069SecurityMgmtCommands(config: AuthorizeOnuParams): string[] {
+  if (config.securityMgmtSupported === false) {
+    return [];
+  }
+  return ['security-mgmt 999 state enable ingress-type lan protocol tr069'];
+}
+
+/**
+ * FASE 6 (parcial) del canal de gestión: TR-069-mgmt (ACS y VLAN tag).
+ * Se eliminaron "voip protocol sip" y "veip 1 port udp 1232 host 2" que
+ * creaban interfaces virtuales fantasma y desviaban el tráfico DHCP de iphost 2.
  */
 export function buildTr069ApplicationCommands(config: AuthorizeOnuParams): string[] {
   return [
-    'voip protocol sip',
-    'veip 1 port udp 1232 host 2',
     'tr069-mgmt 1 state unlock',
     config.tr069AcsUsername && config.tr069AcsPassword
       ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
       : `tr069-mgmt 1 acs ${config.tr069Url}`,
-    // "no tr069-mgmt 1 tag pri 2 vlan <N>" antes de asignarlo -- mismo
-    // riesgo (sin verificar en vivo todavía) de valor VLAN embebido que
-    // "flow 2 pri 2 vlan <N>"/"vlan-filter iphost 2 pri 2 vlan <N>" de
-    // arriba; ver esa nota en buildTr069FlowCommands.
     `no tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
     `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
   ];
@@ -149,6 +155,7 @@ export function isManagementOrTr069Command(cmd: string): boolean {
     cmd.startsWith('flow mode 2') ||
     cmd.startsWith('switchport-bind switch_0/1 iphost 2') ||
     cmd.startsWith('switchport-bind switch_0/1 veip') ||
+    cmd.startsWith('no switchport-bind switch_0/1 veip') ||
     cmd.startsWith('ip-host 2') ||
     cmd.startsWith('vlan-filter-mode iphost 2') ||
     cmd.startsWith('vlan-filter iphost 2') ||
@@ -173,6 +180,7 @@ export function isManagementOrTr069Command(cmd: string): boolean {
 export function isPreparatoryTeardownCommand(cmd: string): boolean {
   return (
     cmd.startsWith('no service-port ') ||
+    cmd === 'no switchport-bind switch_0/1 veip 1' ||
     /^no flow \d+ pri \d+ vlan \d+$/.test(cmd) ||
     /^no vlan-filter iphost \d+ pri \d+ vlan \d+$/.test(cmd) ||
     /^no tr069-mgmt \d+ tag pri \d+ vlan \d+$/.test(cmd)
@@ -370,16 +378,13 @@ export function generateTr069ManagementScript(config: AuthorizeOnuParams): strin
     `pon-onu-mng ${onuInterface}`,
     // 1. Inicializar Flow 2 en orden jerárquico ZTE GPONRM
     ...buildTr069FlowCommands(config),
-    // 2. Vincular puertos al switch_0/1 antes de filtrarlos
+    // 2. Vincular switch interno SOLO a iphost 2 (desvincula veip 1 para no desviar DHCP)
     ...buildTr069SwitchportBindCommands(),
-    // 3. Configurar IP-Host 2 y su filtro de VLAN en orden
+    // 3. Configurar IP-Host 2 (DHCP activo) y su filtro de VLAN en orden
     ...buildTr069IpHostCommands(config),
-    // 4. Puertos LAN, VoIP, VEIP, TR-069 y Firewall al final
-    ...buildDhcpIpEthuniCommands(config),
+    // 4. Parámetros TR-069/ACS y regla de seguridad
     ...buildTr069ApplicationCommands(config),
-    ...buildSecurityMgmtCommands(config),
-    // 5. Reinicio OMCI ÚNICAMENTE cuando ya se enviaron tag y security-mgmt
-    REBOOT_ONU_SENTINEL,
+    ...buildTr069SecurityMgmtCommands(config),
     'end',
     'write',
   ];
@@ -402,19 +407,9 @@ export function generateTr069TransportScript(config: AuthorizeOnuParams): string
     `interface ${onuInterface}`,
     'tcont 2 profile SMARTOLT-VOIPMNG-10M',
     'gemport 2 tcont 2',
-    'gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M',
+    'gemport 2 traffic-limit downstream SMARTOLT-1G-DOWN',
     'no service-port 2',
     `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
-    // Cierre ordenado de sub-vistas (interface -> configure terminal -> EXEC)
-    // ANTES de "write" -- mismo criterio que generateAuthorizationScript
-    // ("exit, exit, write"). BUG REAL CONFIRMADO EN VIVO (2026-10-30, ONU
-    // CMDCDD4D131E): con un solo "exit" la sesión se quedaba en "(config)#"
-    // (solo salía de "interface <X>", nunca de "configure terminal"), así
-    // que el "configure terminal" del bloque OMCI (generateTr069ManagementScript,
-    // ejecutado justo después en applyTr069ManagementWithSession) se mandaba
-    // estando YA en modo config -- esta OLT lo rechaza ahí con "%Error 20200:
-    // Invalid input detected at '^' marker" (no es un glitch de timing, es un
-    // comando ejecutado en el nivel de CLI incorrecto).
     'exit',
     'exit',
     'write',

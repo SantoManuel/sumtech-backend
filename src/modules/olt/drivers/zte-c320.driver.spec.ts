@@ -118,7 +118,7 @@ describe('ZteC320Driver', () => {
 
     // Cableado OMCI del canal de gestión -- mismo bloque pon-onu-mng que el
     // canal de internet (flow 1/iphost 1 verificados arriba).
-    expect(commands).toContain('voip protocol sip');
+    expect(commands).not.toContain('voip protocol sip');
     expect(commands).toContain('flow 2 switch switch_0/1');
     expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('flow 2 pri 2 vlan 46');
@@ -135,7 +135,7 @@ describe('ZteC320Driver', () => {
     expect(commands.indexOf('no vlan-filter iphost 2 pri 2 vlan 46')).toBeLessThan(
       commands.indexOf('vlan-filter iphost 2 pri 2 vlan 46'),
     );
-    expect(commands).toContain('veip 1 port udp 1232 host 2');
+    expect(commands).not.toContain('veip 1 port udp 1232 host 2');
 
     // CONFIRMADO EN VIVO contra SmartOLT (2026-11-01): solo ip-host 2 tiene dhcp-enable
     const ipHost2Idx = commands.indexOf('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
@@ -189,7 +189,7 @@ describe('ZteC320Driver', () => {
       });
       expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
       // El resto del canal de gestión debe seguir generándose igual.
-      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
       expect(commands).toContain('tr069-mgmt 1 state unlock');
     });
 
@@ -234,7 +234,7 @@ describe('ZteC320Driver', () => {
       expect(commands.some((c) => c.includes('security-mgmt'))).toBe(false);
       // El resto del canal de gestión (incluido el registro TR-069) debe
       // seguir generándose igual -- security-mgmt no es parte de esa ruta.
-      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
       expect(commands).toContain('tr069-mgmt 1 state unlock');
       expect(commands).toContain(`tr069-mgmt 1 acs ${baseConfig.tr069Url}`);
     });
@@ -355,13 +355,8 @@ describe('ZteC320Driver', () => {
       expect(commands.indexOf('no flow 2 pri 2 vlan 46')).toBeLessThan(commands.indexOf('flow 2 pri 2 vlan 46'));
       expect(commands).toContain('gemport 2 flow 2');
       expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
-      // CONFIRMADO EN VIVO (2026-10-22) contra un running-config real y
-      // FUNCIONANDO de otra ONU en la misma OLT (SmartOLT, ONU
-      // HWTCDE64BA7C): sin este segundo bind (el del propio VEIP, no solo el
-      // de iphost), "tr069-mgmt ... acs ..." queda rechazado con "%Code
-      // 63990-GPONRM" -- causa real del bug, no "Max VEIP" (que era necesario
-      // pero no suficiente).
-      expect(commands).toContain('switchport-bind switch_0/1 veip 1');
+      expect(commands).toContain('no switchport-bind switch_0/1 veip 1');
+      expect(commands).not.toContain('switchport-bind switch_0/1 veip 1');
       expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
       expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
       expect(commands).toContain('vlan-filter iphost 2 pri 2 vlan 46');
@@ -370,13 +365,10 @@ describe('ZteC320Driver', () => {
       expect(commands.indexOf('no vlan-filter iphost 2 pri 2 vlan 46')).toBeLessThan(
         commands.indexOf('vlan-filter iphost 2 pri 2 vlan 46'),
       );
-      // Confirmado en vivo (2026-10-22) presente en ambas referencias reales
-      // -- rige la asignación de IP de los 4 puertos LAN de la ONU.
-      expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
-      expect(commands).toContain('dhcp-ip ethuni eth_0/2 from-onu');
-      expect(commands).toContain('dhcp-ip ethuni eth_0/3 from-onu');
-      expect(commands).toContain('dhcp-ip ethuni eth_0/4 from-onu');
-      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      // En Etapa 2 NO se envían dhcp-ip ethuni de los puertos LAN (eso es de Etapa 1)
+      expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
+      expect(commands.some((c) => c.includes('veip 1 port udp'))).toBe(false);
+      expect(commands.some((c) => c.includes('voip protocol sip'))).toBe(false);
       expect(commands).toContain('tr069-mgmt 1 state unlock');
       // "acs <url>" y "tag pri <n> vlan <n>" son DOS comandos separados --
       // confirmado en vivo contra OLT_Tabara_Abajo (2026-10-20) vía ayuda
@@ -395,27 +387,18 @@ describe('ZteC320Driver', () => {
       expect(commands.indexOf('no tr069-mgmt 1 tag pri 2 vlan 46')).toBeLessThan(
         commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46'),
       );
-      // Confirmado por comparación directa (2026-10-23) contra running-config
-      // reales y funcionando de SmartOLT en la misma OLT -- debe ser el
-      // PRIMER comando dentro de "pon-onu-mng" (antes de flow/gemport/iphost).
-      expect(commands).toContain('voip protocol sip');
-      // Confirmado en vivo (2026-10-22 y 2026-11-01) presente en ambas referencias reales de SmartOLT.
-      expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
-      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
+      // Regla de seguridad específica para TR-069
+      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol tr069');
 
-      // El cableado OMCI (flow/iphost/veip/state unlock) va ANTES de "acs" --
+      // El cableado OMCI (flow/iphost/state unlock) va ANTES de "acs" --
       // orden confirmado en vivo, cambiarlo rompería la secuencia real.
       const unlockIdx = commands.indexOf('tr069-mgmt 1 state unlock');
       const acsIdx = commands.indexOf('tr069-mgmt 1 acs http://10.46.0.1:7547/');
       expect(unlockIdx).toBeLessThan(acsIdx);
 
-      // "switchport-bind switch_0/1 veip 1" debe ir ANTES de "veip 1 port udp
-      // 1232 host 2" -- mismo orden que el running-config real de SmartOLT.
-      const bindVeipIdx = commands.indexOf('switchport-bind switch_0/1 veip 1');
-      const veipPortIdx = commands.indexOf('veip 1 port udp 1232 host 2');
-      expect(bindVeipIdx).toBeLessThan(veipPortIdx);
-
-      expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
+      // Cierre estándar CLI sin sentinels falsos
+      expect(commands.slice(-2)).toEqual(['end', 'write']);
+      expect(commands).not.toContain(REBOOT_ONU_SENTINEL);
     });
 
     it('agrega "validate basic username/password" solo si la Red TR-069 tiene credenciales de ACS -- confirmado en vivo (2026-10-22) en el running-config real de X2251/HWTCBC05BF9C', () => {
@@ -433,22 +416,11 @@ describe('ZteC320Driver', () => {
       expect(withoutCreds).toContain('tr069-mgmt 1 acs http://10.46.0.1:7547/');
     });
 
-    it('omite "dhcp-ip ethuni ... from-onu" cuando ethuniDhcpDelegationSupported es false -- modelos como HUAWEY-BT546XG rechazan ese ME por OMCI con "%Code 63993 : unknown ME", lo que dejaba el resto de la transacción (incluido ip-host 2) en "Config state: fail" y el equipo nunca obtenía IP de gestión ni se registraba en GenieACS', () => {
-      const commands = driver.generateTr069ManagementScript({
-        ...baseConfig,
-        ethuniDhcpDelegationSupported: false,
-      });
-
-      expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
-      // El resto del bloque (incluido el reinicio OMCI) debe generarse igual.
-      expect(commands).toContain('veip 1 port udp 1232 host 2');
-      expect(commands).toContain('tr069-mgmt 1 state unlock');
-      expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
-    });
-
-    it('no especificar ethuniDhcpDelegationSupported (undefined) sigue generando "dhcp-ip ethuni ... from-onu" -- default seguro para no alterar modelos ya confirmados en vivo (ZTE-F660, X2251) que SÍ lo requieren', () => {
+    it('en Etapa 2 nunca genera "dhcp-ip ethuni ... from-onu" para no competir con el cliente DHCP de ip-host 2', () => {
       const commands = driver.generateTr069ManagementScript(baseConfig);
-      expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
+      expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
+      expect(commands).toContain('tr069-mgmt 1 state unlock');
+      expect(commands.slice(-2)).toEqual(['end', 'write']);
     });
 
     it('omite "security-mgmt ..." cuando securityMgmtSupported es false -- modelos como HUAWEY-BT546XG rechazan esa ME por OMCI con "%Code 63993 : unknown ME"', () => {
@@ -458,12 +430,12 @@ describe('ZteC320Driver', () => {
       });
       expect(commands.some((c) => c.includes('security-mgmt'))).toBe(false);
       expect(commands).toContain('tr069-mgmt 1 state unlock');
-      expect(commands.slice(-3)).toEqual([REBOOT_ONU_SENTINEL, 'end', 'write']);
+      expect(commands.slice(-2)).toEqual(['end', 'write']);
     });
 
     it('no especificar securityMgmtSupported (undefined) sigue generando "security-mgmt ..." -- default seguro para no alterar modelos ya confirmados en vivo (ej. HUAWEI HG8546M)', () => {
       const commands = driver.generateTr069ManagementScript(baseConfig);
-      expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
+      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol tr069');
     });
   });
 
@@ -510,7 +482,7 @@ describe('ZteC320Driver', () => {
         'interface gpon-onu_1/2/15:1',
         'tcont 2 profile SMARTOLT-VOIPMNG-10M',
         'gemport 2 tcont 2',
-        'gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M',
+        'gemport 2 traffic-limit downstream SMARTOLT-1G-DOWN',
         'no service-port 2',
         'service-port 2 vport 2 user-vlan 46 vlan 46',
         'exit',
@@ -2242,7 +2214,7 @@ No.15 profile : TRAFFIC-977M
       expect(result.warning).toContain('TR-069/ACS');
       expect(result.warning).toContain('ONT return error');
       // El resto del script (security-mgmt/reboot/end/write) debe seguir ejecutándose.
-      expect(executeCommand).toHaveBeenCalledWith('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
+      expect(executeCommand).toHaveBeenCalledWith('security-mgmt 999 state enable ingress-type lan protocol tr069');
       expect(rebootOnu).toHaveBeenCalled();
       expect(executeCommand).toHaveBeenCalledWith('end');
       expect(executeCommand).toHaveBeenCalledWith('write');
@@ -2266,6 +2238,9 @@ No.15 profile : TRAFFIC-977M
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
       expect(rebootOnu).toHaveBeenCalled();
+      expect(executeCommand).toHaveBeenCalledWith('ip dhcp snooping enable');
+      expect(executeCommand).toHaveBeenCalledWith('ip dhcp snooping vlan 46');
+      expect(executeCommand).toHaveBeenCalledWith('ip dhcp snooping control-port disable');
       // El sentinel nunca debe llegar a executeCommand -- applyTr069Management()
       // lo intercepta y llama a session.rebootOnu() en su lugar.
       expect(executeCommand).not.toHaveBeenCalledWith(REBOOT_ONU_SENTINEL);
@@ -2293,7 +2268,7 @@ No.15 profile : TRAFFIC-977M
 
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
-      expect(executeCommand).toHaveBeenCalledWith('voip protocol sip');
+      expect(executeCommand).toHaveBeenCalledWith('gemport 2 flow 2');
       expect(executeCommand).toHaveBeenCalledWith('write');
       expect(rebootOnu).toHaveBeenCalled();
     });
@@ -2320,9 +2295,9 @@ No.15 profile : TRAFFIC-977M
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
-    it('un rechazo en el PRIMER comando real del bloque (ej. "voip protocol sip" inválido) también es mejor esfuerzo -- el script completo generado por generateTr069ManagementScript() ES el bloque TR-069 (bug real corregido 2026-10-23: antes esto abortaba toda la Etapa 2 sin reportar warning)', async () => {
+    it('un rechazo en un comando del bloque (ej. "flow mode 2" inválido) también es mejor esfuerzo -- el script completo generado por generateTr069ManagementScript() ES el bloque TR-069 (bug real corregido 2026-10-23: antes esto abortaba toda la Etapa 2 sin reportar warning)', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd === 'voip protocol sip') return Promise.resolve('\r\n%Code 10: Invalid parameter!\r\nOLT#');
+        if (cmd === 'flow mode 2 tag-filter vlan-filter untag-filter discard') return Promise.resolve('\r\n%Code 10: Invalid parameter!\r\nOLT#');
         return Promise.resolve('');
       });
       const rebootOnu = jest.fn().mockResolvedValue(undefined);
@@ -2339,7 +2314,7 @@ No.15 profile : TRAFFIC-977M
       );
 
       expect(result.ok).toBe(true);
-      expect(result.warning).toContain('voip protocol sip');
+      expect(result.warning).toContain('flow mode 2');
       // El resto del script (incluido el reinicio OMCI y el write final) debe
       // seguir corriendo pese al rechazo -- mismo criterio de mejor esfuerzo
       // que el resto del bloque TR-069.
@@ -2347,9 +2322,9 @@ No.15 profile : TRAFFIC-977M
       expect(rebootOnu).toHaveBeenCalled();
     });
 
-    it('dos comandos rechazados en la MISMA corrida aparecen AMBOS en el warning final -- bug real corregido (2026-10-28): antes solo se reportaba el primer rechazo ("if (!warning)"), y los siguientes ni siquiera quedaban en los logs del servidor, obligando a descubrir las incompatibilidades OMCI de un modelo de a una por reintento (ej. "dhcp-ip ethuni" y "security-mgmt" rechazados juntos por HUAWEY-BT546XG, pero solo el primero se veía)', async () => {
+    it('dos comandos rechazados en la MISMA corrida aparecen AMBOS en el warning final -- bug real corregido (2026-10-28): antes solo se reportaba el primer rechazo ("if (!warning)"), y los siguientes ni siquiera quedaban en los logs del servidor', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('dhcp-ip ethuni')) return Promise.resolve('\r\n%Code 63993-GPONRM : ONT return error:unknown ME.\r\nOLT#');
+        if (cmd.startsWith('tr069-mgmt 1 state unlock')) return Promise.resolve('\r\n%Code 63993-GPONRM : ONT return error:unknown ME.\r\nOLT#');
         if (cmd.startsWith('security-mgmt')) return Promise.resolve('\r\n%Code 63993-GPONRM : ONT return error:unknown ME.\r\nOLT#');
         return Promise.resolve('');
       });
@@ -2367,7 +2342,7 @@ No.15 profile : TRAFFIC-977M
       );
 
       expect(result.ok).toBe(true);
-      expect(result.warning).toContain('dhcp-ip ethuni');
+      expect(result.warning).toContain('tr069-mgmt 1 state unlock');
       expect(result.warning).toContain('security-mgmt');
       // El script completo debe seguir corriendo pese a ambos rechazos.
       expect(executeCommand).toHaveBeenCalledWith('write');
@@ -2669,7 +2644,7 @@ No.15 profile : TRAFFIC-977M
         // "configure terminal" (solo nos interesa contar el de la capa de
         // transporte y el del bloque OMCI).
         if (cmd === 'show gpon profile tcont') return Promise.resolve('Profile name :SMARTOLT-VOIPMNG-10M\r\n5 64 64 10240 1 low\r\n');
-        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-VOIPMNG-10M');
+        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
         if (cmd === 'configure terminal') {
           if (!transportConfigTerminalSeen) {
             transportConfigTerminalSeen = true;
@@ -3777,12 +3752,10 @@ OLT#`);
       expect(iph1Vlan).toBeGreaterThan(iph2);
 
       // Fase 6 App / TR-069
-      const voip = commands.indexOf('voip protocol sip');
       const acs = commands.indexOf(
         'tr069-mgmt 1 acs http://10.69.69.1:14501 validate basic username soltcpe password FiEpcY4srQj6',
       );
-      expect(voip).toBeGreaterThan(iph1Vlan);
-      expect(acs).toBeGreaterThan(voip);
+      expect(acs).toBeGreaterThan(iph1Vlan);
 
       // Cierre
       expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);

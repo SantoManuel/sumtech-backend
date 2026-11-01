@@ -64,7 +64,7 @@ export async function ensureTr069TransportWithSession(
   }
 
   await ensureTcontProfileWithSession(session, { name: 'SMARTOLT-VOIPMNG-10M', fixedKbps: 10240 });
-  await ensureTrafficProfileWithSession(session, { name: 'SMARTOLT-VOIPMNG-10M', downKbps: 10240 });
+  await ensureTrafficProfileWithSession(session, { name: 'SMARTOLT-1G-DOWN', downKbps: 1024000 });
 
   // Literales de comando sacados de `generateTr069TransportScript()` --
   // fuente única de verdad compartida con el botón "Previsualizar Script
@@ -100,11 +100,13 @@ export async function ensureTr069TransportWithSession(
   };
 
   await runPaced(cmdConfigTerminal);
-  // Asegura que la OLT no tenga DHCP snooping activo en la VLAN de gestión,
-  // lo cual intercepta y descarta el tráfico DHCP de la ONU antes de que llegue al MikroTik
-  // (confirmado en vivo 2026-11-01: VLAN 46 de SmartOLT tiene snooping disable).
+  // Configuración de DHCP Snooping en la OLT para la VLAN de gestión TR-069 (CRÍTICO - Bloque 3):
+  // Asegura que DHCP snooping esté activo en la VLAN con control-port disable
+  // para permitir que los paquetes DHCP del iphost 2 lleguen al servidor DHCP en MikroTik.
   try {
-    await session.executeCommand(`no ip dhcp snooping vlan ${config.tr069Vlan}`);
+    await session.executeCommand('ip dhcp snooping enable');
+    await session.executeCommand(`ip dhcp snooping vlan ${config.tr069Vlan}`);
+    await session.executeCommand('ip dhcp snooping control-port disable');
   } catch {
     /* best-effort */
   }
@@ -226,23 +228,6 @@ export async function applyTr069ManagementWithSession(
   let acsRebootHandled = false;
 
   for (const cmd of commands) {
-    if (cmd === REBOOT_ONU_SENTINEL) {
-      if (acsRebootHandled) {
-        continue;
-      }
-      // No es un comando CLI -- ver REBOOT_ONU_SENTINEL. Mismo criterio
-      // de mejor esfuerzo que el resto del bloque TR-069: si el ONT no
-      // confirma el reinicio a tiempo, no debe tumbar el resultado
-      // completo (la OLT ya aceptó la configuración).
-      try {
-        await session.rebootOnu();
-      } catch (err: any) {
-        const msg = `No se pudo confirmar el reinicio OMCI del ONT tras configurar TR-069: ${err.message}. La configuración sí se aplicó en la OLT.`;
-        warnings.push(msg);
-        logger.warn(`[diag] applyTr069Management: rebootOnu() best-effort falló, continuando: ${msg}`);
-      }
-      continue;
-    }
 
     // Confirmado en vivo (2026-10-23): el rechazo real de este comando
     // ("%Code 63990-GPONRM") no es un problema de sintaxis -- es que el
@@ -334,6 +319,17 @@ export async function applyTr069ManagementWithSession(
       } else {
         throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
       }
+    }
+  }
+
+  // Reinicio OMCI best-effort si no fue manejado durante el reintento de ACS
+  if (!acsRebootHandled) {
+    try {
+      await session.rebootOnu();
+    } catch (err: any) {
+      const msg = `No se pudo confirmar el reinicio OMCI del ONT tras configurar TR-069: ${err.message}. La configuración sí se aplicó en la OLT.`;
+      warnings.push(msg);
+      logger.warn(`[diag] applyTr069Management: rebootOnu() best-effort falló, continuando: ${msg}`);
     }
   }
 
