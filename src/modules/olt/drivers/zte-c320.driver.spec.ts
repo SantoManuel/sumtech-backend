@@ -135,7 +135,9 @@ describe('ZteC320Driver', () => {
     expect(commands.indexOf('no vlan-filter iphost 2 pri 2 vlan 46')).toBeLessThan(
       commands.indexOf('vlan-filter iphost 2 pri 2 vlan 46'),
     );
-    expect(commands).not.toContain('veip 1 port udp 1232 host 2');
+    // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 es necesario para
+    // que la HG8546M enrute el DHCP de gestión hacia iphost 2.
+    expect(commands).toContain('veip 1 port udp 1232 host 2');
 
     // CONFIRMADO EN VIVO contra SmartOLT (2026-11-01): solo ip-host 2 tiene dhcp-enable
     const ipHost2Idx = commands.indexOf('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
@@ -188,8 +190,9 @@ describe('ZteC320Driver', () => {
         ethuniDhcpDelegationSupported: false,
       });
       expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
-      // El resto del canal de gestión debe seguir generándose igual.
-      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
+      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 va en buildTr069ApplicationCommands
+      // y es necesario incluso cuando ethuniDhcpDelegationSupported=false -- son comandos ortogonales.
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
       expect(commands).toContain('tr069-mgmt 1 state unlock');
     });
 
@@ -234,7 +237,8 @@ describe('ZteC320Driver', () => {
       expect(commands.some((c) => c.includes('security-mgmt'))).toBe(false);
       // El resto del canal de gestión (incluido el registro TR-069) debe
       // seguir generándose igual -- security-mgmt no es parte de esa ruta.
-      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
+      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 siempre se incluye.
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
       expect(commands).toContain('tr069-mgmt 1 state unlock');
       expect(commands).toContain(`tr069-mgmt 1 acs ${baseConfig.tr069Url}`);
     });
@@ -355,8 +359,10 @@ describe('ZteC320Driver', () => {
       expect(commands.indexOf('no flow 2 pri 2 vlan 46')).toBeLessThan(commands.indexOf('flow 2 pri 2 vlan 46'));
       expect(commands).toContain('gemport 2 flow 2');
       expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
-      expect(commands).toContain('no switchport-bind switch_0/1 veip 1');
-      expect(commands).not.toContain('switchport-bind switch_0/1 veip 1');
+      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 también debe vincularse --
+      // la HG8546M usa veip 1 port udp 1232 host 2 para enrutar DHCP hacia iphost 2.
+      expect(commands).toContain('switchport-bind switch_0/1 veip 1');
+      expect(commands).not.toContain('no switchport-bind switch_0/1 veip 1');
       expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
       expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
       expect(commands).toContain('vlan-filter iphost 2 pri 2 vlan 46');
@@ -367,7 +373,9 @@ describe('ZteC320Driver', () => {
       );
       // En Etapa 2 NO se envían dhcp-ip ethuni de los puertos LAN (eso es de Etapa 1)
       expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
-      expect(commands.some((c) => c.includes('veip 1 port udp'))).toBe(false);
+      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 SÍ va en Etapa 2
+      // (dentro de buildTr069ApplicationCommands). Sin él la ONU no envía DISCOVER en VLAN gestión.
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
       expect(commands.some((c) => c.includes('voip protocol sip'))).toBe(false);
       expect(commands).toContain('tr069-mgmt 1 state unlock');
       // "acs <url>" y "tag pri <n> vlan <n>" son DOS comandos separados --
@@ -387,8 +395,9 @@ describe('ZteC320Driver', () => {
       expect(commands.indexOf('no tr069-mgmt 1 tag pri 2 vlan 46')).toBeLessThan(
         commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46'),
       );
-      // Regla de seguridad específica para TR-069
-      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol tr069');
+      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): ambas reglas 998+999 en Etapa 2
+      expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
+      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
 
       // El cableado OMCI (flow/iphost/state unlock) va ANTES de "acs" --
       // orden confirmado en vivo, cambiarlo rompería la secuencia real.
@@ -435,7 +444,9 @@ describe('ZteC320Driver', () => {
 
     it('no especificar securityMgmtSupported (undefined) sigue generando "security-mgmt ..." -- default seguro para no alterar modelos ya confirmados en vivo (ej. HUAWEI HG8546M)', () => {
       const commands = driver.generateTr069ManagementScript(baseConfig);
-      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol tr069');
+      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): se generan ambas reglas 998+999
+      expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
+      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
     });
   });
 
@@ -2212,8 +2223,9 @@ No.15 profile : TRAFFIC-977M
       expect(result.ok).toBe(true);
       expect(result.warning).toContain('TR-069/ACS');
       expect(result.warning).toContain('ONT return error');
-      // El resto del script (security-mgmt/reboot/end/write) debe seguir ejecutándose.
-      expect(executeCommand).toHaveBeenCalledWith('security-mgmt 999 state enable ingress-type lan protocol tr069');
+      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): ambas reglas 998+999 deben ejecutarse.
+      expect(executeCommand).toHaveBeenCalledWith('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
+      expect(executeCommand).toHaveBeenCalledWith('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
       expect(rebootOnu).toHaveBeenCalled();
       expect(executeCommand).toHaveBeenCalledWith('end');
       expect(executeCommand).toHaveBeenCalledWith('write');
