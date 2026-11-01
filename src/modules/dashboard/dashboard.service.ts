@@ -9,6 +9,8 @@ import { TicketEntity } from '../tickets/entities/ticket.entity';
 import { ProductEntity } from '../inventory/entities/product.entity';
 import { SerialNumberEntity } from '../inventory/entities/serial-number.entity';
 import { EquipmentLocationType } from '../inventory/enums/equipment.enums';
+import { CompanyProfileEntity } from '../company/entities/company-profile.entity';
+import { DEFAULT_TENANT_TIMEZONE, dateKeyInTimezone, startOfDayInTimezone } from '../../common/utils/timezone.util';
 
 /** Días con un técnico sin instalar tras los cuales se considera un equipo "estancado" (posible extravío). */
 const STALE_TECHNICIAN_EQUIPMENT_DAYS = 3;
@@ -30,7 +32,14 @@ export class DashboardService {
     private readonly productRepository: Repository<ProductEntity>,
     @InjectRepository(SerialNumberEntity)
     private readonly serialRepository: Repository<SerialNumberEntity>,
+    @InjectRepository(CompanyProfileEntity)
+    private readonly companyProfileRepository: Repository<CompanyProfileEntity>,
   ) {}
+
+  private async getTenantTimezone(): Promise<string> {
+    const [profile] = await this.companyProfileRepository.find({ take: 1 }).catch(() => []);
+    return profile?.timezone || DEFAULT_TENANT_TIMEZONE;
+  }
 
   async getSummary() {
     try {
@@ -39,11 +48,11 @@ export class DashboardService {
       const activeContractsCount = await this.contractRepository.count({ where: { status: 'ACTIVE' } }).catch(() => 0);
       const pendingContractsCount = await this.contractRepository.count({ where: { status: 'PENDING_INSTALL' } }).catch(() => 0);
 
-      // 2. Ventas del día y recaudación
+      // 2. Ventas del día y recaudación (límite de "día" según la zona horaria del tenant,
+      // no la del proceso/contenedor — ver company_profile.timezone)
+      const timeZone = await this.getTenantTimezone();
       const now = new Date();
-      const startOfDay = new Date(now);
-      startOfDay.setHours(0, 0, 0, 0);
-      const todayDatePrefix = now.toISOString().split('T')[0];
+      const startOfDay = startOfDayInTimezone(now, timeZone);
 
       let allPaidSales: SaleEntity[] = [];
       try {
@@ -59,7 +68,7 @@ export class DashboardService {
         if (!s.createdAt) return false;
         const saleDate = new Date(s.createdAt);
         if (isNaN(saleDate.getTime())) return false;
-        return saleDate >= startOfDay || saleDate.toISOString().startsWith(todayDatePrefix);
+        return saleDate >= startOfDay;
       });
 
       const todayRevenue = todaySales.reduce((acc, sale) => acc + Number(sale.grandTotal || 0), 0);
@@ -75,7 +84,7 @@ export class DashboardService {
         if (!inv.issuedAt) return false;
         const invDate = new Date(inv.issuedAt);
         if (isNaN(invDate.getTime())) return false;
-        return invDate >= startOfDay || invDate.toISOString().startsWith(todayDatePrefix);
+        return invDate >= startOfDay;
       });
       const todayInvoicesCount = todayInvoices.length;
 
@@ -248,12 +257,12 @@ export class DashboardService {
 
   async getRevenueTrend(days = 7) {
     try {
-      const dates: string[] = [];
+      const timeZone = await this.getTenantTimezone();
       const now = new Date();
+      const dates: string[] = [];
       for (let i = days - 1; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        dates.push(d.toISOString().split('T')[0]);
+        const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+        dates.push(dateKeyInTimezone(d, timeZone));
       }
 
       let sales: SaleEntity[] = [];
@@ -271,7 +280,7 @@ export class DashboardService {
           if (!s.createdAt) return false;
           const d = new Date(s.createdAt);
           if (isNaN(d.getTime())) return false;
-          return d.toISOString().startsWith(dateStr);
+          return dateKeyInTimezone(d, timeZone) === dateStr;
         });
         const total = daySales.reduce((acc, s) => acc + Number(s.grandTotal || 0), 0);
         return {

@@ -14,6 +14,7 @@ import { ecfTipoDoc, sanitizeRnc } from './dgii-xml-generator.service';
 import { DgiiCertificationRun } from './entities/dgii-certification-run.entity';
 import { CompanyService } from '../../company/company.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
+import { formatDateDgii, formatDateTimeDgii } from '../../../common/utils/dgii-date.util';
 
 export interface DgiiSendResult {
   trackId: string;
@@ -433,8 +434,11 @@ export class DgiiClientService {
     rncComprador?: string,
   ): string {
     const env = config.environment === 'ecf' ? 'ecf' : config.environment === 'certecf' ? 'certecf' : 'testecf';
-    const fechaEmiStr = `${String(fechaEmision.getDate()).padStart(2, '0')}-${String(fechaEmision.getMonth() + 1).padStart(2, '0')}-${fechaEmision.getFullYear()}`;
-    const fechaFirStr = `${fechaEmiStr} ${String(fechaEmision.getHours()).padStart(2, '0')}:${String(fechaEmision.getMinutes()).padStart(2, '0')}:${String(fechaEmision.getSeconds()).padStart(2, '0')}`;
+    // Hora de RD explícita (no la del proceso/contenedor) — debe coincidir con la
+    // FechaHoraFirma embebida en el XML firmado (ver DgiiXmlGeneratorService), que
+    // es justo lo que la DGII usa para validar la consulta por QR.
+    const fechaEmiStr = formatDateDgii(fechaEmision);
+    const fechaFirStr = formatDateTimeDgii(fechaEmision);
     const montoStr = Number(montoTotal || 0).toFixed(2);
 
     const isConsumoMenor = eNcf.startsWith('E32') && montoTotal < 250000;

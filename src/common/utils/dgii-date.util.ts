@@ -44,3 +44,13 @@ export function formatDateTimeDgii(date: Date = new Date(), timeZone: string = D
   const p = getDateParts(date, timeZone);
   return `${p.day}-${p.month}-${p.year} ${p.hour}:${p.minute}:${p.second}`;
 }
+
+/**
+ * Clave "yyyy-MM-dd" del día fiscal real en hora de RD — para agrupar/archivar
+ * por período ante la DGII (ej. Formato 607, carpetas de respaldo en MinIO),
+ * donde el día de calendario del proceso (posiblemente en UTC) no sirve.
+ */
+export function dateKeyDgii(date: Date = new Date(), timeZone: string = DGII_TIME_ZONE): string {
+  const p = getDateParts(date, timeZone);
+  return `${p.year}-${p.month}-${p.day}`;
+}

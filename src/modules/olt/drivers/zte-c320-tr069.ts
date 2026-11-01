@@ -100,6 +100,14 @@ export async function ensureTr069TransportWithSession(
   };
 
   await runPaced(cmdConfigTerminal);
+  // Asegura que la OLT no tenga DHCP snooping activo en la VLAN de gestión,
+  // lo cual intercepta y descarta el tráfico DHCP de la ONU antes de que llegue al MikroTik
+  // (confirmado en vivo 2026-11-01: VLAN 46 de SmartOLT tiene snooping disable).
+  try {
+    await session.executeCommand(`no ip dhcp snooping vlan ${config.tr069Vlan}`);
+  } catch {
+    /* best-effort */
+  }
   const ifaceOutput = await runPaced(cmdInterface);
   if (isOltErrorResponse(ifaceOutput)) {
     try {

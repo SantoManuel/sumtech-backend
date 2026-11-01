@@ -96,11 +96,9 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('flow 1 pri 0 vlan 200');
     expect(commands).toContain('gemport 1 flow 1');
     expect(commands).toContain('switchport-bind switch_0/1 iphost 1');
-    // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-24, ONU
-    // CMDCDD4D131E): la sesión real que terminó registrándose en GenieACS
-    // aplicó "dhcp-enable" también en iphost 1, espejo del que ya se manda
-    // para iphost 2 (canal de gestión) en generateTr069ManagementScript.
-    expect(commands).toContain('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
+    // CONFIRMADO EN VIVO contra SmartOLT (2026-11-01):
+    // ip-host 1 (tráfico de usuario) NO lleva dhcp-enable, solo se cablea su vlan-filter.
+    expect(commands).not.toContain('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
     expect(commands).toContain('vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('vlan-filter iphost 1 pri 0 vlan 200');
 
@@ -139,16 +137,12 @@ describe('ZteC320Driver', () => {
     );
     expect(commands).toContain('veip 1 port udp 1232 host 2');
 
-    // CONFIRMADO EN VIVO (2026-10-29): primero se activan AMBOS ip-host
-    // (dhcp-enable) y recién DESPUÉS se aplican AMBOS vlan-filter -- no
-    // intercalado por host (host 1 completo, luego host 2) como antes.
-    const ipHost1Idx = commands.indexOf('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
+    // CONFIRMADO EN VIVO contra SmartOLT (2026-11-01): solo ip-host 2 tiene dhcp-enable
     const ipHost2Idx = commands.indexOf('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
     const vlanFilterModeIphost1Idx = commands.indexOf('vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard');
     const vlanFilterIphost1Idx = commands.indexOf('vlan-filter iphost 1 pri 0 vlan 200');
     const vlanFilterModeIphost2Idx = commands.indexOf('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
     const vlanFilterIphost2Idx = commands.indexOf('vlan-filter iphost 2 pri 2 vlan 46');
-    expect(ipHost1Idx).toBeLessThan(ipHost2Idx);
     expect(ipHost2Idx).toBeLessThan(vlanFilterModeIphost1Idx);
     expect(vlanFilterModeIphost1Idx).toBeLessThan(vlanFilterIphost1Idx);
     expect(vlanFilterIphost1Idx).toBeLessThan(vlanFilterModeIphost2Idx);
@@ -163,7 +157,6 @@ describe('ZteC320Driver', () => {
     expect(commands.indexOf('no tr069-mgmt 1 tag pri 2 vlan 46')).toBeLessThan(
       commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46'),
     );
-    expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
     expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
     expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
 
@@ -251,14 +244,13 @@ describe('ZteC320Driver', () => {
         ...baseConfig,
         securityMgmtSupported: true,
       });
-      expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
       expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
       expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
     });
 
-    it('securityMgmtSupported no especificado (undefined) -- default seguro, sigue generando las 3 líneas para no alterar modelos ya confirmados en vivo (ej. HUAWEI HG8546M)', () => {
+    it('securityMgmtSupported no especificado (undefined) -- default seguro, sigue generando las líneas para no alterar modelos ya confirmados en vivo (ej. HUAWEI HG8546M)', () => {
       const commands = driver.generateAuthorizationScript(baseConfig);
-      expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
+      expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
     });
   });
 
@@ -282,16 +274,15 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
     expect(commands).toContain('flow 1 switch switch_0/1');
     expect(commands).toContain('switchport-bind switch_0/1 iphost 1');
+    expect(commands).toContain('switchport-bind switch_0/1 veip 1');
 
-    // Nada del canal de gestión ni del bloque TR-069/ACS/security-mgmt.
+    // Nada del canal de gestión ni del bloque TR-069/ACS.
     expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
     expect(commands.some((c) => c.includes('gemport 2'))).toBe(false);
     expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
     expect(commands.some((c) => c.includes('flow 2'))).toBe(false);
     expect(commands.some((c) => c.includes('iphost 2'))).toBe(false);
-    expect(commands.some((c) => c.includes('veip'))).toBe(false);
     expect(commands.some((c) => c.includes('tr069-mgmt'))).toBe(false);
-    expect(commands.some((c) => c.includes('security-mgmt'))).toBe(false);
     // Clave: jamás "undefined" en ningún comando generado.
     expect(commands.some((c) => c.includes('undefined'))).toBe(false);
 
@@ -408,11 +399,7 @@ describe('ZteC320Driver', () => {
       // reales y funcionando de SmartOLT en la misma OLT -- debe ser el
       // PRIMER comando dentro de "pon-onu-mng" (antes de flow/gemport/iphost).
       expect(commands).toContain('voip protocol sip');
-      // CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-24, ONU
-      // CMDCDD4D131E) como parte de la secuencia real que terminó
-      // registrándose en GenieACS.
-      expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
-      // Confirmado en vivo (2026-10-22) presente en ambas referencias reales.
+      // Confirmado en vivo (2026-10-22 y 2026-11-01) presente en ambas referencias reales de SmartOLT.
       expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
       expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
 
@@ -476,7 +463,7 @@ describe('ZteC320Driver', () => {
 
     it('no especificar securityMgmtSupported (undefined) sigue generando "security-mgmt ..." -- default seguro para no alterar modelos ya confirmados en vivo (ej. HUAWEI HG8546M)', () => {
       const commands = driver.generateTr069ManagementScript(baseConfig);
-      expect(commands).toContain('security-mgmt 5 state enable mode forward protocol web https');
+      expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
     });
   });
 
@@ -3782,11 +3769,12 @@ OLT#`);
       expect(bind2).toBeGreaterThan(bind1);
       expect(bindVeip).toBeGreaterThan(bind2);
 
-      // Fase 5 IP-Host
-      const iph1 = commands.indexOf('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
+      // Fase 5 IP-Host (solo ip-host 2 tiene dhcp-enable, ip-host 1 no lleva DHCP)
+      expect(commands).not.toContain('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
+      const iph2 = commands.indexOf('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
       const iph1Vlan = commands.indexOf('vlan-filter iphost 1 pri 0 vlan 400');
-      expect(iph1).toBeGreaterThan(bindVeip);
-      expect(iph1Vlan).toBeGreaterThan(iph1);
+      expect(iph2).toBeGreaterThan(bindVeip);
+      expect(iph1Vlan).toBeGreaterThan(iph2);
 
       // Fase 6 App / TR-069
       const voip = commands.indexOf('voip protocol sip');

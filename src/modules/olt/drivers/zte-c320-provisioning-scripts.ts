@@ -102,14 +102,25 @@ export function buildDhcpIpEthuniCommands(config: AuthorizeOnuParams): string[] 
 }
 
 /**
- * FASE 6 (parcial) del canal de gestión: VoIP/VEIP/TR-069-mgmt y, si el
- * modelo lo soporta, las reglas "security-mgmt ..." (acceso remoto
- * HTTPS/SSH/Telnet/FTP/SNMP -- NO necesarias para el registro TR-069, que
- * ya depende solo de iphost 2/VEIP cableado por `buildTr069IpHostCommands`/
- * `buildTr069SwitchportBindCommands`).
+ * Reglas de seguridad OMCI (acceso web HTTPS y CLI/SSH/Telnet/SNMP local).
+ * Confirmado en vivo contra SmartOLT (2026-11-01): se aplican tanto en Etapa 1
+ * como en Etapa 2 si el modelo lo soporta.
+ */
+export function buildSecurityMgmtCommands(config: AuthorizeOnuParams): string[] {
+  if (config.securityMgmtSupported === false) {
+    return [];
+  }
+  return [
+    'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
+    'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
+  ];
+}
+
+/**
+ * FASE 6 (parcial) del canal de gestión: VoIP/VEIP/TR-069-mgmt.
  */
 export function buildTr069ApplicationCommands(config: AuthorizeOnuParams): string[] {
-  const commands = [
+  return [
     'voip protocol sip',
     'veip 1 port udp 1232 host 2',
     'tr069-mgmt 1 state unlock',
@@ -123,16 +134,6 @@ export function buildTr069ApplicationCommands(config: AuthorizeOnuParams): strin
     `no tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
     `tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`,
   ];
-
-  if (config.securityMgmtSupported !== false) {
-    commands.push(
-      'security-mgmt 5 state enable mode forward protocol web https',
-      'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
-      'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
-    );
-  }
-
-  return commands;
 }
 
 /**
@@ -314,16 +315,19 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
 
   // === FASE 4: Vinculación del Switch Virtual (switchport-bind) ===
   // Debe ejecutarse después de los flows y ANTES de configurar ip-host o veip
+  // Confirmado en vivo contra SmartOLT (2026-11-01): tanto iphost 1 como veip 1 se vinculan en Etapa 1
   commands.push('switchport-bind switch_0/1 iphost 1');
   if (hasTr069) {
-    commands.push(...buildTr069SwitchportBindCommands());
+    commands.push('switchport-bind switch_0/1 iphost 2');
   }
+  commands.push('switchport-bind switch_0/1 veip 1');
 
   // === FASE 5: Configuración de IP-Host y Filtros de VLAN ===
-  // CONFIRMADO EN VIVO (2026-10-29): primero se activan AMBOS ip-host
-  // (dhcp-enable) y recién DESPUÉS se aplican AMBOS vlan-filter -- no
-  // intercalado por host (host 1 completo, luego host 2) como antes.
-  commands.push('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
+  // CONFIRMADO EN VIVO contra SmartOLT (2026-11-01):
+  // ip-host 1 (VLAN de servicio de datos/cliente) NUNCA lleva dhcp-enable,
+  // solo se cablea su vlan-filter. Activar DHCP en ip-host 1 causa conflicto de
+  // doble cliente DHCP en ONUs Huawei (HG8546M/BT546XG) e impide que ip-host 2
+  // obtenga IP de gestión. DHCP WAN solo se habilita en ip-host 2 (canal de gestión TR-069 en Etapa 2).
   if (hasTr069) {
     commands.push(...buildTr069IpHostEnableCommand());
   }
@@ -338,6 +342,7 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
 
   // === FASE 6: Capa de Aplicación (Puertos ETH, VoIP, VEIP, TR-069 y Seguridad) ===
   commands.push(...buildDhcpIpEthuniCommands(config));
+  commands.push(...buildSecurityMgmtCommands(config));
 
   if (hasTr069) {
     commands.push(...buildTr069ApplicationCommands(config));
@@ -372,6 +377,7 @@ export function generateTr069ManagementScript(config: AuthorizeOnuParams): strin
     // 4. Puertos LAN, VoIP, VEIP, TR-069 y Firewall al final
     ...buildDhcpIpEthuniCommands(config),
     ...buildTr069ApplicationCommands(config),
+    ...buildSecurityMgmtCommands(config),
     // 5. Reinicio OMCI ÚNICAMENTE cuando ya se enviaron tag y security-mgmt
     REBOOT_ONU_SENTINEL,
     'end',

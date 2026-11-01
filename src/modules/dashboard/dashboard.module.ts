@@ -10,6 +10,7 @@ import { InvoiceEntity } from '../invoicing/entities/invoice.entity';
 import { TicketEntity } from '../tickets/entities/ticket.entity';
 import { ProductEntity } from '../inventory/entities/product.entity';
 import { SerialNumberEntity } from '../inventory/entities/serial-number.entity';
+import { CompanyProfileEntity } from '../company/entities/company-profile.entity';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { SerialNumberEntity } from '../inventory/entities/serial-number.entity';
       TicketEntity,
       ProductEntity,
       SerialNumberEntity,
+      CompanyProfileEntity,
     ]),
     JwtModule.register({}),
   ],

@@ -23,7 +23,7 @@ import { InvoiceReceiptMetadata } from '../printing/pdf-generator.types';
 import { CompanyService } from '../company/company.service';
 import { isOpenInvoiceStatus, OPEN_INVOICE_STATUSES } from './invoice-status.util';
 import { BillingSettingsEntity } from '../billing/entities/billing-settings.entity';
-import { formatDateDgii } from '../../common/utils/dgii-date.util';
+import { formatDateDgii, dateKeyDgii } from '../../common/utils/dgii-date.util';
 import { MinioStorageService } from '../storage/minio-storage.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { loadMinioConfig, MinioConfig } from '../../config/minio.config';
@@ -448,9 +448,7 @@ export class InvoicingService {
     // refleja, en los 4 métodos que emiten/liquidan una factura, el momento
     // real del timbrado ante la DGII.
     const emittedAt = invoice.paidAt ? new Date(invoice.paidAt) : new Date();
-    const yyyy = emittedAt.getFullYear();
-    const mm = String(emittedAt.getMonth() + 1).padStart(2, '0');
-    const dd = String(emittedAt.getDate()).padStart(2, '0');
+    const [yyyy, mm, dd] = dateKeyDgii(emittedAt).split('-');
     const basePrefix = `${this.tenantContext.getTenantId()}/invoices/${yyyy}/${mm}/${dd}`;
     const fileBaseName = invoice.ncfNumber || invoice.id;
 
@@ -1286,7 +1284,7 @@ export class InvoicingService {
       tipoIdentificacion: inv.sale?.client?.docType === 'RNC' ? 1 : 2,
       numeroComprobante: inv.ncfNumber,
       tipoComprobante: inv.ncfType,
-      fechaEmision: inv.issuedAt.toISOString().split('T')[0],
+      fechaEmision: dateKeyDgii(inv.issuedAt),
       montoFacturado: Number(inv.sale?.subtotal || 0),
       itbisFacturado: Number(inv.sale?.itbisTotal || 0),
       montoTotal: Number(inv.sale?.grandTotal || 0),
