@@ -11,7 +11,6 @@ import {
   FLOW_SWITCH_BIND_RE,
   isPreparatoryTeardownCommand,
 } from './zte-c320-provisioning-scripts';
-import { ensureTcontProfileWithSession, ensureTrafficProfileWithSession } from './zte-c320-profiles';
 
 /**
  * Etapa 2 del flujo de 3 etapas (apuntar la ONU al ACS/TR-069) -- extraído
@@ -63,19 +62,17 @@ export async function ensureTr069TransportWithSession(
     throw new Error('No se puede preparar el canal de gestión/TR-069: falta la VLAN de TR-069 (tr069Vlan).');
   }
 
-  await ensureTcontProfileWithSession(session, { name: 'SMARTOLT-VOIPMNG-10M', fixedKbps: 10240 });
-  await ensureTrafficProfileWithSession(session, { name: 'SMARTOLT-1G-DOWN', downKbps: 1024000 });
-
   // Literales de comando sacados de `generateTr069TransportScript()` --
   // fuente única de verdad compartida con el botón "Previsualizar Script
   // CLI" de Etapa 2, para que la vista previa nunca pueda divergir de lo
   // que esta sesión real ejecuta.
+  // Directriz del sistema: NO auto-crear perfiles automáticamente en la OLT.
+  // gemport 2 no requiere límite downstream.
   const [
     cmdConfigTerminal,
     cmdInterface,
     cmdTcont,
     cmdGemportTcont,
-    cmdGemportTrafficLimit,
     cmdNoServicePort,
     cmdServicePort,
     cmdExitInterface,
@@ -131,7 +128,6 @@ export async function ensureTr069TransportWithSession(
   }
 
   await runPaced(cmdGemportTcont);
-  await runPaced(cmdGemportTrafficLimit);
 
   // "no service-port 2" ANTES de crearlo -- mismo criterio que
   // generateAuthorizationScript (CONFIRMADO EN VIVO, 2026-10-30, ONU

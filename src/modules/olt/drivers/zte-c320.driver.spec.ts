@@ -482,7 +482,6 @@ describe('ZteC320Driver', () => {
         'interface gpon-onu_1/2/15:1',
         'tcont 2 profile SMARTOLT-VOIPMNG-10M',
         'gemport 2 tcont 2',
-        'gemport 2 traffic-limit downstream SMARTOLT-1G-DOWN',
         'no service-port 2',
         'service-port 2 vport 2 user-vlan 46 vlan 46',
         'exit',

@@ -407,7 +407,6 @@ export function generateTr069TransportScript(config: AuthorizeOnuParams): string
     `interface ${onuInterface}`,
     'tcont 2 profile SMARTOLT-VOIPMNG-10M',
     'gemport 2 tcont 2',
-    'gemport 2 traffic-limit downstream SMARTOLT-1G-DOWN',
     'no service-port 2',
     `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
     'exit',
