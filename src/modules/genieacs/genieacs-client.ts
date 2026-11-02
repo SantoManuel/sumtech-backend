@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import { Logger } from '@nestjs/common';
 
 export interface GenieAcsClientConfig {
+  wanWriteGuard?: <T>(deviceId: string, paths: string[], action: () => Promise<T>) => Promise<T>;
   /** Base de la NBI detrás de nginx, ej. "https://genieacs.sumtech.local" — SIN "/api/v1" al final. */
   baseUrl: string;
   apiKey: string;
@@ -144,8 +145,8 @@ export class GenieAcsClient {
    * caso sí es correcto asumir que el CPE nunca hizo bootstrap contra este
    * GenieACS. No es un error, es un estado válido y esperable.
    */
-  async findDeviceBySerial(serialNumber: string): Promise<string | null> {
-    const bySerial = await this.queryFirstDeviceId({ '_deviceId._SerialNumber': serialNumber });
+  async findDeviceBySerial(serialNumber: string, options?: { exactOnly: boolean }): Promise<string | null> {
+    const bySerial = await this.queryFirstDeviceId({ '_deviceId._SerialNumber': serialNumber }, options?.exactOnly);
     if (bySerial) {
       return bySerial;
     }
@@ -155,10 +156,11 @@ export class GenieAcsClient {
       return null;
     }
 
-    const byExactMac = await this.findDeviceByMacHexCandidates([macOctets.join('')]);
+    const byExactMac = await this.findDeviceByMacHexCandidates([macOctets.join('')], options?.exactOnly);
     if (byExactMac) {
       return byExactMac;
     }
+    if (options?.exactOnly) return null;
 
     const nearbyLastOctetHexValues = buildNearbyLastOctetHexValues(macOctets[5], GenieAcsClient.MAC_LAST_OCTET_TOLERANCE);
     const byNearbyMac = await this.findDeviceByMacPrefixAndLastOctets(macOctets.slice(0, 5), nearbyLastOctetHexValues);
@@ -179,7 +181,7 @@ export class GenieAcsClient {
    * dígitos hex sin separadores). `[]` o ningún match -> null, sin pegarle a
    * la NBI innecesariamente.
    */
-  private async findDeviceByMacHexCandidates(hexCandidates: string[]): Promise<string | null> {
+  private async findDeviceByMacHexCandidates(hexCandidates: string[], requireUnique = false): Promise<string | null> {
     if (hexCandidates.length === 0) {
       return null;
     }
@@ -188,7 +190,7 @@ export class GenieAcsClient {
         [`${path}._value`]: { $regex: macHexToPattern(hex), $options: 'i' },
       })),
     );
-    return this.queryFirstDeviceId({ $or: orClauses });
+    return this.queryFirstDeviceId({ $or: orClauses }, requireUnique);
   }
 
   /**
@@ -217,7 +219,7 @@ export class GenieAcsClient {
     return this.queryFirstDeviceId({ $or: orClauses });
   }
 
-  private async queryFirstDeviceId(query: Record<string, unknown>): Promise<string | null> {
+  private async queryFirstDeviceId(query: Record<string, unknown>, requireUnique = false): Promise<string | null> {
     let response;
     try {
       response = await this.http.get(this.buildUrl('devices'), {
@@ -232,6 +234,7 @@ export class GenieAcsClient {
     if (results.length === 0) {
       return null;
     }
+    if (requireUnique && results.length !== 1) throw new Error('La identidad del CPE es ambigua en GenieACS.');
     return results[0]._id;
   }
 
@@ -543,7 +546,14 @@ export class GenieAcsClient {
    * sobre un objeto TR-069 que todavía no existe, "Invalid parameter name")
    * quedaba reportado como éxito silencioso hacia quien llama.
    */
-  async setParameterValues(deviceId: string, parameterValues: Array<[string, string, string]>): Promise<void> {
+  async setParameterValues(deviceId: string, parameterValues: Array<[string, string, string]>): Promise<{ status: 'COMPLETED' | 'QUEUED' | 'UNKNOWN'; taskId?: string }> {
+    if (this.config.wanWriteGuard) {
+      return this.config.wanWriteGuard(deviceId, parameterValues.map(p => p[0]), () => this.setParameterValuesUnguarded(deviceId, parameterValues));
+    }
+    return this.setParameterValuesUnguarded(deviceId, parameterValues);
+  }
+
+  private async setParameterValuesUnguarded(deviceId: string, parameterValues: Array<[string, string, string]>): Promise<{ status: 'COMPLETED' | 'QUEUED' | 'UNKNOWN'; taskId?: string }> {
     try {
       const taskResponse = await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
@@ -551,9 +561,32 @@ export class GenieAcsClient {
         this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
       await this.assertTaskSucceeded(deviceId, (taskResponse as any).data?._id);
+      return { status: taskResponse.status === 200 ? 'COMPLETED' : taskResponse.status === 202 ? 'QUEUED' : 'UNKNOWN', taskId: taskResponse.data?._id };
     } catch (error) {
-      throw new Error(this.describeError(error));
+      let message = this.describeError(error);
+      for (const [path, value] of parameterValues) {
+        if (/password|passphrase|presharedkey/i.test(path) && value) message = message.split(value).join('***');
+      }
+      throw new Error(message);
     }
+  }
+
+  /** All queued tasks block an ownership handover; never delete an unknown task. */
+  async getPendingDeviceTasks(deviceId: string): Promise<unknown[]> {
+    const response = await this.http.get(this.buildUrl('tasks'), {
+      ...this.buildRequestConfig(), params: { query: JSON.stringify({ device: deviceId }) },
+    });
+    if (!Array.isArray(response.data)) throw new Error('No se pudo comprobar la cola de tareas del CPE.');
+    return response.data;
+  }
+
+  async isTaskComplete(deviceId: string, taskId: string): Promise<boolean> {
+    await this.assertTaskSucceeded(deviceId, taskId);
+    const response = await this.http.get(this.buildUrl('tasks'), {
+      ...this.buildRequestConfig(), params: { query: JSON.stringify({ _id: taskId, device: deviceId }) },
+    });
+    if (!Array.isArray(response.data)) throw new Error('La cola ACS devolvió un formato desconocido.');
+    return response.data.length === 0;
   }
 
   /**
@@ -614,6 +647,11 @@ export class GenieAcsClient {
    * real con `assertTaskSucceeded`, igual que `setParameterValues`.
    */
   async addObject(deviceId: string, objectPath: string): Promise<void> {
+    if (this.config.wanWriteGuard) return this.config.wanWriteGuard(deviceId, [objectPath], () => this.addObjectUnguarded(deviceId, objectPath));
+    return this.addObjectUnguarded(deviceId, objectPath);
+  }
+
+  private async addObjectUnguarded(deviceId: string, objectPath: string): Promise<void> {
     try {
       const taskResponse = await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
@@ -634,6 +672,11 @@ export class GenieAcsClient {
    * el resultado real con `assertTaskSucceeded`, igual que `addObject`.
    */
   async deleteObject(deviceId: string, objectPath: string): Promise<void> {
+    if (this.config.wanWriteGuard) return this.config.wanWriteGuard(deviceId, [objectPath], () => this.deleteObjectUnguarded(deviceId, objectPath));
+    return this.deleteObjectUnguarded(deviceId, objectPath);
+  }
+
+  private async deleteObjectUnguarded(deviceId: string, objectPath: string): Promise<void> {
     try {
       const taskResponse = await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
@@ -647,6 +690,15 @@ export class GenieAcsClient {
   }
 
   /** Consulta y verifica valores de parámetros TR-069 del CPE */
+  async refreshParameterValues(deviceId: string, parameterNames: string[]): Promise<Record<string, string | undefined>> {
+    const response = await this.http.post(
+      `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
+      { name: 'getParameterValues', parameterNames }, this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS));
+    if (response.status !== 200) throw new Error('La lectura del CPE quedó encolada.');
+    await this.assertTaskSucceeded(deviceId, response.data?._id);
+    return this.getParameterValues(deviceId, parameterNames);
+  }
+
   async getParameterValues(deviceId: string, parameterNames: string[]): Promise<Record<string, string | undefined>> {
     try {
       // 1. Obtener documento actual del dispositivo

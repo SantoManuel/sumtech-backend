@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
   Req,
+  HttpCode,
 } from '@nestjs/common';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -19,6 +20,9 @@ import { OnuManagementService } from './services/onu-management.service';
 import { OltPermissionGuard, RequireOltAction, OltIdFrom } from './guards/olt-permission.guard';
 import { ListUnconfiguredOnusDto, ListOnusDto } from './dto/list-onus.dto';
 import { MigrateOnuDto } from './dto/migrate-onu.dto';
+import { ConfigureOnuWanDto } from './dto/configure-onu-wan.dto';
+import { OnuOmciWanProfileDto } from './dto/onu-omci-wan-profile.dto';
+import { RetryOnuWanDto } from './dto/retry-onu-wan.dto';
 
 @Controller('olt/onus')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -239,15 +243,46 @@ export class OnuController {
    * exige que la Etapa 2 (tr069-profile) ya se haya aplicado.
    */
   @Post(':id/wan-config')
+  @HttpCode(202)
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
   @OltIdFrom('ONU_ID_PARAM')
   async pushWanConfig(
     @Param('id') id: string,
-    @Body() dto: any,
+    @Body() dto: ConfigureOnuWanDto,
     @Req() req: any,
   ) {
     return this.onuService.pushWanConfig(id, dto, req.user?.id);
+  }
+
+  @Get(':id/wan-operations/:operationId')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('VIEW')
+  @OltIdFrom('ONU_ID_PARAM')
+  getWanOperation(@Param('id') id: string, @Param('operationId') operationId: string) {
+    return this.onuService.getWanOperation(id, operationId);
+  }
+
+  @Post(':id/wan-omci-profile')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  saveOmciWanProfile(@Param('id') id: string, @Body() dto: OnuOmciWanProfileDto, @Req() req: any) {
+    return this.onuService.saveOmciWanProfile(id, dto, req.user?.id);
+  }
+
+  @Post(':id/wan-verify')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  verifyWan(@Param('id') id: string) { return this.onuService.verifyWan(id); }
+
+  @Post(':id/wan-operations/:operationId/retry')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  retryWan(@Param('id') id: string, @Param('operationId') op: string, @Body() dto: RetryOnuWanDto, @Req() req: any) {
+    return this.onuService.retryWan(id, op, dto.acknowledged, req.user?.id);
   }
 
   /**

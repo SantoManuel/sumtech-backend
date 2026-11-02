@@ -324,6 +324,8 @@ export interface OnuTr069MgmtInfo {
  * aplica", sino que todavía no hay evidencia real del equipo para construirla.
  */
 export interface OltDriverCapabilities {
+  /** Driver code exists; per-ONU pilot/validation must still be checked. */
+  omciWanPppoe: boolean;
   testConnection: boolean;
   systemInfo: boolean;
   systemHealth: boolean;
@@ -437,6 +439,7 @@ export interface OltDriverCapabilities {
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
+  omciWanPppoe: false,
   testConnection: false,
   systemInfo: false,
   systemHealth: false,
@@ -491,6 +494,8 @@ export class UnknownOltVendorError extends Error {
 }
 
 export interface IOltDriver {
+  configureOnuWan?(params: OltConnectionParams, input: import('./onu-wan.types').ConfigureOnuWanParams): Promise<import('./onu-wan.types').OnuWanApplyResult>;
+  getOnuWanConfiguration?(params: OltConnectionParams, iface: string, wanIndex: number): Promise<import('./onu-wan.types').OnuWanConfiguration>;
   testConnection(params: OltConnectionParams): Promise<{ ok: boolean; error?: string; latencyMs?: number }>;
   getSystemInfo(params: OltConnectionParams): Promise<OltSystemInfo>;
   getSystemHealth(params: OltConnectionParams): Promise<OltSystemHealth>;

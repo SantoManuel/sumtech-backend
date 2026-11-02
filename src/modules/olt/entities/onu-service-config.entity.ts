@@ -11,6 +11,7 @@ import { OnuEntity } from './onu.entity';
 import { VlanEntity } from './vlan.entity';
 import { Tr069NetworkEntity } from './tr069-network.entity';
 import { OltSpeedProfileEntity } from './olt-speed-profile.entity';
+import { OnuOmciWanProfile, WanApplyStatus, WanProvisioningMethod } from '../ports/onu-wan.types';
 
 @Entity({ schema: 'net', name: 'onu_service_config' })
 export class OnuServiceConfigEntity {
@@ -26,6 +27,30 @@ export class OnuServiceConfigEntity {
 
   @Column({ name: 'management_method', type: 'varchar', length: 20, default: 'TR069' })
   managementMethod: 'OMCI' | 'TR069';
+
+  @Column({ name: 'wan_provisioning_method', type: 'varchar', length: 20, nullable: true })
+  wanProvisioningMethod: WanProvisioningMethod | null;
+
+  @Column({ name: 'wan_applied_method', type: 'varchar', length: 20, nullable: true })
+  wanAppliedMethod: WanProvisioningMethod | null;
+
+  @Column({ name: 'wan_desired_version', type: 'int', default: 0 })
+  wanDesiredVersion: number;
+
+  @Column({ name: 'wan_applied_version', type: 'int', default: 0 })
+  wanAppliedVersion: number;
+
+  @Column({ name: 'wan_apply_status', type: 'varchar', length: 30, default: 'NOT_CONFIGURED' })
+  wanApplyStatus: WanApplyStatus;
+
+  @Column({ name: 'wan_last_error', type: 'text', nullable: true })
+  wanLastError: string | null;
+
+  @Column({ name: 'wan_verified_at', type: 'timestamptz', nullable: true })
+  wanVerifiedAt: Date | null;
+
+  @Column({ name: 'omci_wan_profile', type: 'jsonb', nullable: true })
+  omciWanProfile: OnuOmciWanProfile | null;
 
   @Column({ name: 'operation_mode', type: 'varchar', length: 20, default: 'ROUTER' })
   operationMode: 'BRIDGE' | 'ROUTER';

@@ -60,22 +60,26 @@ export class OnuCpeSyncReconciliationService {
   async retryPendingCpeConfig(): Promise<CpeSyncRetryResult> {
     const result: CpeSyncRetryResult = { checked: 0, succeeded: 0, failed: 0 };
 
-    if (!this.client) {
-      return result;
-    }
-
     const onus = await this.onuRepository.find({
       where: { status: 'ACTIVE' },
       relations: ['olt', 'serviceConfig'],
     });
 
     const pending = onus.filter(
-      (onu) => onu.serviceConfig?.managementMethod === 'TR069' && onu.serviceConfig.cpeConfigStatus !== 'APPLIED',
+      (onu) => onu.serviceConfig?.wanProvisioningMethod && (onu.serviceConfig.wanDesiredVersion || 0) > 0
+        ? ['PENDING','APPLYING','QUEUED','VERIFYING','UNKNOWN','ERROR'].includes(onu.serviceConfig.wanApplyStatus)
+        : !!this.client && onu.serviceConfig?.wanProvisioningMethod !== 'OMCI' &&
+          onu.serviceConfig?.managementMethod === 'TR069' && onu.serviceConfig.cpeConfigStatus !== 'APPLIED',
     );
     result.checked = pending.length;
 
     for (const onu of pending) {
       try {
+        if (onu.serviceConfig?.wanProvisioningMethod && (onu.serviceConfig.wanDesiredVersion || 0) > 0) {
+          const op = await this.onuManagementService.reconcileWan(onu.id);
+          if (op?.status === 'APPLIED') result.succeeded++; else result.failed++;
+          continue;
+        }
         const { cpeConfigured } = await this.onuManagementService.pushCpeConfiguration(
           onu,
           onu.serviceConfig!,

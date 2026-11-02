@@ -37,6 +37,8 @@ import { OltManagementService } from './services/olt-management.service';
 import { OltCatalogsService } from './services/olt-catalogs.service';
 import { OltConnectionResolverService } from './services/olt-connection-resolver.service';
 import { OltNatManagerService } from './services/olt-nat-manager.service';
+import { OnuWanOperationEntity } from './entities/onu-wan-operation.entity';
+import { OnuWanProvisioningService } from './services/onu-wan-provisioning.service';
 import { OnuManagementService } from './services/onu-management.service';
 import { OnuCpeSyncReconciliationService } from './services/onu-cpe-sync-reconciliation.service';
 import { OltPartialOperationService } from './services/olt-partial-operation.service';
@@ -63,6 +65,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
       Tr069NetworkEntity,
       OnuEntity,
       OnuServiceConfigEntity,
+      OnuWanOperationEntity,
       OltPartialOperationEntity,
       OnuOpticalHistoryEntity,
       OltMetricEntity,
@@ -90,6 +93,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
     OltConnectionResolverService,
     OltNatManagerService,
     OnuManagementService,
+    OnuWanProvisioningService,
     OnuCpeSyncReconciliationService,
     OltPartialOperationService,
     OltMonitoringService,
@@ -106,6 +110,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
     OltCatalogsService,
     OltNatManagerService,
     OnuManagementService,
+    OnuWanProvisioningService,
     OltPartialOperationService,
     OnuWebProxyService,
     OltMonitoringService,

@@ -19,7 +19,7 @@ import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
-import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
+
 import { resolveCpeIpv6Capabilities } from '../../genieacs/services/cpe-capabilities';
 import { GenieAcsDeviceResolverService } from '../../genieacs/genieacs-device-resolver.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
@@ -35,6 +35,9 @@ import {
 } from '../ports/olt-driver.port';
 import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
 import { OltPartialOperationService } from './olt-partial-operation.service';
+import { OnuWanProvisioningService } from './onu-wan-provisioning.service';
+import { ConfigureOnuWanDto } from '../dto/configure-onu-wan.dto';
+import { OnuOmciWanProfileDto } from '../dto/onu-omci-wan-profile.dto';
 
 export interface ProvisioningAuditFinding {
   severity: 'CRITICAL' | 'WARNING' | 'INFO';
@@ -104,10 +107,11 @@ export class OnuManagementService {
     private readonly driverRegistry: OltDriverRegistry,
     private readonly connectionResolver: OltConnectionResolverService,
     private readonly deviceOperationLogger: DeviceOperationLogger,
-    private readonly cpeConfiguratorService: CpeConfiguratorService,
+
     private readonly genieAcsDeviceResolver: GenieAcsDeviceResolverService,
     private readonly tenantContext: TenantContextService,
     private readonly partialOperations: OltPartialOperationService,
+    private readonly wanProvisioning: OnuWanProvisioningService,
   ) {}
 
   private async recordPartialOperation(oltId: string, onuId: string, operation: string) {
@@ -300,6 +304,8 @@ export class OnuManagementService {
       this.driverRegistry.attachCapabilities(onu.olt);
     }
 
+    (onu as any).wanCapabilities = this.wanProvisioning.capabilities(onu);
+    (onu as any).wanOperation = await this.wanProvisioning.latestOperation(onu.id);
     const cpeCaps = resolveCpeIpv6Capabilities(onu.vendor, onu.onuType?.model);
     (onu as any).cpeIpv6Capabilities = cpeCaps.capabilities;
     (onu as any).cpeIpv6CapabilityNotes = cpeCaps.notes;
@@ -849,6 +855,11 @@ export class OnuManagementService {
    * OLT_Tabara_Abajo, ONU ECOM0F91DF9B). NO toca el resto del cableado OMCI.
    */
   async applyWanIpFix(id: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performApplyWanIpFix(id));
+  }
+
+  private async performApplyWanIpFix(id: string) {
+    await this.wanProvisioning.assertLegacyWanRecovery(id);
     const { onu, driver, connParams, ponInterface, onuId } = await this.resolveOnuAuditTarget(id);
     if (typeof driver.applyWanIpFix !== 'function') {
       throw new BadRequestException('Este fabricante de OLT todavía no soporta esta corrección.');
@@ -877,6 +888,10 @@ export class OnuManagementService {
    * después de intentar `applyWanIpFix`.
    */
   async applyServiceGemportFix(id: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performApplyServiceGemportFix(id));
+  }
+
+  private async performApplyServiceGemportFix(id: string) {
     const { onu, driver, connParams, ponInterface, onuId } = await this.resolveOnuAuditTarget(id);
     if (typeof driver.applyServiceGemportFix !== 'function') {
       throw new BadRequestException('Este fabricante de OLT todavía no soporta esta corrección.');
@@ -959,6 +974,10 @@ export class OnuManagementService {
    * Autoriza y provisiona la ONU en la OLT (RF-OLT-016 / RF-ONU-001 a 007).
    */
   async authorizeOnu(id: string, dto: any, actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performAuthorizeOnu(id, dto, actorUserId));
+  }
+
+  private async performAuthorizeOnu(id: string, dto: any, actorUserId?: string) {
     const onu = await this.findById(id);
     const olt = onu.olt;
     const driver = this.resolveDriver(olt);
@@ -1063,6 +1082,7 @@ export class OnuManagementService {
       config.lastApplyError = oltWarning ?? null!;
     }
     await this.configRepository.save(config);
+    await this.wanProvisioning.invalidateReplacement(onu.id);
 
     // 3. Actualizar estado de la ONU en net.onus
     // .update() en vez de save(onu): onu.serviceConfig quedó cargado (join de
@@ -1153,107 +1173,25 @@ export class OnuManagementService {
     },
     options: { warningPrefix: string; failureLogMessagePrefix: string; operation: string; actorUserId?: string },
   ): Promise<{ cpeConfigured?: boolean; cpeConfigWarning?: string }> {
-    if (config.managementMethod !== 'TR069' || !config.tr069NetworkId) {
-      return {};
-    }
-
-    try {
-      const tr069Network = await this.tr069Repository.findOneBy({ id: config.tr069NetworkId });
-      if (!tr069Network) {
-        throw new Error(`Red TR-069 "${config.tr069NetworkId}" no encontrada.`);
-      }
-      const onuType = onu.onuTypeId ? await this.onuTypeRepository.findOneBy({ id: onu.onuTypeId }) : null;
-      const wanMode = config.wanMode || 'PPPOE';
-
-      // PPPoE: usuario/contraseña vienen del network_access ya vinculado al
-      // contrato (única fuente de verdad, ver Plan_Implementacion_Red_RF.md
-      // §8 Fase 8) -- nunca se piden de nuevo en este modal para no terminar
-      // con dos credenciales PPPoE distintas (la del secret en RouterOS y la
-      // que el propio ONU usa) para el mismo acceso.
-      let pppoeUsername: string | undefined;
-      let pppoePassword: string | undefined;
-      if (wanMode === 'PPPOE' && onu.contractId) {
-        const networkAccess = await this.networkAccessRepository.findOneBy({ contractId: onu.contractId });
-        if (networkAccess) {
-          pppoeUsername = networkAccess.username || undefined;
-          pppoePassword = networkAccess.pppoePasswordEnc
-            ? decryptCredential(networkAccess.pppoePasswordEnc)
-            : undefined;
+    if (config.wanProvisioningMethod === 'OMCI' || config.managementMethod !== 'TR069' || !config.tr069NetworkId) return {};
+    return this.wanProvisioning.withMutation(onu.id, async () => {
+      const current = await this.findById(onu.id);
+      if (current.serviceConfig?.operationMode === 'BRIDGE') return {};
+      try {
+        const pending = ['APPLYING', 'QUEUED', 'VERIFYING', 'UNKNOWN'].includes(current.serviceConfig?.wanApplyStatus || '');
+        if (pending && (current.serviceConfig?.wanDesiredVersion || 0) > 0) {
+          const op = await this.wanProvisioning.verify(current);
+          return { cpeConfigured: op?.status === 'APPLIED', cpeConfigWarning: op?.lastError || undefined };
         }
+        const op = await this.wanProvisioning.configure(current, {
+          provisioningMethod: 'TR069', wanMode: config.wanMode, ipProtocol: config.ipProtocol, ...wanStatic,
+        }, options.actorUserId);
+        return { cpeConfigured: op.status === 'APPLIED', cpeConfigWarning: op.lastError || undefined };
+      } catch (error: any) {
+        return { cpeConfigured: false, cpeConfigWarning: `${options.warningPrefix}: ${error.message}` };
       }
-
-      let serviceVlan = 100;
-      if (config.serviceVlanId) {
-        const v = await this.vlanRepository.findOneBy({ id: config.serviceVlanId });
-        if (v) serviceVlan = v.vlanId;
-      }
-
-      const configureResult = await this.cpeConfiguratorService.configureCpe({
-        serialNumber: onu.serialNumber,
-        vendor: onuType?.vendor,
-        model: onuType?.model,
-        // Dispara los tags TENANT:<slug>/OLT:<nombre> en GenieACS (ver
-        // CpeConfiguratorService.configureCpe) — único mecanismo real para
-        // saber a qué tenant/OLT pertenece un CPE, dado que GenieACS es una
-        // sola instancia compartida por todos los tenants.
-        tenantSlug: this.tenantContext.getSlug(),
-        oltName: olt.name,
-        operationMode: config.operationMode || 'ROUTER',
-        ipProtocol: config.ipProtocol,
-        wanMode,
-        pppoeUsername,
-        pppoePassword,
-        wanStaticIp: wanMode === 'STATIC' ? wanStatic.wanStaticIp : undefined,
-        wanStaticMask: wanMode === 'STATIC' ? wanStatic.wanStaticMask : undefined,
-        wanStaticGw: wanMode === 'STATIC' ? wanStatic.wanStaticGw : undefined,
-        dns1: config.wanDns1,
-        dns2: config.wanDns2,
-        serviceVlan,
-        managementServer: {
-          acsUrl: tr069Network.acsUrl,
-          acsUsername: tr069Network.acsUsername || undefined,
-          acsPassword: tr069Network.acsPasswordEnc ? decryptCredential(tr069Network.acsPasswordEnc) : undefined,
-          connReqUsername: tr069Network.connReqUsername || undefined,
-          connReqPassword: tr069Network.connReqPasswordEnc
-            ? decryptCredential(tr069Network.connReqPasswordEnc)
-            : undefined,
-          informIntervalSec: tr069Network.informIntervalSec,
-        },
-      });
-
-      if (configureResult.ipv6Readback?.prefix) {
-        config.pppoeIpv6Prefix = configureResult.ipv6Readback.prefix;
-      }
-      if (configureResult.ipv6Readback?.address) {
-        config.pppoeIpv6Address = configureResult.ipv6Readback.address;
-      }
-      config.cpeConfigStatus = 'APPLIED';
-      config.lastCpeConfigError = undefined;
-      config.cpeConfigSyncedAt = new Date();
-      await this.configRepository.save(config);
-
-      // Aviso no fatal (ej. Dual-Stack pedido en DHCP/STATIC, todavía sin
-      // implementar -- ver CpeParameterMapper.getIpv6Warning). La
-      // configuración SÍ se aplicó; esto solo avisa qué parte se ignoró.
-      return { cpeConfigured: true, cpeConfigWarning: configureResult.warning };
-    } catch (err: any) {
-      await this.deviceOperationLogger.logEvent({
-        nodeId: olt.viaNodeId || olt.id,
-        eventType: 'PROVISION',
-        status: 'FAILURE',
-        message: `${options.failureLogMessagePrefix}: ${err.message}`,
-        actorUserId: options.actorUserId,
-        rawDetails: { onuId: onu.id, oltId: olt.id, operation: options.operation },
-      });
-
-      config.cpeConfigStatus = 'ERROR';
-      config.lastCpeConfigError = err.message;
-      await this.configRepository.save(config);
-
-      return { cpeConfigured: false, cpeConfigWarning: `${options.warningPrefix}: ${err.message}` };
-    }
+    });
   }
-
   /**
    * Etapa 2 del flujo de 3 etapas: apunta una ONU YA autorizada ópticamente
    * (Etapa 1, `authorizeOnu`) al ACS (chain OMCI de `tr069-mgmt`) -- SIN
@@ -1314,6 +1252,10 @@ export class OnuManagementService {
   }
 
   async applyTr069Profile(id: string, dto: { tr069NetworkId: string }, actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performApplyTr069Profile(id, dto, actorUserId));
+  }
+
+  private async performApplyTr069Profile(id: string, dto: { tr069NetworkId: string }, actorUserId?: string) {
     const onu = await this.findById(id);
     const olt = onu.olt;
     const driver = this.resolveDriver(olt);
@@ -1500,71 +1442,40 @@ export class OnuManagementService {
    * explícita y reintentable desde la Ficha 360, en vez de dispararse
    * automáticamente dentro de `authorizeOnu`/`reprovisionOnu`.
    */
-  async pushWanConfig(
-    id: string,
-    dto: {
-      wanMode?: 'PPPOE' | 'DHCP' | 'STATIC';
-      wanStaticIp?: string;
-      wanStaticMask?: string;
-      wanStaticGw?: string;
-      ipProtocol?: 'IPV4' | 'IPV6' | 'DUAL';
-      wanDns1?: string;
-      wanDns2?: string;
-      wanStaticIpv6?: string;
-      wanStaticIpv6PrefixLen?: number;
-      wanStaticIpv6Gw?: string;
-      wanStaticIpv6Dns1?: string;
-      wanStaticIpv6Dns2?: string;
-    },
-    actorUserId?: string,
-  ) {
-    const onu = await this.findById(id);
-    const olt = onu.olt;
-
-    const config = await this.configRepository.findOneBy({ onuId: onu.id });
-    if (!config || config.managementMethod !== 'TR069' || !config.tr069NetworkId) {
-      throw new BadRequestException(
-        'Aplica primero el Perfil TR-069 a esta ONU antes de enviar la configuración WAN/PPPoE.',
-      );
-    }
-
-    if (dto.wanMode) config.wanMode = dto.wanMode;
-    if (dto.ipProtocol) config.ipProtocol = dto.ipProtocol;
-    config.wanDns1 = dto.wanDns1 || undefined;
-    config.wanDns2 = dto.wanDns2 || undefined;
-    config.wanStaticIpv6 = dto.wanStaticIpv6 || undefined;
-    config.wanStaticIpv6PrefixLen = dto.wanStaticIpv6PrefixLen ? Number(dto.wanStaticIpv6PrefixLen) : undefined;
-    config.wanStaticIpv6Gw = dto.wanStaticIpv6Gw || undefined;
-    config.wanStaticIpv6Dns1 = dto.wanStaticIpv6Dns1 || undefined;
-    config.wanStaticIpv6Dns2 = dto.wanStaticIpv6Dns2 || undefined;
-    await this.configRepository.save(config);
-
-    const { cpeConfigured, cpeConfigWarning } = await this.pushCpeConfiguration(
-      onu,
-      config,
-      olt,
-      {
-        wanStaticIp: dto.wanStaticIp,
-        wanStaticMask: dto.wanStaticMask,
-        wanStaticGw: dto.wanStaticGw,
-        wanStaticIpv6: dto.wanStaticIpv6,
-        wanStaticIpv6PrefixLen: dto.wanStaticIpv6PrefixLen ? Number(dto.wanStaticIpv6PrefixLen) : undefined,
-        wanStaticIpv6Gw: dto.wanStaticIpv6Gw,
-        wanStaticIpv6Dns1: dto.wanStaticIpv6Dns1,
-        wanStaticIpv6Dns2: dto.wanStaticIpv6Dns2,
-      },
-      {
-        warningPrefix: 'No se pudo confirmar la configuración WAN/PPPoE vía GenieACS',
-        failureLogMessagePrefix: `[${olt.vendor}] ONU ${onu.serialNumber}: fallo enviando WAN/PPPoE vía GenieACS`,
-        operation: 'pushWanConfig',
-        actorUserId,
-      },
-    );
-
-    const saved = await this.findById(onu.id);
-    return { ...saved, cpeConfigured, cpeConfigWarning };
+  async pushWanConfig(id: string, dto: ConfigureOnuWanDto, actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performPushWanConfig(id, dto, actorUserId));
   }
 
+  private async performPushWanConfig(id: string, dto: ConfigureOnuWanDto, actorUserId?: string) {
+    const onu = await this.findById(id);
+    const operation = await this.wanProvisioning.configure(onu, dto, actorUserId);
+    const saved = await this.findById(id);
+    return {
+      ...saved, operationId: operation.id, wanOperation: operation,
+      cpeConfigured: operation.status === 'APPLIED',
+      cpeConfigWarning: operation.lastError || (operation.status === 'APPLIED' ? undefined : 'Configuración enviada; falta confirmar su aplicación.'),
+    };
+  }
+
+  async verifyWan(id: string) {
+    return this.wanProvisioning.withMutation(id, async () => this.wanProvisioning.verify(await this.findById(id)));
+  }
+
+  async reconcileWan(id: string) {
+    return this.wanProvisioning.withMutation(id, async () => this.wanProvisioning.reconcile(await this.findById(id)));
+  }
+
+  async retryWan(id: string, operationId: string, acknowledged: boolean, actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, async () => this.wanProvisioning.retry(await this.findById(id), operationId, acknowledged, actorUserId));
+  }
+  async getWanOperation(id: string, operationId: string) {
+    await this.findById(id);
+    return this.wanProvisioning.getOperation(id, operationId);
+  }
+
+  async saveOmciWanProfile(id: string, dto: OnuOmciWanProfileDto, actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, async () => this.wanProvisioning.saveOmciProfile(await this.findById(id), dto, actorUserId));
+  }
   /**
    * Reconfigura el método de gestión / modo de operación / VLANs de gestión
    * de una ONU YA autorizada, y reintenta el push a GenieACS -- SIN volver a
@@ -1579,6 +1490,10 @@ export class OnuManagementService {
    * deja intacto por compatibilidad, sin wiring nuevo desde el frontend.
    */
   async reprovisionOnu(id: string, dto: any, actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performReprovisionOnu(id, dto, actorUserId));
+  }
+
+  private async performReprovisionOnu(id: string, dto: any, actorUserId?: string) {
     const onu = await this.findById(id);
     if (onu.status !== 'ACTIVE') {
       throw new BadRequestException(
@@ -1738,6 +1653,10 @@ export class OnuManagementService {
    * y reconfigura la OLT y GenieACS manteniendo intacto el contrato del cliente.
    */
   async migrateOnu(id: string, dto: MigrateOnuDto, actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performMigrateOnu(id, dto, actorUserId));
+  }
+
+  private async performMigrateOnu(id: string, dto: MigrateOnuDto, actorUserId?: string) {
     const onu = await this.findById(id);
 
     if (onu.status === 'UNCONFIGURED') {
@@ -1881,46 +1800,17 @@ export class OnuManagementService {
       status: onu.status,
     });
 
-    // 5. Configurar GenieACS con el nuevo número de serie para provisión cero-toque
+    await this.wanProvisioning.invalidateReplacement(onu.id);
+    // Re-evaluate the destination; an OMCI recipe is never inherited by a replacement ONU.
     let cpeConfigured = false;
-    try {
-      if (onu.serviceConfig?.tr069Network) {
-        const tr069Network = onu.serviceConfig.tr069Network;
-        let pppoeUsername: string | undefined;
-        let pppoePassword: string | undefined;
-        if (onu.contractId) {
-          const networkAccess = await this.networkAccessRepository.findOneBy({ contractId: onu.contractId });
-          if (networkAccess) {
-            pppoeUsername = networkAccess.username || undefined;
-            pppoePassword = networkAccess.pppoePasswordEnc ? decryptCredential(networkAccess.pppoePasswordEnc) : undefined;
-          }
-        }
-
-        await this.cpeConfiguratorService.configureCpe({
-          serialNumber: onu.serialNumber,
-          vendor: onu.onuType?.vendor,
-          model: onu.onuType?.model,
-          tenantSlug: this.tenantContext.getSlug(),
-          operationMode: onu.serviceConfig.operationMode || 'ROUTER',
-          wanMode: onu.serviceConfig.wanMode || 'PPPOE',
-          pppoeUsername,
-          pppoePassword,
-          serviceVlan: onu.serviceConfig.serviceVlan?.vlanId || 100,
-          managementServer: {
-            acsUrl: tr069Network.acsUrl,
-            acsUsername: tr069Network.acsUsername || undefined,
-            acsPassword: tr069Network.acsPasswordEnc ? decryptCredential(tr069Network.acsPasswordEnc) : undefined,
-            connReqUsername: tr069Network.connReqUsername || undefined,
-            connReqPassword: tr069Network.connReqPasswordEnc ? decryptCredential(tr069Network.connReqPasswordEnc) : undefined,
-            informIntervalSec: tr069Network.informIntervalSec,
-          },
-        });
-        cpeConfigured = true;
-      }
-    } catch (err: any) {
-      this.logger.warn(`No se pudo enviar template GenieACS para nuevo serial ${trimmedNewSerial}: ${err.message}`);
+    if (onu.serviceConfig?.tr069Network && onu.serviceConfig.wanProvisioningMethod !== 'OMCI') {
+      const result = await this.pushCpeConfiguration(onu, onu.serviceConfig, olt, {}, {
+        warningPrefix: 'El equipo nuevo todavía no confirmó su WAN mediante GenieACS',
+        failureLogMessagePrefix: 'Configuración WAN del equipo reemplazado',
+        operation: 'migrateOnu.configureWan', actorUserId,
+      });
+      cpeConfigured = result.cpeConfigured === true;
     }
-
     // 6. Registrar en el log de operaciones
     await this.deviceOperationLogger.logEvent({
       nodeId: olt.viaNodeId || olt.id,

@@ -28,7 +28,7 @@ describe('OnuCpeSyncReconciliationService', () => {
 
   beforeEach(async () => {
     onuRepo = { find: jest.fn().mockResolvedValue([]) };
-    onuManagementService = { pushCpeConfiguration: jest.fn().mockResolvedValue({ cpeConfigured: true }) };
+    onuManagementService = { pushCpeConfiguration: jest.fn().mockResolvedValue({ cpeConfigured: true }), reconcileWan: jest.fn().mockResolvedValue({ status: 'VERIFYING' }) };
     client = {};
 
     const module: TestingModule = await Test.createTestingModule({
@@ -59,7 +59,7 @@ describe('OnuCpeSyncReconciliationService', () => {
     const result = await unconfigured.retryPendingCpeConfig();
 
     expect(result).toEqual({ checked: 0, succeeded: 0, failed: 0 });
-    expect(onuRepo.find).not.toHaveBeenCalled();
+    expect(onuManagementService.pushCpeConfiguration).not.toHaveBeenCalled();
   });
 
   it('solo reintenta ONUs ACTIVE + TR-069 + cpeConfigStatus distinto de APPLIED', async () => {
@@ -129,6 +129,13 @@ describe('OnuCpeSyncReconciliationService', () => {
     const result = await service.retryPendingCpeConfig();
 
     expect(result).toEqual({ checked: 0, succeeded: 0, failed: 0 });
+    expect(onuManagementService.pushCpeConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('observa una WAN OMCI pendiente con gestión TR-069 sin volver a enviar PPPoE por GenieACS', async () => {
+    onuRepo.find.mockResolvedValue([makeOnu({ serviceConfig: { managementMethod: 'TR069', wanProvisioningMethod: 'OMCI', wanDesiredVersion: 2, wanApplyStatus: 'UNKNOWN' } as any })]);
+    await service.retryPendingCpeConfig();
+    expect(onuManagementService.reconcileWan).toHaveBeenCalledWith('onu-1');
     expect(onuManagementService.pushCpeConfiguration).not.toHaveBeenCalled();
   });
 });

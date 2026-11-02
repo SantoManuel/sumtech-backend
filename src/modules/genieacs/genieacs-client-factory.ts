@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { Provider } from '@nestjs/common';
 import { GenieAcsClient } from './genieacs-client';
+import { CpeWanPolicyService } from './services/cpe-wan-policy.service';
 
 export const GENIEACS_CLIENT = 'GENIEACS_CLIENT';
 
@@ -15,13 +16,13 @@ export const GENIEACS_CLIENT = 'GENIEACS_CLIENT';
  */
 export const genieAcsClientFactoryProvider: Provider = {
   provide: GENIEACS_CLIENT,
-  inject: [ConfigService],
-  useFactory: (configService: ConfigService): GenieAcsClient | null => {
+  inject: [ConfigService, CpeWanPolicyService],
+  useFactory: (configService: ConfigService, wanPolicy: CpeWanPolicyService): GenieAcsClient | null => {
     const baseUrl = configService.get<string>('GENIEACS_NBI_BASE_URL');
     const apiKey = configService.get<string>('GENIEACS_NBI_API_KEY');
     if (!baseUrl || !apiKey) {
       return null;
     }
-    return new GenieAcsClient({ baseUrl, apiKey });
+    return new GenieAcsClient({ baseUrl, apiKey, wanWriteGuard: (id, paths, action) => wanPolicy.withDeviceWrite(id, paths, action) });
   },
 };

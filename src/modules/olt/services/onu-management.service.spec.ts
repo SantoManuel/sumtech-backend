@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { NotFoundException, BadRequestException, HttpException } from '@nestjs/common';
+import { OnuWanProvisioningService } from './onu-wan-provisioning.service';
 import { OnuManagementService } from './onu-management.service';
 import { OltPartialOperationService } from './olt-partial-operation.service';
 import { OnuEntity } from '../entities/onu.entity';
@@ -46,6 +47,7 @@ describe('OnuManagementService', () => {
   let genieAcsDeviceResolver: any;
   let tenantContext: any;
   let onuQueryBuilder: any;
+  let wanProvisioning: any;
 
   const mockOlt: Partial<OltEntity> = {
     id: 'olt-uuid-1',
@@ -215,7 +217,7 @@ describe('OnuManagementService', () => {
     };
 
     cpeConfiguratorService = {
-      configureCpe: jest.fn().mockResolvedValue({ success: true, deviceId: 'dev-1', appliedParametersCount: 3, verification: {}, message: 'ok' }),
+      configureCpe: jest.fn().mockResolvedValue({ success: true, applicationStatus: 'APPLIED', deviceId: 'dev-1', appliedParametersCount: 3, verification: {}, message: 'ok' }),
     };
 
     genieAcsDeviceResolver = {
@@ -226,9 +228,11 @@ describe('OnuManagementService', () => {
       getSlug: jest.fn().mockReturnValue('sumtech'),
     };
 
+    wanProvisioning = { withMutation: (_id: string, callback: () => Promise<any>) => callback(), assertLegacyWanRecovery: jest.fn(), latestOperation: jest.fn().mockResolvedValue(null), invalidateReplacement: jest.fn(), capabilities: jest.fn().mockReturnValue({}), configure: jest.fn().mockResolvedValue({ id: 'op-1', status: 'APPLIED', lastError: null }) };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OnuManagementService,
+        { provide: OnuWanProvisioningService, useValue: wanProvisioning },
         { provide: getRepositoryToken(OnuEntity), useValue: onuRepo },
         { provide: getRepositoryToken(OnuServiceConfigEntity), useValue: configRepo },
         { provide: getRepositoryToken(OnuOpticalHistoryEntity), useValue: opticalHistoryRepo },
@@ -1625,154 +1629,24 @@ describe('OnuManagementService', () => {
     });
   });
 
-  describe('pushWanConfig (Etapa 3: WAN/PPPoE vía GenieACS)', () => {
-    const mockTr069Config = {
-      onuId: 'onu-uuid-1',
-      serviceVlanId: 'vlan-1',
-      managementMethod: 'TR069',
-      tr069NetworkId: 'tr069-1',
-      operationMode: 'ROUTER',
-      wanMode: 'PPPOE',
-      appliedVersion: 1,
-      desiredVersion: 1,
-    };
-
-    it('lanza BadRequestException si la ONU todavía no tiene el Perfil TR-069 aplicado (Etapa 2 pendiente)', async () => {
+  describe('pushWanConfig delegates WAN ownership and state to its orchestrator', () => {
+    it('passes method, desired version and actor; returns the operation without claiming a queued task was applied', async () => {
       onuRepo.findOne.mockResolvedValue(mockOnu);
-      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config, managementMethod: 'OMCI', tr069NetworkId: undefined });
+      wanProvisioning.configure.mockResolvedValue({ id: 'op-1', status: 'QUEUED', lastError: null });
+      const dto = { provisioningMethod: 'TR069' as const, expectedVersion: 2, wanMode: 'PPPOE' as const };
+      const result = await service.pushWanConfig('onu-uuid-1', dto, 'actor-1');
+      expect(wanProvisioning.configure).toHaveBeenCalledWith(expect.objectContaining({ id: mockOnu.id }), dto, 'actor-1');
+      expect(result).toMatchObject({ operationId: 'op-1', cpeConfigured: false });
+      expect(result.cpeConfigWarning).toContain('falta confirmar');
+    });
 
-      await expect(service.pushWanConfig('onu-uuid-1', {})).rejects.toThrow(BadRequestException);
+    it('propagates a rejected compatibility check without sending a legacy CPE template', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      wanProvisioning.configure.mockRejectedValue(new BadRequestException('OMCI no validado'));
+      await expect(service.pushWanConfig('onu-uuid-1', { provisioningMethod: 'OMCI' })).rejects.toThrow('OMCI no validado');
       expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
     });
-
-    it('con wanMode PPPOE y contractId, resuelve usuario/contraseña desde el network_access ya vinculado (fuente única de verdad)', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contractId: 'contract-1' });
-      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });
-      networkAccessRepo.findOneBy.mockResolvedValue({
-        contractId: 'contract-1',
-        username: 'cliente123',
-        pppoePasswordEnc: encryptCredential('ClavePppoeReal!'),
-      });
-
-      const result = await service.pushWanConfig('onu-uuid-1', {});
-
-      expect(networkAccessRepo.findOneBy).toHaveBeenCalledWith({ contractId: 'contract-1' });
-      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
-        expect.objectContaining({
-          wanMode: 'PPPOE',
-          pppoeUsername: 'cliente123',
-          pppoePassword: 'ClavePppoeReal!',
-          managementServer: expect.objectContaining({ acsUrl: 'http://10.46.0.1:7547/' }),
-        }),
-      );
-      expect((result as any).cpeConfigured).toBe(true);
-      expect(configRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ cpeConfigStatus: 'APPLIED', cpeConfigSyncedAt: expect.any(Date) }),
-      );
-    });
-
-    it('con wanMode STATIC en el dto, actualiza config.wanMode y pasa wanStaticIp/Mask/Gw tal cual al configurador CPE', async () => {
-      onuRepo.findOne.mockResolvedValue(mockOnu);
-      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });
-
-      await service.pushWanConfig('onu-uuid-1', {
-        wanMode: 'STATIC',
-        wanStaticIp: '200.1.1.50',
-        wanStaticMask: '255.255.255.0',
-        wanStaticGw: '200.1.1.1',
-      });
-
-      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
-        expect.objectContaining({
-          wanMode: 'STATIC',
-          wanStaticIp: '200.1.1.50',
-          wanStaticMask: '255.255.255.0',
-          wanStaticGw: '200.1.1.1',
-        }),
-      );
-      expect(networkAccessRepo.findOneBy).not.toHaveBeenCalled();
-    });
-
-    it('con wanMode DHCP, no consulta network_access ni manda campos de estática', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contractId: 'contract-1' });
-      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });
-
-      await service.pushWanConfig('onu-uuid-1', { wanMode: 'DHCP' });
-
-      expect(networkAccessRepo.findOneBy).not.toHaveBeenCalled();
-      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
-        expect.objectContaining({
-          wanMode: 'DHCP',
-          wanStaticIp: undefined,
-          wanStaticMask: undefined,
-          wanStaticGw: undefined,
-        }),
-      );
-    });
-
-    it('propaga el aviso de CpeConfiguratorService (ej. Dual-Stack en DHCP, ver Plan_Implementacion_IPv6_Dual_Stack_WAN.md) aunque la config SÍ se haya aplicado', async () => {
-      onuRepo.findOne.mockResolvedValue(mockOnu);
-      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config, wanMode: 'DHCP' });
-      cpeConfiguratorService.configureCpe.mockResolvedValue({
-        success: true,
-        deviceId: 'dev-1',
-        appliedParametersCount: 3,
-        verification: {},
-        message: 'ok',
-        warning: 'Dual-Stack IPv4/IPv6 solicitado en modo DHCP, pero todavía no hay parámetros TR-069 implementados para esto.',
-      });
-
-      const result = await service.pushWanConfig('onu-uuid-1', { wanMode: 'DHCP', ipProtocol: 'DUAL' });
-
-      expect((result as any).cpeConfigured).toBe(true);
-      expect((result as any).cpeConfigWarning).toContain('Dual-Stack');
-      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({ cpeConfigStatus: 'APPLIED' }));
-    });
-
-    it('persiste pppoeIpv6Prefix y pppoeIpv6Address cuando configureCpe reporta ipv6Readback (Fase 3.1)', async () => {
-      onuRepo.findOne.mockResolvedValue(mockOnu);
-      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config, wanMode: 'PPPOE' });
-      cpeConfiguratorService.configureCpe.mockResolvedValue({
-        success: true,
-        deviceId: 'dev-1',
-        appliedParametersCount: 3,
-        verification: {},
-        ipv6Readback: {
-          prefix: '2001:db8:100::/56',
-          address: '2001:db8:100::2',
-        },
-        message: 'ok',
-      });
-
-      const result = await service.pushWanConfig('onu-uuid-1', { wanMode: 'PPPOE', ipProtocol: 'DUAL' });
-
-      expect((result as any).cpeConfigured).toBe(true);
-      expect(configRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          pppoeIpv6Prefix: '2001:db8:100::/56',
-          pppoeIpv6Address: '2001:db8:100::2',
-          cpeConfigStatus: 'APPLIED',
-        }),
-      );
-    });
-
-    it('si GenieACS todavía no conoce el ONU, no lanza -- agrega cpeConfigWarning (OnuCpeSyncReconciliationService reintenta sola)', async () => {
-      onuRepo.findOne.mockResolvedValue(mockOnu);
-      configRepo.findOneBy.mockResolvedValue({ ...mockTr069Config });
-      cpeConfiguratorService.configureCpe.mockRejectedValue(
-        new NotFoundException('El CPE con serial "ZTEGC0123456" no ha sido detectado por GenieACS (aún no ha enviado Inform).'),
-      );
-
-      const result = await service.pushWanConfig('onu-uuid-1', {});
-
-      expect((result as any).cpeConfigured).toBe(false);
-      expect((result as any).cpeConfigWarning).toContain('GenieACS');
-      expect(configRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ cpeConfigStatus: 'ERROR', lastCpeConfigError: expect.stringContaining('GenieACS') }),
-      );
-    });
   });
-
   describe('reprovisionOnu', () => {
     const mockConfig = {
       onuId: 'onu-uuid-1',
@@ -1836,19 +1710,14 @@ describe('OnuManagementService', () => {
         tr069NetworkId: 'tr069-1',
       }, 'admin-id');
 
-      expect(cpeConfiguratorService.configureCpe).toHaveBeenCalledWith(
-        expect.objectContaining({
-          serialNumber: mockOnu.serialNumber,
-          managementServer: expect.objectContaining({ acsUrl: 'http://10.46.0.1:7547/' }),
-        }),
-      );
+      expect(wanProvisioning.configure).toHaveBeenCalledWith(expect.objectContaining({ serialNumber: mockOnu.serialNumber }), expect.objectContaining({ provisioningMethod: 'TR069' }), 'admin-id');
       expect((result as any).cpeConfigured).toBe(true);
     });
 
     it('si el push a GenieACS falla, no revierte la configuración guardada y marca cpeConfigured:false con advertencia', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: 'contract-1', onuTypeId: 'type-1' });
       configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
-      cpeConfiguratorService.configureCpe.mockRejectedValue(new Error('CPE no respondió al primer Inform'));
+      wanProvisioning.configure.mockResolvedValue({ id: 'op-1', status: 'UNKNOWN', lastError: 'GenieACS no confirmó la configuración' });
 
       const result = await service.reprovisionOnu('onu-uuid-1', {
         managementMethod: 'TR069',

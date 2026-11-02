@@ -10,8 +10,12 @@ import {
 import { GENIEACS_CLIENT } from '../genieacs-client-factory';
 import { GenieAcsClient } from '../genieacs-client';
 import { CpeParameterMapper, CpeConfigurationInput } from './cpe-parameter-mapper';
+import { CpeWanPolicyService } from './cpe-wan-policy.service';
 
 export interface CpeConfigureResult {
+  applicationStatus?: 'APPLIED' | 'QUEUED' | 'VERIFYING';
+  taskId?: string;
+  expectedReadback?: Record<string, string>;
   success: boolean;
   deviceId: string;
   appliedParametersCount: number;
@@ -32,6 +36,7 @@ export class CpeConfiguratorService {
     @Inject(GENIEACS_CLIENT)
     private readonly client: GenieAcsClient | null,
     private readonly parameterMapper: CpeParameterMapper,
+    @Optional() private readonly wanPolicy?: CpeWanPolicyService,
   ) {}
 
   private getClient(): GenieAcsClient {
@@ -48,10 +53,17 @@ export class CpeConfiguratorService {
    * RF-OLT-013, RF-ONU-001, RF-ONU-004.
    */
   async configureCpe(input: CpeConfigurationInput): Promise<CpeConfigureResult> {
+    if (input.wanMode && this.wanPolicy) {
+      return this.wanPolicy.withSerial(input.serialNumber, () => this.configureCpeUnlocked(input));
+    }
+    return this.configureCpeUnlocked(input);
+  }
+
+  private async configureCpeUnlocked(input: CpeConfigurationInput): Promise<CpeConfigureResult> {
     const client = this.getClient();
 
     // 1. Localizar dispositivo en GenieACS por serial
-    const deviceId = await client.findDeviceBySerial(input.serialNumber);
+    const deviceId = await client.findDeviceBySerial(input.serialNumber, input.wanMode ? { exactOnly: true } : undefined);
     if (!deviceId) {
       throw new NotFoundException(
         `El CPE con serial "${input.serialNumber}" no ha sido detectado por GenieACS (aún no ha enviado Inform).`,
@@ -59,6 +71,7 @@ export class CpeConfiguratorService {
     }
 
     // 2. Obtener estado y determinar modelo de datos (TR-181 vs TR-098)
+    if (input.wanMode) this.wanPolicy?.bindResolvedDevice(deviceId);
     const deviceStatus = await client.getDeviceStatus(deviceId);
     const isTR181 = deviceStatus.isTR181;
 
@@ -122,8 +135,9 @@ export class CpeConfiguratorService {
     );
 
     // 4. Enviar setParameterValues vía NBI con connection_request=true
+    let delivery: { status: 'COMPLETED' | 'QUEUED' | 'UNKNOWN'; taskId?: string } | void;
     try {
-      await client.setParameterValues(deviceId, parameterValues);
+      delivery = await client.setParameterValues(deviceId, parameterValues);
     } catch (err: any) {
       this.logger.error(`[CPE-CONFIG] Error en setParameterValues para ${deviceId}: ${err.message}`);
       throw new BadRequestException(`Fallo enviando configuración TR-069 al CPE: ${err.message}`);
@@ -155,25 +169,35 @@ export class CpeConfiguratorService {
     }
 
     // 6. Verificar lectura de parámetros clave
-    const verificationKeys = this.parameterMapper.getVerificationParameters(input, isTR181);
+    const readableExpected = parameterValues.filter(([key]) => !/password|passphrase|presharedkey/i.test(key));
+    const verificationKeys = [...new Set([
+      ...this.parameterMapper.getVerificationParameters(input, isTR181),
+      ...readableExpected.map(([key]) => key),
+    ])];
     let verification: Record<string, string | undefined> = {};
     if (verificationKeys.length > 0) {
       try {
-        verification = await client.getParameterValues(deviceId, verificationKeys);
+        verification = await client.refreshParameterValues(deviceId, verificationKeys);
       } catch (err: any) {
         this.logger.warn(`[CPE-CONFIG] No se pudo verificar parámetros de vuelta para ${deviceId}: ${err.message}`);
       }
     }
 
     const ipv6Readback = this.parameterMapper.extractIpv6Readback(verification, isTR181);
+    const expected = parameterValues.filter(([key]) => !/password|passphrase|presharedkey/i.test(key));
+    const confirmed = delivery?.status === 'COMPLETED' && expected.length > 0 &&
+      expected.every(([key, value]) => String(verification[key]) === String(value));
 
     return {
       success: true,
+      applicationStatus: confirmed ? 'APPLIED' : delivery?.status === 'QUEUED' ? 'QUEUED' : 'VERIFYING',
+      taskId: delivery?.taskId,
+      expectedReadback: Object.fromEntries(expected.map(([key, value]) => [key, value])),
       deviceId,
       appliedParametersCount: parameterValues.length,
       verification,
       ipv6Readback,
-      message: `Configuración TR-069 aplicada y encolada con éxito al CPE ${input.serialNumber}.`,
+      message: confirmed ? 'Configuración TR-069 confirmada.' : 'Configuración enviada; falta confirmar su aplicación.',
       warning: ipv6Warning,
     };
   }

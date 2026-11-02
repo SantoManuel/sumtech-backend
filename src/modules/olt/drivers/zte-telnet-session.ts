@@ -1,4 +1,5 @@
 import * as net from 'net';
+import { redactOltCli } from '../utils/redact-olt-cli';
 import { Logger } from '@nestjs/common';
 import { OltConnectionParams } from '../ports/olt-driver.port';
 
@@ -168,7 +169,8 @@ export class ZteTelnetSession {
     }
 
     const t0 = Date.now();
-    this.logger.log(`[diag] executeCommand INICIO: "${command}" (timeout ${timeoutMs}ms)`);
+    const safeCommand = redactOltCli(command);
+    this.logger.log(`[diag] executeCommand INICIO: "${safeCommand}" (timeout ${timeoutMs}ms)`);
 
     return new Promise<string>((resolve, reject) => {
       let output = '';
@@ -182,11 +184,11 @@ export class ZteTelnetSession {
           finished = true;
           socket.removeListener('data', onData);
           this.logger.warn(
-            `[diag] executeCommand TIMEOUT a los ${Date.now() - t0}ms: "${command}" -- ` +
+            `[diag] executeCommand TIMEOUT a los ${Date.now() - t0}ms: "${safeCommand}" -- ` +
               `${chunkCount} chunk(s) recibido(s), ${output.length} chars acumulados, ${moreCount} "--More--" visto(s). ` +
-              `Últimos 300 chars: ${JSON.stringify(output.slice(-300))}`,
+              `Últimos 300 chars: [salida omitida]`,
           );
-          reject(new Error(`Timeout ejecutando comando OLT: "${command}"`));
+          reject(new Error(`Timeout ejecutando comando OLT: "${safeCommand}"`));
         }
       }, timeoutMs);
 
@@ -207,11 +209,11 @@ export class ZteTelnetSession {
           finished = true;
           clearTimeout(timer);
           socket.removeListener('data', onData);
-          const prompt = output.trim().slice(-200);
-          this.logger.warn(`[diag] executeCommand: confirmación interactiva inesperada en "${command}": "${prompt}"`);
+          const prompt = '[confirmación interactiva omitida]';
+          this.logger.warn(`[diag] executeCommand: confirmación interactiva inesperada en "${safeCommand}": "${prompt}"`);
           reject(
             new Error(
-              `La OLT pidió una confirmación interactiva que el comando "${command}" no esperaba: "${prompt}". Revisa la secuencia de comandos del driver.`,
+              `La OLT pidió una confirmación interactiva que el comando "${safeCommand}" no esperaba: "${prompt}". Revisa la secuencia de comandos del driver.`,
             ),
           );
           return;
@@ -237,7 +239,7 @@ export class ZteTelnetSession {
           finished = true;
           clearTimeout(timer);
           socket.removeListener('data', onData);
-          this.logger.log(`[diag] executeCommand OK a los ${Date.now() - t0}ms: "${command}" -- ${chunkCount} chunk(s), ${output.length} chars, ${moreCount} "--More--"`);
+          this.logger.log(`[diag] executeCommand OK a los ${Date.now() - t0}ms: "${safeCommand}" -- ${chunkCount} chunk(s), ${output.length} chars, ${moreCount} "--More--"`);
 
           // Limpiar eco del comando y prompts
           const cleanLines = lines
@@ -280,7 +282,7 @@ export class ZteTelnetSession {
         if (!finished) {
           finished = true;
           socket.removeListener('data', onData);
-          this.logger.warn(`[diag] rebootOnu TIMEOUT a los ${Date.now() - t0}ms. Últimos 300 chars: ${JSON.stringify(output.slice(-300))}`);
+          this.logger.warn(`[diag] rebootOnu TIMEOUT a los ${Date.now() - t0}ms. Últimos 300 chars: [salida omitida]`);
           reject(new Error('Timeout esperando confirmación de reinicio OMCI del ONT.'));
         }
       }, timeoutMs);

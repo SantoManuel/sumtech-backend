@@ -1,5 +1,7 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 import { ZteTelnetSession, ZteSessionLike } from './zte-telnet-session';
+import { ConfigureOnuWanParams } from '../ports/onu-wan.types';
+import { configureOnuWanWithSession, getOnuWanConfigurationWithSession } from './zte-c320-wan';
 import {
   isOltErrorResponse,
   isAlreadyAppliedResponse,
@@ -86,6 +88,22 @@ export { REBOOT_ONU_SENTINEL } from './zte-c320-provisioning-scripts';
 @Injectable()
 export class ZteC320Driver implements IOltDriver {
   private readonly logger = new Logger(ZteC320Driver.name);
+
+  async configureOnuWan(params: OltConnectionParams, input: ConfigureOnuWanParams) {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return await configureOnuWanWithSession(session, input);
+    } finally { await session.close(); }
+  }
+
+  async getOnuWanConfiguration(params: OltConnectionParams, iface: string, wanIndex: number) {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return await getOnuWanConfigurationWithSession(session, iface, wanIndex);
+    } finally { await session.close(); }
+  }
 
   protected createSession(params: OltConnectionParams): {
     connectAndLogin(): Promise<void>;
@@ -1042,6 +1060,7 @@ export class ZteC320Driver implements IOltDriver {
 
   getCapabilities(): OltDriverCapabilities {
     return {
+      omciWanPppoe: true,
       testConnection: true,
       systemInfo: true,
       systemHealth: true,

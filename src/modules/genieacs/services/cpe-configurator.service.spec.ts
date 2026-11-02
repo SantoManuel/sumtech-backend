@@ -13,6 +13,7 @@ describe('CpeConfiguratorService', () => {
     getDeviceStatus: jest.fn(),
     setParameterValues: jest.fn(),
     getParameterValues: jest.fn(),
+    refreshParameterValues: jest.fn(),
     setDeviceTag: jest.fn(),
     refreshObject: jest.fn(),
     factoryReset: jest.fn(),
@@ -22,6 +23,7 @@ describe('CpeConfiguratorService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockClient.refreshParameterValues.mockImplementation((...args) => (mockClient.getParameterValues as any)(...args));
     // Por defecto, el objeto WAN ya existe en el CPE (caso mas comun en los
     // tests existentes, que no se enfocan en el flujo de creacion) -- los
     // tests nuevos de AddObject sobreescriben esto explicitamente.

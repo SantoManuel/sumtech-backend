@@ -652,15 +652,40 @@ describe('GenieAcsClient', () => {
     });
 
     it('resuelve sin error si no hay fault registrado', async () => {
-      http.post.mockResolvedValue({ data: { _id: 'task-789' } });
+      http.post.mockResolvedValue({ status: 200, data: { _id: 'task-789' } });
       http.get.mockResolvedValue({ data: [] });
 
       await expect(
         client.setParameterValues('00259E-ONT-16', [['InternetGatewayDevice.X', 'y', 'xsd:string']]),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({ status: 'COMPLETED', taskId: 'task-789' });
     });
   });
 
+  describe('strict WAN identity and delivery', () => {
+    it('does not use approximate MAC matching when writing a WAN', async () => {
+      http.get.mockResolvedValue({ data: [] });
+      expect(await client.findDeviceBySerial('b4:54:59:6f:12:04', { exactOnly: true })).toBeNull();
+      expect(http.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects an ambiguous exact serial instead of taking the first device', async () => {
+      http.get.mockResolvedValue({ data: [{ _id: 'first' }, { _id: 'second' }] });
+      await expect(client.findDeviceBySerial('DUPLICATED', { exactOnly: true })).rejects.toThrow('ambigua');
+    });
+
+    it('reports HTTP 202 as queued even without an immediate fault', async () => {
+      http.post.mockResolvedValue({ status: 202, data: { _id: 'queued-task' } });
+      http.get.mockResolvedValue({ data: [] });
+      await expect(client.setParameterValues('device-1', [['Device.PPP.Interface.1.Enable', 'true', 'xsd:boolean']]))
+        .resolves.toEqual({ status: 'QUEUED', taskId: 'queued-task' });
+    });
+
+    it('redacts a password echoed by an NBI error response', async () => {
+      http.post.mockRejectedValue(new Error('The device rejected Private123!'));
+      await expect(client.setParameterValues('device-1', [['Device.PPP.Interface.1.Password', 'Private123!', 'xsd:string']]))
+        .rejects.not.toThrow('Private123!');
+    });
+  });
   describe('objectInstanceExists', () => {
     const instancePath = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
 

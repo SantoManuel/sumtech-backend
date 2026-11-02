@@ -14,6 +14,7 @@ import { GenieAcsMonitoringService } from './genieacs-monitoring.service';
 import { GenieAcsReconciliationService } from './genieacs-reconciliation.service';
 import { CpeParameterMapper } from './services/cpe-parameter-mapper';
 import { CpeConfiguratorService } from './services/cpe-configurator.service';
+import { CpeWanPolicyService } from './services/cpe-wan-policy.service';
 import { GenieAcsSnapshotService } from './services/genieacs-snapshot.service';
 import { GenieAcsActivityLogService } from './services/genieacs-activity-log.service';
 import { GenieAcsParameterWriteService } from './services/genieacs-parameter-write.service';
@@ -60,6 +61,7 @@ import { TicketsModule } from '../tickets/tickets.module';
     GenieAcsReconciliationService,
     CpeParameterMapper,
     CpeConfiguratorService,
+    CpeWanPolicyService,
     GenieAcsSnapshotService,
     GenieAcsActivityLogService,
     GenieAcsParameterWriteService,
@@ -75,6 +77,7 @@ import { TicketsModule } from '../tickets/tickets.module';
     GenieAcsWifiService,
     GenieAcsMonitoringService,
     CpeConfiguratorService,
+    CpeWanPolicyService,
     CpeParameterMapper,
     // GENIEACS_CLIENT -- lo necesita OnuCpeSyncReconciliationService (en
     // OltModule, que ya importa este módulo) para saltarse el reintento

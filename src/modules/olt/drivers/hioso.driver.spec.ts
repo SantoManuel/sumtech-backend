@@ -19,6 +19,7 @@ describe('HiosoDriver', () => {
 
   it('solo declara capacidades reales: todo menos chassisCards (sin chasis modular) y tr069AutoProvisioning (EPON sin mecanismo para esto)', () => {
     expect(driver.getCapabilities()).toEqual({
+      omciWanPppoe: false,
       testConnection: true,
       systemInfo: true,
       systemHealth: true,
