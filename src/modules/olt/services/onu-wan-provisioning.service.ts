@@ -6,6 +6,7 @@ import { Repository } from 'typeorm';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { CpeWanPolicyService } from '../../genieacs/services/cpe-wan-policy.service';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
+import { affectsWanProvisioning, summarizeAcsTasks } from '../../genieacs/services/acs-wan-tasks.util';
 import { resolveCpeIpv6Capabilities } from '../../genieacs/services/cpe-capabilities';
 import { GENIEACS_CLIENT } from '../../genieacs/genieacs-client-factory';
 import { GenieAcsClient } from '../../genieacs/genieacs-client';
@@ -139,9 +140,11 @@ export class OnuWanProvisioningService {
           status = ['UNKNOWN','APPLYING'].includes(op.status) ? 'UNKNOWN' : matches ? 'APPLIED' : 'VERIFYING';
         } else if (this.acs && typeof op.evidence?.deviceId === 'string') {
           const tasks = await this.acs.getPendingDeviceTasks(op.evidence.deviceId);
-          status = tasks.length ? 'QUEUED' : 'VERIFYING';
-          evidence = { ...evidence, pendingTasks: tasks.length };
-          if (!tasks.length && typeof op.evidence.taskId === 'string' && op.evidence.expectedReadback &&
+          const blocking = tasks.filter(affectsWanProvisioning);
+          const ownTaskPending = typeof op.evidence.taskId === 'string' && tasks.some(task => task && typeof task === 'object' && (task as any)._id === op.evidence?.taskId);
+          status = ownTaskPending || blocking.length ? 'QUEUED' : 'VERIFYING';
+          evidence = { ...evidence, pendingTasks: tasks.length, pendingWanTasks: blocking.length };
+          if (!ownTaskPending && !blocking.length && typeof op.evidence.taskId === 'string' && op.evidence.expectedReadback &&
               await this.acs.isTaskComplete(op.evidence.deviceId, op.evidence.taskId)) {
             const expected = op.evidence.expectedReadback as Record<string, string>;
             const values = await this.acs.refreshParameterValues(op.evidence.deviceId, Object.keys(expected));
@@ -167,7 +170,11 @@ export class OnuWanProvisioningService {
       }
       if (this.acs) {
         const id = await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
-        if (id && (await this.acs.getPendingDeviceTasks(id)).length) throw new ConflictException('Todavía hay tareas pendientes en GenieACS.');
+        if (id) {
+          const tasks = await this.acs.getPendingDeviceTasks(id);
+          if (op.method === 'OMCI' && tasks.length) throw new ConflictException('Todavía hay tareas pendientes en GenieACS.');
+          if (op.method === 'TR069') this.assertTr069QueueAvailable(tasks);
+        }
       }
       await this.finish(config, op, 'ERROR', 'Reintento solicitado tras revisión por el operador.', { ...op.evidence, retryAcknowledgedBy: actor || null });
       return this.configure(onu, {
@@ -259,7 +266,7 @@ export class OnuWanProvisioningService {
       const acsDeviceForHandover = method === 'OMCI' ? await this.ensureAcsDrained(onu) : undefined;
       if (method === 'TR069' && this.acs) {
         const id = await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
-        if (id && (await this.acs.getPendingDeviceTasks(id)).length) throw new ConflictException('Hay tareas ACS pendientes. Verifica su resultado antes de enviar otra WAN.');
+        if (id) this.assertTr069QueueAvailable(await this.acs.getPendingDeviceTasks(id));
       }
       const resumeSafeAttempt = !actor && prior?.version === config.wanDesiredVersion && prior.status === 'ERROR' &&
         prior.requestFingerprint === fingerprint && prior.evidence?.safeToRetry === true;
@@ -332,6 +339,18 @@ export class OnuWanProvisioningService {
       }
       await this.finish(config, op, status, warning, evidence);
       return (await this.operations.findOneBy({ id: op.id, onuId: onu.id }))!;
+    });
+  }
+
+  private assertTr069QueueAvailable(tasks: unknown[]): void {
+    const blocking = tasks.filter(affectsWanProvisioning);
+    if (!blocking.length) return;
+    const summaries = summarizeAcsTasks(blocking);
+    const types = [...new Set(summaries.map(t => t.name))].join(', ');
+    throw new ConflictException({
+      statusCode: 409, error: 'Conflict', code: 'WAN_ACS_TASKS_PENDING',
+      message: `Hay ${blocking.length} tarea(s) ACS pendientes que pueden modificar la WAN o interrumpir el equipo (${types}). Revisa sus resultados y fallos en GenieACS antes de reenviar.`,
+      pendingTasks: summaries,
     });
   }
 

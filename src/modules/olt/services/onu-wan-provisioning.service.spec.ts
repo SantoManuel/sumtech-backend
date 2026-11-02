@@ -96,6 +96,34 @@ describe('OnuWanProvisioningService', () => {
     expect(config.wanAppliedVersion).toBeUndefined();
   });
 
+  it('does not reject a TR-069 WAN because read-only or Wi-Fi tasks are pending', async () => {
+    acs.getPendingDeviceTasks.mockResolvedValue([
+      { _id: 'read-1', name: 'refreshObject', objectName: 'InternetGatewayDevice.WANDevice.' },
+      { _id: 'wifi-1', name: 'setParameterValues', parameterValues: [['Device.WiFi.SSID.1.SSID', 'Home', 'xsd:string']] },
+    ]);
+    expect((await service.configure(onu, { provisioningMethod: 'TR069' })).status).toBe('APPLIED');
+    expect(cpe.configureCpe).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the identifiers of conflicting WAN tasks without exposing their passwords', async () => {
+    acs.getPendingDeviceTasks.mockResolvedValue([
+      { _id: 'wan-1', name: 'setParameterValues', parameterValues: [['Device.PPP.Interface.1.Password', 'QueueSecret!', 'xsd:string']] },
+    ]);
+    let conflict: any;
+    try { await service.configure(onu, { provisioningMethod: 'TR069' }); } catch (error) { conflict = error; }
+    expect(conflict?.getStatus()).toBe(409);
+    const body = conflict.getResponse();
+    expect(body).toMatchObject({ code: 'WAN_ACS_TASKS_PENDING', pendingTasks: [{ id: 'wan-1', name: 'setParameterValues' }] });
+    expect(JSON.stringify(body)).not.toContain('QueueSecret!');
+    expect(cpe.configureCpe).not.toHaveBeenCalled();
+  });
+
+  it('continues to require a drained queue when switching to OMCI, including read-only tasks', async () => {
+    acs.getPendingDeviceTasks.mockResolvedValue([{ _id: 'read-1', name: 'getParameterValues' }]);
+    await expect(service.configure(onu, { provisioningMethod: 'OMCI' })).rejects.toThrow('pendientes');
+    expect(driver.configureOnuWan).not.toHaveBeenCalled();
+  });
+
   it('returns the same operation for an equivalent request and blocks an uncertain replacement', async () => {
     const first = await service.configure(onu, {});
     prior = first;
@@ -133,6 +161,7 @@ describe('OnuWanProvisioningService', () => {
   it('checks completion and fresh readback before promoting a queued task', async () => {
     cpe.configureCpe.mockResolvedValue({ applicationStatus: 'QUEUED', deviceId: 'device-1', taskId: 'task-1', expectedReadback: { 'Device.PPP.Interface.1.Enable': 'true' } });
     await service.configure(onu, {});
+    acs.getPendingDeviceTasks.mockResolvedValue([{ _id: 'read-2', name: 'getParameterValues' }]);
     acs.isTaskComplete = jest.fn().mockResolvedValue(true);
     acs.refreshParameterValues = jest.fn().mockResolvedValue({ 'Device.PPP.Interface.1.Enable': 'true' });
     const result = await service.verify(onu);

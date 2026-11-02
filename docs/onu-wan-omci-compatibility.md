@@ -63,6 +63,14 @@ La receta admite credenciales que puedan representarse como tokens CLI simples, 
 
 ## Estados y recuperación
 
+### Conflicto 409 al enviar WAN mediante TR-069
+
+La cola TR-069 se comprueba por tipo de tarea: una consulta `getParameterValues`/`refreshObject` o una escritura independiente de Wi-Fi no impide enviar una WAN. Se bloquean las escrituras WAN/ManagementServer, creación/eliminación de objetos WAN, reinicios, restauraciones, descargas de firmware y tareas de formato desconocido. El cambio de propiedad a OMCI conserva la comprobación conservadora de toda la cola.
+
+Cuando existen tareas que bloquean, la respuesta incluye `code: WAN_ACS_TASKS_PENDING` y `pendingTasks` con identificadores y nombres, sin parámetros ni contraseñas. Revisar **TR-069 / GenieACS → Historial de Actividad** para conocer las tareas y fallos reales. Eliminar toda la cola no forma parte de esta corrección.
+
+Al verificar una operación TR-069, las consultas independientes pendientes tampoco impiden confirmar una tarea WAN ya completada mediante lectura fresca. Las tareas WAN pendientes siguen impidiendo esa confirmación.
+
 | Estado | Interpretación |
 |---|---|
 | NOT_CONFIGURED | No hay una WAN aplicada por este flujo, o el equipo fue reemplazado/reautorizado. |
