@@ -3,6 +3,8 @@ export type WanApplyStatus = 'NOT_CONFIGURED' | 'PENDING' | 'APPLYING' | 'QUEUED
 
 /** Per-ONU pilot recipe, explicitly registered by an administrator. Never inherited on replacement. */
 export interface OnuOmciWanProfile {
+  /** Absent on existing recipes: preserve WAN_IP without switching a live ONU implicitly. */
+  commandStyle?: 'WAN_IP' | 'WAN_SERVICE';
   oltId: string;
   enabled: boolean;
   validation: 'PILOT' | 'VALIDATED';
@@ -10,11 +12,13 @@ export interface OnuOmciWanProfile {
   oltFirmware: string;
   onuFirmware: string;
   vendorTypeName: string;
-  vlanProfile: string;
+  vlanProfile?: string;
+  ethUniPorts?: string;
+  ssidPorts?: string;
   serviceVlan: number;
   wanIndex: number;
   hostId: number;
-  auth: 'pap' | 'chap' | 'auto';
+  auth?: 'pap' | 'chap' | 'auto';
   evidence: string;
 }
 
@@ -32,6 +36,15 @@ export interface OnuWanConfiguration {
   vendorTypeName?: string;
   configState?: string;
   mode?: string;
+  commandStyle?: 'WAN_IP' | 'WAN_SERVICE';
+  service?: string;
+  bindingService?: string;
+  ethUniPorts?: string;
+  ssidPorts?: string;
+  natEnabled?: boolean;
+  vlanMode?: string;
+  serviceVlan?: number;
+  hostBindings?: Array<{ wanIndex: number; hostId: number }>;
   username?: string;
   vlanProfile?: string;
   hostId?: number;

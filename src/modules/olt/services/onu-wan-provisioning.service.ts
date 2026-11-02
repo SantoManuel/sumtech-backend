@@ -20,7 +20,7 @@ import { OnuWanOperationEntity } from '../entities/onu-wan-operation.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
-import { validateOmciWanParams } from '../drivers/zte-c320-wan';
+import { matchesZteWanConfiguration, validateOmciWanParams, validateOmciWanProfile } from '../drivers/zte-c320-wan';
 import { redactOltCli } from '../utils/redact-olt-cli';
 import { OnuOmciWanProfile, WanApplyStatus, WanProvisioningMethod } from '../ports/onu-wan.types';
 
@@ -134,8 +134,8 @@ export class OnuWanProvisioningService {
           // A read cannot prove an unreadable PPP password after a timed-out write.
           const p = config.omciWanProfile;
           const access = onu.contractId ? await this.accesses.findOneBy({ contractId: onu.contractId }) : null;
-          const matches = observed.mode === 'pppoe' && observed.username === access?.username && observed.vlanProfile === p.vlanProfile &&
-            observed.hostId === p.hostId && observed.serialNumber === onu.serialNumber && observed.vendorTypeName === p.vendorTypeName &&
+          const matches = !!access?.username && matchesZteWanConfiguration(observed, p, access.username) &&
+            observed.serialNumber === onu.serialNumber && observed.vendorTypeName === p.vendorTypeName &&
             observed.configState?.toLowerCase() === 'success' && p.oltFirmware === onu.olt.firmwareVersion;
           status = ['UNKNOWN','APPLYING'].includes(op.status) ? 'UNKNOWN' : matches ? 'APPLIED' : 'VERIFYING';
         } else if (this.acs && typeof op.evidence?.deviceId === 'string') {
@@ -189,6 +189,7 @@ export class OnuWanProvisioningService {
   }
 
   async saveOmciProfile(onu: OnuEntity, profile: OnuOmciWanProfileDto, actor?: string) {
+    validateOmciWanProfile(profile);
     return this.policy.withOnu(onu.id, async () => {
       const c = await this.configs.findOneBy({ onuId: onu.id });
       if (!c) throw new BadRequestException('Autoriza y configura el servicio de la ONU primero.');
@@ -198,7 +199,14 @@ export class OnuWanProvisioningService {
       }
       if (onu.olt.vendor !== 'ZTE' || !/C320/i.test(onu.olt.model)) throw new BadRequestException('Driver WAN OMCI no disponible para esta OLT.');
       if (c.tr069NetworkId && profile.hostId === 2) throw new BadRequestException('IP-host 2 está reservado para el canal de gestión TR-069 de esta ONU.');
-      const identity = (p: OnuOmciWanProfile) => JSON.stringify([p.oltId,p.serialNumber,p.oltFirmware,p.onuFirmware,p.vendorTypeName,p.vlanProfile,p.serviceVlan,p.wanIndex,p.hostId,p.auth]);
+      if (profile.commandStyle === 'WAN_SERVICE' && typeof onu.onuType?.ethPorts === 'number') {
+        const lastLanPort = Number(profile.ethUniPorts!.split('-').pop());
+        if (lastLanPort > onu.onuType.ethPorts) throw new BadRequestException('El rango LAN supera los puertos Ethernet declarados para este modelo.');
+      }
+      const identity = (p: OnuOmciWanProfile) => JSON.stringify([
+        p.oltId, p.serialNumber, p.oltFirmware, p.onuFirmware, p.vendorTypeName, p.serviceVlan, p.wanIndex, p.hostId,
+        p.commandStyle ?? 'WAN_IP', ...(p.commandStyle === 'WAN_SERVICE' ? [p.ethUniPorts, p.ssidPorts] : [p.vlanProfile, p.auth]),
+      ]);
       const busy = c.wanAppliedMethod === 'OMCI' || ((c.wanDesiredVersion || 0) > 0 && ['APPLYING','QUEUED','VERIFYING','UNKNOWN'].includes(c.wanApplyStatus));
       if (busy && c.omciWanProfile && identity(c.omciWanProfile) !== identity(profile)) {
         throw new ConflictException('Cambia primero la WAN a TR-069 antes de sustituir su receta activa.');

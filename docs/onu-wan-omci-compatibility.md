@@ -4,13 +4,13 @@ Actualizado: 2 de noviembre de 2026. Código implementado; validación con equip
 
 ## Alcance operativo
 
-La primera receta implementa PPPoE IPv4 mediante `wan-ip` en OLT ZTE C320, sobre una ONU previamente autorizada en modo Router. La gestión TR-069 permanece independiente. No se configura el servidor PPPoE de MikroTik desde esta operación.
+Se implementan dos recetas PPPoE IPv4 para OLT ZTE C320, sobre una ONU previamente autorizada en modo Router: `WAN_SERVICE` configura puertos/SSID, servicio Internet, PPPoE, NAT y etiquetado VLAN; `WAN_IP` conserva la variante anterior con perfil VLAN. La gestión TR-069 permanece independiente. No se configura el servidor PPPoE de MikroTik desde esta operación.
 
-No hay modelos certificados automáticamente. Cada receta queda vinculada al serial físico, firmware OLT, firmware ONU declarado, perfil ONU, perfil VLAN, índice WAN y host. `PILOT` habilita exclusivamente una prueba explícita de ese equipo; `VALIDATED` requiere registrar el resultado de las pruebas. Una receta no se hereda al reemplazar una ONU.
+No hay modelos certificados automáticamente. Cada receta queda vinculada a la OLT, serial físico, firmware OLT, firmware ONU declarado, perfil ONU, VLAN, índice WAN y host. `WAN_SERVICE` incluye las asociaciones LAN/SSID; `WAN_IP` utiliza un perfil VLAN con nombre. `PILOT` habilita exclusivamente una prueba explícita de ese equipo; `VALIDATED` requiere registrar el resultado de las pruebas. Una receta no se hereda al reemplazar una ONU.
 
 El driver comprueba el serial y tipo reales antes de escribir. Si la salida permite leer el firmware ONU, debe coincidir; una receta `VALIDATED` exige que se pueda comprobar. En `PILOT`, si el firmware no aparece en `detail-info`, su identificación queda atestiguada manualmente para ese serial. Esto permite obtener evidencia inicial sin afirmar que el modelo esté certificado.
 
-La receta actual actualiza/crea el enlace PPPoE por `wan-ip`. Presupone que el modo Router, los enlaces GPON/VEIP, NAT y las asociaciones LAN/SSID necesarias para ese firmware están correctamente preparados. No intenta adivinar comandos de NAT o bindings específicos de fabricantes. Estos requisitos forman parte de la prueba de conectividad.
+La nueva receta `WAN_SERVICE` procede del bloque CLI aportado por el usuario para OLT-TABARA-ABAJO el 2 de noviembre de 2026. Esta entrega lo implementa y prueba con sesiones simuladas; no se ejecutó en equipos de producción. Presupone que el modo Router y el transporte GPON/VEIP están preparados. Configura explícitamente LAN/SSID y NAT. La variante `WAN_IP` conserva sus prerrequisitos anteriores de NAT y asociaciones preparados por separado.
 
 ## Preparar la instalación
 
@@ -18,14 +18,16 @@ La receta actual actualiza/crea el enlace PPPoE por `wan-ip`. Presupone que el m
 2. Desplegar el backend y frontend del mismo cambio. El backend anterior no conoce la propiedad WAN ni sus bloqueos y no es una versión de recuperación adecuada para equipos ya administrados por OMCI.
 3. Comprobar que la OLT tiene modelo C320 y firmware inventariado, que el tipo ONU coincide con el equipo y que existe una VLAN de servicio real.
 4. En el contrato, guardar usuario y contraseña PPPoE propios. No se aceptan una VLAN inventada ni una contraseña compartida de respaldo.
-5. Preparar en laboratorio el perfil VLAN de la OLT y comprobar su mapeo. La implementación consulta `show gpon onu profile vlan` y exige el perfil indicado, `Tag mode: tag` y el CVLAN correcto. No modifica un perfil compartido ni crea uno con nombres heredados de otra plataforma.
+5. Elegir la receta adecuada. Para `WAN_SERVICE`, comprobar los puertos LAN y SSID existentes y la VLAN de servicio del contrato. Para `WAN_IP`, preparar el perfil VLAN con nombre y comprobar su mapeo: se consulta `show gpon onu profile vlan` y se exige `Tag mode: tag` y el CVLAN correcto. La nueva receta etiqueta directamente con `vlan wan` y no consulta ese perfil con nombre.
 6. Revisar las tareas pendientes del dispositivo en GenieACS. El cambio a OMCI se detiene mientras exista alguna tarea pendiente; no elimina tareas automáticamente.
 
 ## Registrar una ONU de laboratorio
 
 En la ficha de la ONU, abrir **Configurar WAN de Internet → Compatibilidad OMCI: configuración de laboratorio** con un usuario ADMIN o GERENTE.
 
-Completar firmware ONU, nombre del perfil VLAN existente, índice WAN, IP-host, autenticación PPP y referencia de las pruebas. Guardar inicialmente con la habilitación desmarcada permite registrar los datos sin escribir en la OLT. Para probar, seleccionar `Prueba de laboratorio` y habilitar las aplicaciones para ese serial.
+Para un perfil nuevo, el formulario propone **WAN de Internet: LAN/SSID, PPPoE y NAT** (`WAN_SERVICE`). Completar firmware ONU, rangos LAN/SSID, índice WAN, IP-host y referencia de las pruebas. Los rangos admitidos son un puerto/SSID del 1 al 4 o un intervalo ascendente dentro de esos límites, según la sintaxis aportada. El rango LAN no puede superar los puertos declarados para el modelo. Los SSID deben comprobarse en el equipo.
+
+Los perfiles existentes sin `commandStyle` se interpretan como `WAN_IP`: mantienen sus campos de perfil VLAN y autenticación. No se cambia una receta activa automáticamente. Guardar con la habilitación desmarcada registra los datos sin escribir en la OLT; seleccionar `Prueba de laboratorio` y habilitar para ejecutar una prueba explícita de ese serial.
 
 El IP-host 2 está reservado cuando la ONU tiene el canal TR-069 generado por Sumtech. No usarlo para la WAN de Internet.
 
@@ -40,22 +42,41 @@ El registro también está disponible mediante `POST /olt/onus/:id/wan-omci-prof
   "oltFirmware": "FIRMWARE_OLT_REAL",
   "onuFirmware": "FIRMWARE_ONU_REAL",
   "vendorTypeName": "TIPO_REAL_EN_OLT",
-  "vlanProfile": "PERFIL_EXISTENTE",
+  "commandStyle": "WAN_SERVICE",
+  "ethUniPorts": "1-4",
+  "ssidPorts": "1-4",
   "serviceVlan": 400,
   "wanIndex": 1,
   "hostId": 1,
-  "auth": "auto",
   "evidence": "Referencia del laboratorio y observaciones iniciales."
 }
 ```
 
 No registrar contraseñas en la referencia de pruebas. La cuenta PPPoE se resuelve exclusivamente desde el acceso del contrato.
 
+La receta genera, en orden y con una espera de respuesta CLI entre comandos, este bloque parametrizado:
+
+```text
+configure terminal
+pon-onu-mng <interfaz_de_la_onu>
+wan <wan> ethuni <rango_lan> ssid <rango_ssid> service internet
+wan <wan> service internet host <host> pppoe
+pppoe <host> user <usuario_del_contrato> password <contraseña_del_contrato>
+pppoe <host> nat enable
+vlan wan <wan> mode tag vlan <vlan_del_servicio>
+end
+write
+```
+
+Credenciales y NAT se envían siempre en líneas separadas. No se fijan el usuario, la contraseña, la VLAN 400 ni la interfaz de la ONU del ejemplo dentro del driver. Para conservar `WAN_IP` en la API, usar `commandStyle: WAN_IP` con `vlanProfile` y `auth`; LAN/SSID no son obligatorios en esa variante. Los campos nuevos viven en el JSON de compatibilidad existente: esta ampliación no necesita otra migración adicional a la 106.
+
+Si el índice WAN ya utiliza otra receta CLI, no se mezclan ambos mecanismos ni se borra la WAN automáticamente. Hay que resolver la transición de la receta anterior de forma explícita. Tampoco se reutiliza un IP-host que ya esté asociado a otra WAN de la misma ONU.
+
 ## Aplicar y observar
 
 1. Seleccionar **Desde la OLT (OMCI)**, PPPoE e IPv4 y pulsar **Aplicar PPPoE mediante OLT**.
 2. El backend toma el bloqueo de la ONU, valida versiones/credenciales/compatibilidad, comprueba la cola ACS y registra la operación. Nunca reautoriza ni ejecuta `no onu` en esta ruta.
-3. El driver lee identidad, perfil VLAN y configuración antes de enviar `wan-ip`. Luego guarda y vuelve a consultar configuración y estado OMCI. No reinicia automáticamente.
+3. El driver lee identidad y configuración, y en `WAN_IP` también el perfil VLAN. Aplica la receta seleccionada, guarda y vuelve a consultar configuración y estado OMCI. `WAN_SERVICE` solo se confirma si coinciden Internet/PPPoE, host, usuario, NAT habilitado, VLAN tag y asociaciones LAN/SSID. No reinicia automáticamente.
 4. Revisar el estado y usar **Consultar resultado WAN**. La página también consulta el estado guardado cada ocho segundos mientras hay una operación pendiente y la pestaña está visible.
 5. Comprobar por separado sesión PPPoE real en el concentrador, dirección asignada y navegación por Ethernet y Wi-Fi. `APPLIED` significa configuración confirmada por el mecanismo de gestión; no acredita por sí solo navegación del cliente.
 
@@ -94,6 +115,7 @@ Para detener nuevas escrituras OMCI, deshabilitar la receta del serial. Esto no 
 Registrar para cada combinación: OLT/software, ONU/firmware, serial, `vendorTypeName`, VLAN/perfil, índices WAN/host y referencia de evidencias sin secretos.
 
 - [ ] Primera aplicación PPPoE IPv4 y actualización de cuenta.
+- [ ] Receta WAN_SERVICE: asociaciones LAN/SSID, NAT habilitado y VLAN tag coinciden con la solicitud.
 - [ ] Consulta del serial, perfil y estado OMCI reconocida por el parser.
 - [ ] Perfil VLAN correcto y rechazo de un CVLAN equivocado.
 - [ ] Sesión PPPoE en MikroTik y navegación por los puertos/SSID previstos.
@@ -111,7 +133,7 @@ Solo después de completar estas pruebas cambiar la receta a `VALIDATED`. No agr
 
 Las suites de software usan sesiones simuladas y no certifican equipos. La prueba SQL optativa está en `src/database/__tests__/onu-wan-migration.integration.spec.ts`. Requiere una base PostgreSQL local y descartable llamada `sumtech_wan_test`, sin esquema `net` previo; crea los objetos dentro de una transacción y revierte al terminar.
 
-Verificación local de esta entrega: **830 pruebas backend y 28 frontend aprobadas**, además de builds de producción correctos para ambos proyectos. Los cuatro casos PostgreSQL quedaron omitidos explícitamente, sin confundirse con pruebas aprobadas.
+Verificación local tras integrar el bloque `wan / pppoe / NAT / vlan wan`: **878 pruebas backend y 29 frontend aprobadas**, además de builds de producción correctos para ambos proyectos. Los cuatro casos de integración PostgreSQL siguen pendientes de una base de pruebas disponible; no se cuentan como pruebas aprobadas.
 
 ```powershell
 $env:WAN_MIGRATION_TEST_URL = 'postgresql://USUARIO:CLAVE@127.0.0.1:5432/sumtech_wan_test'

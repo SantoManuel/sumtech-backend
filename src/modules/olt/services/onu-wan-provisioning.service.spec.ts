@@ -197,6 +197,45 @@ describe('OnuWanProvisioningService', () => {
     await expect(service.saveOmciProfile(onu, { ...config.omciWanProfile, hostId: 2 })).rejects.toThrow('reservado');
   });
 
+  it('registers the WAN service recipe without requiring legacy VLAN profile fields', async () => {
+    const profile = { ...config.omciWanProfile, commandStyle: 'WAN_SERVICE', vlanProfile: undefined, auth: undefined, ethUniPorts: '1-4', ssidPorts: '1-4' };
+    await service.saveOmciProfile(onu, profile, 'admin-1');
+    expect(config.omciWanProfile).toMatchObject({ commandStyle: 'WAN_SERVICE', ethUniPorts: '1-4', ssidPorts: '1-4' });
+    await service.configure(onu, { provisioningMethod: 'OMCI' }, 'admin-1');
+    expect(driver.configureOnuWan).toHaveBeenCalledWith({}, expect.objectContaining({
+      username: 'cliente@example', password: 'Private123!', profile: expect.objectContaining({ commandStyle: 'WAN_SERVICE', serviceVlan: 400 }),
+    }));
+  });
+
+  it('rejects descending port ranges and bindings beyond the declared Ethernet ports before saving', async () => {
+    const profile = { ...config.omciWanProfile, commandStyle: 'WAN_SERVICE', ethUniPorts: '4-1', ssidPorts: '1-4' };
+    await expect(service.saveOmciProfile(onu, profile)).rejects.toThrow('ascendente');
+    onu.onuType.ethPorts = 1;
+    await expect(service.saveOmciProfile(onu, { ...profile, ethUniPorts: '1-4' })).rejects.toThrow('supera');
+    expect(configs.update).not.toHaveBeenCalled();
+  });
+
+  it('does not confirm a delayed WAN service operation until NAT and bindings also match', async () => {
+    config.omciWanProfile = { ...config.omciWanProfile, commandStyle: 'WAN_SERVICE', ethUniPorts: '1-4', ssidPorts: '1-4' };
+    driver.configureOnuWan.mockResolvedValue({ status: 'VERIFYING' });
+    await service.configure(onu, { provisioningMethod: 'OMCI' });
+    const observed = { wanIndex: 1, commandStyle: 'WAN_SERVICE', mode: 'pppoe', username: 'cliente@example',
+      service: 'internet', bindingService: 'internet', hostId: 1, ethUniPorts: '1-4', ssidPorts: '1-4',
+      natEnabled: false, vlanMode: 'tag', serviceVlan: 400,
+      serialNumber: 'HWTC1234', vendorTypeName: 'HG8546M', configState: 'success' };
+    driver.getOnuWanConfiguration = jest.fn().mockResolvedValue(observed);
+    expect((await service.verify(onu))?.status).toBe('VERIFYING');
+    observed.natEnabled = true;
+    expect((await service.verify(onu))?.status).toBe('APPLIED');
+  });
+
+  it('requires an explicit transition before changing the command style of an applied recipe', async () => {
+    config.wanAppliedMethod = 'OMCI';
+    await expect(service.saveOmciProfile(onu, { ...config.omciWanProfile, commandStyle: 'WAN_SERVICE', ethUniPorts: '1-4', ssidPorts: '1-4' }))
+      .rejects.toThrow('Cambia primero');
+    expect(configs.update).not.toHaveBeenCalled();
+  });
+
   it('backs off before safely retrying a first-Inform failure on the same intent version', async () => {
     cpe.configureCpe.mockRejectedValueOnce(new NotFoundException('El CPE todavía no envió Inform.'));
     const first = await service.configure(onu, {});
