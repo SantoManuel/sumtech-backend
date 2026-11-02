@@ -1,5 +1,5 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
-import { ZteTelnetSession } from './zte-telnet-session';
+import { ZteTelnetSession, ZteSessionLike } from './zte-telnet-session';
 import {
   isOltErrorResponse,
   isAlreadyAppliedResponse,
@@ -346,6 +346,28 @@ export class ZteC320Driver implements IOltDriver {
     return generateTr069ProfileScriptImpl(config);
   }
 
+  private async readOnuSlotIdentity(session: ZteSessionLike, ponInterface: string, onuId: number): Promise<string | null> {
+    if (!/^gpon-olt_\d+\/\d+\/\d+$/.test(ponInterface) || !Number.isSafeInteger(onuId) || onuId < 1) {
+      throw new Error('Ubicación de ONU inválida para comprobar ocupación física.');
+    }
+    const output = await session.executeCommand(`show gpon onu baseinfo ${ponInterface}`, 180000);
+    if (isOltErrorResponse(output)) return null;
+    const target = ponInterface.replace('gpon-olt_', 'gpon-onu_') + `:${onuId}`;
+    const rows = output.split(/\r?\n/).filter((line) => line.trim().split(/\s+/)[0]?.toLowerCase() === target.toLowerCase());
+    const row = rows.length === 1 ? rows[0].trim().match(/^gpon-onu_\d+\/\d+\/\d+:\d+\s+\S+\s+sn\s+SN:([a-zA-Z0-9]+)\s+\S+\s*$/i) : null;
+    return row?.[1] ?? null;
+  }
+
+  async getOnuSlotIdentity(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<string | null> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return await this.readOnuSlotIdentity(session, ponInterface, onuId);
+    } finally {
+      await session.close();
+    }
+  }
+
   /**
    * Ejecuta el aprovisionamiento de la ONU en la OLT respetando los tiempos de
    * convergencia OMCI, simulación de operador humano y el orden jerárquico estricto.
@@ -362,6 +384,20 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
+
+      if (!/^[a-zA-Z0-9]+$/.test(config.serialNumber)) {
+        throw new Error('Ubicación o serial de ONU inválido para comprobar ocupación física.');
+      }
+      const target = config.ponInterface.replace('gpon-olt_', 'gpon-onu_') + `:${config.onuId}`;
+      const identity = await this.readOnuSlotIdentity(session, config.ponInterface, config.onuId);
+      if (identity && identity.toUpperCase() !== config.serialNumber.toUpperCase()) {
+        throw new Error(`No se pudo verificar que ${target} pertenezca al serial solicitado; autorización cancelada para evitar borrar otra ONU.`);
+      }
+      const occupancyWarning = !identity
+        ? `No se pudo determinar la ocupación de ${target}; no onu podría borrar otra ONU.`
+        : undefined;
+      if (occupancyWarning) this.logger.warn(occupancyWarning);
+      let warning: string | undefined;
 
       // Decisión de negocio (2026-10-29): ya NO se crea el onu-type a
       // ciegas aquí si falta -- ver `verifyOnuTypeProfileWithSession`.
@@ -380,8 +416,6 @@ export class ZteC320Driver implements IOltDriver {
       if (config.trafficProfile && config.downKbps) {
         await ensureTrafficProfileWithSession(session, { name: config.trafficProfile, downKbps: config.downKbps });
       }
-
-      let warning: string | undefined;
 
       // Perfiles hardcodeados que `generateAuthorizationScript()` manda SIN
       // verificar que existan en la OLT -- bug real confirmado (2026-10-30).
@@ -507,7 +541,7 @@ export class ZteC320Driver implements IOltDriver {
         }
       }
 
-      return { ok: true, warning, verification };
+      return { ok: true, warning: [occupancyWarning, warning].filter(Boolean).join(' ') || undefined, verification };
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {

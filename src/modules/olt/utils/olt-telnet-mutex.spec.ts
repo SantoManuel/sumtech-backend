@@ -63,4 +63,21 @@ describe('withOltTelnetLock', () => {
     expect(result).toBe('ok');
     expect(second).toHaveBeenCalled();
   });
+
+  it('continua la cola cuando una operacion pendiente falla', async () => {
+    let rejectFirst!: (error: Error) => void;
+    const pending = new Promise<void>((_, reject) => { rejectFirst = reject; });
+    const second = jest.fn().mockResolvedValue('ok');
+    const first = withOltTelnetLock('olt-pending-failure', () => pending);
+    const firstResult = expect(first).rejects.toThrow('fallo pendiente');
+    const next = withOltTelnetLock('olt-pending-failure', second);
+
+    await Promise.resolve();
+    expect(second).not.toHaveBeenCalled();
+    rejectFirst(new Error('fallo pendiente'));
+
+    await firstResult;
+    await expect(next).resolves.toBe('ok');
+    expect(second).toHaveBeenCalledTimes(1);
+  });
 });

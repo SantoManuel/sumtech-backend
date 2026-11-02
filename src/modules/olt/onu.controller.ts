@@ -140,7 +140,7 @@ export class OnuController {
    */
   @Post(':id/apply-service-gemport-fix')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
-  @RequireOltAction('OPERATE')
+  @RequireOltAction('CONFIGURE')
   @OltIdFrom('ONU_ID_PARAM')
   async applyServiceGemportFix(@Param('id') id: string) {
     return this.onuService.applyServiceGemportFix(id);

@@ -34,6 +34,7 @@ import {
   OnuTr069MgmtInfo,
 } from '../ports/olt-driver.port';
 import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
+import { OltPartialOperationService } from './olt-partial-operation.service';
 
 export interface ProvisioningAuditFinding {
   severity: 'CRITICAL' | 'WARNING' | 'INFO';
@@ -106,7 +107,16 @@ export class OnuManagementService {
     private readonly cpeConfiguratorService: CpeConfiguratorService,
     private readonly genieAcsDeviceResolver: GenieAcsDeviceResolverService,
     private readonly tenantContext: TenantContextService,
+    private readonly partialOperations: OltPartialOperationService,
   ) {}
+
+  private async recordPartialOperation(oltId: string, onuId: string, operation: string) {
+    try {
+      await this.partialOperations.record({ oltId, onuId, operation, resourceKey: onuId, expectedState: 'PRESENT' });
+    } catch {
+      this.logger.error(`No se pudo registrar la operación parcial ${operation} para ONU ${onuId} en OLT ${oltId}.`);
+    }
+  }
 
   /**
    * Resuelve el driver real del fabricante de la OLT dueña de la ONU/operación.
@@ -607,7 +617,7 @@ export class OnuManagementService {
    * 0.0.0.0, el ACS aplicado distinto al configurado, o VLANs sin ninguna
    * MAC aprendida. Ver Plan_Implementacion_Auditoria_Aprovisionamiento_ONU.md.
    *
-   * Las 4 consultas corren en paralelo vía `Promise.allSettled` -- un
+   * Las consultas se serializan por OLT y conservan resultados independientes -- un
    * driver que no implemente alguno de estos métodos opcionales (ej.
    * HiOSO) no debe tumbar las otras 3, solo reportarse en `unsupported`.
    */
@@ -615,23 +625,19 @@ export class OnuManagementService {
     const { onu, driver, connParams, ponInterface, onuId } = await this.resolveOnuAuditTarget(id);
 
     const NOT_SUPPORTED = 'NOT_SUPPORTED';
-    const [detailInfoResult, ipHostResult, wanIpResult, tr069MgmtResult, macTableResult] = await Promise.allSettled([
-      typeof driver.getOnuDetailInfo === 'function'
-        ? driver.getOnuDetailInfo(connParams, ponInterface, onuId)
-        : Promise.reject(new Error(NOT_SUPPORTED)),
-      typeof driver.getOnuIpHost === 'function'
-        ? driver.getOnuIpHost(connParams, ponInterface, onuId)
-        : Promise.reject(new Error(NOT_SUPPORTED)),
-      typeof driver.getOnuWanIp === 'function'
-        ? driver.getOnuWanIp(connParams, ponInterface, onuId)
-        : Promise.reject(new Error(NOT_SUPPORTED)),
-      typeof driver.getOnuTr069MgmtInfo === 'function'
-        ? driver.getOnuTr069MgmtInfo(connParams, ponInterface, onuId)
-        : Promise.reject(new Error(NOT_SUPPORTED)),
-      typeof driver.getOnuMacTable === 'function'
-        ? driver.getOnuMacTable(connParams, ponInterface, onuId)
-        : Promise.reject(new Error(NOT_SUPPORTED)),
-    ]);
+    const [detailInfoResult, ipHostResult, wanIpResult, tr069MgmtResult, macTableResult] = await withOltTelnetLock(onu.olt.id, async () => {
+      const settle = async <T>(fn: () => Promise<T>): Promise<PromiseSettledResult<T>> => {
+        try { return { status: 'fulfilled', value: await fn() }; }
+        catch (reason) { return { status: 'rejected', reason }; }
+      };
+      return [
+        await settle(() => driver.getOnuDetailInfo ? driver.getOnuDetailInfo(connParams, ponInterface, onuId) : Promise.reject(new Error(NOT_SUPPORTED))),
+        await settle(() => driver.getOnuIpHost ? driver.getOnuIpHost(connParams, ponInterface, onuId) : Promise.reject(new Error(NOT_SUPPORTED))),
+        await settle(() => driver.getOnuWanIp ? driver.getOnuWanIp(connParams, ponInterface, onuId) : Promise.reject(new Error(NOT_SUPPORTED))),
+        await settle(() => driver.getOnuTr069MgmtInfo ? driver.getOnuTr069MgmtInfo(connParams, ponInterface, onuId) : Promise.reject(new Error(NOT_SUPPORTED))),
+        await settle(() => driver.getOnuMacTable ? driver.getOnuMacTable(connParams, ponInterface, onuId) : Promise.reject(new Error(NOT_SUPPORTED))),
+      ] as const;
+    });
 
     const detailInfo = detailInfoResult.status === 'fulfilled' ? detailInfoResult.value : undefined;
     const ipHost = ipHostResult.status === 'fulfilled' ? ipHostResult.value : undefined;
@@ -716,12 +722,14 @@ export class OnuManagementService {
     // no usa el mecanismo "wan-ip" (ver Plan_Implementacion_WanIp_VlanProfile_HGU.md,
     // todavía no implementado). Tratar esa ausencia como "crítico" era un
     // falso positivo.
-    if (ipHost) {
+    if (ipHost && !/Host\s*(?:ID)?\s*:\s*\d+\b/i.test(ipHost.raw)) {
+      findings.push({ severity: 'WARNING', message: 'No se pudieron identificar hosts en la respuesta ip-host; revisa la salida antes de reparar.', command: 'show gpon remote-onu ip-host', rawExcerpt: ipHost.raw });
+    } else if (ipHost) {
       // Host ID: 1 (canal de servicio/internet) -- iphost 1 se cablea en el
       // script de autorización completo (Etapa 1), NO en el reintento aislado
       // de TR-069 (Etapa 2, que solo toca iphost 2) -- por eso su fixAction
       // es REAUTHORIZE y no REAPPLY_TR069.
-      if (!ipHost.serviceIp) {
+      if (/Host\s*(?:ID)?\s*:\s*1\b/i.test(ipHost.raw) && !ipHost.serviceIp) {
         findings.push({
           severity: 'CRITICAL',
           message:
@@ -734,7 +742,7 @@ export class OnuManagementService {
         });
       }
 
-      if (!ipHost.mgmtIp) {
+      if (ipHost.ipHostFound && !ipHost.mgmtIp) {
         findings.push({
           severity: 'CRITICAL',
           message:
@@ -752,11 +760,11 @@ export class OnuManagementService {
       // intento (no destructivo) y, si eso tampoco resuelve, "service
       // <id> gemport <id> vlan <vlan>" como último recurso (destructivo --
       // borra y reconstruye el cableado de ambos canales).
-      if (!ipHost.mgmtIp && !ipHost.serviceIp) {
+      if (ipHost.ipHostFound && /Host\s*(?:ID)?\s*:\s*1\b/i.test(ipHost.raw) && !ipHost.mgmtIp && !ipHost.serviceIp) {
         findings.push({
           severity: 'CRITICAL',
           message:
-            'Ningún canal (servicio ni gestión) ha obtenido IP, pese a que el cableado OMCI parece correcto. ' +
+            'Ningún canal (servicio ni gestión) ha obtenido IP. Verifica antes el estado óptico y el cableado OMCI. ' +
             'Opción A: re-aplicar "wan-ip" directamente sobre esta ONU, sin tocar el resto del cableado.',
           command: 'wan-ip 1/2 mode dhcp vlan-profile ...',
           fixAction: 'APPLY_WAN_IP',
@@ -831,9 +839,7 @@ export class OnuManagementService {
     const olt = onu.olt;
     const driver = this.resolveDriver(olt);
     const connParams = await this.connectionResolver.resolve(olt);
-    const ponInterface = onu.ponInterface?.name || 'gpon-olt_1/1/1';
-    const parts = onu.onuIndex.split(':');
-    const onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
+    const { ponInterface, onuId } = this.resolveOnuLocation(onu);
     return { onu, driver, connParams, ponInterface, onuId };
   }
 
@@ -853,10 +859,10 @@ export class OnuManagementService {
       throw new BadRequestException('Esta ONU no tiene una VLAN de servicio configurada -- no se puede aplicar wan-ip.');
     }
 
-    const result = await driver.applyWanIpFix(connParams, ponInterface, onuId, {
+    const result = await withOltTelnetLock(onu.olt.id, () => driver.applyWanIpFix!(connParams, ponInterface, onuId, {
       serviceVlan,
       tr069Vlan: onu.serviceConfig?.tr069Vlan?.vlanId,
-    });
+    }));
     if (!result.ok) {
       throw new BadRequestException(`La OLT rechazó la corrección: ${result.error}`);
     }
@@ -881,10 +887,10 @@ export class OnuManagementService {
       throw new BadRequestException('Esta ONU no tiene una VLAN de servicio configurada -- no se puede aplicar esta corrección.');
     }
 
-    const result = await driver.applyServiceGemportFix(connParams, ponInterface, onuId, {
+    const result = await withOltTelnetLock(onu.olt.id, () => driver.applyServiceGemportFix!(connParams, ponInterface, onuId, {
       serviceVlan,
       tr069Vlan: onu.serviceConfig?.tr069Vlan?.vlanId,
-    });
+    }));
     if (!result.ok) {
       throw new BadRequestException(`La OLT rechazó la corrección: ${result.error}`);
     }
@@ -956,19 +962,46 @@ export class OnuManagementService {
     const onu = await this.findById(id);
     const olt = onu.olt;
     const driver = this.resolveDriver(olt);
-    const connParams = await this.connectionResolver.resolve(olt);
-
     const authParams = await this.buildAuthorizeParams(onu, dto);
+    const connParams = await this.connectionResolver.resolve(olt);
+    let config = await this.configRepository.findOneBy({ onuId: onu.id });
 
     // 1. Provisión en la OLT vía Telnet
-    const result = await driver.authorizeOnu(connParams, authParams);
+    let result: Awaited<ReturnType<typeof driver.authorizeOnu>>;
+    try {
+      result = await withOltTelnetLock(olt.id, () => this.callDriver(() => driver.authorizeOnu(connParams, authParams)));
+    } catch (error) {
+      await this.recordPartialOperation(olt.id, onu.id, 'authorizeOnu');
+      if (config) {
+        config.desiredVersion = Math.max(config.desiredVersion, config.appliedVersion) + 1;
+        config.applyStatus = 'ERROR';
+        config.lastApplyError = error instanceof Error ? error.message : 'No se pudo confirmar la autorización.';
+        try { await this.configRepository.save(config); }
+        catch { this.logger.error(`No se pudo guardar el estado de autorización para ONU ${onu.id}.`); }
+      }
+      throw error;
+    }
     if (!result.ok) {
+      await this.recordPartialOperation(olt.id, onu.id, 'authorizeOnu');
+      if (config) {
+        config.desiredVersion = Math.max(config.desiredVersion, config.appliedVersion) + 1;
+        config.applyStatus = 'ERROR';
+        config.lastApplyError = result.error || 'La OLT no confirmó la autorización.';
+        try { await this.configRepository.save(config); }
+        catch { this.logger.error(`No se pudo guardar el estado de autorización para ONU ${onu.id}.`); }
+      }
       throw new BadRequestException(`Fallo aprovisionando ONU en OLT: ${result.error}`);
     }
     // `result.warning` (ver IOltDriver.authorizeOnu): un paso de mejor
     // esfuerzo no crítico (hoy, en ZTE: el push OMCI de TR-069/ACS) falló sin
     // abortar el resto -- se surte igual que `cpeConfigWarning` más abajo.
-    const oltWarning = result.warning;
+    const retainedTr069Warning = config?.managementMethod === 'TR069' && config.tr069NetworkId && !dto.tr069NetworkId
+      ? 'La configuración TR-069 anterior no se reaplicó durante la autorización; aplica el perfil TR-069 nuevamente.'
+      : undefined;
+    const oltWarning = [result.warning, retainedTr069Warning].filter(Boolean).join(' | ') || undefined;
+    if (oltWarning) await this.recordPartialOperation(olt.id, onu.id, 'authorizeOnu');
+
+    try {
 
     // 2. Persistir configuración de servicio en net.onu_service_config.
     // `OnuAuthorizeModal.tsx` (Etapa 1 del frontend, 2026-10-24) ya puede
@@ -981,9 +1014,9 @@ export class OnuManagementService {
     // contrario la Ficha 360 seguía mostrando "Gestión Remota: OMCI" /
     // "VLAN TR-069: —" aunque la OLT ya tuviera el ONT apuntando al ACS
     // (bug real encontrado revisando la Ficha 360 de CMDCDD4D131E). Sin
-    // `tr069NetworkId` en el dto (caso histórico, o una ONU que no usa
-    // TR-069), esos 3 campos no se tocan -- preservan lo que las etapas 2/3
-    // ya hayan aplicado antes. `wanMode` sigue siendo exclusivo de la Etapa 3.
+    // `tr069NetworkId` en el dto, esos campos conservan la configuración
+    // deseada anterior, pero no prueban que siga aplicada tras reautorizar.
+    // `wanMode` sigue siendo exclusivo de la Etapa 3.
     const speedProfileId = dto.speedProfileId || undefined;
 
     // Si este dto YA trae una Red TR-069 (Etapa 1 fusionada, ver `hasTr069`
@@ -1001,7 +1034,6 @@ export class OnuManagementService {
       tr069VlanId = tr069Network?.vlanId;
     }
 
-    let config = await this.configRepository.findOneBy({ onuId: onu.id });
     if (!config) {
       config = this.configRepository.create({
         onuId: onu.id,
@@ -1012,8 +1044,9 @@ export class OnuManagementService {
         operationMode: dto.operationMode || 'ROUTER',
         speedProfileId,
         desiredVersion: 1,
-        appliedVersion: 1,
-        applyStatus: 'APPLIED',
+        appliedVersion: oltWarning ? 0 : 1,
+        applyStatus: oltWarning ? 'PENDING' : 'APPLIED',
+        lastApplyError: oltWarning,
       });
     } else {
       config.serviceVlanId = dto.serviceVlanId;
@@ -1024,9 +1057,10 @@ export class OnuManagementService {
         config.tr069NetworkId = dto.tr069NetworkId;
         config.tr069VlanId = tr069VlanId;
       }
-      config.appliedVersion += 1;
-      config.desiredVersion = config.appliedVersion;
-      config.applyStatus = 'APPLIED';
+      config.desiredVersion = Math.max(config.desiredVersion, config.appliedVersion) + 1;
+      if (!oltWarning) config.appliedVersion = config.desiredVersion;
+      config.applyStatus = oltWarning ? 'PENDING' : 'APPLIED';
+      config.lastApplyError = oltWarning ?? null!;
     }
     await this.configRepository.save(config);
 
@@ -1059,11 +1093,16 @@ export class OnuManagementService {
       description: onu.description,
     });
 
+    } catch (error) {
+      await this.recordPartialOperation(olt.id, onu.id, 'authorizeOnu');
+      throw error;
+    }
+
     await this.deviceOperationLogger.logEvent({
       nodeId: olt.viaNodeId || olt.id,
       eventType: 'PROVISION',
       status: 'SUCCESS',
-      message: `[${olt.vendor}] ONU ${onu.serialNumber} autorizada con éxito en ${authParams.ponInterface}:${authParams.onuId}`,
+      message: `[${olt.vendor}] ONU ${onu.serialNumber} autorizada en ${authParams.ponInterface}:${authParams.onuId}${oltWarning ? `. Advertencia: ${oltWarning}` : ' con éxito'}`,
       actorUserId,
       rawDetails: {
         onuId: onu.id,
@@ -1316,11 +1355,20 @@ export class OnuManagementService {
       );
     }
 
-    const result = await this.callDriver(() => driver.applyTr069Management(connParams, authParams));
+    let result: Awaited<ReturnType<typeof driver.applyTr069Management>>;
+    try {
+      result = await withOltTelnetLock(olt.id, () => this.callDriver(() => driver.applyTr069Management(connParams, authParams)));
+    } catch (error) {
+      await this.recordPartialOperation(olt.id, onu.id, 'applyTr069Profile');
+      throw error;
+    }
     if (!result.ok) {
+      await this.recordPartialOperation(olt.id, onu.id, 'applyTr069Profile');
       throw new BadRequestException(`Fallo aplicando el Perfil TR-069 en la OLT: ${result.error}`);
     }
+    if (result.warning) await this.recordPartialOperation(olt.id, onu.id, 'applyTr069Profile');
 
+    try {
     config.managementMethod = 'TR069';
     config.tr069NetworkId = dto.tr069NetworkId;
     // Bug real confirmado (2026-10-23): esto nunca se asignaba, así que
@@ -1332,7 +1380,16 @@ export class OnuManagementService {
     // del VlanEntity, que vive en "tr069Network.vlanId".
     const tr069Network = await this.tr069Repository.findOneBy({ id: dto.tr069NetworkId });
     config.tr069VlanId = tr069Network?.vlanId;
+    if (result.warning) {
+      config.desiredVersion = Math.max(config.desiredVersion, config.appliedVersion) + 1;
+      config.applyStatus = 'PENDING';
+      config.lastApplyError = result.warning;
+    }
     await this.configRepository.save(config);
+    } catch (error) {
+      await this.recordPartialOperation(olt.id, onu.id, 'applyTr069Profile');
+      throw error;
+    }
 
     await this.deviceOperationLogger.logEvent({
       nodeId: olt.viaNodeId || olt.id,
@@ -1399,7 +1456,7 @@ export class OnuManagementService {
       tr069NetworkId: dto.tr069NetworkId,
       managementMethod: 'TR069',
       operationMode: config.operationMode,
-    });
+    }, true);
 
     if (!authParams.tr069Url) {
       throw new BadRequestException(
@@ -1407,7 +1464,7 @@ export class OnuManagementService {
       );
     }
 
-    const result = await this.callDriver(() =>
+    const result = await withOltTelnetLock(olt.id, () => this.callDriver(() =>
       driver.updateTr069AcsUrl!(connParams, {
         ponInterface: authParams.ponInterface,
         onuId: authParams.onuId,
@@ -1415,7 +1472,7 @@ export class OnuManagementService {
         tr069AcsUsername: authParams.tr069AcsUsername,
         tr069AcsPassword: authParams.tr069AcsPassword,
       }),
-    );
+    ));
     if (!result.ok) {
       throw new BadRequestException(`La OLT rechazó el cambio de ACS: ${result.error}`);
     }
@@ -1586,7 +1643,7 @@ export class OnuManagementService {
     const connParams = await this.connectionResolver.resolve(onu.olt);
 
     const target = this.buildOnuTarget(onu);
-    const result = await driver.setOnuAdminState(connParams, target, 'BLOCKED');
+    const result = await withOltTelnetLock(onu.olt.id, () => driver.setOnuAdminState(connParams, target, 'BLOCKED'));
     if (!result.ok) {
       throw new BadRequestException(`No se pudo bloquear la ONU: ${result.error}`);
     }
@@ -1615,7 +1672,7 @@ export class OnuManagementService {
     const connParams = await this.connectionResolver.resolve(onu.olt);
 
     const target = this.buildOnuTarget(onu);
-    const result = await driver.setOnuAdminState(connParams, target, 'ACTIVE');
+    const result = await withOltTelnetLock(onu.olt.id, () => driver.setOnuAdminState(connParams, target, 'ACTIVE'));
     if (!result.ok) {
       throw new BadRequestException(`No se pudo reactivar la ONU: ${result.error}`);
     }
@@ -1649,11 +1706,9 @@ export class OnuManagementService {
     const driver = this.resolveDriver(olt);
     const connParams = await this.connectionResolver.resolve(olt);
 
-    const ponInterface = onu.ponInterface?.name || 'gpon-olt_1/1/1';
-    const parts = onu.onuIndex.split(':');
-    const onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
+    const { ponInterface, onuId } = this.resolveOnuLocation(onu);
 
-    const result = await this.callDriver(() => driver.deleteOnu(connParams, ponInterface, onuId));
+    const result = await withOltTelnetLock(olt.id, () => this.callDriver(() => driver.deleteOnu(connParams, ponInterface, onuId)));
     if (!result.ok) {
       throw new BadRequestException(`No se pudo eliminar la ONU en la OLT: ${result.error}`);
     }
@@ -1708,16 +1763,50 @@ export class OnuManagementService {
 
     const olt = onu.olt;
     const oldSerial = onu.serialNumber;
-    const ponInterface = dto.newPonInterface || onu.ponInterface?.name || 'gpon-olt_1/1/1';
-    const parts = onu.onuIndex.split(':');
-    const onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
+    const { ponInterface: sourcePon, onuId } = this.resolveOnuLocation(onu);
+    const ponInterface = dto.newPonInterface ?? sourcePon;
+    this.resolveOnuLocation({ ...onu, ponInterface: { name: ponInterface }, onuIndex: String(onuId) } as OnuEntity);
+    const destination = ponInterface === sourcePon
+      ? onu.ponInterface
+      : await this.ifaceRepository.findOneBy({ oltId: olt.id, name: ponInterface });
+    if (!destination) throw new BadRequestException('Interfaz PON de destino no encontrada en la OLT.');
+    const modelTypeName = onu.onuType?.vendorTypeName || onu.onuType?.model;
+    const serviceVlan = onu.serviceConfig?.serviceVlan?.vlanId;
+    if (!modelTypeName || !/^[\w.-]+$/.test(modelTypeName) || !Number.isInteger(serviceVlan) || serviceVlan! < 1 || serviceVlan! > 4094) {
+      throw new BadRequestException('La ONU debe tener un tipo y una VLAN de servicio válidos para migrar.');
+    }
+    for (const value of [trimmedNewSerial, onu.contract?.client?.name, onu.serviceConfig?.speedProfile?.vendorTcontProfile, onu.serviceConfig?.tr069Network?.acsUrl]) {
+      if (value != null && (typeof value !== 'string' || /[\r\n\x00-\x1f\x7f]/.test(value))) {
+        throw new BadRequestException('Parámetro CLI inválido.');
+      }
+    }
+    let newPort: NapPortEntity | null = null;
+    if (dto.newNapPortId) {
+      newPort = await this.napPortRepository.findOne({ where: { id: dto.newNapPortId } });
+      if (!newPort) throw new NotFoundException(`Puerto NAP no encontrado: ${dto.newNapPortId}`);
+      if (newPort.status === 'OCUPADO' && newPort.onuId !== onu.id) {
+        throw new BadRequestException(`El puerto NAP #${newPort.portNumber} ya está ocupado por otra ONU.`);
+      }
+    }
 
-    // 1. Intentar desasociar hardware anterior en la OLT física
     let oltDeconfigured = false;
+    let oltReauthorized = false;
+    let oltWarning = '';
+    await withOltTelnetLock(olt.id, async () => {
+    const preflightDriver = this.resolveDriver(olt);
+    const preflightParams = await this.connectionResolver.resolve(olt);
+    if (!preflightDriver.getOnuSlotIdentity || ponInterface !== sourcePon) {
+      throw new BadRequestException('No se puede verificar el destino físico de la migración; origen conservado.');
+    }
+    const destinationIdentity = await this.callDriver(() => preflightDriver.getOnuSlotIdentity!(preflightParams, ponInterface, onuId));
+    if (!destinationIdentity || destinationIdentity.toUpperCase() !== oldSerial.toUpperCase()) {
+      throw new BadRequestException('Identidad del destino físico desconocida o distinta de la ONU origen; origen conservado.');
+    }
+    // 1. Intentar desasociar hardware anterior en la OLT física
     try {
       const driver = this.resolveDriver(olt);
       const connParams = await this.connectionResolver.resolve(olt);
-      const deleteResult = await this.callDriver(() => driver.deleteOnu(connParams, ponInterface, onuId));
+      const deleteResult = await this.callDriver(() => driver.deleteOnu(connParams, sourcePon, onuId));
       if (deleteResult.ok) {
         oltDeconfigured = true;
       }
@@ -1725,56 +1814,25 @@ export class OnuManagementService {
       this.logger.warn(`No se pudo eliminar ONU anterior ${oldSerial} en OLT ${olt.name} durante migración: ${err.message}`);
     }
 
-    // 2. Gestionar reasignación de puerto NAP si aplica
-    if (onu.napPortId && dto.newNapPortId !== undefined && onu.napPortId !== dto.newNapPortId) {
-      // Liberar puerto anterior
-      await this.napPortRepository.update(onu.napPortId, {
-        status: 'DISPONIBLE',
-        onuId: null,
-      });
-      onu.napPortId = null;
+    if (!oltDeconfigured) {
+      throw new BadRequestException('No se pudo eliminar la ONU anterior en la OLT; migración cancelada.');
     }
 
-    if (dto.newNapPortId) {
-      const newPort = await this.napPortRepository.findOne({ where: { id: dto.newNapPortId } });
-      if (!newPort) {
-        throw new NotFoundException(`Puerto NAP no encontrado: ${dto.newNapPortId}`);
-      }
-      if (newPort.status === 'OCUPADO' && newPort.onuId && newPort.onuId !== onu.id) {
-        throw new BadRequestException(`El puerto NAP #${newPort.portNumber} ya está ocupado por otra ONU.`);
-      }
-      newPort.status = 'OCUPADO';
-      newPort.onuId = onu.id;
-      await this.napPortRepository.save(newPort);
-      onu.napPortId = newPort.id;
-    }
-
-    // 3. Actualizar datos de la ONU en base de datos
-    onu.serialNumber = trimmedNewSerial;
-    onu.status = 'ACTIVE';
-    await this.onuRepository.update(onu.id, {
-      serialNumber: onu.serialNumber,
-      napPortId: onu.napPortId,
-      status: onu.status,
-    });
-
-    // 4. Intentar reautorizar el nuevo serial en la OLT con los parámetros existentes
-    let oltReauthorized = false;
-    let oltWarning = '';
+    // Reautorizar antes de cambiar el serial o los vínculos en la base.
     try {
       const driver = this.resolveDriver(olt);
       const connParams = await this.connectionResolver.resolve(olt);
       const authParams: AuthorizeOnuParams = {
         ponInterface,
         onuId,
-        modelTypeName: onu.onuType?.vendorTypeName || onu.onuType?.model || 'ZTE-F660',
+        modelTypeName,
         ethPorts: onu.onuType?.ethPorts,
         potsPorts: onu.onuType?.potsPorts,
         ethuniDhcpDelegationSupported: onu.onuType?.supportsEthuniDhcpDelegation,
         securityMgmtSupported: onu.onuType?.supportsSecurityMgmt,
-        serialNumber: onu.serialNumber,
+        serialNumber: trimmedNewSerial,
         clientName: onu.contract?.client?.name || undefined,
-        serviceVlan: onu.serviceConfig?.serviceVlan?.vlanId || 100,
+        serviceVlan: serviceVlan!,
         tcontProfile: onu.serviceConfig?.speedProfile?.vendorTcontProfile || undefined,
         downKbps: onu.serviceConfig?.speedProfile?.downKbps,
         upKbps: onu.serviceConfig?.speedProfile?.upKbps,
@@ -1796,6 +1854,32 @@ export class OnuManagementService {
       this.logger.warn(`Error reautorizando nuevo serial ${trimmedNewSerial} en OLT ${olt.name}: ${err.message}`);
       oltWarning = `No se pudo comunicar con la OLT: ${err.message}`;
     }
+
+    if (!oltReauthorized) {
+      await this.onuRepository.update(onu.id, { status: 'ERROR' });
+      throw new BadRequestException(`La ONU anterior fue eliminada de la OLT, pero falló la reautorización. Requiere recuperación manual. ${oltWarning}`);
+    }
+    });
+
+    if (onu.napPortId && dto.newNapPortId !== undefined && onu.napPortId !== dto.newNapPortId) {
+      await this.napPortRepository.update(onu.napPortId, { status: 'DISPONIBLE', onuId: null });
+      onu.napPortId = null;
+    }
+    if (newPort) {
+      newPort.status = 'OCUPADO';
+      newPort.onuId = onu.id;
+      await this.napPortRepository.save(newPort);
+      onu.napPortId = newPort.id;
+    }
+    onu.serialNumber = trimmedNewSerial;
+    onu.status = 'ACTIVE';
+    await this.onuRepository.update(onu.id, {
+      serialNumber: onu.serialNumber,
+      napPortId: onu.napPortId,
+      ponInterfaceId: destination.id,
+      onuIndex: onu.onuIndex.startsWith('gpon-onu_') ? `${ponInterface.replace(/^gpon-olt_/, 'gpon-onu_')}:${onuId}` : onu.onuIndex,
+      status: onu.status,
+    });
 
     // 5. Configurar GenieACS con el nuevo número de serie para provisión cero-toque
     let cpeConfigured = false;
@@ -1892,25 +1976,36 @@ export class OnuManagementService {
     return `${ifaceName}:${onu.onuIndex}`;
   }
 
-  private async buildAuthorizeParams(onu: OnuEntity, dto: any): Promise<AuthorizeOnuParams> {
-    const ponInterface = onu.ponInterface?.name || dto.ponInterface || 'gpon-olt_1/1/1';
-
-    // Extraer número de ONU desde onuIndex o usar el asignado
-    let onuId = parseInt(dto.onuId, 10);
-    if (!onuId) {
-      const parts = onu.onuIndex.split(':');
-      onuId = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(onu.onuIndex, 10) || 1;
+  private resolveOnuLocation(onu: OnuEntity, dto: any = {}) {
+    const ponInterface = onu.ponInterface?.name || dto.ponInterface;
+    if (typeof ponInterface !== 'string' || !/^[a-zA-Z0-9_-]+(?:\/[0-9]+)*$/.test(ponInterface)) {
+      throw new BadRequestException('Interfaz PON ausente o inválida.');
     }
+
+    const index = String(onu.onuIndex ?? '');
+    const fullIndex = index.match(/^gpon-onu_(\d+\/\d+\/\d+):(\d+)$/);
+    if (fullIndex && ponInterface.startsWith('gpon-olt_') && ponInterface !== `gpon-olt_${fullIndex[1]}`) {
+      throw new BadRequestException('El índice de ONU no corresponde a la interfaz PON.');
+    }
+    const rawId = dto.onuId ?? (fullIndex ? fullIndex[2] : index);
+    if (!/^\d+$/.test(String(rawId)) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) < 1 || Number(rawId) > 128) {
+      throw new BadRequestException('ID de ONU ausente o inválido (1-128).');
+    }
+    return { ponInterface, onuId: Number(rawId) };
+  }
+
+  private async buildAuthorizeParams(onu: OnuEntity, dto: any, acsOnly = false): Promise<AuthorizeOnuParams> {
+    const { ponInterface, onuId } = this.resolveOnuLocation(onu, dto);
 
     // Tipo / modelo técnico -- ethPorts/potsPorts viajan también para que el
     // driver pueda auto-crear el "onu-type" en la OLT si todavía no existe
     // ahí (ver ensureOnuTypeProfile en ZteC320Driver).
-    let modelTypeName = 'ZTE-F660';
+    let modelTypeName: string | undefined;
     let onuTypeEthPorts: number | undefined;
     let onuTypePotsPorts: number | undefined;
     let onuTypeEthuniDhcpDelegationSupported: boolean | undefined;
     let onuTypeSecurityMgmtSupported: boolean | undefined;
-    if (dto.onuTypeId) {
+    if (dto.onuTypeId && !acsOnly) {
       const type = await this.onuTypeRepository.findOneBy({ id: dto.onuTypeId });
       if (type) {
         modelTypeName = type.vendorTypeName || type.model;
@@ -1922,10 +2017,16 @@ export class OnuManagementService {
     }
 
     // VLAN de servicio
-    let serviceVlan = 100;
-    if (dto.serviceVlanId) {
+    let serviceVlan: number | undefined;
+    if (dto.serviceVlanId && !acsOnly) {
       const v = await this.vlanRepository.findOneBy({ id: dto.serviceVlanId });
       if (v) serviceVlan = v.vlanId;
+    }
+    if (!acsOnly && (!modelTypeName || !/^[\w.-]+$/.test(modelTypeName))) {
+      throw new BadRequestException('Selecciona un tipo de ONU válido.');
+    }
+    if (!acsOnly && (!Number.isInteger(serviceVlan) || serviceVlan! < 1 || serviceVlan! > 4094)) {
+      throw new BadRequestException('Selecciona una VLAN de servicio válida (1-4094).');
     }
 
     // TR-069
@@ -1943,6 +2044,11 @@ export class OnuManagementService {
         if (net.vlan) tr069Vlan = net.vlan.vlanId;
         tr069AcsUsername = net.acsUsername || undefined;
         tr069AcsPassword = net.acsPasswordEnc ? decryptCredential(net.acsPasswordEnc) : undefined;
+      }
+      if (!net || !tr069Url || !Number.isInteger(tr069Vlan) || tr069Vlan! < 1 || tr069Vlan! > 4094) {
+        if (!acsOnly || !net || !tr069Url) {
+          throw new BadRequestException('La red TR-069 debe existir y tener URL ACS y VLAN válidas.');
+        }
       }
     }
 
@@ -1974,6 +2080,18 @@ export class OnuManagementService {
         downKbps = parseInt(mbMatch[1], 10) * 1024;
       }
     }
+
+    for (const value of [onu.serialNumber, dto.clientName, dto.description, tcontProfile, trafficProfile, tr069Url, tr069AcsUsername, tr069AcsPassword]) {
+      if (value != null && (typeof value !== 'string' || /[\r\n\x00-\x1f\x7f]/.test(value))) {
+        throw new BadRequestException('Parámetro CLI inválido.');
+      }
+    }
+    if (!acsOnly && (typeof onu.serialNumber !== 'string' || !/^[\w.:-]+$/.test(onu.serialNumber))) {
+      throw new BadRequestException('Número de serie inválido.');
+    }
+    for (const value of [tcontProfile, trafficProfile, tr069Url, tr069AcsUsername, tr069AcsPassword]) {
+      if (value && /\s/.test(value)) throw new BadRequestException('Parámetro CLI inválido.');
+    }
     // Si tcontProfile vino explícito pero upKbps no está definido, derivar upKbps
     if (tcontProfile && !upKbps) {
       const mbMatch = tcontProfile.match(/(?:SMARTOLT-|TCONT-)(\d+)M/i);
@@ -1985,7 +2103,7 @@ export class OnuManagementService {
     return {
       ponInterface,
       onuId,
-      modelTypeName,
+      modelTypeName: modelTypeName!,
       ethPorts: onuTypeEthPorts,
       potsPorts: onuTypePotsPorts,
       ethuniDhcpDelegationSupported: onuTypeEthuniDhcpDelegationSupported,
@@ -1997,7 +2115,7 @@ export class OnuManagementService {
       // el valor que llega, no lo recalcula. Ver
       // docs/onu-tr069-provisioning-zte-c320.md.
       description: dto.description || undefined,
-      serviceVlan,
+      serviceVlan: serviceVlan!,
       tcontProfile,
       trafficProfile,
       downKbps,

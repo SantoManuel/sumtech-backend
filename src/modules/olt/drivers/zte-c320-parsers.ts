@@ -192,7 +192,7 @@ export function parseIpHost(raw: string): { mgmtIp?: string; serviceIp?: string;
   const host2Match = raw.match(/Host\s*(?:ID)?\s*:\s*2\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
 
   const serviceIp = host1Match ? extractHostIp(host1Match[1]) : undefined;
-  const mgmtIp = host2Match ? extractHostIp(host2Match[1]) : extractHostIp(raw);
+  const mgmtIp = host2Match ? extractHostIp(host2Match[1]) : undefined;
 
   return { mgmtIp, serviceIp, ipHostFound: Boolean(host2Match) };
 }

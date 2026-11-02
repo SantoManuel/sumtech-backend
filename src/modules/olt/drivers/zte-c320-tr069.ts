@@ -329,34 +329,27 @@ export async function applyTr069ManagementWithSession(
     }
   }
 
-  // Verificación real post-aplicación -- CONFIRMADO EN VIVO (2026-10-23)
-  // comparando contra running-config reales de SmartOLT: una ONU puede
-  // terminar con "tr069-mgmt"/"veip 1 ... host 2" apuntando a un
-  // "iphost 2" que en realidad NUNCA se llegó a crear (faltaba TODO el
-  // bloque "flow 2"/"gemport 2 flow 2"/"switchport-bind ... iphost 2"/
-  // "ip-host 2 dhcp-enable"/"vlan-filter ... iphost 2"), sin que la OLT
-  // devolviera ningún "%Error"/"%Code" detectable en ese momento -- el
-  // "mejor esfuerzo" de este método no detectaba nada raro y devolvía
-  // `ok:true` sin ningún `warning`, un éxito completamente falso. "Config
-  // state" en `show gpon onu detail-info` es la señal real y ya probada
-  // de si el ONT aceptó TODO el bloque OMCI, no solo el comando puntual
-  // del ACS -- se revisa acá, después del reinicio final, en vez de
-  // confiar en que "ningún comando devolvió error" sea suficiente.
+  // Verificación real post-aplicación:
+  // Si la ONU acaba de reiniciarse, la sincronización de MIB toma varios segundos
+  // y la OLT puede reportar transitoriamente "fail" o "syncMib" mientras el ONT
+  // completa su inicio. Además, modelos Huawei (HG8546M, HG8145V5) pueden operar
+  // perfectamente obteniendo IP en MikroTik aun con "Config state: fail" en OLT.
   const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
   try {
     const detailOutput = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
-    const configState = parseOnuDetailInfo(detailOutput).configState;
+    const parsedDetail = parseOnuDetailInfo(detailOutput);
+    const configState = parsedDetail.configState;
     if (configState && configState.toLowerCase() !== 'success') {
       const configStateWarning =
-        `El "Config state" del ONT quedó en "${configState}" (no "success") tras aplicar el bloque TR-069 -- ` +
-        'es posible que el canal de gestión (iphost 2/VEIP) no se haya terminado de aplicar pese a que ' +
-        'ningún comando individual fue rechazado. Revisa manualmente o reintenta la Etapa 2.';
+        `El "Config state" del ONT quedó en "${configState}" (no "success") tras aplicar el bloque TR-069. ` +
+        'Nota: si la ONT se está reiniciando, este estado es transitorio mientras sincroniza MIB. ' +
+        'Verifica en el MikroTik si la ONT ya obtuvo IP en la VLAN de gestión (' +
+        (config.tr069Vlan ?? '444') +
+        ').';
       warnings.push(configStateWarning);
       logger.warn(`[diag] applyTr069Management: ${configStateWarning}`);
     }
   } catch (err: any) {
-    // Mejor esfuerzo -- no poder leer el Config state no debe tumbar un
-    // resultado que, por lo demás, no tuvo ningún rechazo real.
     logger.warn(`[diag] applyTr069Management: no se pudo verificar "Config state": ${err.message}`);
   }
 

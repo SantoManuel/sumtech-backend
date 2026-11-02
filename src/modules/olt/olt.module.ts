@@ -17,6 +17,7 @@ import { OnuTypeEntity } from './entities/onu-type.entity';
 import { Tr069NetworkEntity } from './entities/tr069-network.entity';
 import { OnuEntity } from './entities/onu.entity';
 import { OnuServiceConfigEntity } from './entities/onu-service-config.entity';
+import { OltPartialOperationEntity } from './entities/olt-partial-operation.entity';
 import { OltMetricEntity } from './entities/olt-metric.entity';
 import { OnuOpticalHistoryEntity } from './entities/onu-optical-history.entity';
 import { NetworkNodeEntity } from '../network/entities/network-node.entity';
@@ -38,6 +39,7 @@ import { OltConnectionResolverService } from './services/olt-connection-resolver
 import { OltNatManagerService } from './services/olt-nat-manager.service';
 import { OnuManagementService } from './services/onu-management.service';
 import { OnuCpeSyncReconciliationService } from './services/onu-cpe-sync-reconciliation.service';
+import { OltPartialOperationService } from './services/olt-partial-operation.service';
 import { OltMonitoringService } from './services/olt-monitoring.service';
 import { OltExportService } from './services/olt-export.service';
 import { OnuWebProxyService } from './services/onu-web-proxy.service';
@@ -61,6 +63,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
       Tr069NetworkEntity,
       OnuEntity,
       OnuServiceConfigEntity,
+      OltPartialOperationEntity,
       OnuOpticalHistoryEntity,
       OltMetricEntity,
       NetworkNodeEntity,
@@ -88,6 +91,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
     OltNatManagerService,
     OnuManagementService,
     OnuCpeSyncReconciliationService,
+    OltPartialOperationService,
     OltMonitoringService,
     OltExportService,
     OnuWebProxyService,
@@ -102,6 +106,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
     OltCatalogsService,
     OltNatManagerService,
     OnuManagementService,
+    OltPartialOperationService,
     OnuWebProxyService,
     OltMonitoringService,
     OltDriverRegistry,

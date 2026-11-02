@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { NotFoundException, BadRequestException, HttpException } from '@nestjs/common';
 import { OnuManagementService } from './onu-management.service';
+import { OltPartialOperationService } from './olt-partial-operation.service';
 import { OnuEntity } from '../entities/onu.entity';
 import { OnuServiceConfigEntity } from '../entities/onu-service-config.entity';
 import { OltEntity } from '../entities/olt.entity';
@@ -62,6 +63,7 @@ describe('OnuManagementService', () => {
     oltId: 'olt-uuid-1',
     onuIndex: 'gpon-onu_1/1/1:1',
     serialNumber: 'ZTEGC0123456',
+    onuTypeId: 'type-1',
     vendor: 'ZTE',
     status: 'UNCONFIGURED',
     olt: mockOlt as OltEntity,
@@ -245,6 +247,7 @@ describe('OnuManagementService', () => {
         { provide: CpeConfiguratorService, useValue: cpeConfiguratorService },
         { provide: GenieAcsDeviceResolverService, useValue: genieAcsDeviceResolver },
         { provide: TenantContextService, useValue: tenantContext },
+        { provide: OltPartialOperationService, useValue: { record: jest.fn().mockResolvedValue({}) } },
       ],
     }).compile();
 
@@ -253,6 +256,36 @@ describe('OnuManagementService', () => {
 
   it('debe estar definido', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('protecciones de autorización', () => {
+    const dto = { onuTypeId: 'type-1', serviceVlanId: 'vlan-1' };
+
+    it.each([
+      ['PON ausente', { ponInterface: null }],
+      ['índice inválido', { onuIndex: '1x' }],
+      ['PON inconsistente', { onuIndex: 'gpon-onu_1/2/1:1' }],
+      ['serial con salto de línea', { serialNumber: 'SN\nwrite' }],
+    ])('rechaza %s antes de autorizar', async (_label, changes) => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, ...changes });
+      await expect(service.authorizeOnu('onu-uuid-1', dto)).rejects.toThrow(BadRequestException);
+      expect(zteDriver.authorizeOnu).not.toHaveBeenCalled();
+    });
+
+    it('rechaza tipo o VLAN inexistentes antes de generar el script', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu });
+      onuTypeRepo.findOneBy.mockResolvedValueOnce(null);
+      await expect(service.previewAuthorizationScript('onu-uuid-1', dto)).rejects.toThrow(BadRequestException);
+      vlanRepo.findOneBy.mockResolvedValueOnce(null);
+      await expect(service.previewAuthorizationScript('onu-uuid-1', dto)).rejects.toThrow(BadRequestException);
+      expect(zteDriver.generateAuthorizationScript).not.toHaveBeenCalled();
+    });
+
+    it('rechaza ID explícito inválido sin usar el índice como respaldo', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu });
+      await expect(service.previewAuthorizationScript('onu-uuid-1', { ...dto, onuId: '1x' })).rejects.toThrow(BadRequestException);
+      expect(zteDriver.generateAuthorizationScript).not.toHaveBeenCalled();
+    });
   });
 
   describe('findAll', () => {
@@ -632,6 +665,7 @@ describe('OnuManagementService', () => {
     const auditOnu = {
       ...mockOnu,
       onuIndex: 'gpon-onu_1/2/6:3',
+      ponInterface: { id: 'iface-1', name: 'gpon-olt_1/2/6' },
       authorizedAt: new Date('2026-10-29T12:00:00Z'),
       onuType: { vendorTypeName: 'HUAWEY-BT546XG-TR069', supportsEthuniDhcpDelegation: false, supportsSecurityMgmt: false },
       serviceConfig: {
@@ -676,7 +710,7 @@ describe('OnuManagementService', () => {
     it('marca CRÍTICO cuando la IP de gestión (Host ID: 2, ip-host) es 0.0.0.0/sin asignar', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', phaseState: 'working', raw: '' });
-      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: undefined, serviceIp: '10.46.10.15', ipHostFound: true, raw: 'IP: 0.0.0.0' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: undefined, serviceIp: '10.46.10.15', ipHostFound: true, raw: 'Host ID: 1\nIP: 10.46.10.15\nHost ID: 2\nIP: 0.0.0.0' });
       zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
@@ -693,7 +727,7 @@ describe('OnuManagementService', () => {
     it('marca CRÍTICO cuando la IP de SERVICIO (Host ID: 1, ip-host) es 0.0.0.0/sin asignar -- bug real: el audit original solo rastreaba Host 2, dejando invisible una falla en el canal de internet del cliente', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', phaseState: 'working', raw: '' });
-      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', serviceIp: undefined, ipHostFound: true, raw: 'IP: 0.0.0.0' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', serviceIp: undefined, ipHostFound: true, raw: 'Host ID: 1\nIP: 0.0.0.0\nHost ID: 2\nIP: 10.46.0.247' });
       zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
@@ -708,7 +742,7 @@ describe('OnuManagementService', () => {
     it('marca CRÍTICO sin fixAction cuando "Phase state" no es "working" (ej. LOS) -- capa física, ningún botón de software lo soluciona', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', phaseState: 'LOS', raw: 'Phase state: LOS' });
-      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: undefined, serviceIp: undefined, ipHostFound: true, raw: 'IP: 0.0.0.0' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: undefined, serviceIp: undefined, ipHostFound: true, raw: 'Host ID: 1\nIP: 0.0.0.0\nHost ID: 2\nIP: 0.0.0.0' });
       zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
@@ -724,7 +758,7 @@ describe('OnuManagementService', () => {
     it('ofrece las Opciones A (APPLY_WAN_IP) y B (APPLY_SERVICE_GEMPORT) cuando NINGÚN host (ni servicio ni gestión) tiene IP', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', phaseState: 'working', raw: '' });
-      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: undefined, serviceIp: undefined, ipHostFound: true, raw: 'IP: 0.0.0.0' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: undefined, serviceIp: undefined, ipHostFound: true, raw: 'Host ID: 1\nIP: 0.0.0.0\nHost ID: 2\nIP: 0.0.0.0' });
       zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
@@ -769,7 +803,7 @@ describe('OnuManagementService', () => {
     it('marca ADVERTENCIA cuando el ACS aplicado no coincide con la Red TR-069 esperada', async () => {
       onuRepo.findOne.mockResolvedValue(auditOnu);
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', phaseState: 'working', raw: '' });
-      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', serviceIp: '10.46.10.15', ipHostFound: true, raw: '' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', serviceIp: '10.46.10.15', ipHostFound: true, raw: 'Host ID: 1\nIP: 10.46.10.15\nHost ID: 2\nIP: 10.46.0.247' });
       zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://otro-acs-viejo:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
@@ -800,7 +834,7 @@ describe('OnuManagementService', () => {
         onuType: { vendorTypeName: 'HUAWEY-BT546XG-TR069', supportsEthuniDhcpDelegation: true, supportsSecurityMgmt: true },
       });
       zteDriver.getOnuDetailInfo.mockResolvedValue({ type: 'HUAWEY-BT546XG-TR069', configState: 'success', phaseState: 'working', raw: '' });
-      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', serviceIp: '10.46.10.15', ipHostFound: true, raw: '' });
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', serviceIp: '10.46.10.15', ipHostFound: true, raw: 'Host ID: 1\nIP: 10.46.10.15\nHost ID: 2\nIP: 10.46.0.247' });
       zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
       zteDriver.getOnuTr069MgmtInfo.mockResolvedValue({ acsUrl: 'http://10.254.0.1:7547', raw: '' });
       zteDriver.getOnuMacTable.mockResolvedValue([{ mac: 'aa', vlan: 400 }, { mac: 'bb', vlan: 4069 }]);
@@ -1031,6 +1065,7 @@ describe('OnuManagementService', () => {
 
       await service.authorizeOnu('onu-uuid-1', {
         serviceVlanId: 'vlan-2',
+        onuTypeId: 'type-1',
         tr069NetworkId: 'tr069-2',
         managementMethod: 'TR069',
       });
@@ -1059,7 +1094,7 @@ describe('OnuManagementService', () => {
       });
       zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
 
-      await service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-2' }, 'admin-id');
+      await service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-2', onuTypeId: 'type-1' }, 'admin-id');
 
       expect(configRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1067,8 +1102,72 @@ describe('OnuManagementService', () => {
           managementMethod: 'TR069',
           tr069NetworkId: 'tr069-1',
           wanMode: 'PPPOE',
+          applyStatus: 'PENDING',
+          appliedVersion: 1,
+          desiredVersion: 2,
+          lastApplyError: expect.stringContaining('no se reaplicó'),
         }),
       );
+    });
+
+    it('conserva la versión aplicada y reporta advertencias del driver como pendientes', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ onuId: mockOnu.id, appliedVersion: 2, desiredVersion: 3 });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true, warning: 'rechazo parcial' });
+
+      const result = await service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-1', onuTypeId: 'type-1' });
+
+      expect(result.oltWarning).toContain('rechazo parcial');
+      expect((service as any).partialOperations.record).toHaveBeenCalledWith(expect.objectContaining({
+        onuId: mockOnu.id, operation: 'authorizeOnu', expectedState: 'PRESENT',
+      }));
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        applyStatus: 'PENDING', appliedVersion: 2, desiredVersion: 4, lastApplyError: 'rechazo parcial',
+      }));
+    });
+
+    it('preserva el error del driver si también fallan el registro y el guardado de estado', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ onuId: mockOnu.id, appliedVersion: 1, desiredVersion: 1 });
+      const original = new Error('error original');
+      zteDriver.authorizeOnu.mockRejectedValue(original);
+      (service as any).partialOperations.record.mockRejectedValue(new Error('registro falló'));
+      configRepo.save.mockRejectedValue(new Error('guardado falló'));
+      await expect(service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-1', onuTypeId: 'type-1' })).rejects.toBe(original);
+    });
+
+    it('una autorización nueva con advertencia no declara ninguna versión aplicada', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true, warning: 'confirmación incompleta' });
+
+      await service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-1', onuTypeId: 'type-1' });
+      expect(configRepo.create).toHaveBeenCalledWith(expect.objectContaining({
+        applyStatus: 'PENDING', appliedVersion: 0, desiredVersion: 1, lastApplyError: 'confirmación incompleta',
+      }));
+    });
+
+    it.each(['rechazo', 'excepción'])('registra ERROR sin avanzar la versión aplicada ante %s', async (caso) => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ onuId: mockOnu.id, appliedVersion: 2, desiredVersion: 2 });
+      if (caso === 'rechazo') zteDriver.authorizeOnu.mockResolvedValue({ ok: false, error: 'fallo OLT' });
+      else zteDriver.authorizeOnu.mockRejectedValue(new Error('fallo OLT'));
+
+      await expect(service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-1', onuTypeId: 'type-1' })).rejects.toThrow('fallo OLT');
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        applyStatus: 'ERROR', appliedVersion: 2, desiredVersion: 3, lastApplyError: 'fallo OLT',
+      }));
+      expect(onuRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('limpia la advertencia anterior cuando la autorización queda confirmada', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ onuId: mockOnu.id, appliedVersion: 1, desiredVersion: 2, lastApplyError: 'anterior' });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      await service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-1', onuTypeId: 'type-1' });
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        applyStatus: 'APPLIED', appliedVersion: 3, desiredVersion: 3, lastApplyError: null,
+      }));
     });
 
     it('resuelve speedProfileId a tcontProfile/downKbps/upKbps y los pasa al driver (antes de este fix nunca se leía)', async () => {
@@ -1298,17 +1397,16 @@ describe('OnuManagementService', () => {
       );
     });
 
-    it('deja tr069VlanId undefined (no truena) si la Red TR-069 no tiene VLAN vinculada', async () => {
+    it('rechaza la Red TR-069 sin VLAN antes de ejecutar el driver', async () => {
       onuRepo.findOne.mockResolvedValue(mockOnu);
       configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
       tr069Repo.findOneBy.mockResolvedValue({ id: 'tr069-1', vlanId: undefined, acsUrl: 'http://10.46.0.1:7547/' });
+      tr069Repo.findOne.mockResolvedValue({ id: 'tr069-1', acsUrl: 'http://10.46.0.1:7547/', vlan: null });
       zteDriver.applyTr069Management.mockResolvedValue({ ok: true });
 
-      await service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' });
-
-      expect(configRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ tr069VlanId: undefined }),
-      );
+      await expect(service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' })).rejects.toThrow(/VLAN/);
+      expect(zteDriver.applyTr069Management).not.toHaveBeenCalled();
+      expect(configRepo.save).not.toHaveBeenCalled();
     });
 
     it('propaga el warning de mejor esfuerzo del driver sin fallar', async () => {
@@ -1319,6 +1417,17 @@ describe('OnuManagementService', () => {
       const result = await service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' });
 
       expect((result as any).tr069Warning).toBe('La OLT rechazó tr069-mgmt');
+      expect((service as any).partialOperations.record).toHaveBeenCalledWith(expect.objectContaining({
+        onuId: mockOnu.id, operation: 'applyTr069Profile', expectedState: 'PRESENT',
+      }));
+    });
+
+    it('no resuelve un pendiente previo genérico tras aplicar TR-069', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig, applyStatus: 'PENDING', desiredVersion: 3, appliedVersion: 1 });
+      zteDriver.applyTr069Management.mockResolvedValue({ ok: true });
+      await service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' });
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({ applyStatus: 'PENDING', desiredVersion: 3, appliedVersion: 1 }));
     });
 
     it('lanza BadRequestException si el driver falla (ok:false)', async () => {
@@ -1955,7 +2064,13 @@ describe('OnuManagementService', () => {
       olt: mockOlt as OltEntity,
       ponInterface: { id: 'iface-1', name: 'gpon-olt_1/1/1' } as any,
       napPortId: 'nap-port-old',
+      onuType: { vendorTypeName: 'ZTE-F660' } as any,
+      serviceConfig: { serviceVlan: { vlanId: 200 } } as any,
     };
+
+    beforeEach(() => {
+      zteDriver.getOnuSlotIdentity = jest.fn().mockResolvedValue('ZTEGC0123456');
+    });
 
     it('rechaza la migración si la ONU está en estado UNCONFIGURED', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
@@ -2019,6 +2134,60 @@ describe('OnuManagementService', () => {
         eventType: 'PROVISION',
         status: 'SUCCESS',
       }));
+    });
+
+    it('conserva el origen cuando no se puede demostrar vacío el PON destino', async () => {
+      onuRepo.findOne.mockResolvedValueOnce({ ...activeOnu }).mockResolvedValueOnce(null).mockResolvedValueOnce(activeOnu);
+      ifaceRepo.findOneBy.mockResolvedValue({ id: 'iface-2', name: 'gpon-olt_1/2/3' });
+      zteDriver.deleteOnu.mockResolvedValue({ ok: true });
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true });
+
+      await expect(service.migrateOnu('onu-uuid-1', { newSerialNumber: 'ZTEGC9999999', newPonInterface: 'gpon-olt_1/2/3' })).rejects.toThrow('origen conservado');
+      expect(zteDriver.deleteOnu).not.toHaveBeenCalled();
+      expect(zteDriver.authorizeOnu).not.toHaveBeenCalled();
+    });
+
+    it.each([null, 'OTROSERIAL'])('conserva el origen si la identidad física es %s', async (identity) => {
+      onuRepo.findOne.mockResolvedValueOnce({ ...activeOnu }).mockResolvedValueOnce(null);
+      zteDriver.getOnuSlotIdentity.mockResolvedValue(identity);
+      await expect(service.migrateOnu('onu-uuid-1', { newSerialNumber: 'ZTEGC9999999' })).rejects.toThrow('origen conservado');
+      expect(zteDriver.deleteOnu).not.toHaveBeenCalled();
+    });
+
+    it.each(['ausente', 'ocupado'])('valida el puerto NAP %s antes de cualquier efecto', async (caso) => {
+      onuRepo.findOne.mockResolvedValueOnce({ ...activeOnu }).mockResolvedValueOnce(null);
+      napPortRepo.findOne.mockResolvedValue(caso === 'ausente' ? null : { status: 'OCUPADO', onuId: 'otro', portNumber: 3 });
+      await expect(service.migrateOnu('onu-uuid-1', { newSerialNumber: 'ZTEGC9999999', newNapPortId: 'nuevo' })).rejects.toThrow();
+      expect(zteDriver.deleteOnu).not.toHaveBeenCalled();
+      expect(napPortRepo.update).not.toHaveBeenCalled();
+      expect(onuRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('rechaza una ubicación origen inconsistente antes de efectos', async () => {
+      onuRepo.findOne.mockResolvedValueOnce({ ...activeOnu, onuIndex: 'gpon-onu_1/2/3:2' }).mockResolvedValueOnce(null);
+      await expect(service.migrateOnu('onu-uuid-1', { newSerialNumber: 'ZTEGC9999999' })).rejects.toThrow(BadRequestException);
+      expect(zteDriver.deleteOnu).not.toHaveBeenCalled();
+    });
+
+    it('aborta sin cambios si falla el borrado', async () => {
+      onuRepo.findOne.mockResolvedValueOnce({ ...activeOnu }).mockResolvedValueOnce(null);
+      zteDriver.deleteOnu.mockResolvedValue({ ok: false, error: 'rechazado' });
+      await expect(service.migrateOnu('onu-uuid-1', { newSerialNumber: 'ZTEGC9999999' })).rejects.toThrow(BadRequestException);
+      expect(zteDriver.authorizeOnu).not.toHaveBeenCalled();
+      expect(onuRepo.update).not.toHaveBeenCalled();
+    });
+
+    it.each(['rechazo', 'excepción'])('marca ERROR y no informa éxito ante %s de reautorización', async (caso) => {
+      onuRepo.findOne.mockResolvedValueOnce({ ...activeOnu }).mockResolvedValueOnce(null);
+      zteDriver.deleteOnu.mockResolvedValue({ ok: true });
+      if (caso === 'rechazo') zteDriver.authorizeOnu.mockResolvedValue({ ok: false, error: 'rechazado' });
+      else zteDriver.authorizeOnu.mockRejectedValue(new Error('sin conexión'));
+      await expect(service.migrateOnu('onu-uuid-1', { newSerialNumber: 'ZTEGC9999999', newNapPortId: 'nuevo' })).rejects.toThrow('recuperación manual');
+      expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', { status: 'ERROR' });
+      expect(napPortRepo.update).not.toHaveBeenCalled();
+      expect(napPortRepo.save).not.toHaveBeenCalled();
+      expect(deviceOperationLogger.logEvent).not.toHaveBeenCalled();
+      expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
     });
   });
 });

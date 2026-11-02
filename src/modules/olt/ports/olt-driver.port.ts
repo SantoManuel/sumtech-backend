@@ -504,6 +504,7 @@ export interface IOltDriver {
    * los fabricantes tienen comandos de solo lectura equivalentes todavía.
    */
   getAuthorizedOnus?(params: OltConnectionParams, ponInterface: string): Promise<DiscoveredAuthorizedOnu[]>;
+  getOnuSlotIdentity?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<string | null>;
   /**
    * VLANs REALES (tag/untag) ya configuradas en una interfaz física (ver
    * `vlanDiscovery` en OltDriverCapabilities) -- opcional porque no todos los

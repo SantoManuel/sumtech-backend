@@ -18,6 +18,45 @@ describe('ZteC320Driver', () => {
     expect(driver).toBeDefined();
   });
 
+  describe('comprobación física antes de autorización', () => {
+    const params = { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' };
+    const config = { ponInterface: 'gpon-olt_1/2/1', onuId: 1, modelTypeName: 'ZTE-F660', serialNumber: 'HWTC5F4A209A', serviceVlan: 200, managementMethod: 'OMCI' as const, operationMode: 'ROUTER' as const };
+    const fixture = fs.readFileSync(path.join(__dirname, '../../../../test/fixtures/zte-c320/show_gpon_onu_baseinfo.txt'), 'utf8');
+
+    it.each([
+      ['otro serial', fixture.replace('HWTC5F4A209A', 'HWTC00000000')],
+    ])('bloquea %s sin ejecutar comandos de configuración', async (_case, output) => {
+      const executeCommand = jest.fn().mockResolvedValue(output);
+      const close = jest.fn();
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({ connectAndLogin: jest.fn(), executeCommand, close });
+      const result = await driver.authorizeOnu(params, config);
+      expect(result.ok).toBe(false);
+      expect(executeCommand).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalled();
+    });
+
+    it.each([
+      ['respuesta vacía', ''],
+      ['error CLI', '%Error 20202: Invalid input'],
+      ['fila incompleta', 'gpon-onu_1/2/1:1 ZTE-F660 sn'],
+      ['fila duplicada', fixture + '\ngpon-onu_1/2/1:1 ZTE-F660 sn SN:HWTC5F4A209A ready'],
+      ['otra interfaz', fixture.replace('gpon-onu_1/2/1:1', 'gpon-onu_1/2/10:1')],
+    ])('trata %s como ocupación desconocida y continúa', async (_case, output) => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => Promise.resolve(cmd.startsWith('show gpon onu baseinfo') ? output : '%Error 20202: Invalid input'));
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({ connectAndLogin: jest.fn(), executeCommand, close: jest.fn() });
+      await driver.authorizeOnu(params, config);
+      expect(executeCommand.mock.calls[1][0]).toContain('show onu-type');
+    });
+
+    it('acepta la identidad de la captura real y continúa con la verificación del perfil', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) =>
+        Promise.resolve(cmd.startsWith('show gpon onu baseinfo') ? fixture : '%Error 20202: Invalid input'));
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({ connectAndLogin: jest.fn(), executeCommand, close: jest.fn() });
+      await driver.authorizeOnu(params, config);
+      expect(executeCommand.mock.calls[1][0]).toContain('show onu-type');
+    });
+  });
+
   it('devuelve ok:false con mensaje legible si el host OLT no es alcanzable', async () => {
     const result = await driver.testConnection({
       host: '192.0.2.1', // Test net ip no alcanzable
@@ -2846,7 +2885,7 @@ No.15 profile : TRAFFIC-977M
       );
 
       expect(result.ok).toBe(true);
-      expect(result.warning).toBeUndefined();
+      expect(result.warning).toContain('no onu podría borrar otra ONU');
       const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
       expect(calledCommands).toContain('no flow 2 pri 2 vlan 46');
       expect(calledCommands).toContain('no vlan-filter iphost 2 pri 2 vlan 46');
@@ -3038,7 +3077,7 @@ No.15 profile : TRAFFIC-977M
 
     expect(result.ok).toBe(true);
     const calledCommands = executeCommand.mock.calls.map((c) => c[0]);
-    expect(calledCommands.indexOf('show onu-type gpon HUAWEY-HG8546M')).toBe(0);
+    expect(calledCommands.indexOf('show onu-type gpon HUAWEY-HG8546M')).toBe(1);
     // Decisión de negocio (2026-10-29): ya NO se crea el onu-type aquí si
     // falta -- authorizeOnu() nunca debe mandar "onu-type-if ...".
     expect(calledCommands).not.toContain('onu-type-if HUAWEY-HG8546M eth_0/1-4');
