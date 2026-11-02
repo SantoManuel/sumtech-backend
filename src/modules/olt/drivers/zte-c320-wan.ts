@@ -7,8 +7,8 @@ import { redactOltCli } from '../utils/redact-olt-cli';
 export function validateOmciWanParams(input: ConfigureOnuWanParams): void {
   if (!/^gpon-onu_\d+\/\d+\/\d+:\d+$/.test(input.onuInterface)) throw new BadRequestException('Interfaz GPON inválida.');
   const p = input.profile;
-  if (!p.enabled || p.serialNumber !== input.serialNumber || !['PILOT', 'VALIDATED'].includes(p.validation)) {
-    throw new BadRequestException('La receta OMCI no está habilitada para este serial.');
+  if (!p.enabled || p.serialNumber !== input.serialNumber || !['STANDARD', 'PILOT', 'VALIDATED'].includes(p.validation)) {
+    throw new BadRequestException('La configuración OMCI no corresponde a esta ONU.');
   }
   validateOmciWanProfile(p);
   for (const [label, token] of [['Usuario PPPoE', input.username], ['Contraseña PPPoE', input.password]]) {
@@ -161,9 +161,9 @@ export async function configureOnuWanWithSession(session: ZteSessionLike, input:
   const detail = await session.executeCommand(`show gpon onu detail-info ${input.onuInterface}`);
   const serial = detail.match(/(?:Serial\s*number|SerialNumber|SN)\s*:\s*(\S+)/i)?.[1];
   const type = detail.match(/^\s*Type\s*:\s*(\S+)/im)?.[1];
-  if (serial !== input.serialNumber || type !== p.vendorTypeName) throw new Error('El serial o perfil ONU observado no coincide con la receta OMCI.');
+  if (serial !== input.serialNumber || (p.vendorTypeName && type !== p.vendorTypeName)) throw new Error('El serial o perfil ONU observado no coincide con la configuración OMCI.');
   const firmware = detail.match(/^\s*(?:Software\s*version|SoftwareVersion|Firmware\s*version)\s*:\s*(\S+)/im)?.[1];
-  if ((firmware && firmware !== p.onuFirmware) || (!firmware && p.validation === 'VALIDATED')) {
+  if ((firmware && p.onuFirmware && firmware !== p.onuFirmware) || (!firmware && p.validation === 'VALIDATED')) {
     throw new Error('No se pudo verificar el firmware ONU registrado para esta receta.');
   }
   if (p.commandStyle !== 'WAN_SERVICE') {

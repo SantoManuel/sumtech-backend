@@ -95,6 +95,12 @@ describe('ZTE WAN service recipe supplied for Internet PPPoE', () => {
     expect(buildZteWanCommands(serviceInput).find(c => c.includes(' password '))).not.toContain(' nat enable');
   });
 
+  it('sends standard command options without a lab registration or declared firmware', async () => {
+    const automatic = { ...serviceInput, profile: { ...serviceInput.profile, validation: 'STANDARD' as const, vendorTypeName: '', onuFirmware: '', oltFirmware: '' } };
+    const result = await configureOnuWanWithSession(createSession(), automatic);
+    expect(result.status).toBe('APPLIED');
+  });
+
   it('uses the configured VLAN, WAN index and PPP host instead of hardcoded example values', () => {
     expect(buildZteWanCommands({ ...serviceInput, profile: { ...serviceInput.profile, serviceVlan: 410, wanIndex: 4, hostId: 3, ethUniPorts: '1-2', ssidPorts: '2' } })).toEqual([
       'wan 4 ethuni 1-2 ssid 2 service internet', 'wan 4 service internet host 3 pppoe',

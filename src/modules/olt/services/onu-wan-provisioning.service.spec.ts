@@ -68,10 +68,46 @@ describe('OnuWanProvisioningService', () => {
     expect(cpe.configureCpe).not.toHaveBeenCalled();
   });
 
+  it('enables and sends the standard OMCI block with no registered recipe or firmware inventory', async () => {
+    config.omciWanProfile = null;
+    delete onu.olt.firmwareVersion;
+    delete onu.onuType;
+    onu.serviceConfig = { ...onu.serviceConfig, omciWanProfile: null };
+    expect(service.capabilities(onu).OMCI).toMatchObject({ status: 'SUPPORTED', enabled: true, reason: null });
+    const op = await service.configure(onu, { provisioningMethod: 'OMCI' }, 'admin-1');
+    expect(op.status).toBe('APPLIED');
+    expect(driver.configureOnuWan).toHaveBeenCalledWith({}, expect.objectContaining({
+      username: 'cliente@example', password: 'Private123!',
+      profile: expect.objectContaining({ commandStyle: 'WAN_SERVICE', wanIndex: 1, hostId: 1,
+        ethUniPorts: '1-4', ssidPorts: '1-4', serviceVlan: 400, enabled: true, validation: 'STANDARD' }),
+    }));
+    expect(config.omciWanProfile.commandStyle).toBe('WAN_SERVICE');
+  });
+
+  it('does not require enabling an old lab profile to send the provided commands', async () => {
+    config.omciWanProfile.enabled = false;
+    expect(service.capabilities(onu).OMCI.enabled).toBe(true);
+    await service.configure(onu, { provisioningMethod: 'OMCI' });
+    expect(driver.configureOnuWan).toHaveBeenCalledWith({}, expect.objectContaining({ profile: expect.objectContaining({ commandStyle: 'WAN_SERVICE', enabled: true }) }));
+  });
+
+  it('preserves command options for a legacy WAN that was already applied', async () => {
+    config.wanAppliedMethod = 'OMCI'; config.wanAppliedVersion = 1;
+    await service.configure(onu, { provisioningMethod: 'OMCI' });
+    expect(driver.configureOnuWan).toHaveBeenCalledWith({}, expect.objectContaining({
+      profile: expect.objectContaining({ commandStyle: 'WAN_IP', vlanProfile: 'Internet400', auth: 'auto' }),
+    }));
+  });
+
+  it('uses the declared LAN port count without asking for a manual binding range', async () => {
+    onu.onuType.ethPorts = 1;
+    await service.configure(onu, { provisioningMethod: 'OMCI' });
+    expect(driver.configureOnuWan).toHaveBeenCalledWith({}, expect.objectContaining({ profile: expect.objectContaining({ ethUniPorts: '1', ssidPorts: '1-4' }) }));
+  });
+
   it.each([
     ['Bridge', c => c.operationMode = 'BRIDGE', { provisioningMethod: 'OMCI' }],
     ['missing credentials', (_c, accesses) => accesses.findOneBy.mockResolvedValue(null), { provisioningMethod: 'OMCI' }],
-    ['unknown profile', c => c.omciWanProfile = null, { provisioningMethod: 'OMCI' }],
     ['DHCP over OMCI', () => {}, { provisioningMethod: 'OMCI', wanMode: 'DHCP' }],
     ['Dual-Stack over OMCI', () => {}, { provisioningMethod: 'OMCI', ipProtocol: 'DUAL' }],
     ['stale version', () => {}, { provisioningMethod: 'OMCI', expectedVersion: 99 }],
@@ -156,6 +192,15 @@ describe('OnuWanProvisioningService', () => {
     prior = first;
     expect(await service.configure(onu, { expectedVersion: 0 })).toBe(first);
     expect(cpe.configureCpe).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send the automatic OMCI block twice after persisting its options', async () => {
+    config.omciWanProfile = null;
+    const first = await service.configure(onu, { provisioningMethod: 'OMCI', expectedVersion: 0 });
+    prior = first;
+    expect(await service.configure(onu, { provisioningMethod: 'OMCI', expectedVersion: 0 })).toBe(first);
+    expect(driver.configureOnuWan).toHaveBeenCalledTimes(1);
+    expect(config.wanDesiredVersion).toBe(1);
   });
 
   it('checks completion and fresh readback before promoting a queued task', async () => {

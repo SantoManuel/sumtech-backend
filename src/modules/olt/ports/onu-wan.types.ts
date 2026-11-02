@@ -1,13 +1,13 @@
 export type WanProvisioningMethod = 'OMCI' | 'TR069';
 export type WanApplyStatus = 'NOT_CONFIGURED' | 'PENDING' | 'APPLYING' | 'QUEUED' | 'VERIFYING' | 'APPLIED' | 'ERROR' | 'UNKNOWN';
 
-/** Per-ONU pilot recipe, explicitly registered by an administrator. Never inherited on replacement. */
+/** Effective command options. STANDARD is resolved automatically from the ONU and its service. */
 export interface OnuOmciWanProfile {
   /** Absent on existing recipes: preserve WAN_IP without switching a live ONU implicitly. */
   commandStyle?: 'WAN_IP' | 'WAN_SERVICE';
   oltId: string;
   enabled: boolean;
-  validation: 'PILOT' | 'VALIDATED';
+  validation: 'STANDARD' | 'PILOT' | 'VALIDATED';
   serialNumber: string;
   oltFirmware: string;
   onuFirmware: string;

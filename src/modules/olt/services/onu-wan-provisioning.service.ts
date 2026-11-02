@@ -47,23 +47,36 @@ export class OnuWanProvisioningService {
     if (c?.wanProvisioningMethod || c?.wanAppliedMethod) throw new ConflictException('Esta WAN tiene un método de aprovisionamiento definido. Usa Configurar WAN; la recuperación DHCP anterior sobrescribiría PPPoE.');
   }
 
+  /** The supplied WAN/PPPoE/NAT block is the default, with no compatibility registration step. */
+  private resolveOmciProfile(onu: OnuEntity, config: OnuServiceConfigEntity): OnuOmciWanProfile {
+    const prior = config.omciWanProfile;
+    const preserveApplied = config.wanAppliedMethod === 'OMCI' && config.wanAppliedVersion > 0 && prior &&
+      prior.oltId === onu.oltId && prior.serialNumber === onu.serialNumber && prior.serviceVlan === onu.serviceConfig?.serviceVlan?.vlanId;
+    const count = onu.onuType?.ethPorts;
+    const lanCount = typeof count === 'number' && count >= 1 ? Math.min(4, count) : 4;
+    return {
+      commandStyle: 'WAN_SERVICE', wanIndex: 1, hostId: 1,
+      ethUniPorts: lanCount === 1 ? '1' : `1-${lanCount}`, ssidPorts: '1-4',
+      ...(preserveApplied ? { ...prior, commandStyle: prior.commandStyle ?? 'WAN_IP' } : {}),
+      oltId: onu.oltId, serialNumber: onu.serialNumber,
+      enabled: true, validation: 'STANDARD',
+      oltFirmware: onu.olt?.firmwareVersion || '', onuFirmware: '',
+      vendorTypeName: onu.onuType?.vendorTypeName || '',
+      serviceVlan: onu.serviceConfig?.serviceVlan?.vlanId!,
+      evidence: 'Configuración OMCI resuelta desde la ONU y el servicio del contrato.',
+    };
+  }
+
   capabilities(onu: OnuEntity) {
     const c = onu.serviceConfig;
-    const p = c?.omciWanProfile;
     const zte = onu.olt?.vendor === 'ZTE' && /C320/i.test(onu.olt?.model || '');
-    const bound = !!p && p.oltId === onu.oltId && p.serialNumber === onu.serialNumber && p.vendorTypeName === onu.onuType?.vendorTypeName &&
-      p.oltFirmware === onu.olt?.firmwareVersion && p.serviceVlan === c?.serviceVlan?.vlanId;
-    const enabled = zte && bound && p?.enabled === true;
     return {
       OMCI: {
-        status: enabled && p?.validation === 'VALIDATED' ? 'SUPPORTED' : !zte ? 'UNSUPPORTED' : 'UNKNOWN',
-        enabled: enabled && c?.operationMode === 'ROUTER',
-        validation: p?.validation || null,
+        status: zte ? 'SUPPORTED' : 'UNSUPPORTED',
+        enabled: zte && c?.operationMode === 'ROUTER',
         wanModes: ['PPPOE'], ipProtocols: ['IPV4'],
-        reason: !zte ? 'El driver OMCI WAN está disponible para ZTE C320.' : !enabled
-          ? 'Registra y habilita una receta de laboratorio para este serial, firmware, perfil y VLAN.'
-          : c?.operationMode !== 'ROUTER' ? 'PPPoE se configura en el router externo cuando la ONU está en Bridge.'
-          : p?.validation === 'PILOT' ? 'Receta de laboratorio: compatibilidad pendiente de certificar en hardware.' : null,
+        reason: !zte ? 'El driver OMCI WAN está disponible para ZTE C320.'
+          : c?.operationMode !== 'ROUTER' ? 'PPPoE se configura en el router externo cuando la ONU está en Bridge.' : null,
       },
       TR069: {
         status: 'SUPPORTED', enabled: c?.operationMode === 'ROUTER' && c?.managementMethod === 'TR069' && !!c.tr069NetworkId,
@@ -127,16 +140,16 @@ export class OnuWanProvisioningService {
       try {
         if (op.method === 'OMCI') {
           const driver = this.registry.resolve(onu.olt.vendor);
-          if (!driver.getOnuWanConfiguration || !config.omciWanProfile) return op;
+          if (!driver.getOnuWanConfiguration) return op;
+          const p = config.omciWanProfile || this.resolveOmciProfile(onu, config);
           const conn = await this.connections.resolve(onu.olt);
-          const observed = await withOltTelnetLock(onu.oltId, () => driver.getOnuWanConfiguration!(conn, this.onuInterface(onu), config.omciWanProfile!.wanIndex));
+          const observed = await withOltTelnetLock(onu.oltId, () => driver.getOnuWanConfiguration!(conn, this.onuInterface(onu), p.wanIndex));
           evidence = { ...evidence, configuration: observed };
           // A read cannot prove an unreadable PPP password after a timed-out write.
-          const p = config.omciWanProfile;
           const access = onu.contractId ? await this.accesses.findOneBy({ contractId: onu.contractId }) : null;
           const matches = !!access?.username && matchesZteWanConfiguration(observed, p, access.username) &&
-            observed.serialNumber === onu.serialNumber && observed.vendorTypeName === p.vendorTypeName &&
-            observed.configState?.toLowerCase() === 'success' && p.oltFirmware === onu.olt.firmwareVersion;
+            observed.serialNumber === onu.serialNumber && (!p.vendorTypeName || observed.vendorTypeName === p.vendorTypeName) &&
+            observed.configState?.toLowerCase() === 'success';
           status = ['UNKNOWN','APPLYING'].includes(op.status) ? 'UNKNOWN' : matches ? 'APPLIED' : 'VERIFYING';
         } else if (this.acs && typeof op.evidence?.deviceId === 'string') {
           const tasks = await this.acs.getPendingDeviceTasks(op.evidence.deviceId);
@@ -243,7 +256,8 @@ export class OnuWanProvisioningService {
       const password = access?.pppoePasswordEnc ? decryptCredential(access.pppoePasswordEnc) : undefined;
       if (mode === 'PPPOE' && (!username || !password)) throw new BadRequestException('El contrato necesita usuario y contraseña PPPoE propios guardados.');
       const iface = this.onuInterface(onu);
-      const omciInput = method === 'OMCI' ? { onuInterface: iface, serialNumber: onu.serialNumber, profile: config.omciWanProfile!, username: username!, password: password! } : null;
+      const effectiveProfile = method === 'OMCI' ? this.resolveOmciProfile(onu, config) : null;
+      const omciInput = effectiveProfile ? { onuInterface: iface, serialNumber: onu.serialNumber, profile: effectiveProfile, username: username!, password: password! } : null;
       if (omciInput) validateOmciWanParams(omciInput);
 
       const desired = {
@@ -258,7 +272,7 @@ export class OnuWanProvisioningService {
       if (mode === 'STATIC' && (!desired.wanStaticIp || !desired.wanStaticMask || !desired.wanStaticGw)) throw new BadRequestException('Faltan IP, máscara y gateway estáticos.');
       if (mode === 'STATIC' && [desired.wanStaticIp, desired.wanStaticMask, desired.wanStaticGw].some(v => isIP(v || '') !== 4)) throw new BadRequestException('Dirección IPv4 estática inválida.');
       if (mode === 'STATIC' && protocol !== 'IPV4' && (isIP(desired.wanStaticIpv6 || '') !== 6 || isIP(desired.wanStaticIpv6Gw || '') !== 6 || !desired.wanStaticIpv6PrefixLen)) throw new BadRequestException('Faltan parámetros IPv6 estáticos válidos.');
-      const fingerprint = createHash('sha256').update(JSON.stringify({ desired, method, serial: onu.serialNumber, profile: config.omciWanProfile, credential: access?.pppoePasswordEnc, username })).digest('hex');
+      const fingerprint = createHash('sha256').update(JSON.stringify({ desired, method, serial: onu.serialNumber, profile: effectiveProfile, credential: access?.pppoePasswordEnc, username })).digest('hex');
       const prior = await this.operations.createQueryBuilder('op').addSelect('op.requestFingerprint')
         .where('op.onuId = :id AND op.version >= 0', { id: onu.id }).orderBy('op.version', 'DESC').getOne();
       if (prior && ['APPLYING', 'QUEUED', 'VERIFYING', 'UNKNOWN'].includes(prior.status)) {
@@ -281,7 +295,7 @@ export class OnuWanProvisioningService {
       const version = resumeSafeAttempt ? config.wanDesiredVersion : (config.wanDesiredVersion || 0) + 1;
       const op = await this.tenant.getDataSource().transaction(async manager => {
         const changed = await manager.getRepository(OnuServiceConfigEntity).createQueryBuilder().update()
-          .set({ ...desired, wanProvisioningMethod: method, wanDesiredVersion: version, wanApplyStatus: 'APPLYING', wanLastError: null } as any)
+          .set({ ...desired, ...(effectiveProfile ? { omciWanProfile: effectiveProfile } : {}), wanProvisioningMethod: method, wanDesiredVersion: version, wanApplyStatus: 'APPLYING', wanLastError: null } as any)
           .where('id = :id AND wan_desired_version = :old', { id: config.id, old: config.wanDesiredVersion || 0 }).execute();
         if (changed.affected !== 1) throw new ConflictException('Conflicto de versión WAN.');
         if (resumeSafeAttempt) {
