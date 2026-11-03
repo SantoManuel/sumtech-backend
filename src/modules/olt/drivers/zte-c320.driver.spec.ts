@@ -130,7 +130,11 @@ describe('ZteC320Driver', () => {
     // (tcont/gemport/service-port), sin ningún puente OMCI hacia un iphost --
     // espejo exacto de lo que ya se hacía para el canal de gestión.
     expect(commands).toContain('pon-onu-mng gpon-onu_1/1/1:5');
-    expect(commands).toContain('flow 1 switch switch_0/1');
+    // BUG REAL CONFIRMADO EN VIVO (2026-11-03, ONU CMDCDD4D131E): "flow 1
+    // switch switch_0/1" -- que sí se mandaba antes -- es justo lo que
+    // SmartOLT (referencia funcionando) NO manda; con ese comando de más la
+    // ONU no levantaba IP en el canal de servicio.
+    expect(commands).not.toContain('flow 1 switch switch_0/1');
     expect(commands).toContain('flow mode 1 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('flow 1 pri 0 vlan 200');
     expect(commands).toContain('gemport 1 flow 1');
@@ -158,7 +162,9 @@ describe('ZteC320Driver', () => {
     // Cableado OMCI del canal de gestión -- mismo bloque pon-onu-mng que el
     // canal de internet (flow 1/iphost 1 verificados arriba).
     expect(commands).not.toContain('voip protocol sip');
-    expect(commands).toContain('flow 2 switch switch_0/1');
+    // Mismo fix que el canal 1 (ver arriba): "flow 2 switch switch_0/1" ya
+    // no se manda.
+    expect(commands).not.toContain('flow 2 switch switch_0/1');
     expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('flow 2 pri 2 vlan 46');
     // "no flow 2 pri 2 vlan 46"/"no vlan-filter iphost 2 pri 2 vlan 46" ANTES
@@ -315,7 +321,7 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('tcont 1 profile UP-50M');
     expect(commands).toContain('gemport 1 tcont 1');
     expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
-    expect(commands).toContain('flow 1 switch switch_0/1');
+    expect(commands).not.toContain('flow 1 switch switch_0/1');
     expect(commands).toContain('switchport-bind switch_0/1 iphost 1');
     expect(commands).toContain('switchport-bind switch_0/1 veip 1');
 
@@ -385,7 +391,7 @@ describe('ZteC320Driver', () => {
       expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
       expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
       expect(commands.some((c) => c.includes('switchport mode hybrid'))).toBe(false);
-      expect(commands).toContain('flow 2 switch switch_0/1');
+      expect(commands).not.toContain('flow 2 switch switch_0/1');
       expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
       // pri 2 (no 0) -- confirmado en vivo (2026-10-22) contra las mismas dos
       // referencias reales de arriba, consistente con "tr069-mgmt 1 tag pri
@@ -1407,7 +1413,7 @@ No.15 profile : TRAFFIC-977M
         'show onu-type gpon HUAWEY-HG8546M',
         'configure terminal',
         'pon',
-        'onu-type HUAWEY-HG8546M gpon description 4ETH,2POTS max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8 max-veip 1',
+        'onu-type HUAWEY-HG8546M gpon description 4ETH,2POTS max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8 max-veip 1 max-iphost 2',
         'onu-type-if HUAWEY-HG8546M eth_0/1-4',
         'onu-type-if HUAWEY-HG8546M pots_0/1-2',
         'exit',
@@ -1522,6 +1528,81 @@ No.15 profile : TRAFFIC-977M
       });
 
       await verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'ZTEG-F660', silentLogger);
+
+      expect(executeCommand).toHaveBeenCalledTimes(1);
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
+    });
+
+    it('BUG REAL CONFIRMADO comparando el running-config real de OLT_Tabara_Abajo (2026-11-03): repara "Max IP Host" en caliente si el tipo existe pero reporta menos de 2 (ej. HUAWEY-HG8546M, el tipo de CMDCDD4D131E, sin "max-iphost" configurado)', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-HG8546M') {
+          return Promise.resolve(
+            'ONU type name:          HUAWEY-HG8546M\r\nPON type:               gpon\r\nMax VEIP:               1\r\nMax IP Host:            1(default: 1 IP Host)\r\n',
+          );
+        }
+        return Promise.resolve('');
+      });
+
+      await verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'HUAWEY-HG8546M', silentLogger);
+
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'show onu-type gpon HUAWEY-HG8546M',
+        'configure terminal',
+        'pon',
+        'onu-type HUAWEY-HG8546M gpon max-iphost 2',
+        'exit',
+        'exit',
+        'write',
+      ]);
+    });
+
+    it('repara "Max VEIP" Y "Max IP Host" en la MISMA sesión si ambos están por debajo del mínimo', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-HG8546M') {
+          return Promise.resolve(
+            'ONU type name:          HUAWEY-HG8546M\r\nMax VEIP:               0(default: 1 VEIP)\r\nMax IP Host:            1(default: 1 IP Host)\r\n',
+          );
+        }
+        return Promise.resolve('');
+      });
+
+      await verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'HUAWEY-HG8546M', silentLogger);
+
+      expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
+        'show onu-type gpon HUAWEY-HG8546M',
+        'configure terminal',
+        'pon',
+        'onu-type HUAWEY-HG8546M gpon max-veip 1',
+        'onu-type HUAWEY-HG8546M gpon max-iphost 2',
+        'exit',
+        'exit',
+        'write',
+      ]);
+    });
+
+    it('NUNCA degrada "max-iphost" de un tipo que ya tiene capacidad suficiente -- no toca nada si ya reporta 5 (ej. HUAWEY-BT546XG)', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-BT546XG') {
+          return Promise.resolve('ONU type name:          HUAWEY-BT546XG\r\nMax VEIP:               1\r\nMax IP Host:            5\r\n');
+        }
+        return Promise.resolve('');
+      });
+
+      await verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'HUAWEY-BT546XG', silentLogger);
+
+      expect(executeCommand).toHaveBeenCalledTimes(1);
+      expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
+    });
+
+    it('si "show onu-type gpon <nombre>" no trae ninguna etiqueta reconocible de IP Host, no toca nada (mismo criterio seguro que "Max VEIP" indefinido) -- nunca arriesgarse a adivinar', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'show onu-type gpon HUAWEY-HG8546M') {
+          return Promise.resolve('ONU type name:          HUAWEY-HG8546M\r\nMax VEIP:               1\r\n');
+        }
+        return Promise.resolve('');
+      });
+
+      await verifyOnuTypeProfileWithSession(makeSession(executeCommand), 'HUAWEY-HG8546M', silentLogger);
 
       expect(executeCommand).toHaveBeenCalledTimes(1);
       expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
@@ -1937,113 +2018,6 @@ No.15 profile : TRAFFIC-977M
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
-    it('tolera "%Code 63869-GPONRM : Record already exists." en "flow <n> switch switch_0/1" (y comandos similares del cableado OMCI) -- bug real confirmado en producción (2026-10-22): un reintento de autorización que ya había cableado el canal de internet (ver generateAuthorizationScript) abortaba aquí mismo en vez de tolerarlo, pese a ser el mismo significado que "is existed"', async () => {
-      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
-        if (cmd === 'flow 1 switch switch_0/1') {
-          return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
-        }
-        return Promise.resolve('');
-      });
-      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
-        connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand,
-        close: jest.fn(),
-      });
-
-      const result = await driver.authorizeOnu(
-        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        baseConfig,
-      );
-
-      expect(result.ok).toBe(true);
-      expect(executeCommand).toHaveBeenCalledWith('write');
-    });
-
-    it('CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E): si "flow 1 switch switch_0/1" ya existía, fuerza un re-enlace limpio (no flow 1 switch ... -> flow 1 switch ...) en vez de confiar ciegamente -- el running-config real de esta ONU no traía ese enlace pese a que la OLT había tolerado "already exists"', async () => {
-      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
-        if (cmd === 'flow 1 switch switch_0/1') {
-          return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
-        }
-        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
-      });
-      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
-        connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand,
-        close: jest.fn(),
-      });
-
-      const result = await driver.authorizeOnu(
-        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        baseConfig,
-      );
-
-      expect(result.ok).toBe(true);
-      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
-      const firstAttemptIdx = calledCommands.indexOf('flow 1 switch switch_0/1');
-      const noFlowIdx = calledCommands.indexOf('no flow 1 switch switch_0/1');
-      expect(firstAttemptIdx).toBeGreaterThanOrEqual(0);
-      expect(noFlowIdx).toBeGreaterThan(firstAttemptIdx);
-      // Debe reintentar "flow 1 switch switch_0/1" una SEGUNDA vez después del "no".
-      expect(calledCommands.filter((c) => c === 'flow 1 switch switch_0/1')).toHaveLength(2);
-    });
-
-    it('responde ok:false si el re-enlace de "flow 1 switch switch_0/1" (canal de SERVICIO) también es rechazado con un error real (no "already exists")', async () => {
-      let flowAttempts = 0;
-      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
-        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
-        if (cmd === 'flow 1 switch switch_0/1') {
-          flowAttempts++;
-          if (flowAttempts === 1) return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
-          return Promise.resolve('\r\n%Error 10: Invalid parameter!\r\nOLT#');
-        }
-        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
-      });
-      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
-        connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand,
-        close: jest.fn(),
-      });
-
-      const result = await driver.authorizeOnu(
-        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        baseConfig,
-      );
-
-      expect(result.ok).toBe(false);
-      expect(result.error).toContain('flow 1 switch switch_0/1');
-      expect(executeCommand).not.toHaveBeenCalledWith('write');
-    });
-
-    it('si el re-enlace de "flow 2 switch switch_0/1" (canal de GESTIÓN/TR-069) también es rechazado, es mejor esfuerzo -- no aborta, devuelve ok:true con warning', async () => {
-      let flowAttempts = 0;
-      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :HUAWEY-HG8546M');
-        if (cmd === 'flow 2 switch switch_0/1') {
-          flowAttempts++;
-          if (flowAttempts === 1) return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
-          return Promise.resolve('\r\n%Error 10: Invalid parameter!\r\nOLT#');
-        }
-        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
-      });
-      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
-        connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand,
-        close: jest.fn(),
-      });
-
-      const result = await driver.authorizeOnu(
-        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        { ...baseConfig, modelTypeName: 'HUAWEY-HG8546M', managementMethod: 'TR069', tr069Url: 'http://acs.sumtech.com.do:7547', tr069Vlan: 46 },
-      );
-
-      expect(result.ok).toBe(true);
-      expect(result.warning).toContain('flow 2 switch switch_0/1');
-      expect(executeCommand).toHaveBeenCalledWith('write');
-    });
-
     it('tolera "%Code 63873-GPONRM : GEM port already exists." en "gemport 1 flow 1" (y comandos similares) sin abortar', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
@@ -2065,6 +2039,63 @@ No.15 profile : TRAFFIC-977M
 
       expect(result.ok).toBe(true);
       expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('CONFIRMADO EN VIVO (2026-11-03, ONU CMDCDD4D131E): si "switchport-bind switch_0/1 iphost 1" ya existía, fuerza un re-enlace limpio (no switchport-bind ... -> switchport-bind ...) en vez de confiar ciegamente -- el running-config real de esta ONU no traía ese bind pese a que la OLT había tolerado "already exists"', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'switchport-bind switch_0/1 iphost 1') {
+          return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
+        }
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      const firstAttemptIdx = calledCommands.indexOf('switchport-bind switch_0/1 iphost 1');
+      const noBindIdx = calledCommands.indexOf('no switchport-bind switch_0/1 iphost 1');
+      expect(firstAttemptIdx).toBeGreaterThanOrEqual(0);
+      expect(noBindIdx).toBeGreaterThan(firstAttemptIdx);
+      // Debe reintentar "switchport-bind switch_0/1 iphost 1" una SEGUNDA vez después del "no".
+      expect(calledCommands.filter((c) => c === 'switchport-bind switch_0/1 iphost 1')).toHaveLength(2);
+    });
+
+    it('responde ok:false si el re-enlace de "switchport-bind switch_0/1 iphost 1" (canal de SERVICIO) también es rechazado con un error real (no "already exists")', async () => {
+      let bindAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd === 'switchport-bind switch_0/1 iphost 1') {
+          bindAttempts++;
+          if (bindAttempts === 1) return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
+          return Promise.resolve('\r\n%Error 10: Invalid parameter!\r\nOLT#');
+        }
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('switchport-bind switch_0/1 iphost 1');
+      expect(executeCommand).not.toHaveBeenCalledWith('write');
     });
 
     it('un "%Code" que NO menciona "existed" sigue tratándose como rechazo fatal, sin importar el comando', async () => {
@@ -2296,6 +2327,59 @@ No.15 profile : TRAFFIC-977M
       expect(executeCommand).not.toHaveBeenCalledWith(REBOOT_ONU_SENTINEL);
     });
 
+    it('CONFIRMADO EN VIVO (2026-11-03, ONU CMDCDD4D131E): si "switchport-bind switch_0/1 iphost 2" ya existía, fuerza un re-enlace limpio -- la ONU quedaba con "ip-host 2 dhcp-enable" aplicado pero SIN este bind, así que el canal de gestión nunca recibía el DHCP', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'switchport-bind switch_0/1 iphost 2') {
+          return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      const rebootOnu = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
+      expect(calledCommands).toContain('no switchport-bind switch_0/1 iphost 2');
+      expect(calledCommands.filter((c) => c === 'switchport-bind switch_0/1 iphost 2')).toHaveLength(2);
+    });
+
+    it('si el re-enlace de "switchport-bind switch_0/1 iphost 2" también es rechazado con un error real, lo reporta como warning (mejor esfuerzo) en vez de abortar', async () => {
+      let bindAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'switchport-bind switch_0/1 iphost 2') {
+          bindAttempts++;
+          if (bindAttempts === 1) return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
+          return Promise.resolve('\r\n%Error 20202: Invalid input detected!\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('switchport-bind switch_0/1 iphost 2');
+    });
+
     it('tolera "%Code 63873-GPONRM : GEM port already exists." en "gemport 2 flow 2" sin generar warning (paso ya aplicado previamente)', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd === 'gemport 2 flow 2') {
@@ -2482,6 +2566,94 @@ No.15 profile : TRAFFIC-977M
       expect(result.warning).toContain('Config state');
       expect(result.warning).toContain('fail');
       expect(executeCommand).toHaveBeenCalledWith('show gpon onu detail-info gpon-onu_1/2/15:1');
+    });
+
+    it('hace POLLING de "Config state" en vez de un chequeo único -- si da "fail" en los primeros intentos pero "success" en el último, NO reporta warning (BUG REAL CONFIRMADO EN VIVO, 2026-11-03, OLT_Tabara_Abajo/CMDCDD4D131E: el chequeo único e inmediato producía un falso "fail" porque el ONT todavía no resincronizaba su MIB tras el reinicio)', async () => {
+      let detailInfoAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show gpon onu detail-info')) {
+          detailInfoAttempts++;
+          const state = detailInfoAttempts < 3 ? 'fail' : 'success';
+          return Promise.resolve(`\r\nONU interface: gpon-onu_1/2/15:1\r\n  Config state:        ${state}\r\n  Phase state:         working\r\nOLT#`);
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+      const delaySpy = jest.spyOn<any, any>(driver, 'delay');
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      expect(detailInfoAttempts).toBe(3);
+      // 3 esperas antes de los 3 intentos de detail-info (5s/10s/15s) -- debe
+      // cortar temprano en cuanto ve "success" en el 3er intento, sin agotar
+      // el 4to delay (15s) del presupuesto completo.
+      const detailInfoDelays = delaySpy.mock.calls.map((c: any[]) => c[0]).filter((ms: number) => [5000, 10000, 15000].includes(ms));
+      expect(detailInfoDelays).toEqual([5000, 10000, 15000]);
+    });
+
+    it('si "Config state" sigue en "fail" tras agotar el presupuesto completo de polling (4 intentos), reporta el warning -- ahora como señal confiable, no una carrera perdida de antemano', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show gpon onu detail-info')) {
+          return Promise.resolve('\r\nONU interface: gpon-onu_1/2/15:1\r\n  Config state:        fail\r\n  Phase state:         working\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('Config state');
+      expect(result.warning).toContain('fail');
+      const detailInfoCalls = executeCommand.mock.calls.filter((c: any[]) => c[0].startsWith('show gpon onu detail-info'));
+      expect(detailInfoCalls).toHaveLength(4);
+    });
+
+    it('si un intento intermedio de lectura falla (ej. timeout de Telnet), sigue intentando en vez de abortar el polling', async () => {
+      let detailInfoAttempts = 0;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show gpon onu detail-info')) {
+          detailInfoAttempts++;
+          if (detailInfoAttempts === 1) {
+            return Promise.reject(new Error('Timeout de Telnet'));
+          }
+          return Promise.resolve('\r\nONU interface: gpon-onu_1/2/15:1\r\n  Config state:        success\r\n  Phase state:         working\r\nOLT#');
+        }
+        return Promise.resolve('');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: jest.fn().mockResolvedValue(undefined),
+        close: jest.fn(),
+      });
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
+      expect(detailInfoAttempts).toBe(2);
     });
 
     it('NO agrega ningún warning si "Config state" queda en "success" y nada fue rechazado', async () => {
@@ -2723,82 +2895,6 @@ No.15 profile : TRAFFIC-977M
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
       expect(omciConfigTerminalAttempts).toBe(2);
-    });
-  });
-
-  describe('applyTr069Management() re-enlaza "flow 2 switch switch_0/1" si la OLT lo tolera como "ya existe" -- mismo criterio que authorizeOnu() para "flow 1" (ver FLOW_SWITCH_BIND_RE, compartido vía zte-c320-provisioning-scripts.ts). Tras el desacople de Etapa 1/Etapa 2 (2026-10-30), esta es la ÚNICA sesión donde "flow 2" se aplica, así que necesita la misma protección contra un bind sin re-enlazar de un intento anterior', () => {
-    const tr069Config = {
-      ponInterface: 'gpon-olt_1/2/15',
-      onuId: 1,
-      modelTypeName: 'HUAWEY-HG8546M',
-      serialNumber: 'CMDCDD4D131E',
-      serviceVlan: 400,
-      tr069Url: 'http://acs.sumtech.com.do:7547',
-      tr069Vlan: 46,
-      managementMethod: 'TR069' as const,
-      operationMode: 'ROUTER' as const,
-    };
-
-    beforeEach(() => {
-      jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
-    });
-
-    it('fuerza "no flow 2 switch switch_0/1" y reintenta "flow 2 switch switch_0/1" cuando la OLT responde "ya existe"', async () => {
-      let flowSwitchAttempts = 0;
-      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd === 'flow 2 switch switch_0/1') {
-          flowSwitchAttempts += 1;
-          if (flowSwitchAttempts === 1) {
-            return Promise.resolve('%Error 10: The flow already exists!');
-          }
-        }
-        return Promise.resolve('');
-      });
-      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
-        connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand,
-        rebootOnu: jest.fn().mockResolvedValue(undefined),
-        close: jest.fn(),
-      });
-
-      const result = await driver.applyTr069Management(
-        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        tr069Config,
-      );
-
-      expect(result.ok).toBe(true);
-      expect(result.warning).toBeUndefined();
-      const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
-      expect(calledCommands).toContain('no flow 2 switch switch_0/1');
-      expect(flowSwitchAttempts).toBe(2);
-    });
-
-    it('si el re-enlace también es rechazado con un error real, lo reporta como warning (mejor esfuerzo) en vez de abortar', async () => {
-      let flowSwitchAttempts = 0;
-      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd === 'flow 2 switch switch_0/1') {
-          flowSwitchAttempts += 1;
-          if (flowSwitchAttempts === 1) {
-            return Promise.resolve('%Error 10: The flow already exists!');
-          }
-          return Promise.resolve('%Error 20202: Invalid input detected!');
-        }
-        return Promise.resolve('');
-      });
-      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
-        connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand,
-        rebootOnu: jest.fn().mockResolvedValue(undefined),
-        close: jest.fn(),
-      });
-
-      const result = await driver.applyTr069Management(
-        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        tr069Config,
-      );
-
-      expect(result.ok).toBe(true);
-      expect(result.warning).toContain('flow 2 switch switch_0/1');
     });
   });
 
@@ -3777,12 +3873,13 @@ OLT#`);
       expect(p2).toBeGreaterThan(p1);
       expect(p3).toBeGreaterThan(p2);
 
-      // Fase 3 Flows (Instanciación con switch_0/1 ANTES de flow mode)
-      const f1Switch = commands.indexOf('flow 1 switch switch_0/1');
+      // Fase 3 Flows -- ya NO manda "flow 1 switch switch_0/1" (ver
+      // generateAuthorizationScript, BUG REAL CONFIRMADO EN VIVO
+      // 2026-11-03): ese comando de más impedía que la ONU levantara IP.
+      expect(commands).not.toContain('flow 1 switch switch_0/1');
       const f1Mode = commands.indexOf('flow mode 1 tag-filter vlan-filter untag-filter discard');
       const f1Pri = commands.indexOf('flow 1 pri 0 vlan 400');
       const f1Gem = commands.indexOf('gemport 1 flow 1');
-      expect(f1Mode).toBeGreaterThan(f1Switch);
       expect(f1Pri).toBeGreaterThan(f1Mode);
       expect(f1Gem).toBeGreaterThan(f1Pri);
 

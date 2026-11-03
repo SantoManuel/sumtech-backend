@@ -45,6 +45,12 @@ import { NapPortEntity } from './entities/nap-port.entity';
 import { OnuEntity } from '../olt/entities/onu.entity';
 import { NapManagementService } from './services/nap-management.service';
 import { NapController } from './nap.controller';
+import { GisController } from './gis.controller';
+import { InterfaceTrafficController } from './interface-traffic.controller';
+import { InterfaceTrafficService } from './services/interface-traffic.service';
+import { GisTopologyService } from './services/gis-topology.service';
+import { OltEntity } from '../olt/entities/olt.entity';
+import { AddressEntity } from '../clients/entities/address.entity';
 
 import { BullModule } from '@nestjs/bullmq';
 import { NETWORK_OPS_QUEUE } from './network-ops.constants';
@@ -68,6 +74,8 @@ import { PendingOperationsController } from './pending-operations.controller';
       NapBoxEntity,
       NapPortEntity,
       OnuEntity,
+      OltEntity,
+      AddressEntity,
     ]),
     TypeOrmModule.forFeature([NodePortalRegistryEntity], 'platform'),
     BullModule.registerQueue({ name: NETWORK_OPS_QUEUE }),
@@ -84,6 +92,8 @@ import { PendingOperationsController } from './pending-operations.controller';
     NetworkAuditLogController,
     PendingOperationsController,
     NapController,
+    GisController,
+    InterfaceTrafficController,
   ],
   providers: [
     ZonesService,
@@ -109,6 +119,8 @@ import { PendingOperationsController } from './pending-operations.controller';
     NetworkNodeInfrastructureService,
     SuspensionPortalManagerService,
     NapManagementService,
+    GisTopologyService,
+    InterfaceTrafficService,
   ],
   exports: [
     ZonesService,
@@ -121,6 +133,8 @@ import { PendingOperationsController } from './pending-operations.controller';
     NetworkNodeInfrastructureService,
     SuspensionPortalManagerService,
     NapManagementService,
+    GisTopologyService,
+    InterfaceTrafficService,
   ],
 })
 export class NetworkModule {}

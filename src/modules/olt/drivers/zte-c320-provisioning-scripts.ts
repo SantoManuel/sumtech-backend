@@ -33,16 +33,16 @@ export function toOnuInterfaceName(ponInterface: string, onuId: number): string 
  * "no flow 2 pri 2 vlan <N>" ANTES de asignarlo -- mismo criterio que "no
  * service-port <N>" (destruir y recrear limpio, ver generateAuthorizationScript):
  * este comando carga un valor de VLAN embebido igual que "service-port ...
- * vlan ..." (el bug real confirmado en vivo, 2026-10-30), y la OLT ya
- * documentó tolerar "flow <n> switch switch_0/1 y comandos similares del
- * bloque OMCI" como "ya existe" sin verificar el valor -- el mismo riesgo no
- * verificado se extiende a esta sub-asignación de "pri"/"vlan" del mismo
- * objeto flow. Sintaxis "no flow <N> pri <P> vlan <V>" ya usada y
- * confirmada en vivo en `applyServiceGemportFixWithSession` (Opción B).
+ * vlan ..." (el bug real confirmado en vivo, 2026-10-30).
+ * Sintaxis "no flow <N> pri <P> vlan <V>" ya usada y confirmada en vivo en
+ * `applyServiceGemportFixWithSession` (Opción B).
+ *
+ * Ya NO incluye "flow 2 switch switch_0/1" -- mismo fix que el canal 1 (ver
+ * `generateAuthorizationScript`, BUG REAL CONFIRMADO EN VIVO 2026-11-03):
+ * SmartOLT tampoco lo manda, y con él la ONU no levantaba IP en este canal.
  */
 export function buildTr069FlowCommands(config: AuthorizeOnuParams): string[] {
   return [
-    'flow 2 switch switch_0/1',
     'flow mode 2 tag-filter vlan-filter untag-filter discard',
     `no flow 2 pri 2 vlan ${config.tr069Vlan}`,
     `flow 2 pri 2 vlan ${config.tr069Vlan}`,
@@ -236,17 +236,28 @@ export function hasTr069Channel(config: AuthorizeOnuParams): boolean {
 }
 
 /**
- * Reconoce "flow <N> switch switch_0/1" -- compartido entre `authorizeOnu()`
- * (zte-c320.driver.ts, canal 1) y `applyTr069ManagementWithSession()`
- * (zte-c320-tr069.ts, canal 2 vía Etapa 2) para que ambos bucles de comandos
- * apliquen el MISMO re-enlace forzado cuando la OLT tolera el bind como "ya
- * existe" (ver la nota en cada uno). Antes solo vivía en `authorizeOnu()`;
- * tras el desacople de Etapa 1/Etapa 2 (2026-10-30), Etapa 2 es el único
- * camino para aplicar el canal de gestión/TR-069, así que necesita la misma
- * protección contra un bind "flow 2" que quedó de un intento anterior sin
- * re-enlazar de verdad.
+ * Reconoce "switchport-bind switch_0/1 <iphost N|veip N>" -- compartido
+ * entre `authorizeOnu()` (zte-c320.driver.ts, canal 1: iphost 1/veip 1) y
+ * `applyTr069ManagementWithSession()` (zte-c320-tr069.ts, canal 2: iphost
+ * 2/veip 1) para que ambos bucles apliquen el MISMO re-enlace forzado
+ * cuando la OLT tolera el bind como "ya existe".
+ *
+ * BUG REAL CONFIRMADO EN VIVO (2026-11-03, ONU CMDCDD4D131E): tolerar "ya
+ * existe" a ciegas en este comando (mismo patrón que ya mordió a "flow <N>
+ * switch switch_0/1", ver generateAuthorizationScript) dejó el
+ * running-config SIN "switchport-bind switch_0/1 iphost 2" tras aplicar
+ * Etapa 2, pese a que "ip-host 2 dhcp-enable ..." sí quedó aplicado -- el
+ * canal de gestión queda con DHCP habilitado pero sin bind real al switch
+ * virtual, así que nunca puede recibir el DHCP. A diferencia de "flow <N>
+ * switch switch_0/1" (que resultó ser un comando de más y se quitó
+ * entero), `switchport-bind` sí es necesario -- confirmado que una ONU con
+ * este bind realmente aplicado obtiene IP real en el canal de gestión
+ * (10.46.69.249 vía DHCP). Por eso acá la corrección es forzar el
+ * re-enlace (no switchport-bind ... -> switchport-bind ...), no eliminar
+ * el comando. Sintaxis "no switchport-bind ..." ya usada y confirmada en
+ * vivo en `applyServiceGemportFixWithSession` (Opción B).
  */
-export const FLOW_SWITCH_BIND_RE = /^flow \d+ switch switch_0\/1$/;
+export const SWITCHPORT_BIND_RE = /^switchport-bind switch_0\/1 \S+(?: \d+)?$/;
 
 /**
  * Genera la lista de comandos Telnet de autorización y aprovisionamiento (RF-OLT-016 / RF-ONU-001..007)
@@ -319,12 +330,19 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
 
     // === FASE 3: Inicialización de Flows y Mapeo GEM (pon-onu-mng) ===
     // Orden estricto ZTE GPONRM:
-    // 1° Instanciar flow en el switch: flow <id> switch switch_0/1 (sin esto, OLT rechaza con %Code 63953 "Flow does not exist")
-    // 2° flow mode <id> tag-filter vlan-filter untag-filter discard
-    // 3° flow <id> pri <prio> vlan <vlan>
-    // 4° gemport <id> flow <id>
+    // 1° flow mode <id> tag-filter vlan-filter untag-filter discard
+    // 2° flow <id> pri <prio> vlan <vlan>
+    // 3° gemport <id> flow <id>
+    //
+    // BUG REAL CONFIRMADO EN VIVO (2026-11-03, ONU CMDCDD4D131E): "flow <id>
+    // switch switch_0/1" -- que este driver sí enviaba antes de esta línea --
+    // es exactamente lo que SmartOLT (referencia confirmada funcionando
+    // contra el mismo hardware) NO manda. Con ese comando de más, la ONU
+    // nunca aprendía MAC en la VLAN de servicio ni obtenía IP (el mismo
+    // síntoma que gatillaba, en cadena, el "Config state: fail" de Etapa 2).
+    // Sin él, la ONU SÍ levanta IP -- confirmado comparando running-config
+    // real contra SmartOLT. No reintroducir sin volver a confirmar en vivo.
     `pon-onu-mng ${onuInterface}`,
-    'flow 1 switch switch_0/1',
     'flow mode 1 tag-filter vlan-filter untag-filter discard',
     `flow 1 pri 0 vlan ${config.serviceVlan}`,
     'gemport 1 flow 1',

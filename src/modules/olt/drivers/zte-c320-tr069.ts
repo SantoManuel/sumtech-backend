@@ -8,7 +8,7 @@ import {
   toOnuInterfaceName,
   getHumanPacingDelay,
   REBOOT_ONU_SENTINEL,
-  FLOW_SWITCH_BIND_RE,
+  SWITCHPORT_BIND_RE,
   isPreparatoryTeardownCommand,
 } from './zte-c320-provisioning-scripts';
 
@@ -278,18 +278,17 @@ export async function applyTr069ManagementWithSession(
     }
 
     if (isOltErrorResponse(output)) {
-      if (isAlreadyAppliedResponse(output) && FLOW_SWITCH_BIND_RE.test(cmd)) {
-        // Mismo criterio que `authorizeOnu()` (zte-c320.driver.ts, canal 1)
-        // -- CONFIRMADO EN VIVO (2026-10-30, ONU CMDCDD4D131E) que tolerar
-        // "ya existe" a ciegas en "flow <N> switch switch_0/1" puede dejar
-        // un enlace de un intento ANTERIOR sin verificar realmente
-        // conmutando tráfico. Tras el desacople de Etapa 1/Etapa 2
-        // (2026-10-30), esta es la ÚNICA sesión donde "flow 2 switch
-        // switch_0/1" se aplica, así que necesita la misma protección que
-        // ya tenía el canal 1.
+      if (isAlreadyAppliedResponse(output) && SWITCHPORT_BIND_RE.test(cmd)) {
+        // BUG REAL CONFIRMADO EN VIVO (2026-11-03, ONU CMDCDD4D131E): tolerar
+        // "ya existe" a ciegas en "switchport-bind switch_0/1 iphost 2" dejó
+        // el running-config SIN ese bind pese a que "ip-host 2 dhcp-enable
+        // ..." sí quedó aplicado -- el canal de gestión queda con DHCP
+        // habilitado pero sin bind real, así que nunca recibe el DHCP. Se
+        // fuerza un re-enlace limpio en vez de confiar ciegamente (ver
+        // SWITCHPORT_BIND_RE).
         logger.warn(`[diag] applyTr069Management: "${cmd}" ya existía -- forzando re-enlace limpio por si quedó de un intento anterior`);
         try {
-          await session.executeCommand(cmd.replace(/^flow (\d+) switch/, 'no flow $1 switch'));
+          await session.executeCommand(cmd.replace(/^switchport-bind/, 'no switchport-bind'));
         } catch {
           /* best-effort */
         }
@@ -329,28 +328,48 @@ export async function applyTr069ManagementWithSession(
     }
   }
 
-  // Verificación real post-aplicación:
-  // Si la ONU acaba de reiniciarse, la sincronización de MIB toma varios segundos
-  // y la OLT puede reportar transitoriamente "fail" o "syncMib" mientras el ONT
-  // completa su inicio. Además, modelos Huawei (HG8546M, HG8145V5) pueden operar
-  // perfectamente obteniendo IP en MikroTik aun con "Config state: fail" en OLT.
+  // Verificación real post-aplicación, con POLLING acotado en vez de un
+  // chequeo único e inmediato -- BUG REAL CONFIRMADO EN VIVO (2026-11-03,
+  // OLT_Tabara_Abajo, ONU CMDCDD4D131E): `rebootOnu()` solo confirma que la
+  // OLT aceptó el comando por CLI, no que el ONT ya terminó de reiniciar y
+  // resincronizó su MIB OMCI -- leer "Config state" en el mismo instante
+  // prácticamente garantiza un falso "fail" transitorio (el comentario de
+  // abajo ya lo advertía, pero antes no se esperaba nada). Presupuesto total
+  // ~45s, del mismo orden que la tolerancia ya aceptada en este archivo para
+  // `applyAcsUrlWithRetries` (hasta ~2-2.5 min documentados); sale temprano
+  // en cuanto ve "success" en vez de agotar el resto del presupuesto.
+  const CONFIG_STATE_POLL_DELAYS_MS = [5000, 10000, 15000, 15000];
   const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
-  try {
-    const detailOutput = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
-    const parsedDetail = parseOnuDetailInfo(detailOutput);
-    const configState = parsedDetail.configState;
-    if (configState && configState.toLowerCase() !== 'success') {
-      const configStateWarning =
-        `El "Config state" del ONT quedó en "${configState}" (no "success") tras aplicar el bloque TR-069. ` +
-        'Nota: si la ONT se está reiniciando, este estado es transitorio mientras sincroniza MIB. ' +
-        'Verifica en el MikroTik si la ONT ya obtuvo IP en la VLAN de gestión (' +
-        (config.tr069Vlan ?? '444') +
-        ').';
-      warnings.push(configStateWarning);
-      logger.warn(`[diag] applyTr069Management: ${configStateWarning}`);
+  let lastConfigState: string | undefined;
+  let lastReadError: string | undefined;
+
+  for (const pollDelayMs of CONFIG_STATE_POLL_DELAYS_MS) {
+    await delay(pollDelayMs);
+    try {
+      const detailOutput = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
+      const parsedDetail = parseOnuDetailInfo(detailOutput);
+      lastConfigState = parsedDetail.configState;
+      lastReadError = undefined;
+      if (lastConfigState && lastConfigState.toLowerCase() === 'success') {
+        break;
+      }
+    } catch (err: any) {
+      lastReadError = err.message;
+      logger.warn(`[diag] applyTr069Management: no se pudo verificar "Config state" en este intento: ${err.message}`);
     }
-  } catch (err: any) {
-    logger.warn(`[diag] applyTr069Management: no se pudo verificar "Config state": ${err.message}`);
+  }
+
+  if (lastReadError && !lastConfigState) {
+    logger.warn(`[diag] applyTr069Management: no se pudo verificar "Config state" tras el polling: ${lastReadError}`);
+  } else if (lastConfigState && lastConfigState.toLowerCase() !== 'success') {
+    const configStateWarning =
+      `El "Config state" del ONT quedó en "${lastConfigState}" (no "success") tras aplicar el bloque TR-069. ` +
+      'Nota: si la ONT se está reiniciando, este estado es transitorio mientras sincroniza MIB. ' +
+      'Verifica en el MikroTik si la ONT ya obtuvo IP en la VLAN de gestión (' +
+      (config.tr069Vlan ?? '444') +
+      ').';
+    warnings.push(configStateWarning);
+    logger.warn(`[diag] applyTr069Management: ${configStateWarning}`);
   }
 
   return { ok: true, warning: warnings.length > 0 ? warnings.join(' | ') : undefined };

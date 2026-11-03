@@ -1485,12 +1485,24 @@ describe('OnuManagementService', () => {
       }));
     });
 
-    it('no resuelve un pendiente previo genérico tras aplicar TR-069', async () => {
+    it('un éxito limpio (sin warning) SÍ resuelve un pendiente previo -- bug real confirmado (2026-11-03): antes esta rama solo existía para el caso con warning, así que "Estado de Aprovisionamiento (OLT)" se quedaba perpetuamente desincronizado aunque la OLT confirmara el cambio. Mismo criterio simétrico que ya usa authorizeOnu()', async () => {
       onuRepo.findOne.mockResolvedValue(mockOnu);
-      configRepo.findOneBy.mockResolvedValue({ ...mockConfig, applyStatus: 'PENDING', desiredVersion: 3, appliedVersion: 1 });
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig, applyStatus: 'PENDING', desiredVersion: 3, appliedVersion: 1, lastApplyError: 'warning anterior' });
       zteDriver.applyTr069Management.mockResolvedValue({ ok: true });
       await service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' });
-      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({ applyStatus: 'PENDING', desiredVersion: 3, appliedVersion: 1 }));
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        applyStatus: 'APPLIED', desiredVersion: 4, appliedVersion: 4, lastApplyError: null,
+      }));
+    });
+
+    it('si el driver reporta warning (Config state no confiable tras el polling), SÍ bumpea desiredVersion pero deja applyStatus en PENDING sin tocar appliedVersion', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      configRepo.findOneBy.mockResolvedValue({ ...mockConfig, applyStatus: 'APPLIED', desiredVersion: 1, appliedVersion: 1 });
+      zteDriver.applyTr069Management.mockResolvedValue({ ok: true, warning: 'El "Config state" del ONT quedó en "fail"' });
+      await service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' });
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        applyStatus: 'PENDING', desiredVersion: 2, appliedVersion: 1, lastApplyError: 'El "Config state" del ONT quedó en "fail"',
+      }));
     });
 
     it('lanza BadRequestException si el driver falla (ok:false)', async () => {

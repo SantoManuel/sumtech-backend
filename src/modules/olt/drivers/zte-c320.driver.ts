@@ -19,7 +19,7 @@ import {
   isPreparatoryTeardownCommand,
   getHumanPacingDelay,
   REBOOT_ONU_SENTINEL,
-  FLOW_SWITCH_BIND_RE,
+  SWITCHPORT_BIND_RE,
 } from './zte-c320-provisioning-scripts';
 import {
   verifyOnuProvisioningWithSession,
@@ -516,19 +516,15 @@ export class ZteC320Driver implements IOltDriver {
             // Canal primario de Internet (Fase 1/2/3 datos): error fatal
             throw new Error(`La OLT rechazó el comando "${cmd}": ${errMsg}`);
           }
-        } else if (isOltErrorResponse(output) && isAlreadyAppliedResponse(output) && FLOW_SWITCH_BIND_RE.test(cmd)) {
-          // Bug real confirmado (2026-10-30, ONU CMDCDD4D131E): tolerar "ya
-          // existe" a ciegas en "flow <N> switch switch_0/1" puede dejar un
-          // enlace de un intento de autorización ANTERIOR sin verificar --
-          // el running-config terminaba sin ese enlace pese a que las demás
-          // líneas de ese flow (pri/vlan, gemport) sí se aplicaban, porque
-          // referenciaban un "flow <N>" que ya existía pero no estaba
-          // realmente conmutando tráfico. En vez de confiar ciegamente, se
-          // fuerza un re-enlace limpio (no flow N switch ... -> flow N
-          // switch ...), mismo criterio que "no onu" antes de recrear la ONU.
+        } else if (isOltErrorResponse(output) && isAlreadyAppliedResponse(output) && SWITCHPORT_BIND_RE.test(cmd)) {
+          // BUG REAL CONFIRMADO EN VIVO (2026-11-03, ONU CMDCDD4D131E): tolerar
+          // "ya existe" a ciegas en "switchport-bind switch_0/1 <iphost N|veip N>"
+          // dejó el running-config SIN ese bind (mismo patrón que antes mordía a
+          // "flow <N> switch switch_0/1", ver SWITCHPORT_BIND_RE) -- se fuerza un
+          // re-enlace limpio en vez de confiar ciegamente.
           this.logger.warn(`[diag] authorizeOnu: "${cmd}" ya existía -- forzando re-enlace limpio por si quedó de un intento anterior`);
           try {
-            await session.executeCommand(cmd.replace(/^flow (\d+) switch/, 'no flow $1 switch'));
+            await session.executeCommand(cmd.replace(/^switchport-bind/, 'no switchport-bind'));
           } catch {
             /* best-effort */
           }

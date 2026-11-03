@@ -167,7 +167,29 @@ export async function verifyOnuTypeProfileWithSession(session: ZteSessionLike, o
   // used." si el tipo ya tiene otras ONUs reales asignadas).
   const maxVeipMatch = checkOutput.match(/Max VEIP:\s*(\d+)/i);
   const maxVeip = maxVeipMatch ? parseInt(maxVeipMatch[1], 10) : undefined;
-  if (maxVeip === undefined || maxVeip >= 1) {
+
+  // BUG REAL CONFIRMADO comparando el running-config real de esta OLT
+  // (2026-11-03): "onu-type HUAWEY-HG8546M gpon" (el tipo de CMDCDD4D131E)
+  // nunca tiene "max-iphost" configurado, a diferencia de
+  // "HUAWEY-BT546XG"/"HUAWEY-HG8145V5" (que sí traen "max-iphost 5" en el
+  // running-config) -- mismo patrón que "Max VEIP: 0" de arriba: sin
+  // suficiente capacidad de iphost en la plantilla del tipo, "switchport-
+  // bind switch_0/1 iphost 2"/"ip-host 2 dhcp-enable ..." del canal de
+  // gestión (Etapa 2) no tienen dónde aplicarse de verdad. La etiqueta real
+  // que usa "show onu-type gpon <nombre>" para este valor todavía NO está
+  // confirmada en vivo (sí lo está la sintaxis de escritura, "onu-type
+  // <nombre> gpon max-iphost <N>", visible en el running-config de tipos
+  // que sí lo traen) -- por eso, igual que con "maxVeip" arriba, si no se
+  // puede parsear con certeza (`undefined`) NO se toca nada: jamás hay que
+  // arriesgarse a "corregir" un valor que en realidad podría ya ser mayor
+  // (ej. degradar BT546XG/HG8145V5 de 5 a 2) solo porque el regex falló en
+  // leerlo.
+  const maxIphostMatch = checkOutput.match(/Max\s*IP\s*-?\s*Host:\s*(\d+)/i);
+  const maxIphost = maxIphostMatch ? parseInt(maxIphostMatch[1], 10) : undefined;
+
+  const needsVeipFix = maxVeip !== undefined && maxVeip < 1;
+  const needsIphostFix = maxIphost !== undefined && maxIphost < 2;
+  if (!needsVeipFix && !needsIphostFix) {
     return;
   }
 
@@ -175,17 +197,29 @@ export async function verifyOnuTypeProfileWithSession(session: ZteSessionLike, o
   try {
     await session.executeCommand('configure terminal');
     await session.executeCommand('pon');
-    const fixOutput = await session.executeCommand(`onu-type ${onuTypeName} gpon max-veip 1`);
-    if (isOltErrorResponse(fixOutput)) {
-      logger.warn(
-        `[diag] verifyOnuTypeProfileWithSession: no se pudo corregir "max-veip" del onu-type "${onuTypeName}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
-      );
-    } else {
-      fixSucceeded = true;
+    if (needsVeipFix) {
+      const fixOutput = await session.executeCommand(`onu-type ${onuTypeName} gpon max-veip 1`);
+      if (isOltErrorResponse(fixOutput)) {
+        logger.warn(
+          `[diag] verifyOnuTypeProfileWithSession: no se pudo corregir "max-veip" del onu-type "${onuTypeName}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
+        );
+      } else {
+        fixSucceeded = true;
+      }
+    }
+    if (needsIphostFix) {
+      const fixOutput = await session.executeCommand(`onu-type ${onuTypeName} gpon max-iphost 2`);
+      if (isOltErrorResponse(fixOutput)) {
+        logger.warn(
+          `[diag] verifyOnuTypeProfileWithSession: no se pudo corregir "max-iphost" del onu-type "${onuTypeName}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
+        );
+      } else {
+        fixSucceeded = true;
+      }
     }
   } catch (err: any) {
     logger.warn(
-      `[diag] verifyOnuTypeProfileWithSession: excepción corrigiendo "max-veip" del onu-type "${onuTypeName}" (mejor esfuerzo, no bloquea la autorización): ${err.message}`,
+      `[diag] verifyOnuTypeProfileWithSession: excepción corrigiendo "max-veip"/"max-iphost" del onu-type "${onuTypeName}" (mejor esfuerzo, no bloquea la autorización): ${err.message}`,
     );
   } finally {
     try {
@@ -204,7 +238,7 @@ export async function verifyOnuTypeProfileWithSession(session: ZteSessionLike, o
       await session.executeCommand('write');
     } catch (err: any) {
       logger.warn(
-        `[diag] verifyOnuTypeProfileWithSession: no se pudo guardar "write" tras corregir max-veip (mejor esfuerzo): ${err.message}`,
+        `[diag] verifyOnuTypeProfileWithSession: no se pudo guardar "write" tras corregir max-veip/max-iphost (mejor esfuerzo): ${err.message}`,
       );
     }
   }
@@ -251,18 +285,38 @@ export async function ensureOnuTypeProfileWithSession(session: ZteSessionLike, p
     // (Etapa 1).
     const maxVeipMatch = checkOutput.match(/Max VEIP:\s*(\d+)/i);
     const maxVeip = maxVeipMatch ? parseInt(maxVeipMatch[1], 10) : undefined;
-    if (maxVeip !== undefined && maxVeip < 1) {
+    // Mismo patrón que "max-veip" -- ver la nota equivalente en
+    // `verifyOnuTypeProfileWithSession` (BUG REAL CONFIRMADO 2026-11-03,
+    // comparando el running-config real de OLT_Tabara_Abajo). Si el regex
+    // no puede parsear el valor con certeza (`undefined`), no se toca nada.
+    const maxIphostMatch = checkOutput.match(/Max\s*IP\s*-?\s*Host:\s*(\d+)/i);
+    const maxIphost = maxIphostMatch ? parseInt(maxIphostMatch[1], 10) : undefined;
+    const needsVeipFix = maxVeip !== undefined && maxVeip < 1;
+    const needsIphostFix = maxIphost !== undefined && maxIphost < 2;
+    if (needsVeipFix || needsIphostFix) {
       let fixSucceeded = false;
       try {
         await session.executeCommand('configure terminal');
         await session.executeCommand('pon');
-        const fixOutput = await session.executeCommand(`onu-type ${profile.name} gpon max-veip 1`);
-        if (isOltErrorResponse(fixOutput)) {
-          logger.warn(
-            `[diag] ensureOnuTypeProfileWithSession: no se pudo corregir "max-veip" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
-          );
-        } else {
-          fixSucceeded = true;
+        if (needsVeipFix) {
+          const fixOutput = await session.executeCommand(`onu-type ${profile.name} gpon max-veip 1`);
+          if (isOltErrorResponse(fixOutput)) {
+            logger.warn(
+              `[diag] ensureOnuTypeProfileWithSession: no se pudo corregir "max-veip" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
+            );
+          } else {
+            fixSucceeded = true;
+          }
+        }
+        if (needsIphostFix) {
+          const fixOutput = await session.executeCommand(`onu-type ${profile.name} gpon max-iphost 2`);
+          if (isOltErrorResponse(fixOutput)) {
+            logger.warn(
+              `[diag] ensureOnuTypeProfileWithSession: no se pudo corregir "max-iphost" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${fixOutput.trim()}`,
+            );
+          } else {
+            fixSucceeded = true;
+          }
         }
       } catch (err: any) {
         // De verdad "mejor esfuerzo": antes, una excepción acá (timeout,
@@ -270,7 +324,7 @@ export async function ensureOnuTypeProfileWithSession(session: ZteSessionLike, p
         // autorización óptica, contradiciendo este mismo comentario (bug
         // real confirmado por revisión de código, 2026-10-23).
         logger.warn(
-          `[diag] ensureOnuTypeProfileWithSession: excepción corrigiendo "max-veip" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${err.message}`,
+          `[diag] ensureOnuTypeProfileWithSession: excepción corrigiendo "max-veip"/"max-iphost" del onu-type "${profile.name}" (mejor esfuerzo, no bloquea la autorización): ${err.message}`,
         );
       } finally {
         // "write" EXIGE estar en el prompt top-level "#" (mismo criterio
@@ -295,7 +349,7 @@ export async function ensureOnuTypeProfileWithSession(session: ZteSessionLike, p
           await session.executeCommand('write');
         } catch (err: any) {
           logger.warn(
-            `[diag] ensureOnuTypeProfileWithSession: no se pudo guardar "write" tras corregir max-veip (mejor esfuerzo): ${err.message}`,
+            `[diag] ensureOnuTypeProfileWithSession: no se pudo guardar "write" tras corregir max-veip/max-iphost (mejor esfuerzo): ${err.message}`,
           );
         }
       }
@@ -315,8 +369,17 @@ export async function ensureOnuTypeProfileWithSession(session: ZteSessionLike, p
   // (applyTr069Profile) nunca llega a apuntar el ONT al ACS para ningún
   // onu-type creado por este método. "max-veip" confirmado como keyword
   // real vía ayuda contextual ("onu-type <nombre> gpon ... ?").
+  //
+  // "max-iphost 2" -- BUG REAL CONFIRMADO comparando el running-config real
+  // de esta OLT (2026-11-03): antes este comando de creación nunca lo
+  // incluía, así que cualquier onu-type creado por este método (ej.
+  // HUAWEY-HG8546M) quedaba sin capacidad explícita para un SEGUNDO
+  // iphost -- "switchport-bind switch_0/1 iphost 2"/"ip-host 2 dhcp-enable
+  // ..." del canal de gestión (Etapa 2) no tienen dónde aplicarse de
+  // verdad. Sintaxis "max-iphost <N>" confirmada real en el running-config
+  // de tipos preexistentes como HUAWEY-BT546XG (que sí lo traen, con N=5).
   const createOutput = await session.executeCommand(
-    `onu-type ${profile.name} gpon description ${description} max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8 max-veip 1`,
+    `onu-type ${profile.name} gpon description ${description} max-tcont 8 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8 max-veip 1 max-iphost 2`,
   );
   if (isOltErrorResponse(createOutput)) {
     await session.executeCommand('exit');

@@ -1369,10 +1369,20 @@ export class OnuManagementService {
     // del VlanEntity, que vive en "tr069Network.vlanId".
     const tr069Network = await this.tr069Repository.findOneBy({ id: dto.tr069NetworkId });
     config.tr069VlanId = tr069Network?.vlanId;
+    // Bug real confirmado (2026-11-03): esta rama solo existía para el caso
+    // `result.warning` -- un éxito limpio (ej. "Config state: success" tras
+    // el polling de applyTr069ManagementWithSession) nunca avanzaba
+    // appliedVersion/applyStatus, así que "Estado de Aprovisionamiento (OLT)"
+    // se quedaba perpetuamente en "Versión Aplicada: 0" incluso cuando la OLT
+    // sí confirmó el cambio. Misma simetría que ya usa authorizeOnu() arriba.
+    config.desiredVersion = Math.max(config.desiredVersion, config.appliedVersion) + 1;
     if (result.warning) {
-      config.desiredVersion = Math.max(config.desiredVersion, config.appliedVersion) + 1;
       config.applyStatus = 'PENDING';
       config.lastApplyError = result.warning;
+    } else {
+      config.appliedVersion = config.desiredVersion;
+      config.applyStatus = 'APPLIED';
+      config.lastApplyError = null!;
     }
     await this.configRepository.save(config);
     } catch (error) {
