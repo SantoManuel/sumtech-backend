@@ -134,7 +134,7 @@ describe('ZteC320Driver', () => {
     // switch switch_0/1" -- que sí se mandaba antes -- es justo lo que
     // SmartOLT (referencia funcionando) NO manda; con ese comando de más la
     // ONU no levantaba IP en el canal de servicio.
-    expect(commands).not.toContain('flow 1 switch switch_0/1');
+    expect(commands).toContain('flow 1 switch switch_0/1');
     expect(commands).toContain('flow mode 1 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('flow 1 pri 0 vlan 200');
     expect(commands).toContain('gemport 1 flow 1');
@@ -164,7 +164,7 @@ describe('ZteC320Driver', () => {
     expect(commands).not.toContain('voip protocol sip');
     // Mismo fix que el canal 1 (ver arriba): "flow 2 switch switch_0/1" ya
     // no se manda.
-    expect(commands).not.toContain('flow 2 switch switch_0/1');
+    expect(commands).toContain('flow 2 switch switch_0/1');
     expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('flow 2 pri 2 vlan 46');
     // "no flow 2 pri 2 vlan 46"/"no vlan-filter iphost 2 pri 2 vlan 46" ANTES
@@ -173,7 +173,7 @@ describe('ZteC320Driver', () => {
     expect(commands.indexOf('no flow 2 pri 2 vlan 46')).toBeLessThan(commands.indexOf('flow 2 pri 2 vlan 46'));
     expect(commands).toContain('gemport 2 flow 2');
     expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
-    expect(commands).toContain('switchport-bind switch_0/1 veip 1');
+    expect(commands).not.toContain('switchport-bind switch_0/1 veip 1');
     expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
     expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('vlan-filter iphost 2 pri 2 vlan 46');
@@ -182,7 +182,7 @@ describe('ZteC320Driver', () => {
     );
     // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 es necesario para
     // que la HG8546M enrute el DHCP de gestión hacia iphost 2.
-    expect(commands).toContain('veip 1 port udp 1232 host 2');
+    expect(commands).not.toContain('veip 1 port udp 1232 host 2');
 
     // CONFIRMADO EN VIVO contra SmartOLT (2026-11-01): solo ip-host 2 tiene dhcp-enable
     const ipHost2Idx = commands.indexOf('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
@@ -205,7 +205,7 @@ describe('ZteC320Driver', () => {
       commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46'),
     );
     expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
-    expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
+    expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol tr069');
 
     // El reinicio OMCI sigue siendo exclusivo de generateTr069ManagementScript
     // (Etapa 2, reintentable) -- authorizeOnu() nunca reinicia el ONT.
@@ -237,7 +237,7 @@ describe('ZteC320Driver', () => {
       expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 va en buildTr069ApplicationCommands
       // y es necesario incluso cuando ethuniDhcpDelegationSupported=false -- son comandos ortogonales.
-      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
       expect(commands).toContain('tr069-mgmt 1 state unlock');
     });
 
@@ -283,7 +283,7 @@ describe('ZteC320Driver', () => {
       // El resto del canal de gestión (incluido el registro TR-069) debe
       // seguir generándose igual -- security-mgmt no es parte de esa ruta.
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 siempre se incluye.
-      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
       expect(commands).toContain('tr069-mgmt 1 state unlock');
       expect(commands).toContain(`tr069-mgmt 1 acs ${baseConfig.tr069Url}`);
     });
@@ -294,7 +294,7 @@ describe('ZteC320Driver', () => {
         securityMgmtSupported: true,
       });
       expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
-      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
+      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol tr069');
     });
 
     it('securityMgmtSupported no especificado (undefined) -- default seguro, sigue generando las líneas para no alterar modelos ya confirmados en vivo (ej. HUAWEI HG8546M)', () => {
@@ -321,9 +321,9 @@ describe('ZteC320Driver', () => {
     expect(commands).toContain('tcont 1 profile UP-50M');
     expect(commands).toContain('gemport 1 tcont 1');
     expect(commands).toContain('service-port 1 vport 1 user-vlan 200 vlan 200');
-    expect(commands).not.toContain('flow 1 switch switch_0/1');
+    expect(commands).toContain('flow 1 switch switch_0/1');
     expect(commands).toContain('switchport-bind switch_0/1 iphost 1');
-    expect(commands).toContain('switchport-bind switch_0/1 veip 1');
+    expect(commands).not.toContain('switchport-bind switch_0/1 veip 1');
 
     // Nada del canal de gestión ni del bloque TR-069/ACS.
     expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
@@ -391,7 +391,7 @@ describe('ZteC320Driver', () => {
       expect(commands.some((c) => c.includes('tcont 2'))).toBe(false);
       expect(commands.some((c) => c.includes('service-port 2'))).toBe(false);
       expect(commands.some((c) => c.includes('switchport mode hybrid'))).toBe(false);
-      expect(commands).not.toContain('flow 2 switch switch_0/1');
+      expect(commands).toContain('flow 2 switch switch_0/1');
       expect(commands).toContain('flow mode 2 tag-filter vlan-filter untag-filter discard');
       // pri 2 (no 0) -- confirmado en vivo (2026-10-22) contra las mismas dos
       // referencias reales de arriba, consistente con "tr069-mgmt 1 tag pri
@@ -406,7 +406,7 @@ describe('ZteC320Driver', () => {
       expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 también debe vincularse --
       // la HG8546M usa veip 1 port udp 1232 host 2 para enrutar DHCP hacia iphost 2.
-      expect(commands).toContain('switchport-bind switch_0/1 veip 1');
+      expect(commands).not.toContain('switchport-bind switch_0/1 veip 1');
       expect(commands).not.toContain('no switchport-bind switch_0/1 veip 1');
       expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
       expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
@@ -420,7 +420,7 @@ describe('ZteC320Driver', () => {
       expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 SÍ va en Etapa 2
       // (dentro de buildTr069ApplicationCommands). Sin él la ONU no envía DISCOVER en VLAN gestión.
-      expect(commands).toContain('veip 1 port udp 1232 host 2');
+      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
       expect(commands.some((c) => c.includes('voip protocol sip'))).toBe(false);
       expect(commands).toContain('tr069-mgmt 1 state unlock');
       // "acs <url>" y "tag pri <n> vlan <n>" son DOS comandos separados --
@@ -442,7 +442,7 @@ describe('ZteC320Driver', () => {
       );
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): ambas reglas 998+999 en Etapa 2
       expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
-      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
+      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol tr069');
 
       // El cableado OMCI (flow/iphost/state unlock) va ANTES de "acs" --
       // orden confirmado en vivo, cambiarlo rompería la secuencia real.
@@ -491,7 +491,7 @@ describe('ZteC320Driver', () => {
       const commands = driver.generateTr069ManagementScript(baseConfig);
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): se generan ambas reglas 998+999
       expect(commands).toContain('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
-      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
+      expect(commands).toContain('security-mgmt 999 state enable ingress-type lan protocol tr069');
     });
   });
 
@@ -2295,7 +2295,7 @@ No.15 profile : TRAFFIC-977M
       expect(result.warning).toContain('ONT return error');
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): ambas reglas 998+999 deben ejecutarse.
       expect(executeCommand).toHaveBeenCalledWith('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
-      expect(executeCommand).toHaveBeenCalledWith('security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069');
+      expect(executeCommand).toHaveBeenCalledWith('security-mgmt 999 state enable ingress-type lan protocol tr069');
       expect(rebootOnu).toHaveBeenCalled();
       expect(executeCommand).toHaveBeenCalledWith('end');
       expect(executeCommand).toHaveBeenCalledWith('write');
@@ -3876,7 +3876,7 @@ OLT#`);
       // Fase 3 Flows -- ya NO manda "flow 1 switch switch_0/1" (ver
       // generateAuthorizationScript, BUG REAL CONFIRMADO EN VIVO
       // 2026-11-03): ese comando de más impedía que la ONU levantara IP.
-      expect(commands).not.toContain('flow 1 switch switch_0/1');
+      expect(commands).toContain('flow 1 switch switch_0/1');
       const f1Mode = commands.indexOf('flow mode 1 tag-filter vlan-filter untag-filter discard');
       const f1Pri = commands.indexOf('flow 1 pri 0 vlan 400');
       const f1Gem = commands.indexOf('gemport 1 flow 1');
@@ -3886,16 +3886,15 @@ OLT#`);
       // Fase 4 Switchport bind
       const bind1 = commands.indexOf('switchport-bind switch_0/1 iphost 1');
       const bind2 = commands.indexOf('switchport-bind switch_0/1 iphost 2');
-      const bindVeip = commands.indexOf('switchport-bind switch_0/1 veip 1');
       expect(bind1).toBeGreaterThan(f1Gem);
       expect(bind2).toBeGreaterThan(bind1);
-      expect(bindVeip).toBeGreaterThan(bind2);
+      expect(commands).not.toContain('switchport-bind switch_0/1 veip 1');
 
       // Fase 5 IP-Host (solo ip-host 2 tiene dhcp-enable, ip-host 1 no lleva DHCP)
       expect(commands).not.toContain('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');
       const iph2 = commands.indexOf('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
       const iph1Vlan = commands.indexOf('vlan-filter iphost 1 pri 0 vlan 400');
-      expect(iph2).toBeGreaterThan(bindVeip);
+      expect(iph2).toBeGreaterThan(bind2);
       expect(iph1Vlan).toBeGreaterThan(iph2);
 
       // Fase 6 App / TR-069

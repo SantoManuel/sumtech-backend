@@ -25,6 +25,29 @@ function defaultDelay(ms: number): Promise<void> {
 }
 
 /**
+ * Pausa deliberada de 6 a 10 segundos para aprovisionamiento TR-069 / OMCI en ZTE C320.
+ * Previene colisiones de comandos, desbordamiento de buffers de entrada y permite
+ * que la MIB OMCI de la ONU sincronice adecuadamente en hardware óptico.
+ */
+export function getTr069PacingDelay(cmd: string): number {
+  if (cmd === 'write') {
+    return 8000; // 8s tras write para consolidar cambios en memoria no volátil
+  }
+  if (cmd.startsWith('pon-onu-mng ') || cmd.startsWith('interface gpon-onu_')) {
+    return 6000; // 6s para asentamiento tras cambio de modo
+  }
+  if (cmd === 'exit' || cmd === 'end') {
+    return 1500;
+  }
+  if (cmd === 'configure terminal') {
+    return 2000;
+  }
+  // Para comandos OMCI y transporte (flows, binds, ip-host, tr069-mgmt, security-mgmt, tcont, gemport, service-port)
+  return 6000;
+}
+
+
+/**
  * Prepara la capa de TRANSPORTE del canal de gestión/TR-069 (tcont 2/
  * gemport 2/service-port 2) -- necesario desde que "Autorizar ONU en la
  * OLT" (Etapa 1) dejó de crearla (decisión de negocio 2026-10-30: se quitó
@@ -89,7 +112,7 @@ export async function ensureTr069TransportWithSession(
       await delay(350);
       output = await session.executeCommand(cmd);
     }
-    const pacingMs = getHumanPacingDelay(cmd);
+    const pacingMs = getTr069PacingDelay(cmd);
     if (pacingMs > 0) {
       await delay(pacingMs);
     }
@@ -196,6 +219,8 @@ export async function applyTr069ManagementWithSession(
   // tocado antes. Si esto falla, es fatal (no mejor esfuerzo): el resto del
   // bloque OMCI de abajo referencia "gemport 2", que no existe sin esto.
   await ensureTr069TransportWithSession(session, config, delay);
+  // Pausa deliberada de 6s para asentar la capa de transporte antes del bloque OMCI
+  await delay(6000);
 
   const commands = generateTr069ManagementScript(config);
   // Acumula TODOS los rechazos de la corrida, no solo el primero -- antes
@@ -254,6 +279,10 @@ export async function applyTr069ManagementWithSession(
     // TR-069 a esta ONU).
     if (isPreparatoryTeardownCommand(cmd)) {
       await session.executeCommand(cmd);
+      const pacingMs = getTr069PacingDelay(cmd);
+      if (pacingMs > 0) {
+        await delay(pacingMs);
+      }
       continue;
     }
 
@@ -271,8 +300,8 @@ export async function applyTr069ManagementWithSession(
       output = await session.executeCommand(cmd);
     }
 
-    // Pacing humano entre comandos
-    const pacingMs = getHumanPacingDelay(cmd);
+    // Pacing deliberado de 6 a 10 segundos entre comandos OMCI
+    const pacingMs = getTr069PacingDelay(cmd);
     if (pacingMs > 0) {
       await delay(pacingMs);
     }

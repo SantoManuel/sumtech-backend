@@ -30,19 +30,19 @@ export function toOnuInterfaceName(ponInterface: string, onuId: number): string 
 /**
  * FASE 3 (parcial) del canal de gestión: flow 2 + gemport 2 flow 2.
  *
+ * "flow 2 switch switch_0/1" ES OBLIGATORIO -- instanciar el flujo en el switch
+ * virtual de la ONU es imprescindible en ZTE C320 antes de configurar su modo;
+ * sin él, "flow mode 2 ..." y subsiguientes son rechazados con
+ * "%Code 63953-GPONRM : Flow does not exist." (confirmado en vivo 2026-11-03).
+ *
  * "no flow 2 pri 2 vlan <N>" ANTES de asignarlo -- mismo criterio que "no
  * service-port <N>" (destruir y recrear limpio, ver generateAuthorizationScript):
  * este comando carga un valor de VLAN embebido igual que "service-port ...
  * vlan ..." (el bug real confirmado en vivo, 2026-10-30).
- * Sintaxis "no flow <N> pri <P> vlan <V>" ya usada y confirmada en vivo en
- * `applyServiceGemportFixWithSession` (Opción B).
- *
- * Ya NO incluye "flow 2 switch switch_0/1" -- mismo fix que el canal 1 (ver
- * `generateAuthorizationScript`, BUG REAL CONFIRMADO EN VIVO 2026-11-03):
- * SmartOLT tampoco lo manda, y con él la ONU no levantaba IP en este canal.
  */
 export function buildTr069FlowCommands(config: AuthorizeOnuParams): string[] {
   return [
+    'flow 2 switch switch_0/1',
     'flow mode 2 tag-filter vlan-filter untag-filter discard',
     `no flow 2 pri 2 vlan ${config.tr069Vlan}`,
     `flow 2 pri 2 vlan ${config.tr069Vlan}`,
@@ -51,13 +51,13 @@ export function buildTr069FlowCommands(config: AuthorizeOnuParams): string[] {
 }
 
 /**
- * FASE 4 (parcial) del canal de gestión: vincula iphost 2 y veip 1 al switch
- * virtual. CONFIRMADO EN VIVO contra SmartOLT (2026-11-01): veip 1 también
- * debe vincularse -- sin él, la HG8546M no enruta el DHCP de gestión hacia
- * iphost 2. NO eliminar veip 1.
+ * FASE 4 (parcial) del canal de gestión: vincula iphost 2 al switch virtual.
+ * CONFIRMADO EN VIVO (2026-11-03): SOLO iphost 2, NO usar veip 1.
+ * Vincular veip 1 genera conflictos en ONUs tipo Huawei HG8546M y provoca
+ * descarte o error de entidad ME.
  */
 export function buildTr069SwitchportBindCommands(): string[] {
-  return ['switchport-bind switch_0/1 iphost 2', 'switchport-bind switch_0/1 veip 1'];
+  return ['switchport-bind switch_0/1 iphost 2'];
 }
 
 /** FASE 5a (parcial) del canal de gestión: solo "ip-host 2 dhcp-enable ...". */
@@ -107,9 +107,10 @@ export function buildDhcpIpEthuniCommands(config: AuthorizeOnuParams): string[] 
 }
 
 /**
- * Reglas de seguridad OMCI (acceso web HTTPS y CLI/SSH/Telnet/SNMP local).
- * Confirmado en vivo contra SmartOLT (2026-11-01): se aplican tanto en Etapa 1
- * como en Etapa 2 si el modelo lo soporta.
+ * Reglas de seguridad OMCI (acceso web HTTPS y TR-069 local).
+ * CONFIRMADO EN VIVO (2026-11-03): en ONUs tipo Huawei HG8546M, especificar
+ * "ftp telnet ssh snmp" en la regla 999 produce "%Code 63993-GPONRM : ONT return error:unknown ME.".
+ * Se restringe la regla 999 estrictamente a "protocol tr069".
  */
 export function buildSecurityMgmtCommands(config: AuthorizeOnuParams): string[] {
   if (config.securityMgmtSupported === false) {
@@ -117,15 +118,15 @@ export function buildSecurityMgmtCommands(config: AuthorizeOnuParams): string[] 
   }
   return [
     'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
-    'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
+    'security-mgmt 999 state enable ingress-type lan protocol tr069',
   ];
 }
 
 /**
  * Reglas de seguridad OMCI para Etapa 2 (TR-069).
- * CONFIRMADO EN VIVO contra SmartOLT (2026-11-01): se necesitan AMBAS reglas
- * 998 (web HTTPS) y 999 (ftp/telnet/ssh/snmp/tr069) -- igual que en Etapa 1.
- * Sin la 998, el portal web de la ONU queda bloqueado.
+ * CONFIRMADO EN VIVO (2026-11-03): regla 998 (web HTTPS) y regla 999 (tr069).
+ * Sin la regla 998, el portal web queda inaccesible. Regla 999 solo con protocol tr069
+ * para no fallar con "unknown ME".
  */
 export function buildTr069SecurityMgmtCommands(config: AuthorizeOnuParams): string[] {
   if (config.securityMgmtSupported === false) {
@@ -133,19 +134,17 @@ export function buildTr069SecurityMgmtCommands(config: AuthorizeOnuParams): stri
   }
   return [
     'security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
-    'security-mgmt 999 state enable ingress-type lan protocol ftp telnet ssh snmp tr069',
+    'security-mgmt 999 state enable ingress-type lan protocol tr069',
   ];
 }
 
 /**
- * FASE 6 (parcial) del canal de gestión: VEIP-port, TR-069-mgmt (ACS y VLAN tag).
- * CONFIRMADO EN VIVO contra SmartOLT (2026-11-01): "veip 1 port udp 1232 host 2"
- * es necesario para que la HG8546M enrute el DHCP de gestión desde el motor
- * interno hacia iphost 2. Sin este comando la ONU no envía DISCOVER en VLAN 444.
+ * FASE 6 (parcial) del canal de gestión: TR-069-mgmt (ACS y VLAN tag).
+ * CONFIRMADO EN VIVO (2026-11-03): NO incluir "veip 1 port udp 1232 host 2"
+ * pues las ONUs HG8546M operan en modo iphost sin entidad ME VEIP.
  */
 export function buildTr069ApplicationCommands(config: AuthorizeOnuParams): string[] {
   return [
-    'veip 1 port udp 1232 host 2',
     'tr069-mgmt 1 state unlock',
     config.tr069AcsUsername && config.tr069AcsPassword
       ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
@@ -330,19 +329,12 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
 
     // === FASE 3: Inicialización de Flows y Mapeo GEM (pon-onu-mng) ===
     // Orden estricto ZTE GPONRM:
-    // 1° flow mode <id> tag-filter vlan-filter untag-filter discard
-    // 2° flow <id> pri <prio> vlan <vlan>
-    // 3° gemport <id> flow <id>
-    //
-    // BUG REAL CONFIRMADO EN VIVO (2026-11-03, ONU CMDCDD4D131E): "flow <id>
-    // switch switch_0/1" -- que este driver sí enviaba antes de esta línea --
-    // es exactamente lo que SmartOLT (referencia confirmada funcionando
-    // contra el mismo hardware) NO manda. Con ese comando de más, la ONU
-    // nunca aprendía MAC en la VLAN de servicio ni obtenía IP (el mismo
-    // síntoma que gatillaba, en cadena, el "Config state: fail" de Etapa 2).
-    // Sin él, la ONU SÍ levanta IP -- confirmado comparando running-config
-    // real contra SmartOLT. No reintroducir sin volver a confirmar en vivo.
+    // 1° flow <id> switch switch_0/1
+    // 2° flow mode <id> tag-filter vlan-filter untag-filter discard
+    // 3° flow <id> pri <prio> vlan <vlan>
+    // 4° gemport <id> flow <id>
     `pon-onu-mng ${onuInterface}`,
+    'flow 1 switch switch_0/1',
     'flow mode 1 tag-filter vlan-filter untag-filter discard',
     `flow 1 pri 0 vlan ${config.serviceVlan}`,
     'gemport 1 flow 1',
@@ -353,13 +345,13 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
   }
 
   // === FASE 4: Vinculación del Switch Virtual (switchport-bind) ===
-  // Debe ejecutarse después de los flows y ANTES de configurar ip-host o veip
-  // Confirmado en vivo contra SmartOLT (2026-11-01): tanto iphost 1 como veip 1 se vinculan en Etapa 1
+  // Debe ejecutarse después de los flows y ANTES de configurar ip-host.
+  // CONFIRMADO EN VIVO (2026-11-03): SOLO iphost 1 (e iphost 2 si hasTr069).
+  // ❌ NO usar: switchport-bind switch_0/1 veip 1
   commands.push('switchport-bind switch_0/1 iphost 1');
   if (hasTr069) {
     commands.push('switchport-bind switch_0/1 iphost 2');
   }
-  commands.push('switchport-bind switch_0/1 veip 1');
 
   // === FASE 5: Configuración de IP-Host y Filtros de VLAN ===
   // CONFIRMADO EN VIVO contra SmartOLT (2026-11-01):
@@ -407,15 +399,13 @@ export function generateTr069ManagementScript(config: AuthorizeOnuParams): strin
   return [
     'configure terminal',
     `pon-onu-mng ${onuInterface}`,
-    // 1. Inicializar Flow 2 en orden jerárquico ZTE GPONRM
+    // 1. Inicializar Flow 2 en orden jerárquico ZTE GPONRM (flow 2 switch switch_0/1 primero)
     ...buildTr069FlowCommands(config),
-    // 2. Vincular switch interno a iphost 2 + veip 1.
-    // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 es necesario para que
-    // la HG8546M enrute DHCP de gestión hacia iphost 2. Sin él no hay DISCOVER en VLAN gestión.
+    // 2. Vincular switch interno a iphost 2 (SOLO iphost 2, SIN veip 1)
     ...buildTr069SwitchportBindCommands(),
     // 3. Configurar IP-Host 2 (DHCP activo) y su filtro de VLAN en orden
     ...buildTr069IpHostCommands(config),
-    // 4. veip 1 port udp 1232 host 2 + TR-069/ACS + reglas seguridad 998+999
+    // 4. TR-069/ACS + reglas seguridad 998+999 (solo tr069)
     ...buildTr069ApplicationCommands(config),
     ...buildTr069SecurityMgmtCommands(config),
     'end',
