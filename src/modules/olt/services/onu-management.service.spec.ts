@@ -865,6 +865,65 @@ describe('OnuManagementService', () => {
     });
   });
 
+  describe('resolveLiveManagementIp -- consulta en vivo a la OLT la IP que la ONU ya obtuvo (usada por OnuWebProxyService para abrir la GUI remota sin depender de GenieACS)', () => {
+    it('devuelve mgmtIp de getOnuIpHost si está presente y no es 0.0.0.0', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '10.46.0.247', serviceIp: '10.46.10.15', ipHostFound: true, raw: '' });
+
+      const ip = await service.resolveLiveManagementIp('onu-uuid-1');
+
+      expect(ip).toBe('10.46.0.247');
+      expect(zteDriver.getOnuWanIp).not.toHaveBeenCalled();
+    });
+
+    it('si mgmtIp es 0.0.0.0/undefined pero serviceIp sí tiene valor, usa serviceIp', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: '0.0.0.0', serviceIp: '10.46.10.15', ipHostFound: true, raw: '' });
+
+      const ip = await service.resolveLiveManagementIp('onu-uuid-1');
+
+      expect(ip).toBe('10.46.10.15');
+    });
+
+    it('si getOnuIpHost no reporta nada útil, cae a getOnuWanIp (host2 antes que host1)', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: undefined, serviceIp: undefined, ipHostFound: false, raw: '' });
+      zteDriver.getOnuWanIp.mockResolvedValue({ host1: { ip: '10.46.10.15' }, host2: { ip: '10.46.0.247' }, raw: '' });
+
+      const ip = await service.resolveLiveManagementIp('onu-uuid-1');
+
+      expect(ip).toBe('10.46.0.247');
+    });
+
+    it('devuelve null (sin reventar) si ningún método reporta una IP real', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      zteDriver.getOnuIpHost.mockResolvedValue({ mgmtIp: undefined, serviceIp: undefined, ipHostFound: false, raw: '' });
+      zteDriver.getOnuWanIp.mockResolvedValue({ raw: '' });
+
+      const ip = await service.resolveLiveManagementIp('onu-uuid-1');
+
+      expect(ip).toBeNull();
+    });
+
+    it('devuelve null si el fabricante no implementa estos métodos (ej. Huawei, driver sin implementar) en vez de lanzar', async () => {
+      onuRepo.findOne.mockResolvedValue(mockOnu);
+      delete zteDriver.getOnuIpHost;
+      delete zteDriver.getOnuWanIp;
+
+      const ip = await service.resolveLiveManagementIp('onu-uuid-1');
+
+      expect(ip).toBeNull();
+    });
+
+    it('devuelve null (sin reventar) si la ONU no existe o la OLT no es alcanzable', async () => {
+      onuRepo.findOne.mockResolvedValue(null);
+
+      const ip = await service.resolveLiveManagementIp('onu-inexistente');
+
+      expect(ip).toBeNull();
+    });
+  });
+
   describe('applyWanIpFix -- Opción A de recuperación de IP ("Reaplicar wan-ip"), CONFIRMADA EN VIVO (2026-10-30, ONU ECOM0F91DF9B)', () => {
     const fixOnu = {
       ...mockOnu,

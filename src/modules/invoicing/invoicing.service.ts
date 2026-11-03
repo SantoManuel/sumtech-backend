@@ -15,6 +15,7 @@ import { ContractEntity } from '../clients/entities/contract.entity';
 import { PlanEntity } from '../plans/entities/plan.entity';
 import { EmitInvoiceDto } from './dto/emit-invoice.dto';
 import { GenerateEcfDto } from './dto/generate-ecf.dto';
+import { UpdateEcfSequenceDto } from './dto/update-ecf-sequence.dto';
 import { DgiiXmlGeneratorService, EcfItemInput, UNIDAD_MEDIDA_UND, usesNcfExpiryDate, sanitizeProvincia } from './dgii/dgii-xml-generator.service';
 import { DgiiClientService, DgiiSendResult } from './dgii/dgii-client.service';
 import { DgiiSignerService } from './dgii/dgii-signer.service';
@@ -27,6 +28,33 @@ import { formatDateDgii, dateKeyDgii } from '../../common/utils/dgii-date.util';
 import { MinioStorageService } from '../storage/minio-storage.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { loadMinioConfig, MinioConfig } from '../../config/minio.config';
+
+export const ECF_SEQUENCE_METADATA: Record<string, { name: string; description: string }> = {
+  E31: {
+    name: 'Factura de Crédito Fiscal Electrónica',
+    description: 'Clientes corporativos o personas físicas con RNC para sustentar costos y gastos tributarios (B2B).'
+  },
+  E32: {
+    name: 'Factura de Consumo Electrónica',
+    description: 'Consumidores finales sin valor de crédito fiscal (B2C, ventas por defecto en POS).'
+  },
+  E33: {
+    name: 'Nota de Débito Electrónica',
+    description: 'Para recuperar costos o gastos adicionales incurridos luego de la emisión de una factura.'
+  },
+  E34: {
+    name: 'Nota de Crédito Electrónica',
+    description: 'Para anular o rectificar facturas electrónicas emitidas previamente.'
+  },
+  E44: {
+    name: 'Regímenes Especiales de Tributación Electrónico',
+    description: 'Facturación a clientes amparados bajo regímenes especiales de tributación o exención de ITBIS.'
+  },
+  E45: {
+    name: 'Comprobante Gubernamental Electrónico',
+    description: 'Ventas de bienes o servicios a instituciones gubernamentales del Estado Dominicano.'
+  },
+};
 
 @Injectable()
 export class InvoicingService {
@@ -92,6 +120,12 @@ export class InvoicingService {
         alertRemaining: 50,
       });
       sequenceRecord = await seqRepo.save(sequenceRecord);
+    }
+
+    if (sequenceRecord.isActive === false) {
+      throw new BadRequestException(
+        `El tipo de comprobante ${ncfType} se encuentra inactivo. Habilítelo en la configuración de la DGII.`
+      );
     }
 
     const currentSeqNum = Number(sequenceRecord.currentSequence);
@@ -835,6 +869,153 @@ export class InvoicingService {
     }
     const filename = `${invoice.ncfNumber || id}.xml`;
     return { filename, xmlContent: invoice.signedXmlContent };
+  }
+
+    /**
+   * Obtiene el listado completo y detallado de todas las secuencias e-CF autorizadas
+   * con métricas de consumo, remanente y salud fiscal (exclusivamente electrónicas).
+   */
+  async getAllSequences() {
+    const requiredTypes: Array<'E31' | 'E32' | 'E33' | 'E34' | 'E44' | 'E45'> = [
+      'E31', 'E32', 'E33', 'E34', 'E44', 'E45'
+    ];
+
+    for (const t of requiredTypes) {
+      const exists = await this.sequenceRepository.findOne({ where: { ncfType: t } });
+      if (!exists) {
+        await this.sequenceRepository.save(
+          this.sequenceRepository.create({
+            ncfType: t,
+            serie: 'E',
+            currentSequence: 1,
+            startSequence: 1,
+            endSequence: 100000,
+            authorizationNumber: '6005450276',
+            expiryDate: '31-12-2026',
+            isActive: true,
+            alertRemaining: 50,
+          }),
+        );
+      }
+    }
+
+    const sequences = await this.sequenceRepository.find({ order: { ncfType: 'ASC' } });
+    const ecfSequences = sequences.filter((s) => s.ncfType.startsWith('E'));
+
+    return ecfSequences.map((s) => {
+      const current = Number(s.currentSequence);
+      const start = Number(s.startSequence || 1);
+      const end = Number(s.endSequence);
+      const remaining = Math.max(0, end - current + 1);
+      const totalRange = Math.max(1, end - start + 1);
+      const consumed = Math.max(0, current - start);
+      const consumptionPercentage = Math.min(100, Math.max(0, Math.round((consumed / totalRange) * 100)));
+      const isLowRemaining = remaining <= Number(s.alertRemaining || 50);
+      const isCritical = remaining <= 10;
+      const nextNcfFormatted = `${s.ncfType}${current.toString().padStart(10, '0')}`;
+      const meta = ECF_SEQUENCE_METADATA[s.ncfType] || {
+        name: `Comprobante Electrónico ${s.ncfType}`,
+        description: `Secuencia electrónica autorizada por DGII tipo ${s.ncfType}`,
+      };
+
+      return {
+        id: s.id,
+        ncfType: s.ncfType,
+        name: meta.name,
+        description: meta.description,
+        serie: s.serie,
+        currentSequence: current,
+        startSequence: start,
+        endSequence: end,
+        authorizationNumber: s.authorizationNumber,
+        expiryDate: s.expiryDate,
+        alertRemaining: Number(s.alertRemaining || 50),
+        isActive: s.isActive,
+        remaining,
+        consumptionPercentage,
+        isLowRemaining,
+        isCritical,
+        nextNcfFormatted,
+        updatedAt: s.updatedAt,
+      };
+    });
+  }
+
+  /**
+   * Actualiza los parámetros de una secuencia e-CF (rango, correlativo actual, autorización, etc.)
+   */
+  async updateSequence(id: string, dto: UpdateEcfSequenceDto, userId?: string) {
+    let sequence = await this.sequenceRepository.findOne({ where: { id } });
+    if (!sequence) {
+      sequence = await this.sequenceRepository.findOne({ where: { ncfType: id as any } });
+    }
+
+    if (!sequence) {
+      throw new NotFoundException(`Secuencia fiscal con identificador "${id}" no encontrada`);
+    }
+
+    const newStart = dto.startSequence !== undefined ? Number(dto.startSequence) : Number(sequence.startSequence);
+    const newEnd = dto.endSequence !== undefined ? Number(dto.endSequence) : Number(sequence.endSequence);
+    const newCurrent = dto.currentSequence !== undefined ? Number(dto.currentSequence) : Number(sequence.currentSequence);
+
+    if (newStart > newEnd) {
+      throw new BadRequestException(
+        `La secuencia inicial (${newStart}) no puede ser mayor que la secuencia final (${newEnd}).`
+      );
+    }
+
+    if (newCurrent < newStart || newCurrent > newEnd) {
+      throw new BadRequestException(
+        `La secuencia actual (${newCurrent}) debe estar dentro del rango autorizado [${newStart} - ${newEnd}].`
+      );
+    }
+
+    if (dto.currentSequence !== undefined) sequence.currentSequence = newCurrent;
+    if (dto.startSequence !== undefined) sequence.startSequence = newStart;
+    if (dto.endSequence !== undefined) sequence.endSequence = newEnd;
+    if (dto.authorizationNumber !== undefined) sequence.authorizationNumber = dto.authorizationNumber.trim();
+    if (dto.expiryDate !== undefined) sequence.expiryDate = dto.expiryDate.trim();
+    if (dto.alertRemaining !== undefined) sequence.alertRemaining = Number(dto.alertRemaining);
+    if (dto.isActive !== undefined) sequence.isActive = dto.isActive;
+
+    const saved = await this.sequenceRepository.save(sequence);
+
+    this.logger.log(
+      `Secuencia e-CF ${saved.ncfType} actualizada exitosamente (Actual: ${saved.currentSequence}, Rango: [${saved.startSequence}-${saved.endSequence}], Usuario: ${userId || 'SYSTEM'})`
+    );
+
+    const current = Number(saved.currentSequence);
+    const start = Number(saved.startSequence || 1);
+    const end = Number(saved.endSequence);
+    const remaining = Math.max(0, end - current + 1);
+    const totalRange = Math.max(1, end - start + 1);
+    const consumed = Math.max(0, current - start);
+    const consumptionPercentage = Math.min(100, Math.max(0, Math.round((consumed / totalRange) * 100)));
+    const meta = ECF_SEQUENCE_METADATA[saved.ncfType] || {
+      name: `Comprobante Electrónico ${saved.ncfType}`,
+      description: `Secuencia electrónica autorizada por DGII tipo ${saved.ncfType}`,
+    };
+
+    return {
+      id: saved.id,
+      ncfType: saved.ncfType,
+      name: meta.name,
+      description: meta.description,
+      serie: saved.serie,
+      currentSequence: current,
+      startSequence: start,
+      endSequence: end,
+      authorizationNumber: saved.authorizationNumber,
+      expiryDate: saved.expiryDate,
+      alertRemaining: Number(saved.alertRemaining || 50),
+      isActive: saved.isActive,
+      remaining,
+      consumptionPercentage,
+      isLowRemaining: remaining <= Number(saved.alertRemaining || 50),
+      isCritical: remaining <= 10,
+      nextNcfFormatted: `${saved.ncfType}${current.toString().padStart(10, '0')}`,
+      updatedAt: saved.updatedAt,
+    };
   }
 
   /**

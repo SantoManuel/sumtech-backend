@@ -4,6 +4,7 @@ import { InvoicingService } from './invoicing.service';
 import { EmitInvoiceDto } from './dto/emit-invoice.dto';
 import { FindInvoicesDto } from './dto/find-invoices.dto';
 import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
+import { UpdateEcfSequenceDto } from './dto/update-ecf-sequence.dto';
 import { DgiiClientService } from './dgii/dgii-client.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
@@ -64,6 +65,22 @@ export class InvoicingController {
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
   async findBySaleId(@Param('saleId') saleId: string) {
     return this.invoicingService.findBySaleId(saleId);
+  }
+
+    @Get('sequences')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async getAllSequences() {
+    return this.invoicingService.getAllSequences();
+  }
+
+  @Patch('sequences/:id')
+  @Roles(Role.ADMIN, Role.GERENTE)
+  async updateSequence(
+    @Param('id') id: string,
+    @Body() dto: UpdateEcfSequenceDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.invoicingService.updateSequence(id, dto, userId);
   }
 
   @Get('sequences/available')

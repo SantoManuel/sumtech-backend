@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Query,
+  Body,
   Req,
   Res,
   UseGuards,
@@ -16,23 +17,28 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { Role } from '../../../common/enums/role.enum';
 import { OnuWebProxyService } from '../services/onu-web-proxy.service';
+import { CreateWebProxySessionDto } from '../dto/create-web-proxy-session.dto';
 
 @Controller('olt/onus')
 export class OnuWebProxyController {
   constructor(private readonly proxyService: OnuWebProxyService) {}
 
   /**
-   * Genera un token y URL segura para acceder a la GUI web de la ONU de forma remota
+   * Genera un token y URL segura para acceder a la GUI web de la ONU de forma remota.
+   * Si la ONU no tiene contacto con GenieACS ni WAN estática, `manualIp` permite
+   * al operador indicar la IP de gestión conocida -- se persiste para no volver
+   * a pedirla en sesiones futuras.
    */
   @Post(':id/web-proxy-session')
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   async createWebProxySession(
     @Param('id') id: string,
+    @Body() dto: CreateWebProxySessionDto,
     @Req() req: any,
   ) {
     const userId = req.user?.sub || req.user?.id || 'system';
-    return this.proxyService.createWebSession(id, userId);
+    return this.proxyService.createWebSession(id, userId, dto.manualIp);
   }
 
   /**

@@ -850,6 +850,53 @@ export class OnuManagementService {
   }
 
   /**
+   * Consulta en vivo a la OLT la IP de gestión/servicio que la ONU YA
+   * OBTUVO (vía "show gpon remote-onu ip-host" / "wan-ip") -- esto es lo que
+   * permite abrir la GUI web remota (ver OnuWebProxyService) sin depender de
+   * que la ONU haya contactado a GenieACS. Solo ZTE tiene estas consultas
+   * implementadas de verdad hoy (CONFIRMADO EN VIVO, ver
+   * zte-c320-onu-audit.ts); cualquier otro fabricante, o cualquier error de
+   * conexión/driver, hace que esto devuelva null en vez de reventar -- es un
+   * mejor-esfuerzo, no una operación crítica.
+   */
+  async resolveLiveManagementIp(id: string): Promise<string | null> {
+    let target: Awaited<ReturnType<typeof this.resolveOnuAuditTarget>>;
+    try {
+      target = await this.resolveOnuAuditTarget(id);
+    } catch {
+      return null;
+    }
+    const { onu, driver, connParams, ponInterface, onuId } = target;
+
+    try {
+      return await withOltTelnetLock(onu.olt.id, async () => {
+        if (driver.getOnuIpHost) {
+          try {
+            const ipHost = await driver.getOnuIpHost(connParams, ponInterface, onuId);
+            if (ipHost.mgmtIp && ipHost.mgmtIp !== '0.0.0.0') return ipHost.mgmtIp;
+            if (ipHost.serviceIp && ipHost.serviceIp !== '0.0.0.0') return ipHost.serviceIp;
+          } catch {
+            // seguir intentando con wan-ip
+          }
+        }
+        if (driver.getOnuWanIp) {
+          try {
+            const wanIp = await driver.getOnuWanIp(connParams, ponInterface, onuId);
+            const ip = wanIp.host2?.ip || wanIp.host1?.ip;
+            if (ip && ip !== '0.0.0.0') return ip;
+          } catch {
+            // sin suerte, ningún dato real disponible
+          }
+        }
+        return null;
+      });
+    } catch (err: any) {
+      this.logger.warn(`No se pudo consultar la IP en vivo en la OLT para ONU ${id}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Opción A de recuperación de IP ("Reaplicar wan-ip") -- acción deliberada
    * disparada desde la pestaña de Auditoría, CONFIRMADA EN VIVO (2026-10-30,
    * OLT_Tabara_Abajo, ONU ECOM0F91DF9B). NO toca el resto del cableado OMCI.

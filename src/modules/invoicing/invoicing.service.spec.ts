@@ -1129,6 +1129,94 @@ describe('InvoicingService', () => {
       );
     });
   });
+
+  describe('Gestión de Secuencias e-CF (getAllSequences & updateSequence)', () => {
+    it('getAllSequences devuelve exclusivamente comprobantes tipo E y calcula métricas', async () => {
+      sequenceRepo.find.mockResolvedValueOnce([
+        {
+          id: 'seq-1',
+          ncfType: 'E31',
+          serie: 'E',
+          currentSequence: 10,
+          startSequence: 1,
+          endSequence: 100,
+          authorizationNumber: '6005450276',
+          expiryDate: '31-12-2026',
+          alertRemaining: 20,
+          isActive: true,
+          updatedAt: new Date(),
+        },
+        {
+          id: 'seq-2',
+          ncfType: 'B01',
+          serie: 'B',
+          currentSequence: 5,
+          startSequence: 1,
+          endSequence: 100,
+          authorizationNumber: '6005450276',
+          expiryDate: '31-12-2026',
+          alertRemaining: 10,
+          isActive: true,
+          updatedAt: new Date(),
+        },
+      ]);
+      sequenceRepo.findOne.mockResolvedValue({ id: 'exists' });
+
+      const res = await service.getAllSequences();
+      expect(res).toBeDefined();
+      expect(res.every((s: any) => s.ncfType.startsWith('E'))).toBe(true);
+      const e31 = res.find((s: any) => s.ncfType === 'E31');
+      expect(e31).toBeDefined();
+      expect(e31?.remaining).toBe(91); // 100 - 10 + 1
+      expect(e31?.nextNcfFormatted).toBe('E310000000010');
+      expect(e31?.isLowRemaining).toBe(false);
+    });
+
+    it('updateSequence valida que la secuencia actual esté dentro del rango autorizado', async () => {
+      sequenceRepo.findOne.mockResolvedValueOnce({
+        id: 'seq-1',
+        ncfType: 'E31',
+        currentSequence: 10,
+        startSequence: 1,
+        endSequence: 100,
+        authorizationNumber: '6005450276',
+        expiryDate: '31-12-2026',
+        alertRemaining: 20,
+        isActive: true,
+      });
+
+      await expect(
+        service.updateSequence('seq-1', { currentSequence: 150 })
+      ).rejects.toThrow('debe estar dentro del rango autorizado');
+    });
+
+    it('updateSequence actualiza correctamente y recalcula métricas', async () => {
+      const mockSeq = {
+        id: 'seq-1',
+        ncfType: 'E31',
+        currentSequence: 10,
+        startSequence: 1,
+        endSequence: 100,
+        authorizationNumber: '6005450276',
+        expiryDate: '31-12-2026',
+        alertRemaining: 20,
+        isActive: true,
+        updatedAt: new Date(),
+      };
+      sequenceRepo.findOne.mockResolvedValueOnce(mockSeq);
+      sequenceRepo.save.mockImplementationOnce(async (saved) => ({ ...mockSeq, ...saved }));
+
+      const res = await service.updateSequence('seq-1', {
+        currentSequence: 85,
+        alertRemaining: 20,
+      }, 'user-admin-1');
+
+      expect(res.currentSequence).toBe(85);
+      expect(res.remaining).toBe(16); // 100 - 85 + 1
+      expect(res.isLowRemaining).toBe(true);
+      expect(res.nextNcfFormatted).toBe('E310000000085');
+    });
+  });
 });
 
 

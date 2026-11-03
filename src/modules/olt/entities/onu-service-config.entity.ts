@@ -87,6 +87,11 @@ export class OnuServiceConfigEntity {
   @JoinColumn({ name: 'tr069_network_id' })
   tr069Network?: Tr069NetworkEntity;
 
+  // IP de gestión asignada MANUALMENTE por el operador (ver
+  // OnuWebProxyService.createWebSession / resolveOnuIp) para abrir la GUI
+  // web de la ONU sin depender de que haya contactado a GenieACS. Tiene
+  // prioridad sobre la IP resuelta vía GenieACS. NO la toca ningún flujo de
+  // aprovisionamiento WAN -- eso vive en wan_static_ip/wan_mode.
   @Column({ name: 'tr069_ip', type: 'varchar', length: 45, nullable: true })
   tr069Ip?: string;
 

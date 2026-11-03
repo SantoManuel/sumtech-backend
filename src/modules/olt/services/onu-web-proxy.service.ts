@@ -18,6 +18,7 @@ import { OnuServiceConfigEntity } from '../entities/onu-service-config.entity';
 import { GENIEACS_CLIENT } from '../../genieacs/genieacs-client-factory';
 import { GenieAcsClient } from '../../genieacs/genieacs-client';
 import { GenieAcsDeviceResolverService } from '../../genieacs/genieacs-device-resolver.service';
+import { OnuManagementService } from './onu-management.service';
 
 export interface CpeSessionPayload {
   onuId: string;
@@ -61,6 +62,7 @@ export class OnuWebProxyService {
     @Inject(GENIEACS_CLIENT)
     private readonly genieAcsClient: GenieAcsClient | null,
     private readonly genieAcsDeviceResolver: GenieAcsDeviceResolverService,
+    private readonly onuManagementService: OnuManagementService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
   ) {}
@@ -127,9 +129,27 @@ export class OnuWebProxyService {
   }
 
   /**
-   * Resuelve la IP de gestión de la ONU buscando en GenieACS, config de servicio o mgmtIp
+   * Resuelve la IP de gestión de la ONU buscando primero una IP manual
+   * asignada por el operador (serviceConfig.tr069Ip -- ver
+   * setManualManagementIp): primero se pregunta EN VIVO a la OLT la IP que
+   * la ONU ya obtuvo (OnuManagementService.resolveLiveManagementIp -- "show
+   * gpon remote-onu ip-host"/"wan-ip", solo ZTE lo tiene implementado hoy),
+   * sin que la ONU necesite haber contactado nunca a GenieACS. Si el
+   * fabricante no soporta esa consulta (ej. Huawei, driver sin implementar
+   * todavía) se cae a la IP manual que haya guardado el operador, luego a
+   * GenieACS, y por último a la WAN estática configurada.
    */
   async resolveOnuIp(onu: OnuEntity): Promise<string> {
+    const liveIp = await this.onuManagementService.resolveLiveManagementIp(onu.id);
+    if (liveIp) {
+      this.logger.log(`IP de gestión obtenida en vivo desde la OLT para ONU ${onu.serialNumber}: ${liveIp}`);
+      return liveIp;
+    }
+
+    if (onu.serviceConfig?.tr069Ip) {
+      return onu.serviceConfig.tr069Ip;
+    }
+
     // 1. Intentar resolver deviceId de GenieACS
     let deviceId = onu.genieacsDeviceId;
     if (!deviceId && onu.contractId) {
@@ -174,11 +194,8 @@ export class OnuWebProxyService {
       }
     }
 
-    // 2. Revisar configuración de servicio
-    if (onu.serviceConfig) {
-      if (onu.serviceConfig.tr069Ip) return onu.serviceConfig.tr069Ip;
-      if (onu.serviceConfig.wanStaticIp) return onu.serviceConfig.wanStaticIp;
-    }
+    // 2. Revisar WAN estática configurada
+    if (onu.serviceConfig?.wanStaticIp) return onu.serviceConfig.wanStaticIp;
 
     const cfg = await this.configRepository.findOne({ where: { onuId: onu.id } });
     if (cfg?.tr069Ip) return cfg.tr069Ip;
@@ -217,9 +234,15 @@ export class OnuWebProxyService {
   }
 
   /**
-   * Inicia una sesión temporal de acceso web remoto para la ONU
+   * Inicia una sesión temporal de acceso web remoto para la ONU.
+   *
+   * Si el operador ya conoce la IP de gestión (ej. la ONU nunca contactó a
+   * GenieACS, o es un equipo detectedBy=OLT_IMPORT ya cableado en producción
+   * por fuera de este sistema), `manualIp` la persiste en
+   * serviceConfig.tr069Ip y la usa de inmediato -- no hace falta esperar a
+   * que GenieACS resuelva algo que Sumtech ya sabe.
    */
-  async createWebSession(onuId: string, userId: string): Promise<CpeWebSessionResult> {
+  async createWebSession(onuId: string, userId: string, manualIp?: string): Promise<CpeWebSessionResult> {
     const onu = await this.onuRepository.findOne({
       where: { id: onuId },
       relations: ['serviceConfig', 'onuType'],
@@ -227,6 +250,20 @@ export class OnuWebProxyService {
 
     if (!onu) {
       throw new NotFoundException(`ONU con id ${onuId} no encontrada.`);
+    }
+
+    if (manualIp) {
+      let config = onu.serviceConfig || (await this.configRepository.findOneBy({ onuId: onu.id }));
+      if (!config) {
+        config = this.configRepository.create({
+          onuId: onu.id,
+          managementMethod: 'TR069',
+          operationMode: 'ROUTER',
+        });
+      }
+      config.tr069Ip = manualIp;
+      onu.serviceConfig = await this.configRepository.save(config);
+      this.logger.log(`IP de gestión manual registrada por el operador para ONU ${onu.serialNumber}: ${manualIp}`);
     }
 
     const targetIp = await this.resolveOnuIp(onu);
