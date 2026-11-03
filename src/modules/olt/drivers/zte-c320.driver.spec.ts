@@ -3907,6 +3907,53 @@ OLT#`);
       expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
     });
   });
+
+  describe('rebootOnu() y factoryResetOnu()', () => {
+    it('rebootOnu() ejecuta configure terminal, entra a pon-onu-mng, llama a session.rebootOnu() y hace exit', async () => {
+      const driver = new ZteC320Driver();
+      const executeCommand = jest.fn().mockResolvedValue('OLT#');
+      const rebootOnuMock = jest.fn().mockResolvedValue(undefined);
+      const close = jest.fn().mockResolvedValue(undefined);
+
+      (driver as any).createSession = jest.fn().mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu: rebootOnuMock,
+        close,
+      });
+
+      const res = await driver.rebootOnu({ host: '10.0.0.1', port: 23, username: 'u', password: 'p' }, '1/1/1', 1);
+
+      expect(res.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('configure terminal');
+      expect(executeCommand).toHaveBeenCalledWith('pon-onu-mng gpon-onu_1/1/1:1');
+      expect(rebootOnuMock).toHaveBeenCalled();
+      expect(close).toHaveBeenCalled();
+    });
+
+    it('factoryResetOnu() ejecuta configure terminal, entra a pon-onu-mng, llama a session.factoryResetOnu() y hace exit', async () => {
+      const driver = new ZteC320Driver();
+      const executeCommand = jest.fn().mockResolvedValue('OLT#');
+      const factoryResetMock = jest.fn().mockResolvedValue(undefined);
+      const close = jest.fn().mockResolvedValue(undefined);
+
+      (driver as any).createSession = jest.fn().mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        factoryResetOnu: factoryResetMock,
+        close,
+      });
+
+      const res = await driver.factoryResetOnu({ host: '10.0.0.1', port: 23, username: 'u', password: 'p' }, '1/1/1', 1);
+
+      expect(res.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('configure terminal');
+      expect(executeCommand).toHaveBeenCalledWith('pon-onu-mng gpon-onu_1/1/1:1');
+      expect(factoryResetMock).toHaveBeenCalled();
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
 });
 
 describe('ZteTelnetSession.executeCommand() -- bug real de producción (2026-10-17)', () => {
@@ -4004,6 +4051,33 @@ describe('ZteTelnetSession.executeCommand() -- bug real de producción (2026-10-
 
     await expect(promise).rejects.toThrow(/timeout/i);
   });
+
+  it('factoryResetOnu() responde el prompt interactivo "[yes/no]:" con "yes" y resuelve cuando vuelve el prompt de la OLT', async () => {
+    const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+    const fakeSocket = createFakeSocket();
+    (session as any).socket = fakeSocket;
+
+    const promise = session.factoryResetOnu(5000);
+
+    fakeSocket.emit('data', Buffer.from('\r\nConfirm to restore factory? [yes/no]:'));
+    expect(fakeSocket.write).toHaveBeenCalledWith('yes\r\n');
+
+    fakeSocket.emit('data', Buffer.from('\r\n(gpon-onu-mng)#'));
+
+    await expect(promise).resolves.toBeUndefined();
+    expect(fakeSocket.write).toHaveBeenCalledWith('restore factory\r\n');
+  });
+
+  it('factoryResetOnu() rechaza si el prompt "[yes/no]:" nunca llega (timeout)', async () => {
+    const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+    const fakeSocket = createFakeSocket();
+    (session as any).socket = fakeSocket;
+
+    const promise = session.factoryResetOnu(50);
+
+    await expect(promise).rejects.toThrow(/timeout/i);
+  });
+
 
   describe('close() -- bug real corregido (2026-10-29): antes escribía "exit\\r\\n" y destruía el socket de inmediato, sin esperar el prompt interactivo "[yes/no]:" que la OLT dispara si hay cambios sin guardar, dejando potencialmente la sesión colgada del lado del equipo', () => {
     it('sesión "dirty" (tras "configure terminal"): si la OLT pregunta "[yes/no]:" al hacer exit, responde "yes" antes de destruir el socket', async () => {

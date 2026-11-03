@@ -109,6 +109,7 @@ export class ZteC320Driver implements IOltDriver {
     connectAndLogin(): Promise<void>;
     executeCommand(cmd: string, timeoutMs?: number): Promise<string>;
     rebootOnu(timeoutMs?: number): Promise<void>;
+    factoryResetOnu?(timeoutMs?: number): Promise<void>;
     close(): Promise<void>;
   } {
     return new ZteTelnetSession(params);
@@ -1015,6 +1016,73 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * Reinicia la ONU en la OLT mediante OMCI ("reboot").
+   */
+  async rebootOnu(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
+      await session.executeCommand('configure terminal');
+      const pomOutput = await session.executeCommand(`pon-onu-mng ${onuInterface}`);
+      if (isOltErrorResponse(pomOutput)) {
+        throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${pomOutput.trim()}`);
+      }
+      await session.rebootOnu();
+      try {
+        await session.executeCommand('end');
+      } catch {
+        /* best-effort */
+      }
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Restablece la configuración de fábrica de la ONU en la OLT mediante OMCI ("restore factory").
+   */
+  async factoryResetOnu(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const onuInterface = toOnuInterfaceName(ponInterface, onuId);
+      await session.executeCommand('configure terminal');
+      const pomOutput = await session.executeCommand(`pon-onu-mng ${onuInterface}`);
+      if (isOltErrorResponse(pomOutput)) {
+        throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${pomOutput.trim()}`);
+      }
+      if (session.factoryResetOnu) {
+        await session.factoryResetOnu();
+      } else {
+        await session.rebootOnu();
+      }
+      try {
+        await session.executeCommand('end');
+      } catch {
+        /* best-effort */
+      }
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      await session.close();
+    }
+  }
+
+
+  /**
    * "shutdown"/"no shutdown" sobre la interfaz indicada — mismo mecanismo ya
    * confirmado en producción vía `setOnuAdminState()`, aplicado aquí a una
    * interfaz física completa (puerto PON o uplink) en vez de a la
@@ -1157,6 +1225,8 @@ export class ZteC320Driver implements IOltDriver {
       // convención de este archivo. Ver ensureOnuTypeProfile().
       // Sintaxis confirmada contra el manual oficial y corregida en vivo.
       onuTypeProfileProvisioning: true,
+      onuReboot: true,
+      onuFactoryReset: true,
     };
   }
 

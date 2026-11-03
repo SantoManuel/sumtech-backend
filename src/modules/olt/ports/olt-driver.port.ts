@@ -436,6 +436,8 @@ export interface OltDriverCapabilities {
    * archivo. Ver ZteC320Driver.ensureOnuTypeProfile().
    */
   onuTypeProfileProvisioning: boolean;
+  onuReboot: boolean;
+  onuFactoryReset: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -462,6 +464,8 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   trafficDiscovery: false,
   downstreamTrafficProfile: false,
   onuTypeProfileProvisioning: false,
+  onuReboot: false,
+  onuFactoryReset: false,
 };
 
 /**
@@ -585,6 +589,9 @@ export interface IOltDriver {
   ): Promise<{ ok: boolean; error?: string; warning?: string }>;
   setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }>;
   deleteOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;
+  rebootOnu?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;
+  factoryResetOnu?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;
+
   /**
    * Habilita/deshabilita administrativamente una interfaz física completa
    * (puerto PON o uplink) — distinto de `setOnuAdminState`, que opera sobre

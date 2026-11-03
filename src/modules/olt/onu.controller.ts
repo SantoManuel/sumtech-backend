@@ -330,6 +330,28 @@ export class OnuController {
    * autorización mal hecha). Mismo nivel de permiso que authorize/preview-script
    * (CONFIGURE), no OPERATE: borrar la config es tan sensible como crearla.
    */
+/**
+   * Reinicia la ONU mediante comando OMCI en la OLT.
+   */
+  @Post(':id/reboot')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('OPERATE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async rebootOnu(@Param('id') id: string, @Req() req: any) {
+    return this.onuService.rebootOnu(id, req.user?.id);
+  }
+
+  /**
+   * Restablece la configuración de fábrica de la ONU mediante comando OMCI en la OLT.
+   */
+  @Post(':id/factory-reset')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async factoryResetOnu(@Param('id') id: string, @Req() req: any) {
+    return this.onuService.factoryResetOnu(id, req.user?.id);
+  }
+
   @Delete(':id')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')

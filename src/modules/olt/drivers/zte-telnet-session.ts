@@ -13,6 +13,7 @@ export interface ZteSessionLike {
   connectAndLogin(): Promise<void>;
   executeCommand(cmd: string, timeoutMs?: number): Promise<string>;
   rebootOnu(timeoutMs?: number): Promise<void>;
+  factoryResetOnu?(timeoutMs?: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -315,6 +316,68 @@ export class ZteTelnetSession {
       socket.write('reboot\r\n');
     });
   }
+
+  /**
+   * Restablece el ONT a los parámetros de fábrica por OMCI ("restore factory").
+   * Responde interactivamente al prompt "[yes/no]:" con "yes".
+   */
+  async factoryResetOnu(timeoutMs = 25000): Promise<void> {
+    const socket = this.socket;
+    if (!socket) {
+      throw new Error('Socket Telnet no inicializado.');
+    }
+
+    const t0 = Date.now();
+    this.logger.log('[diag] factoryResetOnu INICIO');
+
+    await new Promise<void>((resolve, reject) => {
+      let output = '';
+      let confirmed = false;
+      let finished = false;
+
+      const timer = setTimeout(() => {
+        if (!finished) {
+          finished = true;
+          socket.removeListener('data', onData);
+          this.logger.warn(`[diag] factoryResetOnu TIMEOUT a los ${Date.now() - t0}ms. Últimos 300 chars: [salida omitida]`);
+          reject(new Error('Timeout esperando confirmación de reseteo de fábrica OMCI del ONT.'));
+        }
+      }, timeoutMs);
+
+      const onData = (raw: Buffer) => {
+        const cleaned = this.handleIac(raw);
+        output += cleaned.toString('ascii');
+
+        if (!confirmed && /\[yes\/no\]:\s*$/i.test(output.trim())) {
+          confirmed = true;
+          output = '';
+          socket.write('yes\r\n');
+          return;
+        }
+
+        if (confirmed) {
+          const lines = output.split('\n');
+          const lastLine = lines[lines.length - 1]?.trim() || '';
+          if (lastLine.endsWith('#') || lastLine.endsWith(')#')) {
+            finished = true;
+            clearTimeout(timer);
+            socket.removeListener('data', onData);
+            if (output.includes('%Error') || output.includes('%Code')) {
+              this.logger.warn(`[diag] factoryResetOnu falló: ${output.trim()}`);
+              reject(new Error(output.trim()));
+            } else {
+              this.logger.log(`[diag] factoryResetOnu OK a los ${Date.now() - t0}ms`);
+              resolve();
+            }
+          }
+        }
+      };
+
+      socket.on('data', onData);
+      socket.write('restore factory\r\n');
+    });
+  }
+
 
   /**
    * CONFIRMADO EN VIVO (logs de producción): "exit" dentro de un submodo con

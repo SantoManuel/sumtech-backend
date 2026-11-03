@@ -1672,6 +1672,78 @@ export class OnuManagementService {
    * autorización mal hecha (VLAN/TR-069/perfil equivocado) sin dejar el
    * puerto PON ocupado por una config que ya no sirve.
    */
+/**
+   * Reinicia la ONU mediante comando OMCI en la OLT.
+   */
+  async rebootOnu(id: string, actorUserId?: string) {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+    const driver = this.resolveDriver(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
+    const { ponInterface, onuId } = this.resolveOnuLocation(onu);
+
+    if (!driver.rebootOnu) {
+      throw new BadRequestException(
+        `[${olt.vendor}] La operación de reinicio no está soportada vía OMCI en este modelo de OLT.`,
+      );
+    }
+
+    const result = await withOltTelnetLock(olt.id, () =>
+      this.callDriver(() => driver.rebootOnu!(connParams, ponInterface, onuId)),
+    );
+
+    if (!result.ok) {
+      throw new BadRequestException(`No se pudo reiniciar la ONU: ${result.error}`);
+    }
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `[${olt.vendor}] ONU ${onu.serialNumber} reiniciada vía OMCI en ${ponInterface}:${onuId}.`,
+      actorUserId,
+      rawDetails: { onuId: onu.id, oltId: olt.id, vendor: olt.vendor, driverName: driver.constructor.name, operation: 'rebootOnu' },
+    });
+
+    return { success: true, message: 'Orden de reinicio enviada correctamente a la ONU.' };
+  }
+
+  /**
+   * Restablece la configuración de fábrica de la ONU mediante comando OMCI en la OLT.
+   */
+  async factoryResetOnu(id: string, actorUserId?: string) {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+    const driver = this.resolveDriver(olt);
+    const connParams = await this.connectionResolver.resolve(olt);
+    const { ponInterface, onuId } = this.resolveOnuLocation(onu);
+
+    if (!driver.factoryResetOnu) {
+      throw new BadRequestException(
+        `[${olt.vendor}] La operación de reset de fábrica no está soportada vía OMCI en este modelo de OLT.`,
+      );
+    }
+
+    const result = await withOltTelnetLock(olt.id, () =>
+      this.callDriver(() => driver.factoryResetOnu!(connParams, ponInterface, onuId)),
+    );
+
+    if (!result.ok) {
+      throw new BadRequestException(`No se pudo restablecer la ONU de fábrica: ${result.error}`);
+    }
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: olt.viaNodeId || olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `[${olt.vendor}] ONU ${onu.serialNumber} restablecida a valores de fábrica vía OMCI en ${ponInterface}:${onuId}.`,
+      actorUserId,
+      rawDetails: { onuId: onu.id, oltId: olt.id, vendor: olt.vendor, driverName: driver.constructor.name, operation: 'factoryResetOnu' },
+    });
+
+    return { success: true, message: 'Orden de restauración de fábrica enviada correctamente a la ONU.' };
+  }
+
   async deleteOnu(id: string, actorUserId?: string) {
     const onu = await this.findById(id);
     const olt = onu.olt;
