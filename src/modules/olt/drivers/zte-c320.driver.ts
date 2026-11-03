@@ -364,23 +364,40 @@ export class ZteC320Driver implements IOltDriver {
     return generateTr069ProfileScriptImpl(config);
   }
 
-  private async readOnuSlotIdentity(session: ZteSessionLike, ponInterface: string, onuId: number): Promise<string | null> {
+  private async readOnuSlotStatus(
+    session: ZteSessionLike,
+    ponInterface: string,
+    onuId: number,
+  ): Promise<{ status: 'OCCUPIED'; serial: string } | { status: 'EMPTY' } | { status: 'UNKNOWN' }> {
     if (!/^gpon-olt_\d+\/\d+\/\d+$/.test(ponInterface) || !Number.isSafeInteger(onuId) || onuId < 1) {
       throw new Error('Ubicación de ONU inválida para comprobar ocupación física.');
     }
     const output = await session.executeCommand(`show gpon onu baseinfo ${ponInterface}`, 180000);
-    if (isOltErrorResponse(output)) return null;
+    if (isOltErrorResponse(output) || !output.trim()) return { status: 'UNKNOWN' };
     const target = ponInterface.replace('gpon-olt_', 'gpon-onu_') + `:${onuId}`;
     const rows = output.split(/\r?\n/).filter((line) => line.trim().split(/\s+/)[0]?.toLowerCase() === target.toLowerCase());
-    const row = rows.length === 1 ? rows[0].trim().match(/^gpon-onu_\d+\/\d+\/\d+:\d+\s+\S+\s+sn\s+SN:([a-zA-Z0-9]+)\s+\S+\s*$/i) : null;
-    return row?.[1] ?? null;
+    if (rows.length === 1) {
+      const match = rows[0].trim().match(/^gpon-onu_\d+\/\d+\/\d+:\d+\s+\S+\s+sn\s+SN:([a-zA-Z0-9]+)/i);
+      if (match?.[1]) {
+        return { status: 'OCCUPIED', serial: match[1] };
+      }
+      return { status: 'UNKNOWN' };
+    }
+    if (rows.length === 0) {
+      const isCleanTable = /OnuIndex\s+Type/i.test(output) || /--------------------/.test(output) || /No related information/i.test(output);
+      if (isCleanTable) {
+        return { status: 'EMPTY' };
+      }
+    }
+    return { status: 'UNKNOWN' };
   }
 
   async getOnuSlotIdentity(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<string | null> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      return await this.readOnuSlotIdentity(session, ponInterface, onuId);
+      const slot = await this.readOnuSlotStatus(session, ponInterface, onuId);
+      return slot.status === 'OCCUPIED' ? slot.serial : null;
     } finally {
       await session.close();
     }
@@ -407,11 +424,11 @@ export class ZteC320Driver implements IOltDriver {
         throw new Error('Ubicación o serial de ONU inválido para comprobar ocupación física.');
       }
       const target = config.ponInterface.replace('gpon-olt_', 'gpon-onu_') + `:${config.onuId}`;
-      const identity = await this.readOnuSlotIdentity(session, config.ponInterface, config.onuId);
-      if (identity && identity.toUpperCase() !== config.serialNumber.toUpperCase()) {
+      const slotStatus = await this.readOnuSlotStatus(session, config.ponInterface, config.onuId);
+      if (slotStatus.status === 'OCCUPIED' && slotStatus.serial.toUpperCase() !== config.serialNumber.toUpperCase()) {
         throw new Error(`No se pudo verificar que ${target} pertenezca al serial solicitado; autorización cancelada para evitar borrar otra ONU.`);
       }
-      const occupancyWarning = !identity
+      const occupancyWarning = slotStatus.status === 'UNKNOWN'
         ? `No se pudo determinar la ocupación de ${target}; no onu podría borrar otra ONU.`
         : undefined;
       if (occupancyWarning) this.logger.warn(occupancyWarning);
