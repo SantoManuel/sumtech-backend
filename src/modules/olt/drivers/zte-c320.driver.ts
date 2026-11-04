@@ -374,6 +374,7 @@ export class ZteC320Driver implements IOltDriver {
       throw new Error('Ubicación de ONU inválida para comprobar ocupación física.');
     }
     const output = await session.executeCommand(`show gpon onu baseinfo ${ponInterface}`, 180000);
+    if (/No relate(?:d)? information/i.test(output)) return { status: 'EMPTY' };
     if (isOltErrorResponse(output) || !output.trim()) return { status: 'UNKNOWN' };
     const target = ponInterface.replace('gpon-olt_', 'gpon-onu_') + `:${onuId}`;
     const rows = output.split(/\r?\n/).filter((line) => line.trim().split(/\s+/)[0]?.toLowerCase() === target.toLowerCase());
