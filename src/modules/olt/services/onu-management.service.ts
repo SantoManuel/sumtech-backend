@@ -1274,6 +1274,8 @@ export class OnuManagementService {
       serviceVlanId: config.serviceVlanId,
       speedProfileId: config.speedProfileId,
       tr069NetworkId: dto.tr069NetworkId,
+      tr069AcsUsername: dto.tr069AcsUsername,
+      tr069AcsPassword: dto.tr069AcsPassword,
       managementMethod: 'TR069',
       operationMode: config.operationMode,
     });
@@ -1330,6 +1332,8 @@ export class OnuManagementService {
       serviceVlanId: config.serviceVlanId,
       speedProfileId: config.speedProfileId,
       tr069NetworkId: dto.tr069NetworkId,
+      tr069AcsUsername: dto.tr069AcsUsername,
+      tr069AcsPassword: dto.tr069AcsPassword,
       managementMethod: 'TR069',
       operationMode: config.operationMode,
     });
@@ -1453,6 +1457,8 @@ export class OnuManagementService {
       serviceVlanId: config.serviceVlanId,
       speedProfileId: config.speedProfileId,
       tr069NetworkId: dto.tr069NetworkId,
+      tr069AcsUsername: dto.tr069AcsUsername,
+      tr069AcsPassword: dto.tr069AcsPassword,
       managementMethod: 'TR069',
       operationMode: config.operationMode,
     }, true);
@@ -2061,8 +2067,8 @@ export class OnuManagementService {
       if (net) {
         tr069Url = net.acsUrl;
         if (net.vlan) tr069Vlan = net.vlan.vlanId;
-        tr069AcsUsername = net.acsUsername || undefined;
-        tr069AcsPassword = net.acsPasswordEnc ? decryptCredential(net.acsPasswordEnc) : undefined;
+        tr069AcsUsername = dto.tr069AcsUsername?.trim() || net.acsUsername || 'soltcpe';
+        tr069AcsPassword = dto.tr069AcsPassword?.trim() || (net.acsPasswordEnc ? decryptCredential(net.acsPasswordEnc) : undefined) || 'FiEpcY4srQj6';
       }
       if (!net || !tr069Url || !Number.isInteger(tr069Vlan) || tr069Vlan! < 1 || tr069Vlan! > 4094) {
         if (!acsOnly || !net || !tr069Url) {
