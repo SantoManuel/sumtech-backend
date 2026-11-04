@@ -2263,13 +2263,6 @@ No.15 profile : TRAFFIC-977M
       operationMode: 'ROUTER' as const,
     };
 
-    beforeEach(() => {
-      // applyAcsUrlWithRetries() espera delayMs (20s por defecto) entre
-      // reintentos -- sin este stub, el test que rechaza el ACS en todos los
-      // intentos dormiría de verdad ~100s (6 intentos x ~20s).
-      jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
-    });
-
     it('si el ONT rechaza "tr069-mgmt ... acs ..." a nivel OMCI, el resto del script (incluido "write") igual se ejecuta y el resultado es ok:true con "warning"', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ')) {
@@ -2296,12 +2289,12 @@ No.15 profile : TRAFFIC-977M
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): ambas reglas 998+999 deben ejecutarse.
       expect(executeCommand).toHaveBeenCalledWith('security-mgmt 998 state enable mode forward ingress-type lan protocol web https');
       expect(executeCommand).toHaveBeenCalledWith('security-mgmt 999 state enable ingress-type lan protocol tr069');
-      expect(rebootOnu).toHaveBeenCalled();
+      expect(rebootOnu).not.toHaveBeenCalled();
       expect(executeCommand).toHaveBeenCalledWith('end');
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
-    it('si TODO el bloque TR-069 tiene éxito, el resultado es ok:true SIN "warning" y se reinicia el ONT (los SET de OMCI no son idempotentes -- ver REBOOT_ONU_SENTINEL)', async () => {
+    it('si TODO el bloque TR-069 tiene éxito, guarda y verifica SIN reiniciar la ONU', async () => {
       const executeCommand = jest.fn().mockResolvedValue('');
       const rebootOnu = jest.fn().mockResolvedValue(undefined);
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -2318,12 +2311,13 @@ No.15 profile : TRAFFIC-977M
 
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
-      expect(rebootOnu).toHaveBeenCalled();
+      expect(rebootOnu).not.toHaveBeenCalled();
+      expect(executeCommand).not.toHaveBeenCalledWith('reboot');
+      expect(executeCommand).toHaveBeenCalledWith('show gpon onu detail-info gpon-onu_1/2/15:1');
       expect(executeCommand).toHaveBeenCalledWith('ip dhcp snooping enable');
       expect(executeCommand).toHaveBeenCalledWith('ip dhcp snooping vlan 46');
       expect(executeCommand).toHaveBeenCalledWith('ip dhcp snooping control-port disable');
-      // El sentinel nunca debe llegar a executeCommand -- applyTr069Management()
-      // lo intercepta y llama a session.rebootOnu() en su lugar.
+      // Aplicar configuración no envía comandos ni sentinels de reinicio.
       expect(executeCommand).not.toHaveBeenCalledWith(REBOOT_ONU_SENTINEL);
     });
 
@@ -2404,10 +2398,10 @@ No.15 profile : TRAFFIC-977M
       expect(result.warning).toBeUndefined();
       expect(executeCommand).toHaveBeenCalledWith('gemport 2 flow 2');
       expect(executeCommand).toHaveBeenCalledWith('write');
-      expect(rebootOnu).toHaveBeenCalled();
+      expect(rebootOnu).not.toHaveBeenCalled();
     });
 
-    it('si "rebootOnu()" rechaza (ej. el ONT no confirma el "[yes/no]:" a tiempo), el resultado sigue siendo ok:true con "warning" -- mismo criterio de mejor esfuerzo', async () => {
+    it('aplica y guarda sin invocar la API de reinicio aunque esta no esté disponible', async () => {
       const executeCommand = jest.fn().mockResolvedValue('');
       const rebootOnu = jest.fn().mockRejectedValue(new Error('Timeout esperando confirmación de reinicio OMCI del ONT.'));
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -2423,8 +2417,8 @@ No.15 profile : TRAFFIC-977M
       );
 
       expect(result.ok).toBe(true);
-      expect(result.warning).toContain('reinicio OMCI');
-      // El resto del script (end/write) debe seguir ejecutándose pese al fallo.
+      expect(result.warning).toBeUndefined();
+      expect(rebootOnu).not.toHaveBeenCalled();
       expect(executeCommand).toHaveBeenCalledWith('end');
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
@@ -2449,11 +2443,9 @@ No.15 profile : TRAFFIC-977M
 
       expect(result.ok).toBe(true);
       expect(result.warning).toContain('flow mode 2');
-      // El resto del script (incluido el reinicio OMCI y el write final) debe
-      // seguir corriendo pese al rechazo -- mismo criterio de mejor esfuerzo
-      // que el resto del bloque TR-069.
+      // El resto del script y el write final siguen sin reiniciar la ONU.
       expect(executeCommand).toHaveBeenCalledWith('write');
-      expect(rebootOnu).toHaveBeenCalled();
+      expect(rebootOnu).not.toHaveBeenCalled();
     });
 
     it('dos comandos rechazados en la MISMA corrida aparecen AMBOS en el warning final -- bug real corregido (2026-10-28): antes solo se reportaba el primer rechazo ("if (!warning)"), y los siguientes ni siquiera quedaban en los logs del servidor', async () => {
@@ -2482,19 +2474,49 @@ No.15 profile : TRAFFIC-977M
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
-    it('reintenta "tr069-mgmt ... acs ..." con reinicio entre cada intento -- si la OLT lo acepta en el 4to intento, no hay warning y se reinició 4 veces (bug real: antes era un intento único, mejor esfuerzo, que dependía de un job externo lento para reintentar)', async () => {
-      let acsAttempts = 0;
-      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ')) {
-          acsAttempts++;
-          if (acsAttempts < 4) {
-            return Promise.resolve('\r\n%Code 63990-GPONRM : ONT return error:command processing error.\r\nOLT#');
-          }
-          return Promise.resolve('');
-        }
-        return Promise.resolve('');
+    it('reporta el rechazo del ACS tras un intento y continúa hasta guardar sin reiniciar', async () => {
+      const acsCommand = 'tr069-mgmt 1 acs ' + tr069Config.tr069Url;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) =>
+        Promise.resolve(cmd === acsCommand
+          ? '%Code 63990-GPONRM : ONT return error:command processing error.'
+          : ''),
+      );
+      const rebootOnu = jest.fn().mockRejectedValue(new Error('No se debe reiniciar al configurar'));
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        rebootOnu,
+        close: jest.fn(),
       });
-      const rebootOnu = jest.fn().mockResolvedValue(undefined);
+
+      const result = await driver.applyTr069Management(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        tr069Config,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('ONT return error');
+      expect(executeCommand.mock.calls.filter(([cmd]) => cmd === acsCommand)).toHaveLength(1);
+      expect(rebootOnu).not.toHaveBeenCalled();
+      expect(executeCommand).not.toHaveBeenCalledWith('reboot');
+      const commands = executeCommand.mock.calls.map(([cmd]) => cmd);
+      const acsIndex = commands.indexOf(acsCommand);
+      expect(commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46')).toBeGreaterThan(acsIndex);
+      expect(commands.indexOf('security-mgmt 999 state enable ingress-type lan protocol tr069')).toBeGreaterThan(acsIndex);
+      expect(commands.lastIndexOf('write')).toBeGreaterThan(acsIndex);
+      // El ACS ahora participa en el mismo pacing de 6s que los demás comandos.
+      const acsCallOrder = executeCommand.mock.invocationCallOrder[acsIndex];
+      const delayMock = jest.spyOn<any, any>(driver, 'delay').mock;
+      const pacingIndex = delayMock.invocationCallOrder.findIndex((order) => order > acsCallOrder);
+      expect(delayMock.calls[pacingIndex]).toEqual([6000]);
+    });
+
+    it('tolera un ACS ya existente sin reintentar ni reiniciar', async () => {
+      const acsCommand = 'tr069-mgmt 1 acs ' + tr069Config.tr069Url;
+      const executeCommand = jest.fn().mockImplementation((cmd: string) =>
+        Promise.resolve(cmd === acsCommand ? '%Code 63869-GPONRM : Record already exists.' : ''),
+      );
+      const rebootOnu = jest.fn();
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
         executeCommand,
@@ -2509,37 +2531,9 @@ No.15 profile : TRAFFIC-977M
 
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
-      expect(acsAttempts).toBe(4);
-      // 4 reinicios por los reintentos del ACS -- ninguno extra del
-      // REBOOT_ONU_SENTINEL (acsRebootHandled evita ese reinicio duplicado).
-      expect(rebootOnu).toHaveBeenCalledTimes(4);
-    });
-
-    it('agota los 6 intentos y reporta el warning final con el último rechazo, si la OLT nunca acepta el ACS', async () => {
-      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
-        if (cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ')) {
-          return Promise.resolve('\r\n%Code 63990-GPONRM : ONT return error:command processing error.\r\nOLT#');
-        }
-        return Promise.resolve('');
-      });
-      const rebootOnu = jest.fn().mockResolvedValue(undefined);
-      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
-        connectAndLogin: jest.fn().mockResolvedValue(undefined),
-        executeCommand,
-        rebootOnu,
-        close: jest.fn(),
-      });
-
-      const result = await driver.applyTr069Management(
-        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        tr069Config,
-      );
-
-      expect(result.ok).toBe(true);
-      expect(result.warning).toContain('6 intentos');
-      expect(rebootOnu).toHaveBeenCalledTimes(6);
-      const acsCalls = executeCommand.mock.calls.filter((c: any[]) => c[0].startsWith('tr069-mgmt') && c[0].includes(' acs '));
-      expect(acsCalls).toHaveLength(6);
+      expect(executeCommand.mock.calls.filter(([cmd]) => cmd === acsCommand)).toHaveLength(1);
+      expect(rebootOnu).not.toHaveBeenCalled();
+      expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
     it('reporta un warning real si "Config state" queda en "fail" tras aplicar, aunque NINGÚN comando individual haya sido rechazado -- bug real confirmado (2026-10-23) comparando running-config reales: una ONU terminó con "tr069-mgmt"/"veip ... host 2" apuntando a un iphost 2 que nunca se creó, sin ningún %Error/%Code visible', async () => {
@@ -2568,7 +2562,7 @@ No.15 profile : TRAFFIC-977M
       expect(executeCommand).toHaveBeenCalledWith('show gpon onu detail-info gpon-onu_1/2/15:1');
     });
 
-    it('hace POLLING de "Config state" en vez de un chequeo único -- si da "fail" en los primeros intentos pero "success" en el último, NO reporta warning (BUG REAL CONFIRMADO EN VIVO, 2026-11-03, OLT_Tabara_Abajo/CMDCDD4D131E: el chequeo único e inmediato producía un falso "fail" porque el ONT todavía no resincronizaba su MIB tras el reinicio)', async () => {
+    it('hace polling de la convergencia OMCI sin reiniciar; si pasa de fail a success no reporta warning', async () => {
       let detailInfoAttempts = 0;
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show gpon onu detail-info')) {
@@ -3046,7 +3040,7 @@ No.15 profile : TRAFFIC-977M
         'end',
         'write',
       ]);
-      expect(rebootOnu).toHaveBeenCalled();
+      expect(rebootOnu).not.toHaveBeenCalled();
     });
 
     it('agrega "validate basic username/password" en el mismo comando cuando la Red TR-069 tiene credenciales de ACS', async () => {
@@ -3068,7 +3062,7 @@ No.15 profile : TRAFFIC-977M
       );
     });
 
-    it('si "rebootOnu()" rechaza, el resultado sigue siendo ok:true con "warning" -- el ACS sí quedó configurado, solo falló confirmar el reinicio (problema de temporización ya conocido, no evidencia de que la OLT haya rechazado el ACS)', async () => {
+    it('actualiza el ACS sin invocar la API de reinicio aunque esta no esté disponible', async () => {
       const executeCommand = jest.fn().mockResolvedValue('');
       const rebootOnu = jest.fn().mockRejectedValue(new Error('Timeout esperando confirmación de reinicio OMCI del ONT.'));
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -3084,7 +3078,9 @@ No.15 profile : TRAFFIC-977M
       );
 
       expect(result.ok).toBe(true);
-      expect(result.warning).toContain('reinicio OMCI');
+      expect(result.warning).toBeUndefined();
+      expect(rebootOnu).not.toHaveBeenCalled();
+      expect(executeCommand).not.toHaveBeenCalledWith('reboot');
       expect(executeCommand).toHaveBeenCalledWith('end');
       expect(executeCommand).toHaveBeenCalledWith('write');
     });

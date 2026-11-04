@@ -12,6 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as net from 'net';
 import * as http from 'http';
+import * as https from 'https';
 import { Request, Response } from 'express';
 import { OnuEntity } from '../entities/onu.entity';
 import { OnuServiceConfigEntity } from '../entities/onu-service-config.entity';
@@ -271,10 +272,19 @@ export class OnuWebProxyService {
 
     // Verificar si responde en puerto 80, o probar 8080 si falla
     const port80Ok = await this.checkPortConnectivity(targetIp, 80);
-    if (!port80Ok) {
-      const port8080Ok = await this.checkPortConnectivity(targetIp, 8080);
-      if (port8080Ok) {
-        port = 8080;
+    if (port80Ok) {
+      port = 80;
+    } else {
+      const port443Ok = await this.checkPortConnectivity(targetIp, 443);
+      if (port443Ok) {
+        port = 443;
+      } else {
+        const port8080Ok = await this.checkPortConnectivity(targetIp, 8080);
+        if (port8080Ok) {
+          port = 8080;
+        } else {
+          this.logger.warn(`[OnuWebProxy] Ni puerto 80, 443 ni 8080 respondieron en ${targetIp} (posible bloqueo WAN por firewall del CPE o falta de ruta VPN). Intentando por puerto 80.`);
+        }
       }
     }
 
@@ -372,16 +382,20 @@ export class OnuWebProxyService {
       }
     }
 
-    const options: http.RequestOptions = {
+    const isHttps = port === 443 || port === 8443;
+    const client = isHttps ? https : http;
+
+    const options: https.RequestOptions = {
       hostname: targetIp,
       port: port,
       path: targetPath,
       method: req.method,
       headers: cleanHeaders,
       timeout: 15000,
+      ...(isHttps ? { rejectUnauthorized: false } : {}),
     };
 
-    const proxyReq = http.request(options, (proxyRes) => {
+    const proxyReq = client.request(options, (proxyRes) => {
       const responseHeaders: http.OutgoingHttpHeaders = { ...proxyRes.headers };
 
       // Eliminar encabezados de seguridad que prohíben incrustar en un iframe

@@ -6,8 +6,6 @@ import {
   generateTr069ManagementScript,
   generateTr069TransportScript,
   toOnuInterfaceName,
-  getHumanPacingDelay,
-  REBOOT_ONU_SENTINEL,
   SWITCHPORT_BIND_RE,
   isPreparatoryTeardownCommand,
 } from './zte-c320-provisioning-scripts';
@@ -15,7 +13,8 @@ import {
 /**
  * Etapa 2 del flujo de 3 etapas (apuntar la ONU al ACS/TR-069) -- extraído
  * de `zte-c320.driver.ts` (Fase 5 de Plan_Implementacion_Refactor_ZteC320Driver.md):
- * `applyTr069Management`, `applyAcsUrlWithRetries`, `updateTr069AcsUrl`.
+ * `applyTr069Management`, `updateTr069AcsUrl`.
+ * Aplicar configuración no reinicia la ONU; el reinicio es una acción explícita.
  */
 
 type DelayFn = (ms: number) => Promise<void>;
@@ -242,35 +241,10 @@ export async function applyTr069ManagementWithSession(
   // Etapa 2 sin reportar un warning reintentable (bug real confirmado
   // por revisión de código, 2026-10-23).
   const inTr069Block = true;
-  // Se pone en `true` dentro de `applyAcsUrlWithRetries()` -- evita que
-  // el REBOOT_ONU_SENTINEL de más abajo dispare un reinicio EXTRA e
-  // innecesario cuando el reintento del ACS ya reinició el ONT una o
-  // varias veces por su cuenta (ver esa nota).
-  let acsRebootHandled = false;
 
   for (const cmd of commands) {
-
-    // Confirmado en vivo (2026-10-23): el rechazo real de este comando
-    // ("%Code 63990-GPONRM") no es un problema de sintaxis -- es que el
-    // ONT necesita, en algunos casos, varios ciclos de reinicio OMCI
-    // antes de aceptar el puntero del ACS, incluso con la secuencia de
-    // comandos ya confirmada idéntica a la de un proveedor externo
-    // (SmartOLT) que sí funciona. Antes este comando se trataba como un
-    // intento único (mejor esfuerzo); ahora se reintenta con reinicio
-    // varias veces dentro de la MISMA llamada, en vez de depender de que
-    // un job externo (GenieAcsReconciliationService) lo reintente solo
-    // cada 10-30 minutos -- confirmado que eso tardó casi una hora sin
-    // éxito en producción (2026-10-23) hasta una intervención manual.
-    const isAcsCommand = cmd.startsWith('tr069-mgmt') && cmd.includes(' acs ');
-    if (isAcsCommand) {
-      const acsResult = await applyAcsUrlWithRetries(session, logger, cmd, delay);
-      acsRebootHandled = true;
-      if (acsResult.warningMessage) {
-        warnings.push(acsResult.warningMessage);
-      }
-      continue;
-    }
-
+    // El ACS sigue el mismo flujo de ejecución y pacing que el resto de OMCI.
+    // Los rechazos se reportan sin ciclos de reinicio/reintento de la ONU.
     // Comandos "no ..." puramente preparatorios (destruir antes de
     // recrear, ver isPreparatoryTeardownCommand) -- mismo criterio que
     // "no service-port 2" en ensureTr069TransportWithSession: nunca deben
@@ -346,27 +320,8 @@ export async function applyTr069ManagementWithSession(
     }
   }
 
-  // Reinicio OMCI best-effort si no fue manejado durante el reintento de ACS
-  if (!acsRebootHandled) {
-    try {
-      await session.rebootOnu();
-    } catch (err: any) {
-      const msg = `No se pudo confirmar el reinicio OMCI del ONT tras configurar TR-069: ${err.message}. La configuración sí se aplicó en la OLT.`;
-      warnings.push(msg);
-      logger.warn(`[diag] applyTr069Management: rebootOnu() best-effort falló, continuando: ${msg}`);
-    }
-  }
-
-  // Verificación real post-aplicación, con POLLING acotado en vez de un
-  // chequeo único e inmediato -- BUG REAL CONFIRMADO EN VIVO (2026-11-03,
-  // OLT_Tabara_Abajo, ONU CMDCDD4D131E): `rebootOnu()` solo confirma que la
-  // OLT aceptó el comando por CLI, no que el ONT ya terminó de reiniciar y
-  // resincronizó su MIB OMCI -- leer "Config state" en el mismo instante
-  // prácticamente garantiza un falso "fail" transitorio (el comentario de
-  // abajo ya lo advertía, pero antes no se esperaba nada). Presupuesto total
-  // ~45s, del mismo orden que la tolerancia ya aceptada en este archivo para
-  // `applyAcsUrlWithRetries` (hasta ~2-2.5 min documentados); sale temprano
-  // en cuanto ve "success" en vez de agotar el resto del presupuesto.
+  // Consultar la convergencia OMCI tras aplicar y guardar, sin reiniciar la ONU.
+  // Las pausas suman 45s; la duración de las consultas se añade a ese tiempo.
   const CONFIG_STATE_POLL_DELAYS_MS = [5000, 10000, 15000, 15000];
   const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
   let lastConfigState: string | undefined;
@@ -393,7 +348,7 @@ export async function applyTr069ManagementWithSession(
   } else if (lastConfigState && lastConfigState.toLowerCase() !== 'success') {
     const configStateWarning =
       `El "Config state" del ONT quedó en "${lastConfigState}" (no "success") tras aplicar el bloque TR-069. ` +
-      'Nota: si la ONT se está reiniciando, este estado es transitorio mientras sincroniza MIB. ' +
+      'La sincronización OMCI puede seguir pendiente tras aplicar los cambios. ' +
       'Verifica en el MikroTik si la ONT ya obtuvo IP en la VLAN de gestión (' +
       (config.tr069Vlan ?? '444') +
       ').';
@@ -402,76 +357,6 @@ export async function applyTr069ManagementWithSession(
   }
 
   return { ok: true, warning: warnings.length > 0 ? warnings.join(' | ') : undefined };
-}
-
-/**
- * Reintenta "tr069-mgmt 1 acs <url>" con reinicio OMCI entre cada intento
- * -- construido tras confirmar en vivo (2026-10-23) que ni la secuencia de
- * comandos ni el orden son el problema (son idénticos a los de SmartOLT,
- * que sí funciona): lo que distingue un intento exitoso de uno rechazado
- * es, simplemente, cuántas veces se reintentó con reinicio de por medio.
- * `maxAttempts`/`delayMs` son conservadores a propósito -- cada intento
- * rechazado cuesta un reinicio OMCI (~20-30s hasta volver a "working") más
- * el delay; con los valores por defecto (6 intentos, 20s) el peor caso
- * ronda los 2-2.5 minutos dentro de esta misma llamada HTTP. Si el proxy
- * balanceador delante del backend tiene un timeout más corto que eso,
- * hay que bajar `maxAttempts` o mover este reintento a un job asíncrono.
- */
-export async function applyAcsUrlWithRetries(
-  session: ZteSessionLike,
-  logger: Logger,
-  acsCmd: string,
-  delay: DelayFn = defaultDelay,
-  maxAttempts = 6,
-  delayMs = 20000,
-): Promise<{ accepted: boolean; warningMessage?: string }> {
-  let lastRejection: string | undefined;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const output = await session.executeCommand(acsCmd);
-    const accepted = !isOltErrorResponse(output) || isAlreadyAppliedResponse(output);
-
-    if (accepted) {
-      logger.log(`[diag] applyAcsUrlWithRetries: ACS aceptado en el intento ${attempt}/${maxAttempts}.`);
-    } else {
-      lastRejection = output.trim();
-      logger.warn(
-        `[diag] applyAcsUrlWithRetries: intento ${attempt}/${maxAttempts} rechazado ("${acsCmd}"): ${lastRejection}`,
-      );
-    }
-
-    // Reinicio obligatorio tras CADA intento -- aceptado o no. Los SET de
-    // OMCI de este ONT no son idempotentes y no toman efecto real sin
-    // reiniciar (mismo motivo por el que REBOOT_ONU_SENTINEL siempre lo
-    // hacía antes de este cambio) -- un intento "aceptado" en la OLT
-    // igual necesita este reinicio para que el ONT lo aplique de verdad.
-    // Mejor esfuerzo: un timeout confirmando el reinicio no debe tumbar un
-    // resultado ya aceptado, pero sí se reporta como warning.
-    let rebootWarning: string | undefined;
-    try {
-      await session.rebootOnu();
-    } catch (err: any) {
-      rebootWarning = `No se pudo confirmar el reinicio OMCI del ONT: ${err.message}.`;
-      logger.warn(
-        `[diag] applyAcsUrlWithRetries: rebootOnu() best-effort falló en el intento ${attempt}: ${err.message}`,
-      );
-    }
-
-    if (accepted) {
-      return { accepted: true, warningMessage: rebootWarning };
-    }
-
-    if (attempt < maxAttempts) {
-      await delay(delayMs);
-    }
-  }
-
-  return {
-    accepted: false,
-    warningMessage:
-      `La OLT rechazó la configuración TR-069/ACS ("${acsCmd}") tras ${maxAttempts} intentos con reinicio: ` +
-      `${lastRejection}. Probablemente debas configurar el WAN manualmente en la ONU.`,
-  };
 }
 
 /**
@@ -492,7 +377,6 @@ export async function updateTr069AcsUrlWithSession(
     tr069AcsUsername?: string;
     tr069AcsPassword?: string;
   },
-  logger: Logger,
 ): Promise<{ ok: boolean; error?: string; warning?: string }> {
   const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
 
@@ -518,19 +402,9 @@ export async function updateTr069AcsUrlWithSession(
     throw new Error(`La OLT rechazó "tr069-mgmt 1 acs": ${acsOutput.trim()}`);
   }
 
-  // El reinicio SÍ sigue siendo mejor esfuerzo: un timeout esperando
-  // "[yes/no]:" es un problema de temporización/sesión ya documentado
-  // (ver rebootOnu()), no evidencia de que la OLT haya rechazado el ACS.
-  let warning: string | undefined;
-  try {
-    await session.rebootOnu();
-  } catch (err: any) {
-    warning = `El ACS se configuró en la OLT, pero no se pudo confirmar el reinicio OMCI del ONT: ${err.message}. El cambio puede no tomar efecto hasta reiniciar manualmente.`;
-    logger.warn(`[diag] updateTr069AcsUrl: rebootOnu() best-effort falló, continuando: ${warning}`);
-  }
-
+  // Persistir el cambio sin reiniciar la ONU.
   await session.executeCommand('end');
   await session.executeCommand('write');
 
-  return { ok: true, warning };
+  return { ok: true };
 }

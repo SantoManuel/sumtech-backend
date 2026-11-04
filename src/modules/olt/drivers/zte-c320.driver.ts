@@ -18,7 +18,6 @@ import {
   isManagementOrTr069Command,
   isPreparatoryTeardownCommand,
   getHumanPacingDelay,
-  REBOOT_ONU_SENTINEL,
   SWITCHPORT_BIND_RE,
 } from './zte-c320-provisioning-scripts';
 import {
@@ -776,7 +775,7 @@ export class ZteC320Driver implements IOltDriver {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      return await updateTr069AcsUrlWithSession(session, config, this.logger);
+      return await updateTr069AcsUrlWithSession(session, config);
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {

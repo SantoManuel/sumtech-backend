@@ -1,5 +1,7 @@
 # TR-069 en ONUs ZTE C320: diagnóstico y solución real (2026-10-20)
 
+> Política vigente desde 2026-11-03: «Aplicar Perfil TR-069» y «Solo actualizar ACS» aplican y guardan sin reiniciar la ONU. Se eliminó el ciclo de reintentos del ACS con reinicios. Las referencias a reinicios necesarios en este diagnóstico son antecedentes históricos; el reinicio actual se solicita como acción independiente del operador.
+
 Caso de referencia: ONU Huawei HG8546M, serial `CMDCDD4D131E`, OLT `OLT_Tabara_Abajo`
 (ZTE ZXA10 C320, `gpon-olt_1/2/15`, onuId `1`), nodo `Nodo_Tabara_Abajo`. SmartOLT
 lograba comunicación TR-069 con esta ONU; Sumtech no. Este documento registra las

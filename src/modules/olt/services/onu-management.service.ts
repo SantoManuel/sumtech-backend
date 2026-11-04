@@ -1255,7 +1255,7 @@ export class OnuManagementService {
    * vacío) para que la previsualización nunca muestre un script que la
    * ejecución real rechazaría de entrada.
    */
-  async previewTr069ProfileScript(id: string, dto: { tr069NetworkId: string }) {
+  async previewTr069ProfileScript(id: string, dto: { tr069NetworkId: string; tr069AcsUsername?: string; tr069AcsPassword?: string }) {
     const onu = await this.findById(id);
     const driver = this.resolveDriver(onu.olt);
 
@@ -1300,11 +1300,11 @@ export class OnuManagementService {
     };
   }
 
-  async applyTr069Profile(id: string, dto: { tr069NetworkId: string }, actorUserId?: string) {
+  async applyTr069Profile(id: string, dto: { tr069NetworkId: string; tr069AcsUsername?: string; tr069AcsPassword?: string }, actorUserId?: string) {
     return this.wanProvisioning.withMutation(id, () => this.performApplyTr069Profile(id, dto, actorUserId));
   }
 
-  private async performApplyTr069Profile(id: string, dto: { tr069NetworkId: string }, actorUserId?: string) {
+  private async performApplyTr069Profile(id: string, dto: { tr069NetworkId: string; tr069AcsUsername?: string; tr069AcsPassword?: string }, actorUserId?: string) {
     const onu = await this.findById(id);
     const olt = onu.olt;
     const driver = this.resolveDriver(olt);
@@ -1417,7 +1417,7 @@ export class OnuManagementService {
    * justifique ocultarlo. Pensada para reintentar/cambiar solo el puntero del
    * ACS sin el riesgo de un "éxito" que en realidad no cambió nada.
    */
-  async updateTr069AcsUrl(id: string, dto: { tr069NetworkId: string }, actorUserId?: string) {
+  async updateTr069AcsUrl(id: string, dto: { tr069NetworkId: string; tr069AcsUsername?: string; tr069AcsPassword?: string }, actorUserId?: string) {
     const onu = await this.findById(id);
     const olt = onu.olt;
     const driver = this.resolveDriver(olt);

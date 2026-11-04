@@ -571,10 +571,9 @@ export interface IOltDriver {
    * ver `applyTr069Management` -- un rechazo de la OLT en ESTE comando
    * específico es un error DURO (`ok: false`), no un `warning`: como es la
    * única pieza que este método toca, no existe "el resto del cableado igual
-   * se aplicó" que justifique ocultar el fallo. El reinicio del ONT (necesario
-   * para que el OMCI tome efecto) sigue siendo mejor esfuerzo -- un timeout
-   * esperando la confirmación "[yes/no]:" es un problema ya conocido y
-   * aparte, no evidencia de que la OLT haya rechazado el ACS. Método opcional:
+   * se aplicó" que justifique ocultar el fallo. Esta operación guarda el
+   * cambio sin reiniciar el ONT. El reinicio se solicita por separado.
+   * Método opcional:
    * solo tiene sentido para drivers con `tr069AutoProvisioning: true`.
    */
   updateTr069AcsUrl?(
