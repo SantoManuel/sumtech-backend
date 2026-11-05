@@ -24,7 +24,8 @@ import { AuthorizeOnuParams } from '../ports/olt-driver.port';
 
 /** "no onu X" -> "interface gpon-onu_X/X/X:Y" usa prefijos distintos ("olt" para el puerto físico, "onu" para la sub-interfaz de cada ONU autorizada en ese puerto), no el mismo nombre con ":<id>" pegado. Bug real confirmado en vivo contra OLT_Tabara_Abajo (2026-10-20): "interface gpon-olt_1/2/15:1" rechazado con "%Error 20202: Invalid input detected ... Invalid parameter". */
 export function toOnuInterfaceName(ponInterface: string, onuId: number): string {
-  return `${ponInterface.replace(/^gpon-olt_/, 'gpon-onu_')}:${onuId}`;
+  const port = ponInterface.replace(/^gpon-(?:olt|onu)_/, '');
+  return `gpon-onu_${port}:${onuId}`;
 }
 
 /**
@@ -422,6 +423,19 @@ export function generateTr069ManagementScript(config: AuthorizeOnuParams): strin
  * `generateAuthorizationScript` (CONFIRMADO EN VIVO, 2026-10-30, ONU
  * CMDCDD4D131E): destruir y recrear limpio evita una VLAN vieja de un
  * intento anterior con otra Red TR-069.
+ *
+ * "gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M" -- BUG REAL
+ * CONFIRMADO (2026-11-04): esta función es autosuficiente (crea tcont2/
+ * gemport2/service-port2 sin asumir que Etapa 1 lo hizo, ver cabecera de
+ * arriba) pero nunca enlazaba el perfil de traffic de BAJADA al gemport 2 --
+ * a diferencia de `generateAuthorizationScript`, que sí lo hace para
+ * gemport 1 ("gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN") y,
+ * en su rama `hasTr069` ya huérfana, también lo hacía para gemport 2. Sin
+ * esta línea, el gemport del canal de gestión queda sin Traffic Descriptor
+ * OMCI de bajada: la ONU manda el DHCP DISCOVER pero nunca le llega de
+ * vuelta el OFFER/ACK por ese gemport, así que nunca obtiene IP de gestión
+ * -- confirmado comparando línea por línea contra un script manual que sí
+ * funciona contra la misma ONU (serial CMDCDD4D131E).
  */
 export function generateTr069TransportScript(config: AuthorizeOnuParams): string[] {
   const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
@@ -430,6 +444,7 @@ export function generateTr069TransportScript(config: AuthorizeOnuParams): string
     `interface ${onuInterface}`,
     'tcont 2 profile SMARTOLT-VOIPMNG-10M',
     'gemport 2 tcont 2',
+    'gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M',
     'no service-port 2',
     `service-port 2 vport 2 user-vlan ${config.tr069Vlan} vlan ${config.tr069Vlan}`,
     'exit',

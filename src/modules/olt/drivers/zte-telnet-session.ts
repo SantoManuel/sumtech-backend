@@ -2,6 +2,7 @@ import * as net from 'net';
 import { redactOltCli } from '../utils/redact-olt-cli';
 import { Logger } from '@nestjs/common';
 import { OltConnectionParams } from '../ports/olt-driver.port';
+import { parseZtePrompt, ZteMode } from './zte-command-executor';
 
 /**
  * Forma mínima de sesión que consumen las funciones extraídas de
@@ -12,6 +13,7 @@ import { OltConnectionParams } from '../ports/olt-driver.port';
 export interface ZteSessionLike {
   connectAndLogin(): Promise<void>;
   executeCommand(cmd: string, timeoutMs?: number): Promise<string>;
+  executeCommandDetailed?(cmd: string, timeoutMs?: number): Promise<{ output: string; mode: ZteMode; prompt: string }>;
   rebootOnu(timeoutMs?: number): Promise<void>;
   factoryResetOnu?(timeoutMs?: number): Promise<void>;
   close(): Promise<void>;
@@ -39,6 +41,8 @@ export class ZteTelnetSession {
    * nunca lo activan, así que no pagan ningún costo de espera adicional.
    */
   private dirty = false;
+  private lastPrompt = '';
+  private invalidated = false;
   // Instrumentación temporal (RF: bug real en producción, 2026-10-17 --
   // "show gpon onu baseinfo" se cuelga completo en algunos puertos incluso
   // ya serializado por OLT -- ver withOltTelnetLock -- y confirmado que la
@@ -159,7 +163,13 @@ export class ZteTelnetSession {
     }
   }
 
+  async executeCommandDetailed(command: string, timeoutMs = 20000): Promise<{ output: string; mode: ZteMode; prompt: string }> {
+    const output = await this.executeCommand(command, timeoutMs);
+    return { output, prompt: this.lastPrompt, mode: parseZtePrompt(this.lastPrompt) };
+  }
+
   async executeCommand(command: string, timeoutMs = 20000): Promise<string> {
+    if (this.invalidated) throw new Error('Sesión CLI indeterminada; es necesario reconectar y observar.');
     const socket = this.socket;
     if (!socket) {
       throw new Error('Socket Telnet no inicializado.');
@@ -184,6 +194,7 @@ export class ZteTelnetSession {
         if (!finished) {
           finished = true;
           socket.removeListener('data', onData);
+          this.invalidated = true;
           this.logger.warn(
             `[diag] executeCommand TIMEOUT a los ${Date.now() - t0}ms: "${safeCommand}" -- ` +
               `${chunkCount} chunk(s) recibido(s), ${output.length} chars acumulados, ${moreCount} "--More--" visto(s). ` +
@@ -207,6 +218,7 @@ export class ZteTelnetSession {
         // adivinar, se falla de inmediato con el texto exacto de la OLT en
         // vez de colgarse hasta agotar el timeout completo.
         if (/\[yes\/no\]:\s*$/i.test(output.trim())) {
+          this.invalidated = true;
           finished = true;
           clearTimeout(timer);
           socket.removeListener('data', onData);
@@ -237,6 +249,7 @@ export class ZteTelnetSession {
         const lastLine = lines[lines.length - 1]?.trim() || '';
 
         if (lastLine.endsWith('#') || lastLine.endsWith(')#' )) {
+          this.lastPrompt = lastLine;
           finished = true;
           clearTimeout(timer);
           socket.removeListener('data', onData);
@@ -307,7 +320,11 @@ export class ZteTelnetSession {
             clearTimeout(timer);
             socket.removeListener('data', onData);
             this.logger.log(`[diag] rebootOnu OK a los ${Date.now() - t0}ms`);
-            resolve();
+            if (/%Error\b|%Code\s+\d+(-\w+)?\s*:/i.test(output)) {
+              reject(new Error(redactOltCli(output.trim())));
+            } else {
+              resolve();
+            }
           }
         }
       };
@@ -402,7 +419,7 @@ export class ZteTelnetSession {
       return;
     }
 
-    if (!this.dirty) {
+    if (!this.dirty || this.invalidated) {
       try {
         socket.destroy();
       } catch {

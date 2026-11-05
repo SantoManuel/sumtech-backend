@@ -262,6 +262,7 @@ export async function applyServiceGemportFixWithSession(
   ponInterface: string,
   onuId: number,
   config: { serviceVlan: number; tr069Vlan?: number },
+  delay: (ms: number) => Promise<void> = () => Promise.resolve(),
 ): Promise<void> {
   const onuInterface = toOnuInterfaceName(ponInterface, onuId);
 
@@ -276,34 +277,63 @@ export async function applyServiceGemportFixWithSession(
     throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${mngOutput.trim()}`);
   }
 
-  const teardownCommands = [
-    'no gemport 1 flow 1',
-    'no gemport 2 flow 2',
-    `no flow 1 pri 0 vlan ${config.serviceVlan}`,
-    ...(config.tr069Vlan ? [`no flow 2 pri 2 vlan ${config.tr069Vlan}`] : []),
-    // Bug real confirmado en vivo (2026-10-30, ONU 699addf7-a473-430c-aa38-8ecc1ecaecd9):
-    // faltaba desenlazar "flow 1 switch switch_0/1" -- solo se quitaba el de
-    // flow 2. Sin esto, el gemport 1 seguía con datos de "flow" asociados y
-    // la OLT rechazaba "service 1 gemport 1 vlan ..." con "%Code 64010-GPONRM :
-    // Operation is forbidden for conflicting with flow data" (ZTE no permite
-    // mezclar los dos mecanismos -- flow-based y service/gemport-based -- en
-    // el mismo gemport).
-    'no flow 1 switch switch_0/1',
-    'no flow 2 switch switch_0/1',
+    const teardownCommands = [
+    // 1. Desmontar capa WAN / PPPoE / Aplicación (evita %Code 64010 por conflicto con flows/wan)
+    'no wan 1',
+    'no vlan wan 1',
+    'no pppoe 1',
+    'no wan-ip 1',
+    'no wan-ip 2',
+    ...(config.tr069Vlan ? [`no tr069-mgmt 1 tag pri 2 vlan ${config.tr069Vlan}`] : ['no tr069-mgmt 1 tag']),
+    'no tr069-mgmt 1 acs',
+    'no security-mgmt 998',
+    'no security-mgmt 999',
+
+    // 2. Desvincular puertos internos del switch
     'no switchport-bind switch_0/1 iphost 1',
     'no switchport-bind switch_0/1 iphost 2',
     'no switchport-bind switch_0/1 veip 1',
+
+    // 3. Desmontar filtros e IP hosts
+    `no vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`,
+    'no vlan-filter iphost 1',
+    'no vlan-filter-mode iphost 1',
+    ...(config.tr069Vlan ? [`no vlan-filter iphost 2 pri 2 vlan ${config.tr069Vlan}`] : []),
+    'no vlan-filter iphost 2',
+    'no vlan-filter-mode iphost 2',
+    'no ip-host 1',
+    'no ip-host 2',
+
+    // 4. Desvincular gemports de flows
+    'no gemport 1 flow 1',
+    'no gemport 2 flow 2',
+
+    // 5. Desmontar flows
+    `no flow 1 pri 0 vlan ${config.serviceVlan}`,
+    ...(config.tr069Vlan ? [`no flow 2 pri 2 vlan ${config.tr069Vlan}`] : []),
+    'no flow 1 switch switch_0/1',
+    'no flow 2 switch switch_0/1',
+    'no flow mode 1',
+    'no flow mode 2',
+    'no flow 1',
+    'no flow 2',
   ];
   for (const cmd of teardownCommands) {
     await session.executeCommand(cmd);
+    await delay(300);
   }
+  await delay(1500);
 
   const serviceCommands = [
     `service 1 gemport 1 vlan ${config.serviceVlan}`,
     ...(config.tr069Vlan ? [`service 2 gemport 2 vlan ${config.tr069Vlan}`] : []),
   ];
   for (const cmd of serviceCommands) {
-    const output = await session.executeCommand(cmd);
+    let output = await session.executeCommand(cmd);
+    if (output.includes('%Error 20200')) {
+      await delay(1000);
+      output = await session.executeCommand(cmd);
+    }
     if (isOltErrorResponse(output)) {
       try {
         await session.executeCommand('end');

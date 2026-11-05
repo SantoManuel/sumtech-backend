@@ -16,10 +16,21 @@
  */
 
 const queues = new Map<string, Promise<unknown>>();
+let sharedLock: (<T>(oltId: string, fn: () => Promise<T>) => Promise<T>) | undefined;
+let ownershipCheck: (() => Promise<void>) | undefined;
+
+export function installOltIoLock(lock: typeof sharedLock, check: typeof ownershipCheck): void {
+  sharedLock = lock;
+  ownershipCheck = check;
+}
+export async function assertOltIoOwnership(): Promise<void> { await ownershipCheck?.(); }
 
 export function withOltTelnetLock<T>(oltId: string, fn: () => Promise<T>): Promise<T> {
+  if (sharedLock) return sharedLock(oltId, fn);
   const prior = queues.get(oltId) || Promise.resolve();
   const run = prior.then(fn, fn);
-  queues.set(oltId, run.catch(() => undefined));
+  const tail = run.catch(() => undefined);
+  queues.set(oltId, tail);
+  void tail.finally(() => { if (queues.get(oltId) === tail) queues.delete(oltId); });
   return run;
 }

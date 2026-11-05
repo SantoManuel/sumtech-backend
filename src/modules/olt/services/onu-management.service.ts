@@ -1,4 +1,7 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
+import { Tr069Result, initialTr069Result, evidence } from '../ports/tr069-provisioning.types';
+import { validateTr069Input } from '../drivers/zte-c320-tr069-state';
+import { redactOltCli } from '../utils/redact-olt-cli';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThanOrEqual } from 'typeorm';
 import { OnuEntity } from '../entities/onu.entity';
@@ -938,25 +941,53 @@ export class OnuManagementService {
     return this.wanProvisioning.withMutation(id, () => this.performApplyServiceGemportFix(id));
   }
 
-  private async performApplyServiceGemportFix(id: string) {
+    private async performApplyServiceGemportFix(id: string) {
     const { onu, driver, connParams, ponInterface, onuId } = await this.resolveOnuAuditTarget(id);
     if (typeof driver.applyServiceGemportFix !== 'function') {
       throw new BadRequestException('Este fabricante de OLT todavía no soporta esta corrección.');
     }
 
-    const serviceVlan = onu.serviceConfig?.serviceVlan?.vlanId;
+    let serviceVlan = onu.serviceConfig?.serviceVlan?.vlanId;
+    if (!serviceVlan && onu.serviceConfig?.serviceVlanId) {
+      const v = await this.vlanRepository.findOneBy({ id: onu.serviceConfig.serviceVlanId });
+      if (v) serviceVlan = v.vlanId;
+    }
     if (!serviceVlan) {
-      throw new BadRequestException('Esta ONU no tiene una VLAN de servicio configurada -- no se puede aplicar esta corrección.');
+      const defaultVlan = await this.vlanRepository.findOne({
+        where: { type: 'INTERNET', isActive: true },
+        order: { vlanId: 'ASC' },
+      });
+      if (defaultVlan) serviceVlan = defaultVlan.vlanId;
+    }
+    if (!serviceVlan) {
+      throw new BadRequestException('Esta ONU no tiene una VLAN de servicio configurada ni se encontró una VLAN para esta OLT.');
+    }
+
+    let tr069Vlan = onu.serviceConfig?.tr069Vlan?.vlanId;
+    if (!tr069Vlan && onu.serviceConfig?.tr069NetworkId) {
+      const net = await this.tr069Repository.findOne({
+        where: { id: onu.serviceConfig.tr069NetworkId },
+        relations: ['vlan'],
+      });
+      if (net?.vlan) tr069Vlan = net.vlan.vlanId;
     }
 
     const result = await withOltTelnetLock(onu.olt.id, () => driver.applyServiceGemportFix!(connParams, ponInterface, onuId, {
       serviceVlan,
-      tr069Vlan: onu.serviceConfig?.tr069Vlan?.vlanId,
+      tr069Vlan,
     }));
     if (!result.ok) {
       throw new BadRequestException(`La OLT rechazó la corrección: ${result.error}`);
     }
-    return { success: true, message: 'Cableado reconstruido con "service/gemport" en la OLT.' };
+
+    // Actualizar configuración local a BRIDGE tras aplicar service/gemport
+    let cfg = onu.serviceConfig || (await this.configRepository.findOneBy({ onuId: onu.id }));
+    if (cfg) {
+      cfg.operationMode = 'BRIDGE';
+      await this.configRepository.save(cfg);
+    }
+
+    return { success: true, message: 'Cableado reconstruido exitosamente con "service/gemport" en la OLT.' };
   }
 
   /**
@@ -1290,18 +1321,84 @@ export class OnuManagementService {
       throw new BadRequestException(`[${onu.olt.vendor}] esta previsualización todavía no está implementada para este fabricante.`);
     }
 
-    const commands = await this.callDriver(async () => driver.generateTr069ProfileScript!(authParams));
+    const commands = driver.previewTr069Plan
+      ? await withOltTelnetLock(onu.olt.id, async () => driver.previewTr069Plan!(await this.connectionResolver.resolve(onu.olt), authParams))
+      : (await this.callDriver(async () => driver.generateTr069ProfileScript!(authParams))).map(cmd => redactOltCli(cmd));
 
     return {
       onuId: onu.id,
       serialNumber: onu.serialNumber,
       commands,
       totalCommands: commands.length,
+      previewKind: driver.previewTr069Plan ? 'observed_diff' : 'template',
     };
   }
 
   async applyTr069Profile(id: string, dto: { tr069NetworkId: string; tr069AcsUsername?: string; tr069AcsPassword?: string }, actorUserId?: string) {
     return this.wanProvisioning.withMutation(id, () => this.performApplyTr069Profile(id, dto, actorUserId));
+  }
+
+  async prepareTr069Operation(id: string, dto: { tr069NetworkId: string; tr069AcsUsername?: string; tr069AcsPassword?: string }, kind: 'profile' | 'acs') {
+    if (!!dto.tr069AcsUsername !== !!dto.tr069AcsPassword) throw new BadRequestException('Para cambiar credenciales ACS proporciona usuario y contraseña juntos.');
+    const onu = await this.findById(id);
+    if (onu.status !== 'ACTIVE') throw new BadRequestException('La ONU debe estar autorizada antes de aplicar TR-069.');
+    if (onu.olt.vendor !== 'ZTE' || !/C320/i.test(onu.olt.model)) throw new BadRequestException('El flujo verificable TR-069 está disponible para ZTE C320.');
+    const enabledOlts = (process.env.TR069_PROVISIONING_OLT_ALLOWLIST || '').split(',').map(value => value.trim());
+    if (!enabledOlts.includes('*') && !enabledOlts.includes(onu.olt.id)) throw new BadRequestException('El aprovisionamiento verificable TR-069 no está habilitado para esta OLT.');
+    const config = await this.configRepository.findOneBy({ onuId: id });
+    if (!config && kind === 'profile') throw new BadRequestException('Falta configuración previa de servicio; autoriza la ONU primero.');
+    if (!dto.tr069NetworkId) throw new BadRequestException('Selecciona una Red TR-069.');
+    const network = await this.tr069Repository.findOneBy({ id: dto.tr069NetworkId });
+    if (!network) throw new BadRequestException('La red TR-069 no existe en este tenant.');
+    const auth = await this.buildAuthorizeParams(onu, {
+      onuTypeId: onu.onuTypeId, serviceVlanId: config?.serviceVlanId, speedProfileId: config?.speedProfileId,
+      tr069NetworkId: network.id, tr069AcsUsername: dto.tr069AcsUsername, tr069AcsPassword: dto.tr069AcsPassword,
+      managementMethod: 'TR069', operationMode: config?.operationMode || 'ROUTER',
+    }, kind === 'acs');
+    validateTr069Input(auth, kind === 'acs');
+    auth.tr069Uplinks = (await this.ifaceRepository.find({ where: { oltId: onu.olt.id, type: 'UPLINK' } })).map(iface => iface.name);
+    return { auth, oltId: onu.olt.id, networkId: network.id, vlanId: network.vlanId, cidr: network.cidr, kind };
+  }
+
+  async executePreparedTr069(id: string, auth: AuthorizeOnuParams, kind: 'profile' | 'acs', expectedOltId: string): Promise<Tr069Result> {
+    const onu = await this.findById(id);
+    if (onu.serialNumber !== auth.serialNumber || onu.status !== 'ACTIVE') throw new BadRequestException('La identidad o estado de la ONU cambió desde la solicitud.');
+    const location = this.resolveOnuLocation(onu);
+    if (onu.olt.id !== expectedOltId || location.ponInterface !== auth.ponInterface || location.onuId !== auth.onuId) throw new BadRequestException('La ubicación de la ONU cambió desde la solicitud.');
+    const enabledOlts = (process.env.TR069_PROVISIONING_OLT_ALLOWLIST || '').split(',').map(value => value.trim());
+    if (!enabledOlts.includes('*') && !enabledOlts.includes(onu.olt.id)) throw new BadRequestException('El aprovisionamiento TR-069 fue deshabilitado para esta OLT.');
+    const driver = this.resolveDriver(onu.olt);
+    const conn = await this.connectionResolver.resolve(onu.olt);
+    const result = await withOltTelnetLock(onu.olt.id, () => kind === 'profile'
+      ? driver.applyTr069Management(conn, auth)
+      : driver.updateTr069AcsUrl!(conn, { ...auth, tr069Url: auth.tr069Url! }));
+    if (!result.status || !result.evidence) return { ...initialTr069Result(), error: 'El driver no devolvió evidencia de configuración verificable.' };
+    return result as Tr069Result;
+  }
+
+  async observeTr069Operation(id: string, version: number, serial: string, result: Tr069Result) {
+    const onu = await this.findById(id);
+    const config = await this.configRepository.findOneBy({ onuId: id });
+    if (onu.serialNumber !== serial || config?.desiredVersion !== version) return false;
+    const { ponInterface, onuId } = this.resolveOnuLocation(onu);
+    const driver = this.resolveDriver(onu.olt);
+    const conn = await this.connectionResolver.resolve(onu.olt);
+    await withOltTelnetLock(onu.olt.id, async () => {
+      if (driver.getOnuDetailInfo) {
+        try {
+          const detail = await driver.getOnuDetailInfo(conn, ponInterface, onuId);
+          const known = !!detail.configState && !!detail.phaseState;
+          result.evidence.omci = evidence(!known ? 'unknown' : detail.configState?.toLowerCase() === 'success' && detail.phaseState?.toLowerCase() === 'working' ? 'confirmed' : 'failed', 'detail-info', 'Consulta de convergencia posterior, sin mutaciones.');
+        } catch { result.evidence.omci = evidence('unknown', 'detail-info', 'Consulta posterior no disponible.'); }
+      }
+      if (driver.getOnuIpHost) {
+        try {
+          const host = await driver.getOnuIpHost(conn, ponInterface, onuId);
+          result.evidence.ip = evidence(host.mgmtIp ? 'confirmed' : 'unknown', 'ip-host', host.mgmtIp ? 'IP de gestión: ' + host.mgmtIp : 'Sin IP de gestión confirmada.');
+        } catch { result.evidence.ip = evidence('unknown', 'ip-host', 'Consulta posterior no disponible.'); }
+      }
+    });
+    return config?.tr069Network?.cidr || onu.serviceConfig?.tr069Network?.cidr || '';
   }
 
   private async performApplyTr069Profile(id: string, dto: { tr069NetworkId: string; tr069AcsUsername?: string; tr069AcsPassword?: string }, actorUserId?: string) {
@@ -1431,7 +1528,7 @@ export class OnuManagementService {
 
     // A diferencia de "Aplicar Perfil TR-069" (applyTr069Profile), esta acción
     // NUNCA toca VLAN/tcont/gemport/service-port -- el driver solo entra a
-    // "pon-onu-mng" y corre "tr069-mgmt 1 acs" + reboot (ver
+    // "pon-onu-mng" y aplica "tr069-mgmt 1 acs" con verificación y guardado (ver
     // ZteC320Driver.updateTr069AcsUrl, confirmado leyendo su implementación
     // real). serviceVlanId/speedProfileId/operationMode de `config` ni
     // siquiera llegan al payload final del driver. Por eso, si la ONU no
@@ -2067,8 +2164,8 @@ export class OnuManagementService {
       if (net) {
         tr069Url = net.acsUrl;
         if (net.vlan) tr069Vlan = net.vlan.vlanId;
-        tr069AcsUsername = dto.tr069AcsUsername?.trim() || net.acsUsername || 'soltcpe';
-        tr069AcsPassword = dto.tr069AcsPassword?.trim() || (net.acsPasswordEnc ? decryptCredential(net.acsPasswordEnc) : undefined) || 'FiEpcY4srQj6';
+        tr069AcsUsername = dto.tr069AcsUsername?.trim() || net.acsUsername || undefined;
+        tr069AcsPassword = dto.tr069AcsPassword || (net.acsPasswordEnc ? decryptCredential(net.acsPasswordEnc) : undefined);
       }
       if (!net || !tr069Url || !Number.isInteger(tr069Vlan) || tr069Vlan! < 1 || tr069Vlan! > 4094) {
         if (!acsOnly || !net || !tr069Url) {

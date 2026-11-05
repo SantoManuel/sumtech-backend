@@ -1,3 +1,5 @@
+import type { Tr069Result } from './tr069-provisioning.types';
+
 export interface OltConnectionParams {
   host: string;
   port: number;
@@ -177,6 +179,10 @@ export interface VlanTranslationParams {
 }
 
 export interface AuthorizeOnuParams {
+  /** Execution-only callback, never serialized in a queued request. */
+  onTr069Stage?: (stage: string) => Promise<void>;
+  tr069RemainingMs?: () => number;
+  tr069Uplinks?: string[];
   ponInterface: string; // ej. 'gpon-olt_1/1/1'
   onuId: number; // 1-128
   modelTypeName: string; // ej. 'ZTE-F660'
@@ -556,19 +562,20 @@ export interface IOltDriver {
    * Configurar WAN-PPPoE), separado de `authorizeOnu()` para poder
    * reintentarse de forma independiente sin volver a autorizar la ONU
    * ópticamente. Asume que la ONU ya está autorizada en la OLT
-   * (`authorizeOnu()` ya corrió exitosamente antes). Mismo criterio de
-   * "mejor esfuerzo" que antes tenía el bloque TR-069 dentro de
-   * `authorizeOnu()`: un rechazo de la OLT en este bloque se reporta como
-   * `warning`, nunca lanza.
+   * (`authorizeOnu()` ya corrió exitosamente antes). ZTE devuelve evidencia
+   * estructurada: un requisito rechazado produce failed/partial y ok:false;
+   * la configuración aplicada sin comunicación ACS probada queda
+   * applied_unverified. Los campos opcionales mantienen compatibilidad con
+   * fabricantes cuyo aprovisionamiento TR-069 aún no está implementado.
    */
-  applyTr069Management(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string; warning?: string }>;
+  applyTr069Management(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<Partial<Tr069Result> & { ok: boolean }>;
+  previewTr069Plan?(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<string[]>;
   /**
    * Actualiza SOLO el puntero del ACS (`tr069-mgmt ... acs <url>`) de una ONU
    * cuyo canal de gestión TR-069 YA fue cableado antes por
    * `applyTr069Management` (tcont/gemport/service-port/flow/vlan-filter/veip
    * de la VLAN de gestión siguen intactos, no se tocan aquí). A diferencia de
-   * TODO el resto del bloque TR-069 -- tratado como mejor esfuerzo por diseño,
-   * ver `applyTr069Management` -- un rechazo de la OLT en ESTE comando
+   * una advertencia de monitoreo, un rechazo de la OLT en ESTE comando
    * específico es un error DURO (`ok: false`), no un `warning`: como es la
    * única pieza que este método toca, no existe "el resto del cableado igual
    * se aplicó" que justifique ocultar el fallo. Esta operación guarda el
@@ -582,10 +589,11 @@ export interface IOltDriver {
       ponInterface: string;
       onuId: number;
       tr069Url: string;
+      serialNumber?: string;
       tr069AcsUsername?: string;
       tr069AcsPassword?: string;
     },
-  ): Promise<{ ok: boolean; error?: string; warning?: string }>;
+  ): Promise<Partial<Tr069Result> & { ok: boolean }>;
   setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }>;
   deleteOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;
   rebootOnu?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;

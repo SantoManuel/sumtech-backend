@@ -17,6 +17,8 @@ import { RequireFeature } from '../../common/decorators/require-feature.decorato
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
 import { OnuManagementService } from './services/onu-management.service';
+import { OnuTr069OperationsService } from './services/onu-tr069-operations.service';
+import { Tr069OperationDto } from './dto/tr069-operation.dto';
 import { OltPermissionGuard, RequireOltAction, OltIdFrom } from './guards/olt-permission.guard';
 import { ListUnconfiguredOnusDto, ListOnusDto } from './dto/list-onus.dto';
 import { MigrateOnuDto } from './dto/migrate-onu.dto';
@@ -28,7 +30,7 @@ import { RetryOnuWanDto } from './dto/retry-onu-wan.dto';
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
 @RequireFeature('OLT')
 export class OnuController {
-  constructor(private readonly onuService: OnuManagementService) {}
+  constructor(private readonly onuService: OnuManagementService, private readonly tr069: OnuTr069OperationsService) {}
 
   /**
    * Bandeja de entrada de ONUs sin configurar descubiertas (RF-OLT-014).
@@ -209,15 +211,16 @@ export class OnuController {
    * ACS (TR-069), sin tocar GenieACS/WAN todavía.
    */
   @Post(':id/tr069-profile')
+  @HttpCode(202)
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
   @OltIdFrom('ONU_ID_PARAM')
   async applyTr069Profile(
     @Param('id') id: string,
-    @Body() dto: any,
+    @Body() dto: Tr069OperationDto,
     @Req() req: any,
   ) {
-    return this.onuService.applyTr069Profile(id, dto, req.user?.id);
+    return this.tr069.create(id, dto, 'profile', req.user?.id, req.headers?.['idempotency-key']);
   }
 
   /**
@@ -227,16 +230,29 @@ export class OnuController {
    * SIEMPRE es un error duro (400), nunca un éxito silencioso con warning.
    */
   @Post(':id/tr069-acs')
+  @HttpCode(202)
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
   @OltIdFrom('ONU_ID_PARAM')
   async updateTr069AcsUrl(
     @Param('id') id: string,
-    @Body() dto: any,
+    @Body() dto: Tr069OperationDto,
     @Req() req: any,
   ) {
-    return this.onuService.updateTr069AcsUrl(id, dto, req.user?.id);
+    return this.tr069.create(id, dto, 'acs', req.user?.id, req.headers?.['idempotency-key']);
   }
+
+  @Get(':id/tr069-operations/latest')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('VIEW')
+  @OltIdFrom('ONU_ID_PARAM')
+  async latestTr069Operation(@Param('id') id: string) { return this.tr069.latest(id); }
+
+  @Get(':id/tr069-operations/:operationId')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('VIEW')
+  @OltIdFrom('ONU_ID_PARAM')
+  async getTr069Operation(@Param('id') id: string, @Param('operationId') operationId: string) { return this.tr069.get(id, operationId); }
 
   /**
    * Etapa 3 (flujo de 3 etapas): empuja WAN/PPPoE/WiFi al CPE vía GenieACS --

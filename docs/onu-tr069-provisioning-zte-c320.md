@@ -2,6 +2,8 @@
 
 > Política vigente desde 2026-11-03: «Aplicar Perfil TR-069» y «Solo actualizar ACS» aplican y guardan sin reiniciar la ONU. Se eliminó el ciclo de reintentos del ACS con reinicios. Las referencias a reinicios necesarios en este diagnóstico son antecedentes históricos; el reinicio actual se solicita como acción independiente del operador.
 
+> La etapa 2 configura exclusivamente el canal de gestión de la ONU. No habilita DHCP snooping, no registra VLAN en DHCP snooping ni cambia `control-port` global en la OLT. Estas políticas se administran por separado de cada ONU.
+
 Caso de referencia: ONU Huawei HG8546M, serial `CMDCDD4D131E`, OLT `OLT_Tabara_Abajo`
 (ZTE ZXA10 C320, `gpon-olt_1/2/15`, onuId `1`), nodo `Nodo_Tabara_Abajo`. SmartOLT
 lograba comunicación TR-069 con esta ONU; Sumtech no. Este documento registra las

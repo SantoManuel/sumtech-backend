@@ -1,4 +1,9 @@
 import { Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
+import { OnuTr069OperationEntity } from './entities/onu-tr069-operation.entity';
+import { OnuTr069OperationsService, TR069_QUEUE } from './services/onu-tr069-operations.service';
+import { OnuTr069Processor } from './services/onu-tr069.processor';
+import { OltIoLockService } from './services/olt-io-lock.service';
 import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { UsersModule } from '../users/users.module';
@@ -54,6 +59,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
 
 @Module({
   imports: [
+    BullModule.registerQueue({ name: TR069_QUEUE }),
     TenantTypeOrmModule.forFeature([
       OltEntity,
       OltRolePermissionEntity,
@@ -66,6 +72,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
       OnuEntity,
       OnuServiceConfigEntity,
       OnuWanOperationEntity,
+      OnuTr069OperationEntity,
       OltPartialOperationEntity,
       OnuOpticalHistoryEntity,
       OltMetricEntity,
@@ -83,6 +90,9 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
   ],
   controllers: [OltController, OnuController, OnuWebProxyController],
   providers: [
+    OnuTr069OperationsService,
+    OnuTr069Processor,
+    OltIoLockService,
     ZteC320Driver,
     HuaweiMa5800Driver,
     HiosoDriver,

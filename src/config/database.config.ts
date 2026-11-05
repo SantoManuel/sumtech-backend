@@ -86,6 +86,7 @@ import { OltRolePermissionEntity } from '../modules/olt/entities/olt-role-permis
 import { OnuEntity } from '../modules/olt/entities/onu.entity';
 import { OnuTypeEntity } from '../modules/olt/entities/onu-type.entity';
 import { OnuWanOperationEntity } from '../modules/olt/entities/onu-wan-operation.entity';
+import { OnuTr069OperationEntity } from '../modules/olt/entities/onu-tr069-operation.entity';
 import { OnuServiceConfigEntity } from '../modules/olt/entities/onu-service-config.entity';
 import { OltPartialOperationEntity } from '../modules/olt/entities/olt-partial-operation.entity';
 import { Tr069NetworkEntity } from '../modules/olt/entities/tr069-network.entity';
@@ -188,6 +189,7 @@ export const entities = [
   OnuTypeEntity,
   OnuServiceConfigEntity,
   OnuWanOperationEntity,
+  OnuTr069OperationEntity,
   OltPartialOperationEntity,
   Tr069NetworkEntity,
   VlanEntity,

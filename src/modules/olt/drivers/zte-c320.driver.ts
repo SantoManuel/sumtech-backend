@@ -31,6 +31,9 @@ import {
   applyServiceGemportFixWithSession,
 } from './zte-c320-onu-audit';
 import { applyTr069ManagementWithSession, updateTr069AcsUrlWithSession } from './zte-c320-tr069';
+import { Tr069Result, initialTr069Result } from '../ports/tr069-provisioning.types';
+import { redactOltCli } from '../utils/redact-olt-cli';
+import { buildTr069Plan, parseTr069State, validateTr069Input } from './zte-c320-tr069-state';
 import {
   findTcontProfileByNameWithSession,
   ensureTcontProfileWithSession,
@@ -718,39 +721,52 @@ export class ZteC320Driver implements IOltDriver {
    * reintentarse sin re-autorizar la ONU ópticamente. Asume que la ONU ya
    * está autorizada en la OLT (vport1/service-port1 ya existen).
    *
-   * Trata el bloque completo como MEJOR ESFUERZO, no crítico -- mismo
-   * criterio que `cpeConfigWarning` del lado del servicio. Confirmado en
-   * vivo contra OLT_Tabara_Abajo (2026-10-20) que la OLT puede aceptar el
-   * comando pero el ONT lo rechace a nivel OMCI ("%Code 63990-GPONRM : ONT
-   * return error: command processing error."). CAUSA RAÍZ CONFIRMADA
-   * (2026-10-22): el onu-type del ONT tenía "Max VEIP: 0" -- `veip 1 port
-   * udp 1232 host 2` exige que el onu-type soporte al menos 1 VEIP.
-   * `ensureOnuTypeProfileWithSession` ya incluye "max-veip 1" para
-   * onu-types NUEVOS (ver esa nota), pero esto solo arregla casos futuros:
-   * un onu-type que ya existía en la OLT (ej. HUAWEY-HG8145V5 en
-   * OLT_Tabara_Abajo) sigue con "Max VEIP: 0" hasta corregirse a mano. Por
-   * eso este bloque se mantiene como mejor esfuerzo -- un rechazo acá nunca
-   * debe impedir que el admin vea el resultado -- se reporta como
-   * `warning`, no como `error` duro, igual que antes hacía `authorizeOnu()`
-   * con este mismo bloque.
+   * Calcula los cambios desde una lectura previa y comprueba respuestas,
+   * configuración posterior y guardado. Un requisito rechazado devuelve
+   * failed/partial. La comunicación ACS se verifica por separado.
+   * No reinicia la ONU ni modifica políticas globales de la OLT.
    */
   async applyTr069Management(
     params: OltConnectionParams,
     config: AuthorizeOnuParams,
-  ): Promise<{ ok: boolean; error?: string; warning?: string }> {
-    const session = this.createSession(params);
+  ): Promise<Tr069Result> {
+    const session = this.createSession({ ...params, timeoutMs: Math.max(1, Math.min(params.timeoutMs || 15000, config.tr069RemainingMs?.() ?? 15000)) });
     try {
+      if ((config.tr069RemainingMs?.() ?? 1) <= 0) throw new Error('Se agotó el presupuesto de la operación TR-069.');
       await session.connectAndLogin();
       return await applyTr069ManagementWithSession(session, config, this.logger, (ms) => this.delay(ms));
     } catch (err: any) {
-      return { ok: false, error: err.message };
+      return { ...initialTr069Result(), error: redactOltCli(err.message, [config.tr069AcsPassword, config.tr069AcsUsername]) };
     } finally {
-      await session.close();
+      try { await session.close(); } catch { this.logger.warn('No se pudo cerrar la sesión TR-069.'); }
     }
   }
 
   protected delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async previewTr069Plan(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<string[]> {
+    validateTr069Input(config);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const state = parseTr069State(await session.executeCommand('show running-config'), toOnuInterfaceName(config.ponInterface, config.onuId), config.serialNumber);
+      const steps = buildTr069Plan(config, state);
+      const commands: string[] = [];
+      let scope: string | undefined;
+      for (const step of steps) {
+        if (scope !== step.scope) {
+          if (scope) commands.push('end');
+          commands.push('configure terminal', (step.scope === 'interface' ? 'interface ' : 'pon-onu-mng ') + state.iface);
+          scope = step.scope;
+        }
+        commands.push(step.command);
+      }
+      if (scope) commands.push('end');
+      if (steps.length) commands.push('write');
+      return commands.map(cmd => redactOltCli(cmd, [config.tr069AcsPassword, config.tr069AcsUsername]));
+    } finally { try { await session.close(); } catch { /* read-only preview */ } }
   }
 
   /**
@@ -768,18 +784,21 @@ export class ZteC320Driver implements IOltDriver {
       ponInterface: string;
       onuId: number;
       tr069Url: string;
+      serialNumber?: string;
+      tr069RemainingMs?: () => number;
       tr069AcsUsername?: string;
       tr069AcsPassword?: string;
     },
-  ): Promise<{ ok: boolean; error?: string; warning?: string }> {
-    const session = this.createSession(params);
+  ): Promise<Tr069Result> {
+    const session = this.createSession({ ...params, timeoutMs: Math.max(1, Math.min(params.timeoutMs || 15000, config.tr069RemainingMs?.() ?? 15000)) });
     try {
+      if ((config.tr069RemainingMs?.() ?? 1) <= 0) throw new Error('Se agotó el presupuesto de la operación TR-069.');
       await session.connectAndLogin();
-      return await updateTr069AcsUrlWithSession(session, config);
+      return await updateTr069AcsUrlWithSession(session, config, this.logger, (ms) => this.delay(ms));
     } catch (err: any) {
-      return { ok: false, error: err.message };
+      return { ...initialTr069Result(), error: redactOltCli(err.message, [config.tr069AcsPassword, config.tr069AcsUsername]) };
     } finally {
-      await session.close();
+      try { await session.close(); } catch { this.logger.warn('No se pudo cerrar la sesión TR-069.'); }
     }
   }
 
@@ -1233,7 +1252,7 @@ export class ZteC320Driver implements IOltDriver {
   getCapabilityNotes(): Partial<Record<keyof OltDriverCapabilities, string>> {
     return {
       tr069AutoProvisioning:
-        'El driver ya genera el segundo camino de datos GPON para la VLAN de gestión y todo el cableado OMCI (flow/switchport-bind/ip-host/vlan-filter/veip) que conecta con el VEIP, más un reinicio OMCI obligatorio al final -- causa raíz real encontrada y corregida el 2026-10-20 (ver docs/onu-tr069-provisioning-zte-c320.md). Falta reconfirmar en vivo contra una ONU recién autorizada por Sumtech (no una que reutilice un onu-type preexistente) antes de pasar esta capacidad a `true`.',
+        'Aplica el canal de gestión desde el estado observado, sin reiniciar ni cambiar políticas globales. Requiere perfiles existentes y habilitación por OLT. La configuración aplicada y la comunicación ACS se verifican por separado; validar cada combinación de firmware y modelo antes de habilitarla.',
       onuTypeProfileProvisioning:
         'El driver ya intenta crear el "onu-type" automáticamente al autorizar, con sintaxis confirmada contra el manual oficial (ZXA10 C300 Configuration Manual (CLI), §2.1) después de que un primer intento en vivo fallara por mandar "description" entre comillas con espacios -- la corrección todavía no se reprobó contra la OLT real.',
     };
