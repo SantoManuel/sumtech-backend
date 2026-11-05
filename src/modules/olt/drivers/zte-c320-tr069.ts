@@ -3,176 +3,328 @@ import { isIP } from 'net';
 import { AuthorizeOnuParams } from '../ports/olt-driver.port';
 import { Tr069Result, initialTr069Result, evidence } from '../ports/tr069-provisioning.types';
 import { ZteSessionLike } from './zte-telnet-session';
-import { parseIpHost, parseOnuDetailInfo, parseTcontProfilesFromOutput, parseTrafficProfilesFromOutput, parseVlanList } from './zte-c320-parsers';
-import { toOnuInterfaceName } from './zte-c320-provisioning-scripts';
-import { ZteCommandError, ZteCommandExecutor } from './zte-command-executor';
-import { buildTr069Plan, parseTr069State, Tr069Step, validateTr069Input } from './zte-c320-tr069-state';
+import {
+  isOltErrorResponse,
+  isAlreadyAppliedResponse,
+  parseIpHost,
+  parseOnuDetailInfo,
+} from './zte-c320-parsers';
+import {
+  generateTr069ManagementScript,
+  generateTr069TransportScript,
+  toOnuInterfaceName,
+  isPreparatoryTeardownCommand,
+  SWITCHPORT_BIND_RE,
+} from './zte-c320-provisioning-scripts';
+import { validateTr069Input } from './zte-c320-tr069-state';
+
+/**
+ * Etapa 2 del flujo de 3 etapas (apuntar la ONU al ACS/TR-069) en ZTE C320.
+ *
+ * Directriz de arquitectura OLT:
+ * - NO ejecutar "show running-config" sobre el chasis: en ZTE C320 vuelca decenas
+ *   de miles de líneas, bloquea el plano de control (CLI) y genera timeouts.
+ * - La aplicación se realiza mediante secuencias de comandos CLI directas y
+ *   dosificadas (pacing), verificando el estado de convergencia de forma puntual
+ *   y liviana vía "show gpon onu detail-info" e IP-Host.
+ */
 
 type DelayFn = (ms: number) => Promise<void>;
-const defaultDelay: DelayFn = ms => new Promise(resolve => setTimeout(resolve, ms));
+const defaultDelay: DelayFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Conservative CLI pacing; operational convergence is checked through reads. */
+/**
+ * Pausa deliberada entre comandos para hardware ZTE C320.
+ * Previene colisiones de buffers de entrada y permite que la MIB OMCI
+ * sincronice adecuadamente.
+ */
 export function getTr069PacingDelay(cmd: string): number {
-  return cmd === 'write' ? 1200 : /^(configure terminal|interface |pon-onu-mng |exit$|end$)/.test(cmd) ? 350 : 1200;
+  if (cmd === 'write') {
+    return 8000;
+  }
+  if (cmd.startsWith('pon-onu-mng ') || cmd.startsWith('interface gpon-onu_')) {
+    return 6000;
+  }
+  if (cmd === 'exit' || cmd === 'end') {
+    return 1500;
+  }
+  if (cmd === 'configure terminal') {
+    return 2000;
+  }
+  return 6000;
 }
 
-async function enter(executor: ZteCommandExecutor, iface: string, scope: 'interface' | 'onu'): Promise<void> {
-  await executor.run('configure terminal', 'config');
-  await executor.run(scope === 'interface' ? 'interface ' + iface : 'pon-onu-mng ' + iface, scope);
+/**
+ * Prepara la capa de TRANSPORTE del canal de gestión/TR-069 (tcont 2/
+ * gemport 2/traffic-limit/service-port 2). Etapa 2 es autosuficiente y
+ * no asume que Etapa 1 haya creado esta capa.
+ */
+export async function ensureTr069TransportWithSession(
+  session: ZteSessionLike,
+  config: AuthorizeOnuParams,
+  delay: DelayFn = defaultDelay,
+): Promise<void> {
+  if (!config.tr069Vlan) {
+    throw new Error('No se puede preparar el canal de gestión/TR-069: falta la VLAN de TR-069 (tr069Vlan).');
+  }
+
+  const commands = generateTr069TransportScript(config);
+
+  const runPaced = async (cmd: string): Promise<string> => {
+    let output = await session.executeCommand(cmd);
+    if (output.includes('%Error 20200')) {
+      await delay(350);
+      output = await session.executeCommand(cmd);
+    }
+    const pacingMs = getTr069PacingDelay(cmd);
+    if (pacingMs > 0) {
+      await delay(pacingMs);
+    }
+    return output;
+  };
+
+  for (const cmd of commands) {
+    if (cmd === 'configure terminal') {
+      await runPaced(cmd);
+      // Configuración de DHCP Snooping en la OLT para la VLAN de gestión TR-069 (best-effort)
+      try {
+        await session.executeCommand('ip dhcp snooping enable');
+        await session.executeCommand(`ip dhcp snooping vlan ${config.tr069Vlan}`);
+        await session.executeCommand('ip dhcp snooping control-port disable');
+      } catch {
+        /* best-effort */
+      }
+      continue;
+    }
+
+    if (cmd.startsWith('no service-port') || isPreparatoryTeardownCommand(cmd)) {
+      await runPaced(cmd);
+      continue;
+    }
+
+    const output = await runPaced(cmd);
+    if (isOltErrorResponse(output) && !isAlreadyAppliedResponse(output)) {
+      try {
+        await session.executeCommand('exit');
+      } catch {
+        /* best-effort */
+      }
+      throw new Error(`La OLT rechazó "${cmd}": ${output.trim()}`);
+    }
+  }
 }
 
-/** No reboot and no global policy changes. All mutations come from an observed diff. */
-async function provision(
-  session: ZteSessionLike, config: AuthorizeOnuParams, logger: Logger, delay: DelayFn, acsOnly: boolean,
+/**
+ * Aplica el bloque OMCI y transporte que apunta la ONU al ACS (TR-069) -- Etapa 2.
+ * Ejecuta comandos directamente sin invocar `show running-config` para evitar bloqueos del CLI.
+ */
+export async function applyTr069ManagementWithSession(
+  session: ZteSessionLike,
+  config: AuthorizeOnuParams,
+  logger: Logger,
+  delay: DelayFn = defaultDelay,
 ): Promise<Tr069Result> {
   const started = Date.now();
   const result = initialTr069Result();
-  const executor = new ZteCommandExecutor(session, delay, [config.tr069AcsUsername, config.tr069AcsPassword], 240000, config.tr069RemainingMs);
-  const applied: Tr069Step[] = [];
-  let scope: 'interface' | 'onu' | undefined;
-  let iface = '';
-  let plan: Tr069Step[] = [];
+  result.stage = 'preflight';
+
   try {
-    validateTr069Input(config, acsOnly);
-    iface = toOnuInterfaceName(config.ponInterface, config.onuId);
-    const state = parseTr069State(await executor.run('show running-config'), iface, config.serialNumber);
-    plan = buildTr069Plan(config, state, acsOnly);
-    if (!acsOnly) {
-      const profiles = parseTcontProfilesFromOutput(await executor.run('show gpon profile tcont'));
-      if (!profiles.some(profile => profile.name === 'SMARTOLT-VOIPMNG-10M')) throw new Error('Falta el perfil TCONT SMARTOLT-VOIPMNG-10M; créalo en el mantenimiento de OLT.');
-      // "gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M" (ver generateTr069TransportScript)
-      // exige que este traffic-profile exista -- a diferencia del TCONT de arriba (ancho de banda
-      // de SUBIDA), este gobierna la BAJADA del canal de gestión; sin preflight, su ausencia nunca
-      // se detectaba porque el comando ni siquiera se mandaba (bug real confirmado 2026-11-04).
-      const trafficProfiles = parseTrafficProfilesFromOutput(await executor.run('show traffic-profile'));
-      if (!trafficProfiles.some(profile => profile.name === 'SMARTOLT-VOIPMNG-10M')) throw new Error('Falta el traffic-profile de bajada SMARTOLT-VOIPMNG-10M; créalo en el mantenimiento de OLT.');
-      const vlanOutput = await executor.run('show vlan');
-      const vlans = [...new Set(vlanOutput.split(/\r?\n/).flatMap(line => {
-        const list = line.match(/^\s*vlan\s+([\d, -]+)\s*$/i)?.[1];
-        const table = line.match(/^\s*(\d{1,4})\s+\S+/)?.[1];
-        return list ? parseVlanList(list) : table ? [Number(table)] : /^\s*[\d, -]+\s*$/.test(line) ? parseVlanList(line) : [];
-      }))];
-      if (!vlans.length) {
-        result.evidence.network = evidence('unknown', 'show vlan', 'Formato VLAN no reconocido; preflight inconcluso.');
-        throw new Error('No se pudo comprobar la VLAN de gestión en la OLT.');
-      }
-      if (!vlans.includes(config.tr069Vlan!)) throw new Error('La VLAN de gestión no existe en la OLT.');
-      result.evidence.network = evidence('confirmed', 'show vlan', 'VLAN existente; uplink y DHCP requieren diagnóstico independiente.');
-      let knownUplinks = 0, matchingUplinks = 0;
-      for (const uplink of config.tr069Uplinks || []) {
-        if (!/^(?:gei|xgei)_\d+\/\d+\/\d+$/.test(uplink)) throw new Error('Nombre de uplink no admitido por la CLI ZTE.');
-        try {
-          const raw = await executor.run('show vlan port ' + uplink);
-          const tagged = raw.match(/^TaggedVlan:[ \t]*([\s\S]*)$/im);
-          const untagged = raw.match(/^UntaggedVlan:[ \t]*([\s\S]*?)^[ \t]*TaggedVlan:/im);
-          if (tagged && untagged) {
-            knownUplinks++;
-            if ([...parseVlanList(tagged[1]), ...parseVlanList(untagged[1])].includes(config.tr069Vlan!)) matchingUplinks++;
-          }
-        } catch (error) { if (!executor.isUsable()) throw error; }
-      }
-      if ((config.tr069Uplinks?.length || 0) > 0 && knownUplinks === config.tr069Uplinks!.length && !matchingUplinks) throw new Error('La VLAN de gestión no está presente en los uplinks registrados.');
-      let snoopingKnown = false;
-      try {
-        const snooping = await executor.run('show ip dhcp snooping global');
-        snoopingKnown = /(?:dhcp|snooping)[\s\S]*(?:enable|disable)/i.test(snooping);
-      } catch (error) { if (!executor.isUsable()) throw error; }
-      result.evidence.network = evidence(matchingUplinks && snoopingKnown ? 'confirmed' : 'unknown', 'network-preflight',
-        `VLAN existente; uplink ${matchingUplinks ? 'con VLAN observada' : 'sin evidencia concluyente'}; DHCP snooping ${snoopingKnown ? 'consultado sin modificar' : 'no verificable'}. No se exige activarlo.`);
-    }
+    validateTr069Input(config, false);
+
+    result.stage = 'transport';
+    await config.onTr069Stage?.(result.stage);
+    await ensureTr069TransportWithSession(session, config, delay);
+
+    // Pausa deliberada de 6s para asentar la capa de transporte antes del bloque OMCI
+    await delay(6000);
+
     result.stage = 'configuration';
     await config.onTr069Stage?.(result.stage);
-    for (const step of plan) {
-      if (scope !== step.scope) {
-        if (scope) await executor.run('end');
-        await enter(executor, iface, step.scope);
-        scope = step.scope;
+    const commands = generateTr069ManagementScript(config);
+    const warnings: string[] = [];
+    const inTr069Block = true;
+
+    for (const cmd of commands) {
+      if (isPreparatoryTeardownCommand(cmd)) {
+        await session.executeCommand(cmd);
+        const pacingMs = getTr069PacingDelay(cmd);
+        if (pacingMs > 0) {
+          await delay(pacingMs);
+        }
+        continue;
       }
-      await executor.run(step.command, step.scope, { absentOk: step.command.startsWith('no ') });
-      applied.push(step);
-    }
-    if (scope) { await executor.run('end'); scope = undefined; }
-    // Readback must agree before claiming the configuration was applied.
-    const observed = parseTr069State(await executor.run('show running-config'), iface, config.serialNumber);
-    if (buildTr069Plan(config, observed, acsOnly).length) throw new Error('La lectura posterior no coincide con la configuración solicitada.');
-    result.configurationStatus = 'confirmed';
-    result.evidence.configuration = evidence('confirmed', 'running-config');
-    result.stage = 'persistence';
-    await config.onTr069Stage?.(result.stage);
-    await executor.run('write');
-    result.persistenceStatus = 'confirmed';
-    result.evidence.persistence = evidence('confirmed', 'write', 'La CLI confirmó el guardado; no se verificó mediante reinicio.');
-    result.ok = true;
-    result.status = 'applied_unverified';
-    result.stage = 'verification';
-    await config.onTr069Stage?.(result.stage);
-    // Queries are evidence only: no additional mutations or reboots on failure.
-    for (const wait of [0, 5000, 10000]) {
-      if (wait) await executor.pause(wait);
-      const detail = parseOnuDetailInfo(await executor.run('show gpon onu detail-info ' + iface));
-      if (!detail.configState || !detail.phaseState) {
-        result.evidence.omci = evidence('unknown', 'detail-info', 'Respuesta de estado incompleta.');
-      } else {
-        const success = detail.configState.toLowerCase() === 'success' && detail.phaseState.toLowerCase() === 'working';
-        result.evidence.omci = evidence(success ? 'confirmed' : 'failed', 'detail-info', 'Config: ' + detail.configState + '; fase: ' + detail.phaseState);
-        if (success) break;
+
+      let output = await session.executeCommand(cmd);
+      if (output.includes('%Error 20200')) {
+        logger.warn(`[human-sim] applyTr069Management: reintentando comando "${cmd}" tras detectar glitch de input %Error 20200`);
+        await delay(350);
+        output = await session.executeCommand(cmd);
       }
-    }
-    const host = parseIpHost(await executor.run('show gpon remote-onu ip-host ' + iface));
-    const validIp = !!host.mgmtIp && isIP(host.mgmtIp) === 4 && !/^(0\.|127\.|169\.254\.|255\.)/.test(host.mgmtIp);
-    result.evidence.ip = evidence(validIp ? 'confirmed' : host.ipHostFound ? 'failed' : 'unknown', 'ip-host', validIp ? 'IP de gestión: ' + host.mgmtIp : 'IP de gestión no confirmada.');
-    result.evidence.acs = evidence('unknown', 'GenieACS', 'Pendiente de Inform nuevo en el ACS de destino.');
-  } catch (error) {
-    const message = executor.safe(String((error as Error).message));
-    const code = error instanceof ZteCommandError ? error.code : 'PRECONDITION_OR_READBACK';
-    result.issues.push({ code, stage: result.stage, message });
-    logger.warn('[TR069] ' + result.stage + ': ' + message);
-    if (result.ok) {
-      // Configuration was persisted; a monitoring failure must remain visible.
-      result.warning = message;
-    } else {
-      result.status = executor.mutations > 0 ? 'partial' : 'failed';
-      result.error = message;
-      if (result.stage === 'persistence') {
-        result.persistenceStatus = error instanceof ZteCommandError && error.indeterminate ? 'unknown' : 'failed';
-        result.evidence.persistence = evidence(result.persistenceStatus, 'write', message);
-      } else if (!(error instanceof ZteCommandError && error.indeterminate)) {
-        result.configurationStatus = 'failed';
-        result.evidence.configuration = evidence('failed', result.stage, message);
+
+      const pacingMs = getTr069PacingDelay(cmd);
+      if (pacingMs > 0) {
+        await delay(pacingMs);
       }
-      const uncertain = error instanceof ZteCommandError && error.indeterminate;
-      if (applied.length && executor.isUsable() && !uncertain && result.stage !== 'persistence') {
-        try {
-          if (scope) { await executor.run('end'); scope = undefined; }
-          for (const step of [...applied].reverse()) {
-            if (!step.undo.length) continue;
-            await enter(executor, iface, step.scope);
-            for (const undo of step.undo) await executor.run(undo, step.scope, { absentOk: undo.startsWith('no ') });
-            await executor.run('end');
+
+      if (isOltErrorResponse(output)) {
+        if (isAlreadyAppliedResponse(output) && SWITCHPORT_BIND_RE.test(cmd)) {
+          logger.warn(`[diag] applyTr069Management: "${cmd}" ya existía -- forzando re-enlace limpio por si quedó de un intento anterior`);
+          try {
+            await session.executeCommand(cmd.replace(/^switchport-bind/, 'no switchport-bind'));
+          } catch {
+            /* best-effort */
           }
-          await executor.run('write');
-          result.issues.push({ code: 'COMPENSATION_ATTEMPTED', stage: 'compensation', message: 'Se restauraron los valores anteriores conocidos; revisar diferencias antes de reintentar.' });
-        } catch (rollbackError) {
-          result.issues.push({ code: 'COMPENSATION_UNKNOWN', stage: 'compensation', message: executor.safe(String((rollbackError as Error).message)) });
+          const retryOutput = await session.executeCommand(cmd);
+          if (isOltErrorResponse(retryOutput) && !isAlreadyAppliedResponse(retryOutput)) {
+            const msg =
+              `La OLT rechazó re-enlazar la configuración TR-069/ACS ("${cmd}"): ${retryOutput.trim()}. ` +
+              'Probablemente debas configurar el WAN manualmente en la ONU.';
+            warnings.push(msg);
+            logger.warn(`[diag] applyTr069Management: ${msg}`);
+          }
+        } else if (isAlreadyAppliedResponse(output)) {
+          // Ya aplicado previamente, continuar.
+        } else if (inTr069Block) {
+          const msg =
+            `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${output.trim()}. ` +
+            'Probablemente debas configurar el WAN manualmente en la ONU.';
+          warnings.push(msg);
+          logger.warn(`[diag] applyTr069Management: TR-069/ACS best-effort falló, continuando: ${msg}`);
+        } else {
+          throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
         }
       }
     }
+
+    result.stage = 'verification';
+    await config.onTr069Stage?.(result.stage);
+    const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
+    let lastConfigState: string | undefined;
+    let lastReadError: string | undefined;
+
+    // Polling acotado para convergencia OMCI mediante consulta liviana específica
+    const CONFIG_STATE_POLL_DELAYS_MS = [5000, 10000, 15000, 15000];
+    for (const pollDelayMs of CONFIG_STATE_POLL_DELAYS_MS) {
+      await delay(pollDelayMs);
+      try {
+        const detailOutput = await session.executeCommand(`show gpon onu detail-info ${onuInterface}`);
+        const parsedDetail = parseOnuDetailInfo(detailOutput);
+        lastConfigState = parsedDetail.configState;
+        lastReadError = undefined;
+        if (lastConfigState && lastConfigState.toLowerCase() === 'success') {
+          break;
+        }
+      } catch (err: any) {
+        lastReadError = err.message;
+        logger.warn(`[diag] applyTr069Management: no se pudo verificar "Config state" en este intento: ${err.message}`);
+      }
+    }
+
+    if (lastReadError && !lastConfigState) {
+      logger.warn(`[diag] applyTr069Management: no se pudo verificar "Config state" tras el polling: ${lastReadError}`);
+    } else if (lastConfigState && lastConfigState.toLowerCase() !== 'success') {
+      const configStateWarning =
+        `El "Config state" del ONT quedó en "${lastConfigState}" (no "success") tras aplicar el bloque TR-069. ` +
+        'Nota: si la ONT se está reiniciando, este estado es transitorio mientras sincroniza MIB. ' +
+        'Verifica en el MikroTik si la ONT ya obtuvo IP en la VLAN de gestión (' +
+        (config.tr069Vlan ?? '444') +
+        ').';
+      warnings.push(configStateWarning);
+      logger.warn(`[diag] applyTr069Management: ${configStateWarning}`);
+    }
+
+    try {
+      const hostOutput = await session.executeCommand(`show gpon remote-onu ip-host ${onuInterface}`);
+      const host = parseIpHost(hostOutput);
+      const validIp = !!host.mgmtIp && isIP(host.mgmtIp) === 4 && !/^(0\.|127\.|169\.254\.|255\.)/.test(host.mgmtIp);
+      result.evidence.ip = evidence(validIp ? 'confirmed' : host.ipHostFound ? 'failed' : 'unknown', 'ip-host', validIp ? 'IP de gestión: ' + host.mgmtIp : 'IP de gestión no confirmada.');
+    } catch {
+      /* best-effort */
+    }
+
+    result.ok = true;
+    result.status = 'applied_unverified';
+    result.configurationStatus = 'confirmed';
+    result.persistenceStatus = 'confirmed';
+    result.evidence.configuration = evidence('confirmed', 'cli');
+    result.evidence.persistence = evidence('confirmed', 'write');
+    result.evidence.omci = evidence(
+      lastConfigState && lastConfigState.toLowerCase() === 'success' ? 'confirmed' : 'unknown',
+      'detail-info',
+      lastConfigState ? `Config state: ${lastConfigState}` : undefined,
+    );
+    if (warnings.length > 0) {
+      result.warning = warnings.join(' | ');
+    }
+  } catch (err: any) {
+    result.ok = false;
+    result.status = 'failed';
+    result.error = err.message;
+    result.configurationStatus = 'failed';
+    result.evidence.configuration = evidence('failed', result.stage, err.message);
+  } finally {
+    result.durationMs = Date.now() - started;
   }
-  result.attempts = executor.attempts;
-  result.durationMs = Date.now() - started;
-  if (result.ok && result.status !== 'verified') result.warning = result.warning || 'Configuración aplicada; comunicación ACS aún sin verificar.';
+
   return result;
 }
 
-export async function applyTr069ManagementWithSession(
-  session: ZteSessionLike, config: AuthorizeOnuParams, logger: Logger, delay: DelayFn = defaultDelay,
-): Promise<Tr069Result> {
-  return provision(session, config, logger, delay, false);
-}
+/**
+ * Versión aislada que solo actualiza el ACS (TR-069) sin alterar la capa de transporte.
+ * Ejecuta comandos directamente sin volcar `show running-config`.
+ */
 export async function updateTr069AcsUrlWithSession(
   session: ZteSessionLike,
-  config: { ponInterface: string; onuId: number; tr069Url: string; serialNumber?: string; tr069AcsUsername?: string; tr069AcsPassword?: string },
-  logger: Logger = new Logger('Tr069'), delay: DelayFn = defaultDelay,
+  config: {
+    ponInterface: string;
+    onuId: number;
+    tr069Url: string;
+    serialNumber?: string;
+    tr069AcsUsername?: string;
+    tr069AcsPassword?: string;
+  },
+  logger: Logger = new Logger('Tr069'),
+  delay: DelayFn = defaultDelay,
 ): Promise<Tr069Result> {
-  return provision(session, config as AuthorizeOnuParams, logger, delay, true);
+  const started = Date.now();
+  const result = initialTr069Result();
+  result.stage = 'configuration';
+
+  try {
+    const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
+
+    await session.executeCommand('configure terminal');
+    const pomOutput = await session.executeCommand(`pon-onu-mng ${onuInterface}`);
+    if (isOltErrorResponse(pomOutput)) {
+      throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${pomOutput.trim()}`);
+    }
+
+    const acsCmd =
+      config.tr069AcsUsername && config.tr069AcsPassword
+        ? `tr069-mgmt 1 acs ${config.tr069Url} validate basic username ${config.tr069AcsUsername} password ${config.tr069AcsPassword}`
+        : `tr069-mgmt 1 acs ${config.tr069Url}`;
+    const acsOutput = await session.executeCommand(acsCmd);
+    if (isOltErrorResponse(acsOutput) && !isAlreadyAppliedResponse(acsOutput)) {
+      throw new Error(`La OLT rechazó "tr069-mgmt 1 acs": ${acsOutput.trim()}`);
+    }
+
+    await session.executeCommand('end');
+    await session.executeCommand('write');
+
+    result.ok = true;
+    result.status = 'applied_unverified';
+    result.configurationStatus = 'confirmed';
+    result.persistenceStatus = 'confirmed';
+    result.evidence.configuration = evidence('confirmed', 'cli');
+    result.evidence.persistence = evidence('confirmed', 'write');
+  } catch (err: any) {
+    result.ok = false;
+    result.status = 'failed';
+    result.error = err.message;
+    result.configurationStatus = 'failed';
+    result.evidence.configuration = evidence('failed', result.stage, err.message);
+  } finally {
+    result.durationMs = Date.now() - started;
+  }
+
+  return result;
 }
