@@ -748,25 +748,8 @@ export class ZteC320Driver implements IOltDriver {
 
   async previewTr069Plan(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<string[]> {
     validateTr069Input(config);
-    const session = this.createSession(params);
-    try {
-      await session.connectAndLogin();
-      const state = parseTr069State(await session.executeCommand('show running-config'), toOnuInterfaceName(config.ponInterface, config.onuId), config.serialNumber);
-      const steps = buildTr069Plan(config, state);
-      const commands: string[] = [];
-      let scope: string | undefined;
-      for (const step of steps) {
-        if (scope !== step.scope) {
-          if (scope) commands.push('end');
-          commands.push('configure terminal', (step.scope === 'interface' ? 'interface ' : 'pon-onu-mng ') + state.iface);
-          scope = step.scope;
-        }
-        commands.push(step.command);
-      }
-      if (scope) commands.push('end');
-      if (steps.length) commands.push('write');
-      return commands.map(cmd => redactOltCli(cmd, [config.tr069AcsPassword, config.tr069AcsUsername]));
-    } finally { try { await session.close(); } catch { /* read-only preview */ } }
+    const commands = this.generateTr069ProfileScript(config);
+    return commands.map(cmd => redactOltCli(cmd, [config.tr069AcsPassword, config.tr069AcsUsername]));
   }
 
   /**
