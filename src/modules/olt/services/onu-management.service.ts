@@ -1343,8 +1343,6 @@ export class OnuManagementService {
     const onu = await this.findById(id);
     if (onu.status !== 'ACTIVE') throw new BadRequestException('La ONU debe estar autorizada antes de aplicar TR-069.');
     if (onu.olt.vendor !== 'ZTE' || !/C320/i.test(onu.olt.model)) throw new BadRequestException('El flujo verificable TR-069 está disponible para ZTE C320.');
-    const enabledOlts = (process.env.TR069_PROVISIONING_OLT_ALLOWLIST || '').split(',').map(value => value.trim());
-    if (!enabledOlts.includes('*') && !enabledOlts.includes(onu.olt.id)) throw new BadRequestException('El aprovisionamiento verificable TR-069 no está habilitado para esta OLT.');
     const config = await this.configRepository.findOneBy({ onuId: id });
     if (!config && kind === 'profile') throw new BadRequestException('Falta configuración previa de servicio; autoriza la ONU primero.');
     if (!dto.tr069NetworkId) throw new BadRequestException('Selecciona una Red TR-069.');
@@ -1365,8 +1363,6 @@ export class OnuManagementService {
     if (onu.serialNumber !== auth.serialNumber || onu.status !== 'ACTIVE') throw new BadRequestException('La identidad o estado de la ONU cambió desde la solicitud.');
     const location = this.resolveOnuLocation(onu);
     if (onu.olt.id !== expectedOltId || location.ponInterface !== auth.ponInterface || location.onuId !== auth.onuId) throw new BadRequestException('La ubicación de la ONU cambió desde la solicitud.');
-    const enabledOlts = (process.env.TR069_PROVISIONING_OLT_ALLOWLIST || '').split(',').map(value => value.trim());
-    if (!enabledOlts.includes('*') && !enabledOlts.includes(onu.olt.id)) throw new BadRequestException('El aprovisionamiento TR-069 fue deshabilitado para esta OLT.');
     const driver = this.resolveDriver(onu.olt);
     const conn = await this.connectionResolver.resolve(onu.olt);
     const result = await withOltTelnetLock(onu.olt.id, () => kind === 'profile'
