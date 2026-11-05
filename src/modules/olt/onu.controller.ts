@@ -211,7 +211,7 @@ export class OnuController {
    * ACS (TR-069), sin tocar GenieACS/WAN todavía.
    */
   @Post(':id/tr069-profile')
-  @HttpCode(202)
+
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
   @OltIdFrom('ONU_ID_PARAM')
@@ -220,7 +220,7 @@ export class OnuController {
     @Body() dto: Tr069OperationDto,
     @Req() req: any,
   ) {
-    return this.tr069.create(id, dto, 'profile', req.user?.id, req.headers?.['idempotency-key']);
+    return this.onuService.applyTr069Profile(id, dto, req.user?.id);
   }
 
   /**
@@ -230,7 +230,7 @@ export class OnuController {
    * SIEMPRE es un error duro (400), nunca un éxito silencioso con warning.
    */
   @Post(':id/tr069-acs')
-  @HttpCode(202)
+
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
   @OltIdFrom('ONU_ID_PARAM')
@@ -239,7 +239,7 @@ export class OnuController {
     @Body() dto: Tr069OperationDto,
     @Req() req: any,
   ) {
-    return this.tr069.create(id, dto, 'acs', req.user?.id, req.headers?.['idempotency-key']);
+    return this.onuService.updateTr069AcsUrl(id, dto, req.user?.id);
   }
 
   @Get(':id/tr069-operations/latest')
@@ -259,7 +259,7 @@ export class OnuController {
    * exige que la Etapa 2 (tr069-profile) ya se haya aplicado.
    */
   @Post(':id/wan-config')
-  @HttpCode(202)
+
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
   @OltIdFrom('ONU_ID_PARAM')
