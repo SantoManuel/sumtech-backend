@@ -4086,6 +4086,31 @@ describe('ZteTelnetSession.executeCommand() -- bug real de producción (2026-10-
     expect(fakeSocket.write).toHaveBeenCalledWith('restore factory\r\n');
   });
 
+  it('factoryResetOnu() resuelve directamente si la OLT devuelve el prompt sin pedir confirmacion interactiva', async () => {
+    const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+    const fakeSocket = createFakeSocket();
+    (session as any).socket = fakeSocket;
+
+    const promise = session.factoryResetOnu(5000);
+
+    fakeSocket.emit('data', Buffer.from('\r\n(gpon-onu-mng)#'));
+
+    await expect(promise).resolves.toBeUndefined();
+    expect(fakeSocket.write).toHaveBeenCalledWith('restore factory\r\n');
+  });
+
+  it('factoryResetOnu() rechaza inmediatamente si la OLT devuelve error', async () => {
+    const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
+    const fakeSocket = createFakeSocket();
+    (session as any).socket = fakeSocket;
+
+    const promise = session.factoryResetOnu(5000);
+
+    fakeSocket.emit('data', Buffer.from('\r\n%Error 10100: Invalid command\r\n(gpon-onu-mng)#'));
+
+    await expect(promise).rejects.toThrow(/%Error 10100/);
+  });
+
   it('factoryResetOnu() rechaza si el prompt "[yes/no]:" nunca llega (timeout)', async () => {
     const session = new ZteTelnetSession({ host: '10.0.0.10', port: 23, username: 'admin', password: 'password' });
     const fakeSocket = createFakeSocket();

@@ -305,26 +305,24 @@ export class ZteTelnetSession {
         const cleaned = this.handleIac(raw);
         output += cleaned.toString('ascii');
 
-        if (!confirmed && /\[yes\/no\]:\s*$/i.test(output.trim())) {
+        if (!confirmed && /\[(?:yes\/no|y\/n)\]:?\s*$/i.test(output.trim())) {
           confirmed = true;
           output = '';
           socket.write('yes\r\n');
           return;
         }
 
-        if (confirmed) {
-          const lines = output.split('\n');
-          const lastLine = lines[lines.length - 1]?.trim() || '';
-          if (lastLine.endsWith('#') || lastLine.endsWith(')#')) {
-            finished = true;
-            clearTimeout(timer);
-            socket.removeListener('data', onData);
-            this.logger.log(`[diag] rebootOnu OK a los ${Date.now() - t0}ms`);
-            if (/%Error\b|%Code\s+\d+(-\w+)?\s*:/i.test(output)) {
-              reject(new Error(redactOltCli(output.trim())));
-            } else {
-              resolve();
-            }
+        const lines = output.split('\n');
+        const lastLine = lines[lines.length - 1]?.trim() || '';
+        if (lastLine.endsWith('#') || lastLine.endsWith(')#')) {
+          finished = true;
+          clearTimeout(timer);
+          socket.removeListener('data', onData);
+          this.logger.log(`[diag] rebootOnu OK a los ${Date.now() - t0}ms`);
+          if (/%Error\b|%Code\s+\d+(-\w+)?\s*:/i.test(output)) {
+            reject(new Error(redactOltCli(output.trim())));
+          } else {
+            resolve();
           }
         }
       };
@@ -365,27 +363,25 @@ export class ZteTelnetSession {
         const cleaned = this.handleIac(raw);
         output += cleaned.toString('ascii');
 
-        if (!confirmed && /\[yes\/no\]:\s*$/i.test(output.trim())) {
+        if (!confirmed && /\[(?:yes\/no|y\/n)\]:?\s*$/i.test(output.trim())) {
           confirmed = true;
           output = '';
           socket.write('yes\r\n');
           return;
         }
 
-        if (confirmed) {
-          const lines = output.split('\n');
-          const lastLine = lines[lines.length - 1]?.trim() || '';
-          if (lastLine.endsWith('#') || lastLine.endsWith(')#')) {
-            finished = true;
-            clearTimeout(timer);
-            socket.removeListener('data', onData);
-            if (output.includes('%Error') || output.includes('%Code')) {
-              this.logger.warn(`[diag] factoryResetOnu falló: ${output.trim()}`);
-              reject(new Error(output.trim()));
-            } else {
-              this.logger.log(`[diag] factoryResetOnu OK a los ${Date.now() - t0}ms`);
-              resolve();
-            }
+        const lines = output.split('\n');
+        const lastLine = lines[lines.length - 1]?.trim() || '';
+        if (lastLine.endsWith('#') || lastLine.endsWith(')#')) {
+          finished = true;
+          clearTimeout(timer);
+          socket.removeListener('data', onData);
+          if (/%Error\b|%Code\s+\d+(-\w+)?\s*:/i.test(output)) {
+            this.logger.warn(`[diag] factoryResetOnu falló: ${output.trim()}`);
+            reject(new Error(redactOltCli(output.trim())));
+          } else {
+            this.logger.log(`[diag] factoryResetOnu OK a los ${Date.now() - t0}ms`);
+            resolve();
           }
         }
       };
