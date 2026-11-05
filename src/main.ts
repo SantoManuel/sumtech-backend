@@ -47,6 +47,8 @@ async function bootstrap() {
       'Authorization',
       'X-Tenant-Slug',
       'X-Is-Superadmin',
+      'Idempotency-Key',
+      'idempotency-key',
     ],
   });
 
