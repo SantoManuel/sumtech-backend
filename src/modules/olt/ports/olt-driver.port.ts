@@ -9,6 +9,18 @@ export interface OltConnectionParams {
   timeoutMs?: number;
 }
 
+/**
+ * Handle de una sesión Telnet interactiva abierta para la Consola OLT (ver
+ * IOltDriver.openConsoleStream). `onData` puede llamarse más de una vez
+ * (ej. para reconectar un listener) -- cada llamada agrega un listener
+ * nuevo, no reemplaza el anterior.
+ */
+export interface OltConsoleStream {
+  write(data: string): void;
+  onData(cb: (chunk: Buffer) => void): void;
+  close(): Promise<void>;
+}
+
 export interface OltSystemInfo {
   vendor: string;
   model: string;
@@ -704,6 +716,19 @@ export interface IOltDriver {
    * todavía -- el llamador debe responder 501 si el driver no lo implementa.
    */
   runRawCommand?(params: OltConnectionParams, command: string): Promise<string>;
+  /**
+   * Streaming interactivo real para la Consola OLT por WebSocket -- a
+   * diferencia de runRawCommand() (una conexión Telnet nueva por comando,
+   * sin estado entre uno y otro), abre UNA sesión que permanece viva
+   * mientras el modal esté abierto y entrega los bytes tal cual salen del
+   * equipo, sin interceptar paginación ("--More--") ni confirmaciones
+   * interactivas ("[yes/no]:") -- el operador los ve y responde él mismo,
+   * como en cualquier terminal Telnet real. Necesario para que comandos que
+   * dependen de un modo/contexto (ej. "configure terminal" seguido de
+   * "interface ...") funcionen en la misma sesión en vez de reconectar
+   * desde cero en cada línea. Mismo criterio opcional que runRawCommand().
+   */
+  openConsoleStream?(params: OltConnectionParams): Promise<OltConsoleStream>;
   getInterfaceTraffic?(params: OltConnectionParams, interfaceName: string): Promise<{ rxKbps: number; txKbps: number; rawBps?: { inputBps: number; outputBps: number } }>;
   getCapabilities(): OltDriverCapabilities;
   /**

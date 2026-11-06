@@ -78,6 +78,7 @@ import {
   OnuIpHostInfo,
   OnuWanIpInfo,
   OnuTr069MgmtInfo,
+  OltConsoleStream,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
@@ -1126,6 +1127,16 @@ export class ZteC320Driver implements IOltDriver {
     } finally {
       await session.close();
     }
+  }
+
+  async openConsoleStream(params: OltConnectionParams): Promise<OltConsoleStream> {
+    const session = new ZteTelnetSession(params);
+    await session.connectAndLogin();
+    return {
+      write: (data: string) => session.writeRaw(data),
+      onData: (cb: (chunk: Buffer) => void) => session.attachInteractiveListener(cb),
+      close: () => session.closeInteractive(),
+    };
   }
 
   async getInterfaceTraffic(

@@ -51,6 +51,7 @@ import { OltMonitoringService } from './services/olt-monitoring.service';
 import { OltExportService } from './services/olt-export.service';
 import { OnuWebProxyService } from './services/onu-web-proxy.service';
 import { OltPermissionGuard } from './guards/olt-permission.guard';
+import { OltConsoleGateway } from './gateways/olt-console.gateway';
 import { OltController } from './olt.controller';
 import { OnuController } from './onu.controller';
 import { OnuWebProxyController } from './controllers/onu-web-proxy.controller';
@@ -111,6 +112,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
     OnuWebProxyService,
     CpeProxyMiddleware,
     OltPermissionGuard,
+    OltConsoleGateway,
     routerOsClientFactoryProvider,
     routerOsBinaryClientFactoryProvider,
     RouterOsClientResolverService,

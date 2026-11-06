@@ -19,6 +19,7 @@ import {
   OnuTypeProfile,
   VlanTranslationParams,
   OltAlarm,
+  OltConsoleStream,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'HIOSO';
@@ -821,6 +822,16 @@ export class HiosoDriver implements IOltDriver {
     }
   }
 
+  async openConsoleStream(params: OltConnectionParams): Promise<OltConsoleStream> {
+    const session = new HiosoTelnetSession(params);
+    await session.connectAndLogin();
+    return {
+      write: (data: string) => session.writeRaw(data),
+      onData: (cb: (chunk: Buffer) => void) => session.attachInteractiveListener(cb),
+      close: () => session.closeInteractive(),
+    };
+  }
+
   async getInterfaceTraffic(
     params: OltConnectionParams,
     interfaceName: string,
@@ -1029,6 +1040,41 @@ class HiosoTelnetSession {
       }
       this.socket = null;
     }
+  }
+
+  /**
+   * Streaming interactivo real (Consola OLT por WebSocket): entrega los
+   * bytes crudos de la sesión tal cual llegan, sin interceptar "Enter Key
+   * To Continue" ni ningún otro prompt -- el operador los ve y responde él
+   * mismo, como en cualquier terminal Telnet real.
+   */
+  attachInteractiveListener(onData: (chunk: Buffer) => void): void {
+    const socket = this.socket;
+    if (!socket) {
+      throw new Error('Socket Telnet no inicializado.');
+    }
+    socket.on('data', (raw: Buffer) => {
+      const cleaned = this.handleIac(raw);
+      if (cleaned.length > 0) onData(cleaned);
+    });
+  }
+
+  /** Escribe bytes crudos tal cual (sin agregar \r\n) -- el llamador decide el framing. */
+  writeRaw(data: string): void {
+    this.socket?.write(data);
+  }
+
+  /** Igual que close(), con una breve espera para dejar viajar un "exit" pendiente antes de destruir el socket. */
+  async closeInteractive(): Promise<void> {
+    const socket = this.socket;
+    if (!socket) return;
+    try {
+      socket.write('exit\r\n');
+    } catch {
+      // ignore
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    this.close();
   }
 
   /**

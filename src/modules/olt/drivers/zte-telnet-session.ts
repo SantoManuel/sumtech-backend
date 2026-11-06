@@ -467,6 +467,41 @@ export class ZteTelnetSession {
   }
 
   /**
+   * Streaming interactivo real (Consola OLT por WebSocket): entrega los
+   * bytes crudos de la sesión tal cual llegan, sin parsear prompts ni
+   * interceptar paginación/confirmaciones -- el operador los ve y responde
+   * él mismo, como en cualquier terminal Telnet real. A diferencia de
+   * executeCommand(), no hay noción de "fin de comando": el listener queda
+   * activo hasta closeInteractive().
+   */
+  attachInteractiveListener(onData: (chunk: Buffer) => void): void {
+    const socket = this.socket;
+    if (!socket) {
+      throw new Error('Socket Telnet no inicializado.');
+    }
+    socket.on('data', (raw: Buffer) => {
+      const cleaned = this.handleIac(raw);
+      if (cleaned.length > 0) onData(cleaned);
+    });
+  }
+
+  /** Escribe bytes crudos tal cual (sin agregar \r\n) -- el llamador decide el framing. */
+  writeRaw(data: string): void {
+    this.socket?.write(data);
+  }
+
+  /**
+   * Igual que close(), pero siempre intenta la salida con gracia (espera un
+   * posible "[yes/no]:" de confirmación antes de destruir el socket): en
+   * modo interactivo no hay forma de saber de antemano si el operador dejó
+   * cambios sin guardar dentro de "configure terminal".
+   */
+  async closeInteractive(): Promise<void> {
+    this.dirty = true;
+    await this.close();
+  }
+
+  /**
    * Negociación Telnet IAC (RFC 854)
    * 0xFF 0xFD (DO) -> 0xFF 0xFC (WON'T)
    * 0xFF 0xFB (WILL) -> 0xFF 0xFE (DON'T)
