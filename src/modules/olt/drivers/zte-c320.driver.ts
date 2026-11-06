@@ -16,6 +16,9 @@ import {
   generateAuthorizationScript as generateAuthorizationScriptImpl,
   generateTr069ManagementScript as generateTr069ManagementScriptImpl,
   generateTr069ProfileScript as generateTr069ProfileScriptImpl,
+  generateTr069TransportScript as generateTr069TransportScriptImpl,
+  isTr069TransportAlreadyApplied,
+  isTr069ManagementAlreadyApplied,
   hasTr069Channel,
   isManagementOrTr069Command,
   isPreparatoryTeardownCommand,
@@ -35,7 +38,7 @@ import {
 import { applyTr069ManagementWithSession, updateTr069AcsUrlWithSession } from './zte-c320-tr069';
 import { Tr069Result, initialTr069Result } from '../ports/tr069-provisioning.types';
 import { redactOltCli } from '../utils/redact-olt-cli';
-import { buildTr069Plan, parseTr069State, validateTr069Input } from './zte-c320-tr069-state';
+import { validateTr069Input } from './zte-c320-tr069-state';
 import {
   findTcontProfileByNameWithSession,
   ensureTcontProfileWithSession,
@@ -788,10 +791,31 @@ export class ZteC320Driver implements IOltDriver {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  /**
+   * Preview honesto (diff real contra la OLT, no un template ciego): lee la
+   * capa de transporte ("show running-config interface <iface>") y el
+   * bloque OMCI ("show onu running config <iface>") con los mismos
+   * comandos acotados y seguros que usa `applyTr069Management`, y omite de
+   * la lista cualquiera de los dos bloques que ya coincida con el
+   * objetivo. Antes de esto devolvía siempre el template completo sin leer
+   * nada de la OLT, pese a etiquetarse como "observed_diff" en el service.
+   */
   async previewTr069Plan(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<string[]> {
     validateTr069Input(config);
-    const commands = this.generateTr069ProfileScript(config);
-    return commands.map(cmd => redactOltCli(cmd, [config.tr069AcsPassword, config.tr069AcsUsername]));
+    const onuInterface = toOnuInterfaceName(config.ponInterface, config.onuId);
+    const session = this.createSession({ ...params, timeoutMs: Math.max(1, Math.min(params.timeoutMs || 15000, config.tr069RemainingMs?.() ?? 15000)) });
+    try {
+      await session.connectAndLogin();
+      const transportRaw = await session.executeCommand(`show running-config interface ${onuInterface}`, 15000).catch(() => undefined);
+      const managementRaw = await session.executeCommand(`show onu running config ${onuInterface}`, 10000).catch(() => undefined);
+      const commands = [
+        ...(isTr069TransportAlreadyApplied(transportRaw, config) ? [] : generateTr069TransportScriptImpl(config)),
+        ...(isTr069ManagementAlreadyApplied(managementRaw, config) ? [] : generateTr069ManagementScriptImpl(config)),
+      ];
+      return commands.map(cmd => redactOltCli(cmd, [config.tr069AcsPassword, config.tr069AcsUsername]));
+    } finally {
+      try { await session.close(); } catch { this.logger.warn('No se pudo cerrar la sesión de previsualización TR-069.'); }
+    }
   }
 
   /**

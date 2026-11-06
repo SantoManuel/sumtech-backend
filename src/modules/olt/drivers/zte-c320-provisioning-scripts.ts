@@ -1,4 +1,5 @@
 import { AuthorizeOnuParams } from '../ports/olt-driver.port';
+import { isOltErrorResponse } from './zte-c320-parsers';
 
 
 export function toOnuInterfaceName(ponInterface: string, onuId: number): string {
@@ -287,6 +288,68 @@ export function generateTr069TransportScript(config: AuthorizeOnuParams): string
 
 export function generateTr069ProfileScript(config: AuthorizeOnuParams): string[] {
   return [...generateTr069TransportScript(config), ...generateTr069ManagementScript(config)];
+}
+
+/**
+ * Normaliza la salida cruda de un "show" acotado (una línea por comando ya
+ * aplicado, con indentación variable) a un set de líneas comparables.
+ */
+function observedLineSet(raw: string | undefined): Set<string> | undefined {
+  if (!raw || !raw.trim() || isOltErrorResponse(raw)) return undefined;
+  return new Set(raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean));
+}
+
+/**
+ * Compara la salida de "show running-config interface <iface>" (capa de
+ * transporte: tcont 2/gemport 2/service-port 2) contra lo que
+ * `generateTr069TransportScript()` mandaría, IGNORANDO los comandos de
+ * contexto/cierre ("configure terminal", "interface X", "exit", "write") y
+ * el teardown previo ("no service-port 2", que siempre se manda sin
+ * importar el estado). Si CADA línea objetivo ya está presente tal cual,
+ * reaplicar el bloque no cambiaría nada -- confirmado en vivo contra
+ * OLT_Tabara_Abajo, ONU gpon-onu_1/3/1:3 (2026-11-06): "show this" en modo
+ * "interface" mostró tcont 2/gemport 2/service-port 2 ya idénticos al
+ * target, y aun así "Aplicar Perfil TR-069" los habría vuelto a reenviar
+ * completos. Si la lectura falla/no es soportada, se asume que SÍ hace
+ * falta aplicar (comportamiento idéntico al actual, nunca peor).
+ */
+export function isTr069TransportAlreadyApplied(observedRaw: string | undefined, config: AuthorizeOnuParams): boolean {
+  const observed = observedLineSet(observedRaw);
+  if (!observed) return false;
+  let desired: string[];
+  try {
+    desired = generateTr069TransportScript(config).filter(
+      cmd => cmd !== 'configure terminal' && cmd !== 'exit' && cmd !== 'write' && !cmd.startsWith('interface ') && !cmd.startsWith('no '),
+    );
+  } catch {
+    return false;
+  }
+  return desired.length > 0 && desired.every(cmd => observed.has(cmd));
+}
+
+/**
+ * Mismo criterio que `isTr069TransportAlreadyApplied`, pero para la salida
+ * de "show onu running config <iface>" (bloque OMCI "pon-onu-mng": flow 2/
+ * switchport-bind/ip-host 2/tr069-mgmt/security-mgmt) contra
+ * `generateTr069ManagementScript()`. Esta es la comparación que de verdad
+ * importa: es el bloque donde el reenlace ciego de "switchport-bind" y el
+ * teardown+recreate de "flow 2 pri 2 vlan"/"vlan-filter iphost 2 pri 2
+ * vlan"/"tr069-mgmt 1 tag pri 2 vlan" tumban momentáneamente un canal de
+ * gestión que ya estaba vivo -- confirmado en vivo (2026-11-06): la ONU de
+ * prueba ya tenía las 13 líneas objetivo idénticas.
+ */
+export function isTr069ManagementAlreadyApplied(observedRaw: string | undefined, config: AuthorizeOnuParams): boolean {
+  const observed = observedLineSet(observedRaw);
+  if (!observed) return false;
+  let desired: string[];
+  try {
+    desired = generateTr069ManagementScript(config).filter(
+      cmd => cmd !== 'configure terminal' && cmd !== 'end' && cmd !== 'write' && !cmd.startsWith('pon-onu-mng ') && !cmd.startsWith('no '),
+    );
+  } catch {
+    return false;
+  }
+  return desired.length > 0 && desired.every(cmd => observed.has(cmd));
 }
 
 /**

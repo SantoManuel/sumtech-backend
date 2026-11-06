@@ -2505,11 +2505,12 @@ No.15 profile : TRAFFIC-977M
       expect(commands.indexOf('tr069-mgmt 1 tag pri 2 vlan 46')).toBeGreaterThan(acsIndex);
       expect(commands.indexOf('security-mgmt 999 state enable ingress-type lan protocol tr069')).toBeGreaterThan(acsIndex);
       expect(commands.lastIndexOf('write')).toBeGreaterThan(acsIndex);
-      // El ACS ahora participa en el mismo pacing de 6s que los demás comandos.
+      // El ACS ahora participa en el mismo pacing genérico que los demás
+      // comandos (recortado a 100ms el 2026-11-06, requisito de <=10s).
       const acsCallOrder = executeCommand.mock.invocationCallOrder[acsIndex];
       const delayMock = jest.spyOn<any, any>(driver, 'delay').mock;
       const pacingIndex = delayMock.invocationCallOrder.findIndex((order) => order > acsCallOrder);
-      expect(delayMock.calls[pacingIndex]).toEqual([6000]);
+      expect(delayMock.calls[pacingIndex]).toEqual([100]);
     });
 
     it('tolera un ACS ya existente sin reintentar ni reiniciar', async () => {
@@ -2589,14 +2590,14 @@ No.15 profile : TRAFFIC-977M
       expect(result.ok).toBe(true);
       expect(result.warning).toBeUndefined();
       expect(detailInfoAttempts).toBe(3);
-      // 3 esperas antes de los 3 intentos de detail-info (5s/10s/15s) -- debe
-      // cortar temprano en cuanto ve "success" en el 3er intento, sin agotar
-      // el 4to delay (15s) del presupuesto completo.
-      const detailInfoDelays = delaySpy.mock.calls.map((c: any[]) => c[0]).filter((ms: number) => [5000, 10000, 15000].includes(ms));
-      expect(detailInfoDelays).toEqual([5000, 10000, 15000]);
+      // 3 esperas antes de los 3 intentos de detail-info (recortadas a
+      // 0.5s/1s/1.5s el 2026-11-06, requisito de <=10s) -- debe cortar en
+      // cuanto ve "success" en el 3er y último intento del presupuesto.
+      const detailInfoDelays = delaySpy.mock.calls.map((c: any[]) => c[0]).filter((ms: number) => [500, 1000, 1500].includes(ms));
+      expect(detailInfoDelays).toEqual([500, 1000, 1500]);
     });
 
-    it('si "Config state" sigue en "fail" tras agotar el presupuesto completo de polling (4 intentos), reporta el warning -- ahora como señal confiable, no una carrera perdida de antemano', async () => {
+    it('si "Config state" sigue en "fail" tras agotar el presupuesto completo de polling (3 intentos), reporta el warning -- ahora como señal confiable, no una carrera perdida de antemano', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show gpon onu detail-info')) {
           return Promise.resolve('\r\nONU interface: gpon-onu_1/2/15:1\r\n  Config state:        fail\r\n  Phase state:         working\r\nOLT#');
@@ -2619,7 +2620,7 @@ No.15 profile : TRAFFIC-977M
       expect(result.warning).toContain('Config state');
       expect(result.warning).toContain('fail');
       const detailInfoCalls = executeCommand.mock.calls.filter((c: any[]) => c[0].startsWith('show gpon onu detail-info'));
-      expect(detailInfoCalls).toHaveLength(4);
+      expect(detailInfoCalls).toHaveLength(3);
     });
 
     it('si un intento intermedio de lectura falla (ej. timeout de Telnet), sigue intentando en vez de abortar el polling', async () => {
@@ -2756,8 +2757,13 @@ No.15 profile : TRAFFIC-977M
       // cualquier "exit" de la sesión -- ensureTcontProfileWithSession/
       // ensureTrafficProfileWithSession también usan "exit"/"write" al
       // crear sus perfiles, antes de este punto) debe ser exactamente
-      // ["exit", "exit", "write"] antes de entrar a "pon-onu-mng".
-      expect(calledCommands.slice(servicePortIdx + 1, pomIdx)).toEqual(['exit', 'exit', 'write', 'configure terminal']);
+      // ["exit", "exit", "write"] antes de entrar a "pon-onu-mng". Entre
+      // "write" y el "configure terminal" del bloque OMCI se intercala una
+      // lectura acotada ("show onu running config <iface>", 2026-11-06) que
+      // decide si ese bloque hace falta reenviar o ya está aplicado.
+      expect(calledCommands.slice(servicePortIdx + 1, pomIdx)).toEqual([
+        'exit', 'exit', 'write', 'show onu running config gpon-onu_1/2/15:1', 'configure terminal',
+      ]);
     });
 
     it('responde ok:false (FATAL, no mejor esfuerzo) si la OLT rechaza "service-port 2 ..." con un error real -- a diferencia del resto del bloque TR-069, esto no puede tratarse como mejor esfuerzo: sin esto "gemport 2" nunca podría existir', async () => {
