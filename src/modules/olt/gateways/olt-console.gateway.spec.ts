@@ -1,4 +1,5 @@
 import { OltConsoleGateway } from './olt-console.gateway';
+import * as oltTelnetMutex from '../utils/olt-telnet-mutex';
 
 function makeFakeClientSocket(overrides: Partial<{ auth: any; query: any; id: string }> = {}) {
   return {
@@ -17,6 +18,7 @@ describe('OltConsoleGateway', () => {
   let jwtService: any;
   let configService: any;
   let tenantConnectionManager: any;
+  let tenantContext: any;
   let driverRegistry: any;
   let reachabilityResolver: any;
   let operationLogger: any;
@@ -62,6 +64,9 @@ describe('OltConsoleGateway', () => {
         getRepository: jest.fn().mockReturnValue({ findOne: jest.fn().mockResolvedValue(mockOlt) }),
       }),
     };
+    // Igual que en ClientsImportProcessor.spec: invoca el callback de
+    // verdad, simulando un AsyncLocalStorage activo (ver TenantContextService).
+    tenantContext = { run: jest.fn((_ctx: any, fn: () => any) => fn()) };
     driverRegistry = { resolve: jest.fn().mockReturnValue(fakeDriver) };
     reachabilityResolver = { resolveEndpoint: jest.fn().mockResolvedValue({ host: '10.254.2.2' }) };
     operationLogger = { logEvent: jest.fn().mockResolvedValue(undefined) };
@@ -70,6 +75,7 @@ describe('OltConsoleGateway', () => {
       jwtService,
       configService,
       tenantConnectionManager,
+      tenantContext,
       driverRegistry,
       reachabilityResolver,
       operationLogger,
@@ -203,6 +209,32 @@ describe('OltConsoleGateway', () => {
 
       expect(client.emit).toHaveBeenCalledWith('error', expect.stringContaining('Timeout'));
       expect(client.disconnect).toHaveBeenCalledWith(true);
+    });
+
+    it('envuelve la adquisición del lock Telnet en el contexto de tenant (TenantContextService), ya que OltIoLockService lo necesita para identificar la OLT fuera de un request HTTP', async () => {
+      const client = makeFakeClientSocket();
+
+      await gateway.handleConnection(client);
+
+      expect(tenantContext.run).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 'tenant-1', slug: 'sumtech' }),
+        expect.any(Function),
+      );
+    });
+
+    it('si la cola Telnet (withOltTelnetLock) rechaza antes de poder abrir la sesión, emite error y desconecta en vez de quedarse "conectando" para siempre', async () => {
+      const spy = jest
+        .spyOn(oltTelnetMutex, 'withOltTelnetLock')
+        .mockRejectedValue(new Error('TenantContextService: no hay contexto de tenant activo.'));
+      const client = makeFakeClientSocket();
+
+      await gateway.handleConnection(client);
+
+      expect(client.emit).toHaveBeenCalledWith('error', expect.stringContaining('contexto de tenant'));
+      expect(client.disconnect).toHaveBeenCalledWith(true);
+      expect(fakeDriver.openConsoleStream).not.toHaveBeenCalled();
+
+      spy.mockRestore();
     });
   });
 

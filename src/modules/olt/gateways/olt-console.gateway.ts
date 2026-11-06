@@ -15,6 +15,7 @@ import { ConfigService } from '@nestjs/config';
 import { getJwtSecret } from '../../../common/utils/required-env.util';
 import { getConfiguredCorsOrigins, isAllowedCorsOrigin } from '../../../common/utils/cors-origin.util';
 import { TenantConnectionManagerService } from '../../../common/tenancy/tenant-connection-manager.service';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { OltEntity } from '../entities/olt.entity';
 import { NetworkNodeEntity } from '../../network/entities/network-node.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
@@ -69,6 +70,7 @@ export class OltConsoleGateway implements OnGatewayConnection, OnGatewayDisconne
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly tenantConnectionManager: TenantConnectionManagerService,
+    private readonly tenantContext: TenantContextService,
     private readonly driverRegistry: OltDriverRegistry,
     private readonly reachabilityResolver: ReachabilityResolver,
     private readonly operationLogger: DeviceOperationLogger,
@@ -124,7 +126,18 @@ export class OltConsoleGateway implements OnGatewayConnection, OnGatewayDisconne
       // Espera su turno en la cola Telnet de esta OLT (olt-telnet-mutex) y
       // mantiene el lock tomado mientras dure la sesión completa -- se
       // libera recién en handleDisconnect(), no al terminar cada comando.
-      releaseLock = await this.acquireTelnetLock(olt.id);
+      // withOltTelnetLock delega en OltIoLockService (lock real por
+      // advisory lock de Postgres, no el mutex en memoria) cuando está
+      // instalado, y ESE servicio necesita un TenantContextService activo
+      // (this.tenant.getDataSource()) para identificar la OLT física -- un
+      // socket de WebSocket nunca pasa por TenantResolutionMiddleware, así
+      // que hay que abrir el contexto a mano (mismo patrón que
+      // ClientsImportProcessor para workers en background). Sin esto, el
+      // lock nunca se tomaba: handleConnection se quedaba esperando para
+      // siempre y el modal se veía "conectando..." sin fin ni error.
+      releaseLock = await this.tenantContext.run({ tenantId: tenant.id, slug: tenant.slug, dataSource }, () =>
+        this.acquireTelnetLock(olt.id),
+      );
 
       const stream = await driver.openConsoleStream!(connParams);
 
@@ -242,9 +255,16 @@ export class OltConsoleGateway implements OnGatewayConnection, OnGatewayDisconne
     };
   }
 
-  /** Resuelve cuando le toca el turno en la cola Telnet de la OLT; devuelve la función para liberar el lock. */
+  /**
+   * Resuelve cuando le toca el turno en la cola Telnet de la OLT; devuelve
+   * la función para liberar el lock. Si withOltTelnetLock rechaza ANTES de
+   * invocar la función que le pasamos (ej. OltIoLockService no pudo
+   * identificar la OLT, o el advisory lock de Postgres nunca se obtuvo),
+   * esa función nunca se ejecuta -- rejectTurn() es lo único que evita que
+   * esta promesa se quede pendiente para siempre en ese caso.
+   */
   private acquireTelnetLock(oltId: string): Promise<() => void> {
-    return new Promise((resolveTurn) => {
+    return new Promise((resolveTurn, rejectTurn) => {
       withOltTelnetLock(oltId, () => {
         let release: () => void;
         const held = new Promise<void>((resolve) => {
@@ -252,7 +272,7 @@ export class OltConsoleGateway implements OnGatewayConnection, OnGatewayDisconne
         });
         resolveTurn(() => release());
         return held;
-      }).catch(() => undefined);
+      }).catch((err) => rejectTurn(err));
     });
   }
 
