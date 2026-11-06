@@ -226,6 +226,10 @@ export interface AuthorizeOnuParams {
   tr069AcsPassword?: string;
   /** Habilita la verificación post-aprovisionamiento de IP-Host y aprendizaje de MACs en la OLT */
   verifyPostProvisioning?: boolean;
+  /** Si true o por defecto en UNCONFIGURED, permite auto-asignar el menor ID libre si el ID indicado está ocupado */
+  autoAllocateOnuId?: boolean;
+  /** Si true, el usuario especificó este ID manualmente y no debe auto-reasignarse en silencio */
+  explicitOnuId?: boolean;
   /**
    * Si el firmware OMCI del modelo acepta "dhcp-ip ethuni eth_0/N from-onu"
    * (net.onu_types.supports_ethuni_dhcp_delegation). Default true (no
@@ -567,7 +571,20 @@ export interface IOltDriver {
    * que `cpeConfigWarning` en onu-management.service.ts: nunca debe hacer
    * fallar la autorización completa, que ya dejó al ONU pasando tráfico.
    */
-  authorizeOnu(params: OltConnectionParams, config: AuthorizeOnuParams): Promise<{ ok: boolean; error?: string; warning?: string }>;
+  authorizeOnu(
+    params: OltConnectionParams,
+    config: AuthorizeOnuParams,
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    warning?: string;
+    assignedOnuId?: number;
+    verification?: OnuProvisioningVerification;
+  }>;
+  getAvailableOnuId?(
+    params: OltConnectionParams,
+    ponInterface: string,
+  ): Promise<{ nextFreeOnuId: number; occupiedIds: number[] }>;
   /**
    * Aplica SOLO el bloque OMCI que apunta la ONU al ACS (TR-069) -- Etapa 2
    * del flujo de 3 etapas (Autorizar en OLT / Aplicar Perfil TR-069 /

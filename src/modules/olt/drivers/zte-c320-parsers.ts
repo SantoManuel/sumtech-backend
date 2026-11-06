@@ -281,3 +281,36 @@ export function parseVlanProfilesFromOutput(output: string): DiscoveredVlanProfi
   }
   return profiles;
 }
+
+/**
+ * Parsea los IDs de ONU ocupados en un puerto GPON a partir de "show gpon onu baseinfo <puerto>".
+ * Extrae tanto formatos completos "gpon-onu_1/3/1:2" como abreviados "1/3/1:2".
+ */
+export function parseOccupiedOnuIds(output: string, ponInterface?: string): Set<number> {
+  const occupied = new Set<number>();
+  if (!output || /No relate(?:d)? information/i.test(output)) {
+    return occupied;
+  }
+  // Coincide con líneas de tabla: "gpon-onu_1/3/1:2" o "1/3/1:2"
+  const regex = /(?:gpon-onu_\d+\/\d+\/\d+|\d+\/\d+\/\d+):(\d+)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(output)) !== null) {
+    const id = parseInt(match[1], 10);
+    if (Number.isInteger(id) && id >= 1 && id <= 128) {
+      occupied.add(id);
+    }
+  }
+  return occupied;
+}
+
+/**
+ * Encuentra el primer ID de ONU libre (1..128) disponible en un conjunto de IDs ocupados.
+ */
+export function findFirstFreeOnuId(occupiedIds: Set<number>, maxId = 128): number | null {
+  for (let i = 1; i <= maxId; i++) {
+    if (!occupiedIds.has(i)) {
+      return i;
+    }
+  }
+  return null;
+}

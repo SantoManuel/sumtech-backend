@@ -91,6 +91,14 @@ export class OnuController {
   /**
    * Ficha 360 de la ONU con inventario, contrato, VLANs y estado.
    */
+  @Get(':id/available-onu-id')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('VIEW')
+  @OltIdFrom('ONU_ID_PARAM')
+  async getAvailableOnuId(@Param('id') id: string) {
+    return this.onuService.getAvailableOnuId(id);
+  }
+
   @Get(':id')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
   @RequireOltAction('VIEW')

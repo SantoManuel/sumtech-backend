@@ -8,6 +8,8 @@ import {
   parseOnuRunningConfig,
   parseTcontProfilesFromOutput,
   parseTrafficProfilesFromOutput,
+  parseOccupiedOnuIds,
+  findFirstFreeOnuId,
 } from './zte-c320-parsers';
 import {
   toOnuInterfaceName,
@@ -397,6 +399,25 @@ export class ZteC320Driver implements IOltDriver {
     return { status: 'UNKNOWN' };
   }
 
+  async getAvailableOnuId(
+    params: OltConnectionParams,
+    ponInterface: string,
+  ): Promise<{ nextFreeOnuId: number; occupiedIds: number[] }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand(`show gpon onu baseinfo ${ponInterface}`, 180000);
+      const occupied = parseOccupiedOnuIds(output, ponInterface);
+      const nextFree = findFirstFreeOnuId(occupied);
+      if (nextFree === null) {
+        throw new Error(`El puerto PON ${ponInterface} no tiene slots ONU disponibles (límite de 128 alcanzado).`);
+      }
+      return { nextFreeOnuId: nextFree, occupiedIds: Array.from(occupied).sort((a, b) => a - b) };
+    } finally {
+      await session.close();
+    }
+  }
+
   async getOnuSlotIdentity(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<string | null> {
     const session = this.createSession(params);
     try {
@@ -419,6 +440,7 @@ export class ZteC320Driver implements IOltDriver {
     ok: boolean;
     error?: string;
     warning?: string;
+    assignedOnuId?: number;
     verification?: import('../ports/olt-driver.port').OnuProvisioningVerification;
   }> {
     const session = this.createSession(params);
@@ -428,10 +450,24 @@ export class ZteC320Driver implements IOltDriver {
       if (!/^[a-zA-Z0-9]+$/.test(config.serialNumber)) {
         throw new Error('Ubicación o serial de ONU inválido para comprobar ocupación física.');
       }
-      const target = config.ponInterface.replace('gpon-olt_', 'gpon-onu_') + `:${config.onuId}`;
+      let target = config.ponInterface.replace('gpon-olt_', 'gpon-onu_') + `:${config.onuId}`;
       const slotStatus = await this.readOnuSlotStatus(session, config.ponInterface, config.onuId);
       if (slotStatus.status === 'OCCUPIED' && slotStatus.serial.toUpperCase() !== config.serialNumber.toUpperCase()) {
-        throw new Error(`No se pudo verificar que ${target} pertenezca al serial solicitado; autorización cancelada para evitar borrar otra ONU.`);
+        if (!config.autoAllocateOnuId) {
+          throw new Error(`No se pudo verificar que ${target} pertenezca al serial solicitado; autorización cancelada para evitar borrar otra ONU.`);
+        }
+        // Auto-asignar el siguiente slot libre disponible en el puerto PON
+        const baseInfoOutput = await session.executeCommand(`show gpon onu baseinfo ${config.ponInterface}`, 180000);
+        const occupied = parseOccupiedOnuIds(baseInfoOutput, config.ponInterface);
+        const freeId = findFirstFreeOnuId(occupied);
+        if (freeId === null) {
+          throw new Error(`El puerto PON ${config.ponInterface} no tiene slots ONU disponibles (128 ocupados).`);
+        }
+        this.logger.log(
+          `[diag] Slot ${target} ocupado por serial ${slotStatus.serial}. Reasignando automáticamente al ID libre: ${freeId}`,
+        );
+        config.onuId = freeId;
+        target = config.ponInterface.replace('gpon-olt_', 'gpon-onu_') + `:${config.onuId}`;
       }
       const occupancyWarning = slotStatus.status === 'UNKNOWN'
         ? `No se pudo determinar la ocupación de ${target}; no onu podría borrar otra ONU.`
@@ -577,7 +613,12 @@ export class ZteC320Driver implements IOltDriver {
         }
       }
 
-      return { ok: true, warning: [occupancyWarning, warning].filter(Boolean).join(' ') || undefined, verification };
+      return {
+        ok: true,
+        assignedOnuId: config.onuId,
+        warning: [occupancyWarning, warning].filter(Boolean).join(' ') || undefined,
+        verification,
+      };
     } catch (err: any) {
       return { ok: false, error: err.message };
     } finally {

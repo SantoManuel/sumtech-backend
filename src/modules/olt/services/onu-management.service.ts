@@ -3,7 +3,8 @@ import { Tr069Result, initialTr069Result, evidence } from '../ports/tr069-provis
 import { validateTr069Input } from '../drivers/zte-c320-tr069-state';
 import { redactOltCli } from '../utils/redact-olt-cli';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThanOrEqual } from 'typeorm';
+import { Repository, MoreThanOrEqual, Not } from 'typeorm';
+import { findFirstFreeOnuId } from '../drivers/zte-c320-parsers';
 import { OnuEntity } from '../entities/onu.entity';
 import { OnuServiceConfigEntity } from '../entities/onu-service-config.entity';
 import { OnuOpticalHistoryEntity } from '../entities/onu-optical-history.entity';
@@ -335,6 +336,60 @@ export class OnuManagementService {
   /**
    * Escanea ONUs no configuradas en una OLT (RF-OLT-014).
    */
+  /**
+   * Consulta el próximo ID de ONU disponible (1..128) para un puerto PON dado,
+   * consultando la OLT en vivo o recurriendo a la base de datos local si no está accesible.
+   */
+  async getAvailableOnuId(id: string): Promise<{ nextFreeOnuId: number; occupiedIds: number[]; ponInterface: string }> {
+    const onu = await this.findById(id);
+    const olt = onu.olt;
+    const driver = this.resolveDriver(olt);
+    let ponInterface = onu.ponInterface?.name;
+    if (!ponInterface && onu.onuIndex?.startsWith('gpon-onu_')) {
+      const match = onu.onuIndex.match(/^gpon-onu_(\d+\/\d+\/\d+)/);
+      if (match) ponInterface = `gpon-olt_${match[1]}`;
+    }
+    if (!ponInterface) {
+      throw new BadRequestException('No se pudo determinar el puerto PON de la ONU.');
+    }
+
+    try {
+      const connParams = await this.connectionResolver.resolve(olt);
+      if (driver.getAvailableOnuId) {
+        const live = await withOltTelnetLock(olt.id, () => driver.getAvailableOnuId!(connParams, ponInterface!));
+        return { ...live, ponInterface };
+      }
+    } catch (err: any) {
+      this.logger.warn(`No se pudo consultar el slot libre en vivo en la OLT: ${err.message}. Calculando desde la base de datos.`);
+    }
+
+    const ponIface = await this.ifaceRepository.findOneBy({ oltId: olt.id, name: ponInterface });
+    const activeOnus = await this.onuRepository.find({
+      where: {
+        oltId: olt.id,
+        ...(ponIface ? { ponInterfaceId: ponIface.id } : {}),
+        status: Not('UNCONFIGURED' as any),
+      },
+      select: ['onuIndex'],
+    });
+
+    const occupied = new Set<number>();
+    for (const o of activeOnus) {
+      const m = String(o.onuIndex).match(/:(\d+)$/);
+      if (m) {
+        const num = parseInt(m[1], 10);
+        if (Number.isInteger(num)) occupied.add(num);
+      }
+    }
+
+    const nextFree = findFirstFreeOnuId(occupied) || 1;
+    return {
+      nextFreeOnuId: nextFree,
+      occupiedIds: Array.from(occupied).sort((a, b) => a - b),
+      ponInterface,
+    };
+  }
+
   async scanUnconfiguredOnus(oltId: string, actorUserId?: string) {
     const olt = await this.oltRepository.findOneBy({ id: oltId });
     if (!olt) throw new NotFoundException(`OLT no encontrada: ${oltId}`);
@@ -1176,7 +1231,14 @@ export class OnuManagementService {
     onu.authorizedByUserId = actorUserId;
     onu.contractId = dto.contractId || onu.contractId;
     onu.onuTypeId = dto.onuTypeId || onu.onuTypeId;
-    if (dto.onuIndex) onu.onuIndex = dto.onuIndex;
+    if (dto.onuIndex) {
+      onu.onuIndex = dto.onuIndex;
+    } else {
+      const assignedOnuId = (result as any)?.assignedOnuId ?? authParams.onuId;
+      onu.onuIndex = authParams.ponInterface.startsWith('gpon-olt_')
+        ? `${authParams.ponInterface.replace(/^gpon-olt_/, 'gpon-onu_')}:${assignedOnuId}`
+        : String(assignedOnuId);
+    }
     onu.name = authParams.clientName || onu.name;
     onu.description = authParams.description || onu.description;
 
@@ -2114,6 +2176,8 @@ export class OnuManagementService {
 
   private async buildAuthorizeParams(onu: OnuEntity, dto: any, acsOnly = false): Promise<AuthorizeOnuParams> {
     const { ponInterface, onuId } = this.resolveOnuLocation(onu, dto);
+    const explicitOnuId = Boolean(dto.onuId);
+    const autoAllocateOnuId = !explicitOnuId && onu.status === 'UNCONFIGURED';
 
     // Tipo / modelo técnico -- ethPorts/potsPorts viajan también para que el
     // driver pueda auto-crear el "onu-type" en la OLT si todavía no existe
@@ -2244,6 +2308,8 @@ export class OnuManagementService {
       tr069Vlan,
       tr069AcsUsername,
       tr069AcsPassword,
+      explicitOnuId,
+      autoAllocateOnuId,
     };
   }
 }
