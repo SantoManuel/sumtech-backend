@@ -1267,6 +1267,63 @@ Profile name  :SMARTOLT-VOIPMNG-10M
     });
   });
 
+  describe('getOnuTypes / parseOnuTypesFromOutput -- "show onu-type", listado completo confirmado en vivo (2026-11-07)', () => {
+    const REAL_ONU_TYPE_OUTPUT = fs.readFileSync(
+      path.join(__dirname, '../../../../test/fixtures/zte-c320/show_onu_type.txt'),
+      'utf8',
+    );
+
+    it('parseOnuTypesFromOutput parsea los 28 tipos reales (EPON y GPON mezclados)', () => {
+      const parsed = driver.parseOnuTypesFromOutput(REAL_ONU_TYPE_OUTPUT);
+      expect(parsed).toHaveLength(28);
+    });
+
+    it('parsea un bloque GPON con Max T-CONT y Max VEIP (sufijo "(default: 1 VEIP)" cuando vale 0)', () => {
+      const parsed = driver.parseOnuTypesFromOutput(REAL_ONU_TYPE_OUTPUT);
+      const all = parsed.find((t) => t.name === 'ALL');
+      expect(all).toEqual({ name: 'ALL', ponType: 'gpon', description: undefined, maxTcont: 255, maxVeip: 0, speed: undefined });
+
+      const f601 = parsed.find((t) => t.name === 'ZTE-F601');
+      expect(f601).toEqual({ name: 'ZTE-F601', ponType: 'gpon', description: '1ETH', maxTcont: 8, maxVeip: 0, speed: undefined });
+    });
+
+    it('parsea un bloque GPON con Max VEIP:1 (sin el sufijo "(default: 1 VEIP)")', () => {
+      const parsed = driver.parseOnuTypesFromOutput(REAL_ONU_TYPE_OUTPUT);
+      const huawei = parsed.find((t) => t.name === 'HUAWEY-HG8546M');
+      expect(huawei).toEqual({ name: 'HUAWEY-HG8546M', ponType: 'gpon', description: '4ETH,1POTS', maxTcont: 8, maxVeip: 1, speed: undefined });
+    });
+
+    it('parsea un bloque EPON (sin Max T-CONT/Max VEIP, con Speed)', () => {
+      const parsed = driver.parseOnuTypesFromOutput(REAL_ONU_TYPE_OUTPUT);
+      const epon = parsed.find((t) => t.name === 'ZTE-D420');
+      expect(epon).toEqual({ name: 'ZTE-D420', ponType: 'epon', description: '4FE, 2POTS', maxTcont: undefined, maxVeip: undefined, speed: '1g' });
+    });
+
+    it('ignora el prompt final "ZXAN#" y cualquier bloque sin "ONU type name"', () => {
+      const parsed = driver.parseOnuTypesFromOutput(REAL_ONU_TYPE_OUTPUT);
+      expect(parsed.some((t) => (t.name as string).includes('ZXAN'))).toBe(false);
+    });
+
+    it('getOnuTypes ejecuta "show onu-type" y devuelve los tipos descubiertos', async () => {
+      const executeCommand = jest.fn().mockResolvedValue(REAL_ONU_TYPE_OUTPUT);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const types = await driver.getOnuTypes({
+        host: '10.0.0.10',
+        port: 23,
+        username: 'admin',
+        password: 'password',
+      });
+
+      expect(executeCommand).toHaveBeenCalledWith('show onu-type');
+      expect(types.find((t) => t.name === 'ZTE-F622')).toBeDefined();
+    });
+  });
+
   describe('ensureOnuTypeProfile (perfil de capacidades OMCI -- max-tcont/max-gemport/etc. diseñados por analogía, AÚN NO verificados en vivo; "max-veip 1" sí confirmado en vivo, 2026-10-22, ver zte-c320.driver.ts)', () => {
     it('no crea nada si "show onu-type gpon <nombre>" ya reporta el perfil existente', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {

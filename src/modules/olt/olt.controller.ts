@@ -365,6 +365,13 @@ export class OltController {
     return this.catalogsService.deleteOnuType(id);
   }
 
+  /** Catálogo de Tipos de ONU para una OLT específica, marcando cuáles ya existen realmente en ella. */
+  @Get('olts/:oltId/onu-types-catalog')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
+  async getOltOnuTypesCatalog(@Param('oltId') oltId: string, @Query('ponType') ponType?: string) {
+    return this.catalogsService.getOltOnuTypesCatalog(oltId, ponType);
+  }
+
   /**
    * Crea (o repara) este onu-type directamente en la OLT -- acción
    * deliberada, ya NO ocurre automáticamente al autorizar una ONU (ver

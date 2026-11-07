@@ -1,4 +1,4 @@
-import { DiscoveredCard, DiscoveredTcontProfile, DiscoveredTrafficProfile, DiscoveredVlanProfile, OnuDetailInfo } from '../ports/olt-driver.port';
+import { DiscoveredCard, DiscoveredOnuType, DiscoveredTcontProfile, DiscoveredTrafficProfile, DiscoveredVlanProfile, OnuDetailInfo } from '../ports/olt-driver.port';
 
 /**
  * Funciones puras de parseo/clasificación de texto del driver ZTE C320 --
@@ -279,6 +279,55 @@ export function parseTrafficProfilesFromOutput(output: string): DiscoveredTraffi
     profiles.push({ name, downKbps: Number.isFinite(downKbps) ? downKbps : undefined });
   }
   return profiles;
+}
+
+/**
+ * Parser de "show onu-type" -- CONFIRMADO EN VIVO (2026-11-07, operador pegó
+ * el volcado completo). Bloques separados por línea en blanco, cada uno
+ * iniciado por "ONU type name:". El formato real DIFIERE según `PON type`:
+ * los bloques GPON traen "Max T-CONT"/"Max VEIP" (este último con el sufijo
+ * literal "(default: 1 VEIP)" cuando vale 0 -- el mismo "Max VEIP: 0" que
+ * `ensureOnuTypeProfileWithSession` ya corrige agregando "max-veip 1" al
+ * crear un onu-type nuevo, ver sumtech_zte_veip_switchport_bind_real_fix),
+ * mientras que los bloques EPON solo traen "Protect type"/"Speed" y nunca
+ * max-tcont/VEIP (en EPON no hay vendor-lock, cualquier marca conecta, ver
+ * migración 077). "Description" puede venir vacía (ej. el tipo "ALL" de
+ * fábrica) -- se descarta si no queda ningún carácter no-blanco.
+ *
+ * Distinto del lookup individual "show onu-type gpon <nombre>" (un solo
+ * bloque, usado por `verifyOnuTypeProfileWithSession` para confirmar un
+ * nombre puntual) -- este parser procesa el LISTADO COMPLETO de todos los
+ * tipos ya registrados en la OLT, EPON y GPON mezclados, incluido el "ALL"
+ * de fábrica que no corresponde a ningún modelo real.
+ */
+export function parseOnuTypesFromOutput(output: string): DiscoveredOnuType[] {
+  const types: DiscoveredOnuType[] = [];
+  const blocks = output.split(/\r?\n\s*\r?\n/);
+  for (const block of blocks) {
+    const nameMatch = block.match(/ONU type name:\s*(\S+)/i);
+    if (!nameMatch) continue;
+    const ponTypeMatch = block.match(/PON type:\s*(\S+)/i);
+    const ponType = (ponTypeMatch?.[1] || '').toLowerCase();
+    if (ponType !== 'gpon' && ponType !== 'epon') continue;
+
+    // Espacios/tabs, nunca \s genérico: "Description:" sin valor (ej. "ALL")
+    // no debe cruzar la línea en blanco y "comerse" la etiqueta siguiente
+    // ("Max T-CONT:") como si fuera el valor de la descripción.
+    const descMatch = block.match(/Description:[ \t]*(\S.*?)[ \t]*$/im);
+    const maxTcontMatch = block.match(/Max T-CONT:\s*(\d+)/i);
+    const maxVeipMatch = block.match(/Max VEIP:\s*(\d+)/i);
+    const speedMatch = block.match(/Speed:\s*(\S+)/i);
+
+    types.push({
+      name: nameMatch[1],
+      ponType: ponType as 'gpon' | 'epon',
+      description: descMatch?.[1]?.trim() || undefined,
+      maxTcont: maxTcontMatch ? parseInt(maxTcontMatch[1], 10) : undefined,
+      maxVeip: maxVeipMatch ? parseInt(maxVeipMatch[1], 10) : undefined,
+      speed: speedMatch?.[1],
+    });
+  }
+  return types;
 }
 
 /**

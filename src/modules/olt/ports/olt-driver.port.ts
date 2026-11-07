@@ -71,6 +71,24 @@ export interface DiscoveredTrafficProfile {
 }
 
 /**
+ * Tipo/modelo de ONU REALMENTE registrado en la OLT (`show onu-type`), por
+ * `getOnuTypes` -- ver `onuTypeDiscovery` en OltDriverCapabilities. Distinto
+ * del catálogo global de Sumtech (`net.onu_types`): este es el objeto que la
+ * OLT física ya conoce (algunos preexistentes de fábrica como "ALL" o
+ * cargados por otro sistema como SmartOLT), comparado contra el catálogo por
+ * `vendorTypeName`. Los campos GPON (`maxTcont`/`maxVeip`) y EPON (`speed`)
+ * son mutuamente excluyentes según `ponType` -- ver parseOnuTypesFromOutput.
+ */
+export interface DiscoveredOnuType {
+  name: string;
+  ponType: 'gpon' | 'epon';
+  description?: string;
+  maxTcont?: number;
+  maxVeip?: number;
+  speed?: string;
+}
+
+/**
  * Perfil "vlan-profile" real de la OLT (`show gpon onu profile vlan`) --
  * objeto distinto de `net.vlans` (el catálogo de Sumtech): este es el
  * nombre que el comando "wan-ip ... vlan-profile <nombre> host ..." exige
@@ -434,6 +452,15 @@ export interface OltDriverCapabilities {
    */
   trafficDiscovery: boolean;
   /**
+   * Consultar qué Tipos/Modelos de ONU REALMENTE están registrados en la OLT,
+   * vía `getOnuTypes` (método opcional de IOltDriver) -- a diferencia de
+   * `onuTypeProfileProvisioning`/`ensureOnuTypeProfile`, que ESCRIBE un
+   * onu-type nuevo, esto es puramente de lectura. Permite al modal de
+   * autorización distinguir un tipo "✓ confirmado en esta OLT" de uno que
+   * solo existe en el catálogo global y se autocrearía al autorizar.
+   */
+  onuTypeDiscovery: boolean;
+  /**
    * Crear/asegurar el "traffic-profile" (CIR/PIR) que limita el ancho de
    * banda de BAJADA (downstream) en el vport de la ONU -- distinto de
    * `dbaProfile`/TCONT, que en GPON solo gobierna la SUBIDA (ITU-T G.984).
@@ -484,6 +511,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   vlanDiscovery: false,
   tcontDiscovery: false,
   trafficDiscovery: false,
+  onuTypeDiscovery: false,
   downstreamTrafficProfile: false,
   onuTypeProfileProvisioning: false,
   onuReboot: false,
@@ -554,6 +582,12 @@ export interface IOltDriver {
    * los fabricantes tienen un comando de solo lectura equivalente confirmado.
    */
   getTrafficProfiles?(params: OltConnectionParams): Promise<DiscoveredTrafficProfile[]>;
+  /**
+   * Tipos/Modelos de ONU REALMENTE registrados en la OLT (ver
+   * `onuTypeDiscovery` en OltDriverCapabilities) -- opcional porque no todos
+   * los fabricantes tienen un comando de solo lectura equivalente confirmado.
+   */
+  getOnuTypes?(params: OltConnectionParams): Promise<DiscoveredOnuType[]>;
   /**
    * Lee la configuración activa de una sub-interfaz de ONU (ej. gpon-onu_1/2/15:1)
    * para obtener su name, description, perfiles y puertos configurados en la OLT.

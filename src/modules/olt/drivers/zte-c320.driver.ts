@@ -8,6 +8,7 @@ import {
   parseOnuRunningConfig,
   parseTcontProfilesFromOutput,
   parseTrafficProfilesFromOutput,
+  parseOnuTypesFromOutput,
   parseOccupiedOnuIds,
   findFirstFreeOnuId,
 } from './zte-c320-parsers';
@@ -79,6 +80,7 @@ import {
   DiscoveredAuthorizedOnu,
   DiscoveredTcontProfile,
   DiscoveredTrafficProfile,
+  DiscoveredOnuType,
   OnuDetailInfo,
   OnuIpHostInfo,
   OnuWanIpInfo,
@@ -954,6 +956,30 @@ export class ZteC320Driver implements IOltDriver {
     }
   }
 
+  /** Expuesto como método público porque las pruebas lo ejercitan directo (`driver.parseOnuTypesFromOutput(...)`). */
+  parseOnuTypesFromOutput(output: string): DiscoveredOnuType[] {
+    return parseOnuTypesFromOutput(output);
+  }
+
+  /**
+   * Consulta qué Tipos/Modelos de ONU REALMENTE están registrados en la OLT
+   * mediante "show onu-type" -- CONFIRMADO EN VIVO por el operador (2026-11-07,
+   * mismo volcado usado como fixture de prueba). Distinto del lookup individual
+   * "show onu-type gpon <nombre>" que ya usa `verifyOnuTypeProfileWithSession`
+   * (confirma UN nombre puntual) -- este comando lista TODOS los tipos ya
+   * registrados en la OLT, EPON y GPON mezclados, incluido el "ALL" de fábrica.
+   */
+  async getOnuTypes(params: OltConnectionParams): Promise<DiscoveredOnuType[]> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const output = await session.executeCommand('show onu-type');
+      return this.parseOnuTypesFromOutput(output);
+    } finally {
+      await session.close();
+    }
+  }
+
   /**
    * Asegura que el "onu-type" (perfil de capacidades OMCI que exige
    * `onu <id> type <nombre> sn <serial>`) exista en la OLT antes de
@@ -1297,6 +1323,11 @@ export class ZteC320Driver implements IOltDriver {
       // ver getTrafficProfiles/parseTrafficProfilesFromOutput). La capacidad
       // en sí ya estaba confirmada, solo el comando/parser estaban mal.
       trafficDiscovery: true,
+      // Confirmado en vivo contra OLT_Tabara_Abajo (2026-11-07): "show onu-type"
+      // devolvió el listado completo real de tipos ya registrados en la OLT
+      // (EPON y GPON mezclados, incluido el "ALL" de fábrica) -- ver
+      // getOnuTypes/parseOnuTypesFromOutput.
+      onuTypeDiscovery: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): se creó y
       // eliminó un traffic-profile de prueba real ("SUMTECH-TEST-DELETE-ME")
       // con el flujo completo configure terminal/traffic-profile/exit/write

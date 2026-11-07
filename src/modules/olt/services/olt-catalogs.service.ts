@@ -11,7 +11,7 @@ import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { OltEntity } from '../entities/olt.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { OltConnectionResolverService } from './olt-connection-resolver.service';
-import { UnknownOltVendorError } from '../ports/olt-driver.port';
+import { DiscoveredOnuType, UnknownOltVendorError } from '../ports/olt-driver.port';
 import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
@@ -777,6 +777,58 @@ export class OltCatalogsService {
 
     await this.onuTypeRepository.delete(id);
     return { success: true, message: `Tipo de ONU "${onuType.vendor} ${onuType.model}" eliminado correctamente.` };
+  }
+
+  /**
+   * Catálogo de Tipos de ONU para una OLT específica: devuelve el catálogo
+   * global (`net.onu_types`, mismo filtro de `ponType`/activos que
+   * `findAllOnuTypes`) marcando cada uno con `confirmedOnOlt` según lo que
+   * `getOnuTypes` descubra en vivo en ESA OLT física (comparando por
+   * `vendorTypeName`, el nombre real del objeto en la OLT). Mismo patrón de
+   * "mejor esfuerzo" que `getOltProfilesCatalog`: si la OLT no responde o el
+   * fabricante no soporta descubrimiento, `confirmedOnOlt` queda `false` en
+   * todos (nunca bloquea el modal) y `source` indica 'CATALOG'.
+   */
+  async getOltOnuTypesCatalog(oltId: string, ponType?: string) {
+    const olt = await this.oltRepository.findOneBy({ id: oltId });
+    if (!olt) throw new NotFoundException('OLT no encontrada.');
+
+    const catalogTypes = await this.findAllOnuTypes(ponType, false);
+
+    let driver;
+    try {
+      driver = this.driverRegistry.resolve(olt.vendor);
+    } catch {
+      driver = null;
+    }
+
+    let discovered: DiscoveredOnuType[] = [];
+    if (driver?.getOnuTypes) {
+      const connParams = await this.connectionResolver.resolve(olt).catch(() => null);
+      if (connParams) {
+        try {
+          discovered = await driver.getOnuTypes(connParams);
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+
+    const confirmedNames = new Set(discovered.map((t) => t.name.toUpperCase()));
+    const source: 'LIVE' | 'CATALOG' = discovered.length > 0 ? 'LIVE' : 'CATALOG';
+
+    const onuTypes = catalogTypes.map((t) => ({
+      ...t,
+      confirmedOnOlt: Boolean(t.vendorTypeName) && confirmedNames.has(t.vendorTypeName.toUpperCase()),
+    }));
+
+    return {
+      oltId,
+      vendor: olt.vendor,
+      source,
+      onuTypes,
+      discovered,
+    };
   }
 
   // ══════════════════════════════════════════════════
