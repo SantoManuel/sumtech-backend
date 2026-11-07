@@ -372,6 +372,13 @@ export class OltController {
     return this.catalogsService.getOltOnuTypesCatalog(oltId, ponType);
   }
 
+  /** Da de alta en el catálogo un tipo de ONU real descubierto por /onu-types-catalog (campo uncatalogedDiscovered) -- no escribe nada en la OLT, ya existía. */
+  @Post('onu-types/import-discovered')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  async importDiscoveredOnuType(@Body() body: { name: string; ponType: 'gpon' | 'epon'; description?: string }) {
+    return this.catalogsService.importDiscoveredOnuType(body);
+  }
+
   /**
    * Crea (o repara) este onu-type directamente en la OLT -- acción
    * deliberada, ya NO ocurre automáticamente al autorizar una ONU (ver

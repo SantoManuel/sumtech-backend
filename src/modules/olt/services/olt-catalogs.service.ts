@@ -822,13 +822,93 @@ export class OltCatalogsService {
       confirmedOnOlt: Boolean(t.vendorTypeName) && confirmedNames.has(t.vendorTypeName.toUpperCase()),
     }));
 
+    // Tipos REALES de la OLT que NO existen todavía en el catálogo de
+    // Sumtech -- bug real confirmado (2026-11-07): sin esto, el modal de
+    // autorización solo podía ofrecer los 4 modelos del seed genérico
+    // (ZTE-F660, ZTE-F670L, HW-HG8245H, VSOL-V2801SG), nunca los 28 tipos
+    // reales que esta OLT ya tiene configurados (ZTE-F622, HUAWEY-HG8546M,
+    // etc.) -- el usuario reportó "no veo los tipos de onu" porque
+    // `confirmedOnOlt` solo anotaba el catálogo existente, nunca agregaba lo
+    // que faltaba. "ALL" se excluye a propósito: es la entrada "wildcard"/por
+    // defecto de fábrica de este firmware, no corresponde a ningún modelo de
+    // ONU real que se pueda autorizar.
+    const catalogNames = new Set(
+      catalogTypes.map((t) => t.vendorTypeName).filter(Boolean).map((n) => n!.toUpperCase()),
+    );
+    const uncatalogedDiscovered = discovered.filter(
+      (t) => t.name.toUpperCase() !== 'ALL' && !catalogNames.has(t.name.toUpperCase()),
+    );
+
     return {
       oltId,
       vendor: olt.vendor,
       source,
       onuTypes,
       discovered,
+      uncatalogedDiscovered,
     };
+  }
+
+  /** Deriva vendor/model a partir del nombre real del onu-type (ej. "ZTE-F622" -> vendor "ZTE", model "F622"). Sin guion, el nombre completo se usa como model y el vendor queda "Desconocido". */
+  private splitDiscoveredOnuTypeName(name: string): { vendor: string; model: string } {
+    const dashIndex = name.indexOf('-');
+    if (dashIndex <= 0 || dashIndex === name.length - 1) {
+      return { vendor: 'Desconocido', model: name };
+    }
+    return { vendor: name.slice(0, dashIndex), model: name.slice(dashIndex + 1) };
+  }
+
+  /**
+   * Best-effort: "show onu-type" no trae columnas separadas de puertos
+   * ETH/POTS, solo una "Description" libre (ej. "4FE, 2POTS", "1ETH, 2POTS,
+   * 1RF") -- se extraen de ahí. Sin match, se omite el campo y la columna
+   * DB aplica su propio default (4 eth / 1 pots) -- nunca se inventa un
+   * número sin evidencia textual.
+   */
+  private parsePortsFromOnuTypeDescription(description?: string): { ethPorts?: number; potsPorts?: number } {
+    if (!description) return {};
+    const ethMatch = description.match(/(\d+)\s*(?:FE|ETH|GE)\b/i);
+    const potsMatch = description.match(/(\d+)\s*POTS\b/i);
+    return {
+      ethPorts: ethMatch ? parseInt(ethMatch[1], 10) : undefined,
+      potsPorts: potsMatch ? parseInt(potsMatch[1], 10) : undefined,
+    };
+  }
+
+  /**
+   * Da de alta en el catálogo de Sumtech (`net.onu_types`) un tipo de ONU
+   * descubierto por `getOltOnuTypesCatalog` (campo `uncatalogedDiscovered`)
+   * -- mismo patrón que `importDiscoveredSpeedProfile` para perfiles TCONT:
+   * no escribe nada en la OLT, el onu-type YA existe ahí (por eso se
+   * descubrió); solo lo registra en Sumtech para que tenga un ID
+   * seleccionable en el modal de autorización.
+   */
+  async importDiscoveredOnuType(discovered: {
+    name: string;
+    ponType: 'gpon' | 'epon';
+    description?: string;
+  }): Promise<OnuTypeEntity> {
+    if (discovered.name.toUpperCase() === 'ALL') {
+      throw new BadRequestException('"ALL" es la entrada por defecto de fábrica de la OLT, no un modelo de ONU real -- no se puede importar.');
+    }
+    const existingByVendorTypeName = await this.onuTypeRepository.findOneBy({ vendorTypeName: discovered.name });
+    if (existingByVendorTypeName) {
+      throw new ConflictException(`El tipo de ONU "${discovered.name}" ya está registrado en el catálogo.`);
+    }
+
+    const { vendor, model } = this.splitDiscoveredOnuTypeName(discovered.name);
+    await this.assertOnuTypeNotDuplicate(vendor, model);
+    const { ethPorts, potsPorts } = this.parsePortsFromOnuTypeDescription(discovered.description);
+
+    const onuType = this.onuTypeRepository.create({
+      vendor,
+      model,
+      vendorTypeName: discovered.name,
+      ponType: discovered.ponType.toUpperCase(),
+      ethPorts,
+      potsPorts,
+    });
+    return this.onuTypeRepository.save(onuType);
   }
 
   // ══════════════════════════════════════════════════
