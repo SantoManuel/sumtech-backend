@@ -235,11 +235,12 @@ export async function applyTr069ManagementWithSession(
           } else if (isAlreadyAppliedResponse(output)) {
             // Ya aplicado previamente, continuar.
           } else if (inTr069Block) {
-            const msg =
-              `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${output.trim()}. ` +
-              'Probablemente debas configurar el WAN manualmente en la ONU.';
+            const isOptionalSecurity = cmd.startsWith('security-mgmt');
+            const msg = isOptionalSecurity
+              ? `Regla opcional de seguridad ("${cmd}") omitida por la OLT: ${output.trim()}.`
+              : `La OLT rechazó la configuración TR-069/ACS ("${cmd}"): ${output.trim()}. Probablemente debas configurar el WAN manualmente en la ONU.`;
             warnings.push(msg);
-            logger.warn(`[diag] applyTr069Management: TR-069/ACS best-effort falló, continuando: ${msg}`);
+            logger.warn(`[diag] applyTr069Management: ${isOptionalSecurity ? 'seguridad opcional omitida' : 'TR-069/ACS best-effort falló'}, continuando: ${msg}`);
           } else {
             throw new Error(`La OLT rechazó el comando "${cmd}": ${output.trim()}`);
           }

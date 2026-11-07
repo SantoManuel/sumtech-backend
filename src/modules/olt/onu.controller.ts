@@ -30,7 +30,7 @@ import { RetryOnuWanDto } from './dto/retry-onu-wan.dto';
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
 @RequireFeature('OLT')
 export class OnuController {
-  constructor(private readonly onuService: OnuManagementService, private readonly tr069: OnuTr069OperationsService) {}
+  constructor(private readonly onuService: OnuManagementService, private readonly tr069: OnuTr069OperationsService) { }
 
   /**
    * Bandeja de entrada de ONUs sin configurar descubiertas (RF-OLT-014).
@@ -219,7 +219,6 @@ export class OnuController {
    * ACS (TR-069), sin tocar GenieACS/WAN todavía.
    */
   @Post(':id/tr069-profile')
-
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
   @OltIdFrom('ONU_ID_PARAM')
@@ -354,9 +353,9 @@ export class OnuController {
    * autorización mal hecha). Mismo nivel de permiso que authorize/preview-script
    * (CONFIGURE), no OPERATE: borrar la config es tan sensible como crearla.
    */
-/**
-   * Reinicia la ONU mediante comando OMCI en la OLT.
-   */
+  /**
+     * Reinicia la ONU mediante comando OMCI en la OLT.
+     */
   @Post(':id/reboot')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('OPERATE')

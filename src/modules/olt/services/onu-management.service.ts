@@ -1151,7 +1151,9 @@ export class OnuManagementService {
       ? 'La configuración TR-069 anterior no se reaplicó durante la autorización; aplica el perfil TR-069 nuevamente.'
       : undefined;
     const oltWarning = [result.warning, retainedTr069Warning].filter(Boolean).join(' | ') || undefined;
-    if (oltWarning) await this.recordPartialOperation(olt.id, onu.id, 'authorizeOnu');
+    const isCosmeticWarning = this.isCosmeticOmciWarning(oltWarning);
+    if (oltWarning && !isCosmeticWarning) await this.recordPartialOperation(olt.id, onu.id, 'authorizeOnu');
+    await this.autoLearnUnsupportedOnuTypeCapabilities(onu.onuTypeId || dto.onuTypeId, oltWarning);
 
     try {
 
@@ -1196,9 +1198,9 @@ export class OnuManagementService {
         operationMode: dto.operationMode || 'ROUTER',
         speedProfileId,
         desiredVersion: 1,
-        appliedVersion: oltWarning ? 0 : 1,
-        applyStatus: oltWarning ? 'PENDING' : 'APPLIED',
-        lastApplyError: oltWarning,
+        appliedVersion: oltWarning && !isCosmeticWarning ? 0 : 1,
+        applyStatus: oltWarning && !isCosmeticWarning ? 'PENDING' : 'APPLIED',
+        lastApplyError: oltWarning && !isCosmeticWarning ? oltWarning : null!,
       });
     } else {
       config.serviceVlanId = dto.serviceVlanId;
@@ -1210,9 +1212,9 @@ export class OnuManagementService {
         config.tr069VlanId = tr069VlanId;
       }
       config.desiredVersion = Math.max(config.desiredVersion, config.appliedVersion) + 1;
-      if (!oltWarning) config.appliedVersion = config.desiredVersion;
-      config.applyStatus = oltWarning ? 'PENDING' : 'APPLIED';
-      config.lastApplyError = oltWarning ?? null!;
+      if (!oltWarning || isCosmeticWarning) config.appliedVersion = config.desiredVersion;
+      config.applyStatus = oltWarning && !isCosmeticWarning ? 'PENDING' : 'APPLIED';
+      config.lastApplyError = oltWarning && !isCosmeticWarning ? oltWarning : null!;
     }
     await this.configRepository.save(config);
     await this.wanProvisioning.invalidateReplacement(onu.id);
@@ -1514,7 +1516,9 @@ export class OnuManagementService {
       await this.recordPartialOperation(olt.id, onu.id, 'applyTr069Profile');
       throw new BadRequestException(`Fallo aplicando el Perfil TR-069 en la OLT: ${result.error}`);
     }
-    if (result.warning) await this.recordPartialOperation(olt.id, onu.id, 'applyTr069Profile');
+    const isCosmeticWarning = this.isCosmeticOmciWarning(result.warning);
+    if (result.warning && !isCosmeticWarning) await this.recordPartialOperation(olt.id, onu.id, 'applyTr069Profile');
+    await this.autoLearnUnsupportedOnuTypeCapabilities(onu.onuTypeId, result.warning);
 
     try {
     config.managementMethod = 'TR069';
@@ -1535,7 +1539,7 @@ export class OnuManagementService {
     // se quedaba perpetuamente en "Versión Aplicada: 0" incluso cuando la OLT
     // sí confirmó el cambio. Misma simetría que ya usa authorizeOnu() arriba.
     config.desiredVersion = Math.max(config.desiredVersion, config.appliedVersion) + 1;
-    if (result.warning) {
+    if (result.warning && !isCosmeticWarning) {
       config.applyStatus = 'PENDING';
       config.lastApplyError = result.warning;
     } else {
@@ -2311,5 +2315,73 @@ export class OnuManagementService {
       explicitOnuId,
       autoAllocateOnuId,
     };
+  }
+  /**
+   * Determina si una advertencia devuelta por la OLT corresponde exclusivamente
+   * al rechazo de Managed Entities (ME) opcionales (típicamente "security-mgmt"
+   * o "dhcp-ip ethuni" rechazadas con unknown ME / command processing error).
+   * En estos casos, la conectividad real (datos / internet / TR-069) SÍ quedó
+   * operativa, por lo que no debe degradarse el estado de la ONU a "PENDING".
+   */
+  private isCosmeticOmciWarning(warning?: string): boolean {
+    if (!warning) return false;
+    const segments = warning.split(/\s*\|\s*/).map((s) => s.trim()).filter(Boolean);
+    if (segments.length === 0) return false;
+
+    return segments.every((seg) => {
+      const s = seg.toLowerCase();
+      const isOptionalCmd =
+        s.includes('security-mgmt') ||
+        s.includes('dhcp-ip ethuni') ||
+        s.includes('regla opcional de seguridad');
+      const isIgnorableError =
+        s.includes('unknown me') ||
+        s.includes('63993') ||
+        s.includes('command processing error') ||
+        s.includes('omitida por la olt') ||
+        s.includes('secundaria de gestión');
+      return isOptionalCmd && isIgnorableError;
+    });
+  }
+
+  /**
+   * Auto-aprendizaje de compatibilidad OMCI del modelo de ONU:
+   * Si la OLT reporta que la ONT rechazó "security-mgmt" o "dhcp-ip ethuni" con
+   * error de ME desconocida (%Code 63993 : unknown ME), desactiva automáticamente
+   * la bandera correspondiente en OnuTypeEntity. De este modo, futuras autorizaciones
+   * y reaplicaciones de TR-069 para este modelo omitirán estos comandos por completo.
+   */
+  private async autoLearnUnsupportedOnuTypeCapabilities(onuTypeId?: string, warning?: string): Promise<void> {
+    if (!onuTypeId || !warning) return;
+    const lower = warning.toLowerCase();
+    const hasUnknownMe = lower.includes('unknown me') || lower.includes('63993');
+    if (!hasUnknownMe) return;
+
+    const rejectsSecurity = lower.includes('security-mgmt');
+    const rejectsEthuni = lower.includes('dhcp-ip ethuni');
+    if (!rejectsSecurity && !rejectsEthuni) return;
+
+    try {
+      const type = await this.onuTypeRepository.findOneBy({ id: onuTypeId });
+      if (!type) return;
+
+      let changed = false;
+      if (rejectsSecurity && type.supportsSecurityMgmt !== false) {
+        type.supportsSecurityMgmt = false;
+        changed = true;
+        this.logger.log(`[auto-learn] Desactivando supportsSecurityMgmt para modelo "${type.model || type.vendorTypeName}" (${type.id}) tras rechazo OMCI unknown ME.`);
+      }
+      if (rejectsEthuni && type.supportsEthuniDhcpDelegation !== false) {
+        type.supportsEthuniDhcpDelegation = false;
+        changed = true;
+        this.logger.log(`[auto-learn] Desactivando supportsEthuniDhcpDelegation para modelo "${type.model || type.vendorTypeName}" (${type.id}) tras rechazo OMCI unknown ME.`);
+      }
+
+      if (changed) {
+        await this.onuTypeRepository.save(type);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[auto-learn] Error al auto-actualizar capacidades de OnuType ${onuTypeId}: ${err.message}`);
+    }
   }
 }

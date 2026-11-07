@@ -117,6 +117,7 @@ describe('OnuManagementService', () => {
 
     onuTypeRepo = {
       findOneBy: jest.fn().mockResolvedValue({ id: 'type-1', model: 'F660', vendorTypeName: 'ZTE-F660' }),
+      save: jest.fn().mockImplementation((val) => Promise.resolve(val)),
     };
 
     speedProfileRepo = {
@@ -1186,6 +1187,26 @@ describe('OnuManagementService', () => {
       }));
       expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
         applyStatus: 'PENDING', appliedVersion: 2, desiredVersion: 4, lastApplyError: 'rechazo parcial',
+      }));
+    });
+
+    it('trata advertencias cosméticas de OMCI (unknown ME en security-mgmt o dhcp-ip ethuni) como APPLIED y auto-aprende en OnuType', async () => {
+      const mockType = { id: 'type-1', model: 'HG8546M', supportsSecurityMgmt: true, supportsEthuniDhcpDelegation: true };
+      onuTypeRepo.findOneBy.mockResolvedValue(mockType);
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, onuTypeId: 'type-1' });
+      configRepo.findOneBy.mockResolvedValue({ onuId: mockOnu.id, appliedVersion: 1, desiredVersion: 1 });
+      const cosmeticWarning = 'La OLT rechazó la configuración secundaria de gestión ("security-mgmt 998"): %Code 63993-GPONRM : ONT return error:unknown ME.. El canal de internet sí quedó activo.';
+      zteDriver.authorizeOnu.mockResolvedValue({ ok: true, warning: cosmeticWarning });
+
+      const result = await service.authorizeOnu('onu-uuid-1', { serviceVlanId: 'vlan-1', onuTypeId: 'type-1' });
+
+      expect(result.oltWarning).toContain('security-mgmt');
+      expect((service as any).partialOperations.record).not.toHaveBeenCalled();
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        applyStatus: 'APPLIED', appliedVersion: 2, desiredVersion: 2, lastApplyError: null,
+      }));
+      expect(onuTypeRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'type-1', supportsSecurityMgmt: false,
       }));
     });
 

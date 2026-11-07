@@ -2099,6 +2099,31 @@ No.15 profile : TRAFFIC-977M
       expect(executeCommand).not.toHaveBeenCalledWith('write');
     });
 
+    it('tolera rechazo OMCI en "dhcp-ip ethuni" (unknown ME) sin abortar la autorización ni omitir el write', async () => {
+      const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+        if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
+        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd.startsWith('dhcp-ip ethuni')) {
+          return Promise.resolve('\r\n%Code 63993-GPONRM : ONT return error:unknown ME.\r\nOLT#');
+        }
+        return Promise.resolve('\r\n.[Successful]\r\nOLT#');
+      });
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.authorizeOnu(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        baseConfig,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.warning).toContain('dhcp-ip ethuni');
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
     it('un "%Code" que NO menciona "existed" sigue tratándose como rechazo fatal, sin importar el comando', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');

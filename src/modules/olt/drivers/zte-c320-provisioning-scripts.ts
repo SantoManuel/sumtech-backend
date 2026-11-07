@@ -97,7 +97,8 @@ export function isManagementOrTr069Command(cmd: string): boolean {
     cmd.startsWith('voip') ||
     cmd.startsWith('veip') ||
     cmd.startsWith('tr069-mgmt') ||
-    cmd.startsWith('security-mgmt')
+    cmd.startsWith('security-mgmt') ||
+    cmd.startsWith('dhcp-ip ethuni')
   );
 }
 
