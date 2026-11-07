@@ -1421,18 +1421,37 @@ describe('OnuManagementService', () => {
       desiredVersion: 1,
     };
 
-    // A diferencia de updateTr069AcsUrl, ESTA acción sí re-cablea VLAN/tcont
-    // con serviceVlanId/speedProfileId -- auto-crear la fila acá arriesgaría
-    // empujar una VLAN adivinada a un equipo de producción ya cableado, así
-    // que se queda bloqueada sin una fila real (el mensaje ahora guía hacia
-    // "Solo actualizar ACS" para ese caso, ver updateTr069AcsUrl).
-    it('lanza BadRequestException si la ONU no tiene config previa (no se autorizó en la OLT todavía), y sugiere "Solo actualizar ACS" para equipos ya cableados', async () => {
-      onuRepo.findOne.mockResolvedValue(mockOnu);
+    // Decisión de negocio (2026-11-07): el bloque TR-069 no lee serviceVlanId/
+    // speedProfileId/onuTypeId para generarse -- ya NO se exige una fila de
+    // config previa en net.onu_service_config. Aplica a cualquier ONU que la
+    // OLT ya reporte autorizada (status ACTIVE), sin importar si la
+    // autorización óptica la hizo este sistema o fue detectada/importada
+    // externamente (ej. detectedBy=OLT_IMPORT).
+    it('ya NO exige config previa -- aplica el perfil a cualquier ONU ACTIVE, creando una fila mínima si no existía', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE' });
+      configRepo.findOneBy.mockResolvedValue(null);
+      zteDriver.applyTr069Management.mockResolvedValue({ ok: true });
+
+      const result = await service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' }, 'admin-id');
+
+      expect(zteDriver.applyTr069Management).toHaveBeenCalled();
+      expect(configRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ onuId: 'onu-uuid-1', managementMethod: 'TR069', operationMode: 'ROUTER' }),
+      );
+      expect(configRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ managementMethod: 'TR069', tr069NetworkId: 'tr069-1' }),
+      );
+      expect((result as any).tr069Warning).toBeUndefined();
+    });
+
+    it('rechaza si la ONU todavía no está autorizada ópticamente en la OLT (status distinto de ACTIVE), config exista o no', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
       configRepo.findOneBy.mockResolvedValue(null);
 
       await expect(
         service.applyTr069Profile('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
-      ).rejects.toThrow(/Solo actualizar ACS/);
+      ).rejects.toThrow(/autorizada/);
+      expect(zteDriver.applyTr069Management).not.toHaveBeenCalled();
     });
 
     it('lanza BadRequestException si no se selecciona Red TR-069', async () => {
@@ -1549,8 +1568,21 @@ describe('OnuManagementService', () => {
       desiredVersion: 1,
     };
 
-    it('reutiliza la MISMA validación que applyTr069Profile: lanza BadRequestException si la ONU no tiene config previa, sin llamar al driver', async () => {
-      onuRepo.findOne.mockResolvedValue(mockOnu);
+    it('ya NO exige config previa -- previsualiza el script para cualquier ONU ACTIVE, sin crear/persistir nada', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE' });
+      configRepo.findOneBy.mockResolvedValue(null);
+      zteDriver.generateTr069ProfileScript.mockReturnValue(['configure terminal', 'pon-onu-mng gpon-onu_1/1/1:1']);
+
+      const preview = await service.previewTr069ProfileScript('onu-uuid-1', { tr069NetworkId: 'tr069-1' });
+
+      expect(zteDriver.generateTr069ProfileScript).toHaveBeenCalled();
+      expect(preview.commands).toHaveLength(2);
+      expect(configRepo.create).not.toHaveBeenCalled();
+      expect(configRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('reutiliza la MISMA validación de estado que applyTr069Profile: rechaza si la ONU no está ACTIVE, sin llamar al driver', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'UNCONFIGURED' });
       configRepo.findOneBy.mockResolvedValue(null);
 
       await expect(

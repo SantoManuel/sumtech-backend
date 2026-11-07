@@ -48,23 +48,6 @@ export interface ProvisioningAuditFinding {
   message: string;
   command?: string;
   rawExcerpt?: string;
-  /**
-   * Acción de corrección disponible desde la pestaña de Auditoría:
-   * "REAPPLY_TR069" reabre el modal "Aplicar Perfil TR-069" (Etapa 2 --
-   * recablea iphost2/VEIP/ACS y fuerza el reinicio OMCI, mismo flujo ya
-   * probado manualmente durante la depuración de ECOM0F91DF9B). "REAUTHORIZE"
-   * reabre el modal de Autorización completa (Etapa 1 -- fuerza "no onu" +
-   * recreación limpia); deliberadamente SIN prefill automático: un tipo de
-   * ONU equivocado amerita que el operador reconfirme a mano plan/VLAN/
-   * contrato, no un reintento silencioso con valores adivinados.
-   * "APPLY_WAN_IP" (Opción A, CONFIRMADO EN VIVO 2026-10-30) ejecuta de una
-   * vez "wan-ip ... mode dhcp vlan-profile ..." sin pasar por ningún modal --
-   * no cambia plan/VLAN/contrato, solo re-aplica un comando puntual.
-   * "APPLY_SERVICE_GEMPORT" (Opción B, "último recurso", también confirmado
-   * en vivo) es DESTRUCTIVA: borra flow/switchport-bind/veip de ambos
-   * canales y los reemplaza por "service <id> gemport <id> vlan <vlan>" --
-   * debe ofrecerse solo cuando la Opción A ya se intentó y no resolvió.
-   */
   fixAction?: 'REAPPLY_TR069' | 'REAUTHORIZE' | 'APPLY_WAN_IP' | 'APPLY_SERVICE_GEMPORT';
 }
 
@@ -126,10 +109,7 @@ export class OnuManagementService {
     }
   }
 
-  /**
-   * Resuelve el driver real del fabricante de la OLT dueña de la ONU/operación.
-   * Nunca cae silenciosamente en ZteC320Driver para un vendor desconocido.
-   */
+  
   private resolveDriver(olt: OltEntity): IOltDriver {
     try {
       return this.driverRegistry.resolve(olt.vendor);
@@ -153,13 +133,7 @@ export class OnuManagementService {
     }
   }
 
-  /**
-   * Consulta ONUs sin configurar descubiertas por OLT o por ACS (RF-OLT-014).
-   * `olt`/`ponInterface` son ManyToOne (un único row por ONU) -- skip/take
-   * directo sobre `find()` pagina ONUs reales, sin el riesgo de
-   * multiplicación por join que sí aplica a relaciones OneToMany (ver
-   * OltManagementService.findAll).
-   */
+ 
   async findUnconfigured(dto?: ListUnconfiguredOnusDto) {
     const page = dto?.page || 1;
     const limit = dto?.limit || 20;
@@ -1354,26 +1328,28 @@ export class OnuManagementService {
     const onu = await this.findById(id);
     const driver = this.resolveDriver(onu.olt);
 
-    const config = await this.configRepository.findOneBy({ onuId: onu.id });
-    if (!config) {
-      throw new BadRequestException(
-        'Esta ONU no tiene configuración de servicio previa en el sistema. Autorízala en la OLT primero (Etapa 1).',
-      );
+    if (onu.status !== 'ACTIVE') {
+      throw new BadRequestException('La ONU debe estar autorizada (ópticamente activa) en la OLT antes de previsualizar el perfil TR-069.');
     }
+
+    // Misma relajación que performApplyTr069Profile: no exige fila de config
+    // previa, ya que el script de TR-069 no depende de serviceVlanId/
+    // speedProfileId/onuTypeId.
+    const config = await this.configRepository.findOneBy({ onuId: onu.id });
     if (!dto.tr069NetworkId) {
       throw new BadRequestException('Selecciona una Red TR-069.');
     }
 
     const authParams = await this.buildAuthorizeParams(onu, {
       onuTypeId: onu.onuTypeId,
-      serviceVlanId: config.serviceVlanId,
-      speedProfileId: config.speedProfileId,
+      serviceVlanId: config?.serviceVlanId,
+      speedProfileId: config?.speedProfileId,
       tr069NetworkId: dto.tr069NetworkId,
       tr069AcsUsername: dto.tr069AcsUsername,
       tr069AcsPassword: dto.tr069AcsPassword,
       managementMethod: 'TR069',
-      operationMode: config.operationMode,
-    });
+      operationMode: config?.operationMode,
+    }, false, true);
 
     if (!authParams.tr069Url) {
       throw new BadRequestException(
@@ -1467,18 +1443,32 @@ export class OnuManagementService {
     const driver = this.resolveDriver(olt);
     const connParams = await this.connectionResolver.resolve(olt);
 
-    // A diferencia de "Solo actualizar ACS" (updateTr069AcsUrl), esta acción SÍ
-    // re-cablea tcont/gemport/service-port/flow/veip con el serviceVlanId/
-    // speedProfileId de `config` -- auto-crear la fila acá con valores
-    // adivinados arriesgaría empujarle a un equipo de producción ya cableado
-    // (ej. detectedBy=OLT_IMPORT) una VLAN distinta a la real. Por eso este
-    // camino se queda bloqueado sin una fila real, a diferencia del otro.
-    const config = await this.configRepository.findOneBy({ onuId: onu.id });
+    if (onu.status !== 'ACTIVE') {
+      throw new BadRequestException('La ONU debe estar autorizada (ópticamente activa) en la OLT antes de aplicar el perfil TR-069.');
+    }
+
+    // El bloque TR-069 (tcont 2/gemport 2/service-port 2 en la VLAN de gestión
+    // + OMCI pon-onu-mng, ver generateTr069TransportScript/
+    // generateTr069ManagementScript) es autosuficiente: nunca lee
+    // serviceVlanId/speedProfileId/onuTypeId para generarse -- esos campos
+    // solo importan para el canal de datos (tcont 1/service-port 1), que
+    // esta acción no toca. Por eso ya NO se exige una fila de config previa
+    // en net.onu_service_config: aplica a cualquier ONU que la OLT ya
+    // reporte autorizada (status ACTIVE), sin importar si la autorización
+    // óptica la hizo este sistema o fue detectada/importada externamente
+    // (ej. detectedBy=OLT_IMPORT). Si no existe fila, se crea una mínima
+    // -- serviceVlanId/speedProfileId quedan en null, igual que ya permite
+    // el esquema para equipos OLT_IMPORT (ver columna nullable, migración 098).
+    let config = await this.configRepository.findOneBy({ onuId: onu.id });
     if (!config) {
-      throw new BadRequestException(
-        'Esta ONU no tiene configuración de servicio previa en el sistema. Si es un equipo nuevo, autorízalo en la OLT primero. ' +
-          'Si es un equipo de producción que YA está cableado en la OLT (ej. importado por escaneo) y solo necesitas apuntarlo a un ACS distinto, usa el botón "Solo actualizar ACS" de este mismo modal -- esa acción no re-cablea VLAN/tcont y no requiere conocer la configuración previa.',
-      );
+      config = this.configRepository.create({
+        onuId: onu.id,
+        managementMethod: 'TR069',
+        operationMode: 'ROUTER',
+        desiredVersion: 1,
+        appliedVersion: 0,
+        applyStatus: 'PENDING',
+      });
     }
     if (!dto.tr069NetworkId) {
       throw new BadRequestException('Selecciona una Red TR-069.');
@@ -1493,7 +1483,7 @@ export class OnuManagementService {
       tr069AcsPassword: dto.tr069AcsPassword,
       managementMethod: 'TR069',
       operationMode: config.operationMode,
-    });
+    }, false, true);
 
     // Falla aquí, ANTES de conectarse a la OLT, en vez de dejar que el
     // driver genere "tr069-mgmt 1 acs " en blanco (la OLT lo aceptaría sin
@@ -1566,16 +1556,7 @@ export class OnuManagementService {
     return { ...saved, tr069Warning: result.warning };
   }
 
-  /**
-   * Acción aislada: cambia SOLO el ACS al que apunta la ONU, sin re-cablear
-   * el resto del canal de gestión TR-069 (eso lo hace `applyTr069Profile`,
-   * que asume que ya corrió aquí antes). A diferencia de `applyTr069Profile`
-   * -- que reporta un rechazo de la OLT como `warning` porque el resto del
-   * cableado igual se aplicó -- aquí un rechazo es SIEMPRE un error duro: es
-   * la única pieza que esta acción toca, no hay "igual se aplicó algo" que
-   * justifique ocultarlo. Pensada para reintentar/cambiar solo el puntero del
-   * ACS sin el riesgo de un "éxito" que en realidad no cambió nada.
-   */
+  
   async updateTr069AcsUrl(id: string, dto: { tr069NetworkId: string; tr069AcsUsername?: string; tr069AcsPassword?: string }, actorUserId?: string) {
     const onu = await this.findById(id);
     const olt = onu.olt;
@@ -1588,17 +1569,6 @@ export class OnuManagementService {
       );
     }
 
-    // A diferencia de "Aplicar Perfil TR-069" (applyTr069Profile), esta acción
-    // NUNCA toca VLAN/tcont/gemport/service-port -- el driver solo entra a
-    // "pon-onu-mng" y aplica "tr069-mgmt 1 acs" con verificación y guardado (ver
-    // ZteC320Driver.updateTr069AcsUrl, confirmado leyendo su implementación
-    // real). serviceVlanId/speedProfileId/operationMode de `config` ni
-    // siquiera llegan al payload final del driver. Por eso, si la ONU no
-    // tiene fila de servicio todavía (típico de equipos detectedBy=
-    // OLT_IMPORT: producción real, ya cableados en la OLT por fuera de este
-    // sistema -- NO hay que re-autorizarlos), se crea una fila mínima acá en
-    // vez de bloquear: no hay ningún dato de VLAN/perfil que adivinar para
-    // esta operación puntual.
     let config = await this.configRepository.findOneBy({ onuId: onu.id });
     if (!config) {
       config = this.configRepository.create({
@@ -1657,13 +1627,7 @@ export class OnuManagementService {
     return { ...saved, tr069Warning: result.warning };
   }
 
-  /**
-   * Etapa 3 del flujo de 3 etapas: empuja WAN/PPPoE/WiFi + tags reales al
-   * CPE vía GenieACS (`pushCpeConfiguration`, sin cambios) -- exige que la
-   * Etapa 2 (`applyTr069Profile`) ya se haya aplicado. Expuesta como acción
-   * explícita y reintentable desde la Ficha 360, en vez de dispararse
-   * automáticamente dentro de `authorizeOnu`/`reprovisionOnu`.
-   */
+  
   async pushWanConfig(id: string, dto: ConfigureOnuWanDto, actorUserId?: string) {
     return this.wanProvisioning.withMutation(id, () => this.performPushWanConfig(id, dto, actorUserId));
   }
@@ -2178,7 +2142,7 @@ export class OnuManagementService {
     return { ponInterface, onuId: Number(rawId) };
   }
 
-  private async buildAuthorizeParams(onu: OnuEntity, dto: any, acsOnly = false): Promise<AuthorizeOnuParams> {
+  private async buildAuthorizeParams(onu: OnuEntity, dto: any, acsOnly = false, skipServiceValidation = false): Promise<AuthorizeOnuParams> {
     const { ponInterface, onuId } = this.resolveOnuLocation(onu, dto);
     const explicitOnuId = Boolean(dto.onuId);
     const autoAllocateOnuId = !explicitOnuId && onu.status === 'UNCONFIGURED';
@@ -2208,10 +2172,10 @@ export class OnuManagementService {
       const v = await this.vlanRepository.findOneBy({ id: dto.serviceVlanId });
       if (v) serviceVlan = v.vlanId;
     }
-    if (!acsOnly && (!modelTypeName || !/^[\w.-]+$/.test(modelTypeName))) {
+    if (!acsOnly && !skipServiceValidation && (!modelTypeName || !/^[\w.-]+$/.test(modelTypeName))) {
       throw new BadRequestException('Selecciona un tipo de ONU válido.');
     }
-    if (!acsOnly && (!Number.isInteger(serviceVlan) || serviceVlan! < 1 || serviceVlan! > 4094)) {
+    if (!acsOnly && !skipServiceValidation && (!Number.isInteger(serviceVlan) || serviceVlan! < 1 || serviceVlan! > 4094)) {
       throw new BadRequestException('Selecciona una VLAN de servicio válida (1-4094).');
     }
 
@@ -2296,10 +2260,6 @@ export class OnuManagementService {
       securityMgmtSupported: onuTypeSecurityMgmtSupported,
       serialNumber: onu.serialNumber,
       clientName: dto.clientName || undefined,
-      // Autogenerada en el frontend (zona de la OLT + GPS del contrato si
-      // hay + fecha) y editable antes de autorizar -- el backend confía en
-      // el valor que llega, no lo recalcula. Ver
-      // docs/onu-tr069-provisioning-zte-c320.md.
       description: dto.description || undefined,
       serviceVlan: serviceVlan!,
       tcontProfile,
@@ -2316,13 +2276,7 @@ export class OnuManagementService {
       autoAllocateOnuId,
     };
   }
-  /**
-   * Determina si una advertencia devuelta por la OLT corresponde exclusivamente
-   * al rechazo de Managed Entities (ME) opcionales (típicamente "security-mgmt"
-   * o "dhcp-ip ethuni" rechazadas con unknown ME / command processing error).
-   * En estos casos, la conectividad real (datos / internet / TR-069) SÍ quedó
-   * operativa, por lo que no debe degradarse el estado de la ONU a "PENDING".
-   */
+ 
   private isCosmeticOmciWarning(warning?: string): boolean {
     if (!warning) return false;
     const segments = warning.split(/\s*\|\s*/).map((s) => s.trim()).filter(Boolean);
