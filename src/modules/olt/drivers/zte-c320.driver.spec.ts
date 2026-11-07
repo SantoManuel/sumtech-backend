@@ -1176,50 +1176,35 @@ interface gpon-onu_1/2/15:1
     });
   });
 
-  describe('ensureTrafficProfile y getTrafficProfiles (bajada/downstream, confirmado en vivo contra OLT_Tabara_Abajo, 2026-10-27)', () => {
+  describe('ensureTrafficProfile y getTrafficProfiles (bajada/downstream) -- comando y parser corregidos (2026-11-07): "show traffic-profile" nunca fue el comando real de este firmware, el real es "show gpon profile traffic" (confirmado en vivo por el operador)', () => {
     const REAL_TRAFFIC_OUTPUT = `
------------------------------------------------------------------
-No. 1 profile : TRAFFIC-2M
------------------------------------------------------------------
-No. 2 profile : TRAFFIC-4M
------------------------------------------------------------------
-No. 3 profile : TRAFFIC-5M
------------------------------------------------------------------
-No. 4 profile : TRAFFIC-10M
------------------------------------------------------------------
-No. 5 profile : TRAFFIC-21M
------------------------------------------------------------------
-No. 6 profile : TRAFFIC-27M
------------------------------------------------------------------
-No. 7 profile : TRAFFIC-31M
------------------------------------------------------------------
-No. 8 profile : TRAFFIC-62M
------------------------------------------------------------------
-No. 9 profile : TRAFFIC-108M
------------------------------------------------------------------
-No.10 profile : TRAFFIC-153M
------------------------------------------------------------------
-No.11 profile : TRAFFIC-196M
------------------------------------------------------------------
-         No.12 profile : TRAFFIC-205M
------------------------------------------------------------------
-No.13 profile : TRAFFIC-410M
------------------------------------------------------------------
-No.14 profile : TRAFFIC-512M
------------------------------------------------------------------
-No.15 profile : TRAFFIC-977M
+Profile name  :default
+  SIR(kbps)           PIR(kbps)           CBS(kbytes)         PBS(kbytes)
+
+ 9953280             9953280             default             default
+
+
+Profile name  :SMARTOLT-1G-DOWN
+  SIR(kbps)           PIR(kbps)           CBS(kbytes)         PBS(kbytes)
+
+ 1024000             1024000             512                 1023
+
+
+Profile name  :SMARTOLT-VOIPMNG-10M
+  SIR(kbps)           PIR(kbps)           CBS(kbytes)         PBS(kbytes)
+
+ 10240               20480               500                 500
 `;
 
-    it('parseTrafficProfilesFromOutput parsea correctamente la salida real de show traffic-profile', () => {
+    it('parseTrafficProfilesFromOutput parsea correctamente la salida real de "show gpon profile traffic" (downKbps = PIR)', () => {
       const parsed = driver.parseTrafficProfilesFromOutput(REAL_TRAFFIC_OUTPUT);
-      expect(parsed).toHaveLength(15);
-      expect(parsed[0]).toEqual({ name: 'TRAFFIC-2M', downKbps: 2048 });
-      expect(parsed[4]).toEqual({ name: 'TRAFFIC-21M', downKbps: 21504 });
-      expect(parsed[8]).toEqual({ name: 'TRAFFIC-108M', downKbps: 110592 });
-      expect(parsed[14]).toEqual({ name: 'TRAFFIC-977M', downKbps: 1000448 });
+      expect(parsed).toHaveLength(3);
+      expect(parsed[0]).toEqual({ name: 'default', downKbps: 9953280 });
+      expect(parsed[1]).toEqual({ name: 'SMARTOLT-1G-DOWN', downKbps: 1024000 });
+      expect(parsed[2]).toEqual({ name: 'SMARTOLT-VOIPMNG-10M', downKbps: 20480 });
     });
 
-    it('getTrafficProfiles ejecuta "show traffic-profile" y devuelve los perfiles descubiertos', async () => {
+    it('getTrafficProfiles ejecuta "show gpon profile traffic" y devuelve los perfiles descubiertos', async () => {
       const executeCommand = jest.fn().mockResolvedValue(REAL_TRAFFIC_OUTPUT);
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
@@ -1234,12 +1219,12 @@ No.15 profile : TRAFFIC-977M
         password: 'password',
       });
 
-      expect(executeCommand).toHaveBeenCalledWith('show traffic-profile');
-      expect(profiles).toHaveLength(15);
-      expect(profiles.find((p) => p.name === 'TRAFFIC-108M')).toBeDefined();
+      expect(executeCommand).toHaveBeenCalledWith('show gpon profile traffic');
+      expect(profiles).toHaveLength(3);
+      expect(profiles.find((p) => p.name === 'SMARTOLT-1G-DOWN')).toBeDefined();
     });
 
-    it('ensureTrafficProfile no ejecuta configure terminal ni write si el perfil ya existe en show traffic-profile', async () => {
+    it('ensureTrafficProfile no ejecuta configure terminal ni write si el perfil ya existe en show gpon profile traffic', async () => {
       const executeCommand = jest.fn().mockResolvedValue(REAL_TRAFFIC_OUTPUT);
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
@@ -1249,16 +1234,16 @@ No.15 profile : TRAFFIC-977M
 
       const result = await driver.ensureTrafficProfile(
         { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
-        { name: 'TRAFFIC-108M', downKbps: 110592 },
+        { name: 'SMARTOLT-1G-DOWN', downKbps: 1024000 },
       );
 
       expect(result.ok).toBe(true);
-      expect(executeCommand).toHaveBeenCalledWith('show traffic-profile');
+      expect(executeCommand).toHaveBeenCalledWith('show gpon profile traffic');
       expect(executeCommand).not.toHaveBeenCalledWith('configure terminal');
       expect(executeCommand).not.toHaveBeenCalledWith('write');
     });
 
-    it('ensureTrafficProfile declara el perfil si no existe en show traffic-profile', async () => {
+    it('ensureTrafficProfile declara el perfil si no existe en show gpon profile traffic', async () => {
       const executeCommand = jest.fn().mockResolvedValue('');
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
         connectAndLogin: jest.fn().mockResolvedValue(undefined),
@@ -1273,7 +1258,7 @@ No.15 profile : TRAFFIC-977M
 
       expect(result.ok).toBe(true);
       expect(executeCommand.mock.calls.map((c: any[]) => c[0])).toEqual([
-        'show traffic-profile',
+        'show gpon profile traffic',
         'configure terminal',
         'traffic-profile TRAFFIC-NUEVO-5M ip cir 5000 cbs 1000 pir 5000 pbs 1000',
         'exit',
@@ -1657,18 +1642,18 @@ No.15 profile : TRAFFIC-977M
 
       expect(result.ok).toBe(true);
       const calledCommands = executeCommand.mock.calls.map((c: any[]) => c[0]);
-      expect(calledCommands.indexOf('show traffic-profile')).toBeGreaterThanOrEqual(0);
+      expect(calledCommands.indexOf('show gpon profile traffic')).toBeGreaterThanOrEqual(0);
       expect(calledCommands.indexOf('traffic-profile SMARTOLT-1G-DOWN ip cir 1048576 cbs 1000 pir 1048576 pbs 1000')).toBeGreaterThan(
-        calledCommands.indexOf('show traffic-profile'),
+        calledCommands.indexOf('show gpon profile traffic'),
       );
       // Verificado ANTES del script principal (que empieza con "configure terminal" / "interface gpon-olt_...").
-      expect(calledCommands.indexOf('show traffic-profile')).toBeLessThan(calledCommands.indexOf('interface gpon-olt_1/1/1'));
+      expect(calledCommands.indexOf('show gpon profile traffic')).toBeLessThan(calledCommands.indexOf('interface gpon-olt_1/1/1'));
     });
 
     it('no vuelve a crear "SMARTOLT-1G-DOWN" si ya existe en la OLT', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
-        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd === 'show gpon profile traffic') return Promise.resolve('Profile name :SMARTOLT-1G-DOWN\n 1024000 1024000 512 1023');
         return Promise.resolve('');
       });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -1864,7 +1849,7 @@ No.15 profile : TRAFFIC-977M
     it('no intenta asegurar ningún traffic-profile DEL PLAN si no se provee trafficProfile/downKbps -- el techo "SMARTOLT-1G-DOWN" SÍ se verifica siempre (ver describe aparte), pero ya existe en este mock y no se crea de nuevo', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :ZTE-F660');
-        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd === 'show gpon profile traffic') return Promise.resolve('Profile name :SMARTOLT-1G-DOWN\n 1024000 1024000 512 1023');
         return Promise.resolve('');
       });
       jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
@@ -1907,7 +1892,7 @@ No.15 profile : TRAFFIC-977M
         // prueba es sobre el rechazo del script principal de autorización,
         // no sobre el aprovisionamiento de tipo/perfiles.
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
-        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd === 'show gpon profile traffic') return Promise.resolve('Profile name :SMARTOLT-1G-DOWN\n 1024000 1024000 512 1023');
         if (cmd.startsWith('onu ')) return Promise.resolve('\r\n%Code 63904-GPONRM : Not support this ONU.\r\nOLT#');
         return Promise.resolve('');
       });
@@ -2075,7 +2060,7 @@ No.15 profile : TRAFFIC-977M
       let bindAttempts = 0;
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
-        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd === 'show gpon profile traffic') return Promise.resolve('Profile name :SMARTOLT-1G-DOWN\n 1024000 1024000 512 1023');
         if (cmd === 'switchport-bind switch_0/1 iphost 1') {
           bindAttempts++;
           if (bindAttempts === 1) return Promise.resolve('\r\n%Code 63869-GPONRM : Record already exists.\r\nOLT#');
@@ -2102,7 +2087,7 @@ No.15 profile : TRAFFIC-977M
     it('tolera rechazo OMCI en "dhcp-ip ethuni" (unknown ME) sin abortar la autorización ni omitir el write', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
-        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd === 'show gpon profile traffic') return Promise.resolve('Profile name :SMARTOLT-1G-DOWN\n 1024000 1024000 512 1023');
         if (cmd.startsWith('dhcp-ip ethuni')) {
           return Promise.resolve('\r\n%Code 63993-GPONRM : ONT return error:unknown ME.\r\nOLT#');
         }
@@ -2127,7 +2112,7 @@ No.15 profile : TRAFFIC-977M
     it('un "%Code" que NO menciona "existed" sigue tratándose como rechazo fatal, sin importar el comando', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
-        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd === 'show gpon profile traffic') return Promise.resolve('Profile name :SMARTOLT-1G-DOWN\n 1024000 1024000 512 1023');
         if (cmd.startsWith('tcont ')) {
           return Promise.resolve('\r\n%Code 10: Invalid parameter!\r\nOLT#');
         }
@@ -2892,7 +2877,7 @@ No.15 profile : TRAFFIC-977M
         // "configure terminal" (solo nos interesa contar el de la capa de
         // transporte y el del bloque OMCI).
         if (cmd === 'show gpon profile tcont') return Promise.resolve('Profile name :SMARTOLT-VOIPMNG-10M\r\n5 64 64 10240 1 low\r\n');
-        if (cmd === 'show traffic-profile') return Promise.resolve('No. 1   profile : SMARTOLT-1G-DOWN');
+        if (cmd === 'show gpon profile traffic') return Promise.resolve('Profile name :SMARTOLT-1G-DOWN\n 1024000 1024000 512 1023');
         if (cmd === 'configure terminal') {
           if (!transportConfigTerminalSeen) {
             transportConfigTerminalSeen = true;

@@ -630,6 +630,14 @@ export class OltCatalogsService {
       }
     }
 
+    // `tcontSource`/`trafficSource` capturan ANTES del fallback si la lista
+    // vino de verdad de la OLT (LIVE) o del catálogo global sin confirmar
+    // (CATALOG) -- el frontend (modal de autorización) usa esto para marcar
+    // cada opción como "✓ Confirmado en esta OLT" vs. "Catálogo -- se creará
+    // al autorizar" en vez de tratar ambos orígenes como indistinguibles.
+    const tcontSource: 'LIVE' | 'CATALOG' = tcontProfiles.length > 0 ? 'LIVE' : 'CATALOG';
+    const trafficSource: 'LIVE' | 'CATALOG' = trafficProfiles.length > 0 ? 'LIVE' : 'CATALOG';
+
     // Si la OLT no respondió o no soporta escaneo en vivo, poblar con perfiles del catálogo
     if (tcontProfiles.length === 0) {
       tcontProfiles = catalogProfiles
@@ -650,6 +658,8 @@ export class OltCatalogsService {
       vendor: olt.vendor,
       tcontProfiles,
       trafficProfiles,
+      tcontSource,
+      trafficSource,
       catalogProfiles,
     };
   }

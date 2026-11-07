@@ -249,16 +249,34 @@ export function parseTcontProfilesFromOutput(output: string): DiscoveredTcontPro
   return results;
 }
 
+/**
+ * Parser de "show gpon profile traffic" -- BUG REAL CONFIRMADO (2026-11-07):
+ * la versión anterior asumía el formato "No. 1 profile: NOMBRE", que no
+ * corresponde a ningún comando real de este firmware. El formato real
+ * (confirmado en vivo por el operador) es igual en estructura al de
+ * `parseTcontProfilesFromOutput` (hermano de subida): "Profile name :X"
+ * seguido, con ruido de cabecera/paginación posible en medio, de la fila
+ * de datos "SIR(kbps) PIR(kbps) CBS(kbytes) PBS(kbytes)" -- mismo criterio
+ * lazy de salto hasta la primera fila que calce el patrón numérico real.
+ *
+ * downKbps usa PIR (Peak Information Rate -- el límite máximo real de
+ * ancho de banda, lo que el operador vende como "velocidad de bajada"),
+ * no SIR (Sustained Information Rate, el "garantizado"): en los perfiles
+ * reales confirmados, SIR <= PIR siempre (ej. SMARTOLT-1G-DOWN:
+ * SIR=PIR=1024000; SMARTOLT-VOIPMNG-10M: SIR=10240, PIR=20480) -- PIR es
+ * el techo real que el ONT puede alcanzar. CBS/PBS pueden venir como el
+ * literal "default" (perfil "default" de fábrica) en vez de un número --
+ * no se usan para calcular velocidad, por eso el regex los captura con
+ * `\S+` en vez de `\d+`.
+ */
 export function parseTrafficProfilesFromOutput(output: string): DiscoveredTrafficProfile[] {
-  const regex = /No\.\s*\d+\s+profile\s*:\s*([^\r\n]+)/g;
+  const profileRegex = /Profile name\s*:\s*(\S+)[\s\S]*?\r?\n\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)/g;
   const profiles: DiscoveredTrafficProfile[] = [];
   let match: RegExpExecArray | null;
-  while ((match = regex.exec(output)) !== null) {
-    const name = match[1].trim();
-    if (!name) continue;
-    const mbMatch = name.match(/TRAFFIC-(\d+)M/i);
-    const downKbps = mbMatch ? parseInt(mbMatch[1], 10) * 1024 : undefined;
-    profiles.push({ name, downKbps });
+  while ((match = profileRegex.exec(output)) !== null) {
+    const [, name, , pir] = match;
+    const downKbps = parseInt(pir, 10);
+    profiles.push({ name, downKbps: Number.isFinite(downKbps) ? downKbps : undefined });
   }
   return profiles;
 }

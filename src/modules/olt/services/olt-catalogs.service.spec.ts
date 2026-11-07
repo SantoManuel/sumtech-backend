@@ -1089,6 +1089,24 @@ describe('OltCatalogsService', () => {
       expect(catalog.trafficProfiles).toHaveLength(1);
       expect(catalog.trafficProfiles[0].name).toBe('TRAFFIC-108M');
       expect(catalog.catalogProfiles).toHaveLength(1);
+      expect(catalog.tcontSource).toBe('LIVE');
+      expect(catalog.trafficSource).toBe('LIVE');
+    });
+
+    it('getOltProfilesCatalog marca tcontSource/trafficSource como CATALOG si la OLT no responde o el fabricante no soporta descubrimiento', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      driverRegistry.resolve.mockReturnValue({});
+      connectionResolver.resolve.mockResolvedValue({ host: '10.0.0.1' });
+      speedProfileRepo.find.mockResolvedValue([
+        { id: 'sp-1', name: '100M', vendorTcontProfile: 'SMARTOLT-100M-UP', vendorTrafficProfile: 'TRAFFIC-108M' },
+      ]);
+
+      const catalog = await service.getOltProfilesCatalog('olt-zte-1');
+
+      expect(catalog.tcontSource).toBe('CATALOG');
+      expect(catalog.trafficSource).toBe('CATALOG');
+      expect(catalog.tcontProfiles[0].name).toBe('SMARTOLT-100M-UP');
+      expect(catalog.trafficProfiles[0].name).toBe('TRAFFIC-108M');
     });
   });
 });

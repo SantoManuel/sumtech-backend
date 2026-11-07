@@ -31,7 +31,12 @@ export async function ensureTcontProfileWithSession(session: ZteSessionLike, pro
 }
 
 export async function ensureTrafficProfileWithSession(session: ZteSessionLike, profile: TrafficProfile): Promise<void> {
-  const listOutput = await session.executeCommand('show traffic-profile');
+  // "show gpon profile traffic" -- mismo comando corregido que getTrafficProfiles
+  // (bug real confirmado 2026-11-07, ver zte-c320-parsers.ts); antes se usaba
+  // "show traffic-profile" junto al mismo parser ya reescrito para el formato
+  // real, lo que haría que esta verificación de existencia SIEMPRE fallara en
+  // silencio y reintentara crear perfiles que ya existen.
+  const listOutput = await session.executeCommand('show gpon profile traffic');
   const existing = parseTrafficProfilesFromOutput(listOutput).find((p) => p.name === profile.name);
   if (existing) {
     return;

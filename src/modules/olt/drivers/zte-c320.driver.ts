@@ -905,9 +905,10 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
-   * Crea (o comprueba) el traffic-profile de BAJADA (CIR=PIR=downKbps) --
-   * CONFIRMADO EN VIVO contra OLT_Tabara_Abajo (2026-10-19/2026-10-27):
-   *   "show traffic-profile" lista los perfiles existentes sin entrar a config.
+   * Crea (o comprueba) el traffic-profile de BAJADA (CIR=PIR=downKbps).
+   * La verificación de existencia usa "show gpon profile traffic" (corregido
+   * 2026-11-07 -- "show traffic-profile" nunca fue el comando real de este
+   * firmware, ver nota en getTrafficProfiles/parseTrafficProfilesFromOutput).
    * Si el perfil ya existe, retorna inmediatamente sin mandar comandos innecesarios
    * a la OLT ni escribir a la flash (write).
    * Si no existe, lo crea con:
@@ -934,13 +935,19 @@ export class ZteC320Driver implements IOltDriver {
 
   /**
    * Consulta qué perfiles de tráfico (downstream) REALMENTE existen en la OLT
-   * mediante "show traffic-profile" (confirmado en vivo contra OLT_Tabara_Abajo).
+   * mediante "show gpon profile traffic" -- BUG REAL CONFIRMADO (2026-11-07):
+   * el comando usado hasta ahora ("show traffic-profile") no es el real de
+   * este firmware; nunca devolvía nada útil y `getOltProfilesCatalog` caía
+   * en silencio al catálogo global, exactamente como reportó el operador.
+   * Comando y formato de salida confirmados en vivo por el operador, mismo
+   * nivel de certeza que ya tuvo "show gpon profile tcont" (hermano de
+   * subida, mismo prefijo "show gpon profile").
    */
   async getTrafficProfiles(params: OltConnectionParams): Promise<DiscoveredTrafficProfile[]> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();
-      const output = await session.executeCommand('show traffic-profile');
+      const output = await session.executeCommand('show gpon profile traffic');
       return this.parseTrafficProfilesFromOutput(output);
     } finally {
       await session.close();
@@ -1285,8 +1292,10 @@ export class ZteC320Driver implements IOltDriver {
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): "show gpon
       // profile tcont" responde con ~40 perfiles reales ya configurados.
       tcontDiscovery: true,
-      // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-27): "show traffic-profile"
-      // responde con los 15 perfiles de tráfico de bajada existentes.
+      // Corregido (2026-11-07): el comando real es "show gpon profile traffic"
+      // (no "show traffic-profile", que nunca fue válido en este firmware --
+      // ver getTrafficProfiles/parseTrafficProfilesFromOutput). La capacidad
+      // en sí ya estaba confirmada, solo el comando/parser estaban mal.
       trafficDiscovery: true,
       // Confirmado en vivo contra OLT_Tabara_Abajo (2026-10-19): se creó y
       // eliminó un traffic-profile de prueba real ("SUMTECH-TEST-DELETE-ME")
