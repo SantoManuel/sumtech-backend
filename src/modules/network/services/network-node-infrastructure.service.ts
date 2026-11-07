@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, GatewayTimeoutException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, GatewayTimeoutException, BadGatewayException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NetworkNodeEntity } from '../entities/network-node.entity';
@@ -940,19 +940,16 @@ export class NetworkNodeInfrastructureService {
     const safeNodeName = (node.name || 'node').replace(/[^a-zA-Z0-9_-]/g, '_');
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const baseName = `sumtech_${safeNodeName}_${timestamp}`;
+    const contentType = options.type === 'BINARY' ? 'application/octet-stream' : 'text/plain; charset=utf-8';
 
     let targetFileName = '';
-    let contentType = 'application/octet-stream';
-
-    if (options.type === 'BINARY') {
-      targetFileName = await client.createBackup(baseName, options.password);
-      contentType = 'application/octet-stream';
-    } else {
-      targetFileName = await client.exportConfig(baseName, true);
-      contentType = 'text/plain; charset=utf-8';
-    }
 
     try {
+      targetFileName =
+        options.type === 'BINARY'
+          ? await client.createBackup(baseName, options.password)
+          : await client.exportConfig(baseName, true);
+
       const buffer = await client.readFileChunks(targetFileName);
 
       // Limpieza inmediata en el router para evitar llenar la flash
@@ -973,8 +970,30 @@ export class NetworkNodeInfrastructureService {
         contentType,
       };
     } catch (error: any) {
-      await client.deleteFile(targetFileName).catch(() => {});
-      throw error;
+      if (targetFileName) {
+        await client.deleteFile(targetFileName).catch(() => {});
+      }
+
+      // Bug real confirmado en producción (2026-11-07): el cliente REST de
+      // RouterOS (createBackup/exportConfig/readFileChunks) lanza un `Error`
+      // plano con el motivo real (describeError(): status+cuerpo real del
+      // router, timeout, o "sin respuesta"). Sin un filtro de excepciones
+      // global en el proyecto, Nest convertía ESE Error en un 500 genérico
+      // sin ningún mensaje -- el motivo real nunca llegaba al navegador. Se
+      // traduce aquí a una excepción con el mensaje real, igual que ya hace
+      // getInterfaces() con GatewayTimeoutException.
+      const reason = error?.message || 'Error desconocido generando el respaldo.';
+      await this.deviceOperationLogger.logEvent({
+        nodeId: node.id,
+        eventType: 'COMMAND',
+        status: 'FAILURE',
+        message: `Error generando respaldo ${options.type} en "${node.name}": ${reason}`,
+        actorUserId,
+        rawDetails: { operation: 'generateAndDownloadBackup', type: options.type },
+      });
+      throw new BadGatewayException(
+        `El router "${node.name}" rechazó la generación del respaldo ${options.type}: ${reason}`,
+      );
     }
   }
 
