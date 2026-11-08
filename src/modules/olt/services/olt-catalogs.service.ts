@@ -839,9 +839,10 @@ export class OltCatalogsService {
       return { oltId, vendor: olt.vendor, source: 'UNAVAILABLE', onuTypes: [], reason: err.message || 'La OLT rechazó la consulta de tipos de ONU reales.' };
     }
 
-    // "ALL" es la entrada wildcard/por defecto de fábrica de este firmware --
-    // nunca corresponde a un modelo de ONU real que se pueda autorizar.
-    const real = discovered.filter((t) => t.name.toUpperCase() !== 'ALL');
+    // Se incluyen todos los tipos confirmados por la OLT, incluido el perfil
+    // universal "ALL" nativo de ZTE C320 (utilizado frecuentemente para ONUs
+    // de terceros o aprovisionamiento genérico GPON).
+    const real = discovered;
     const registered = await Promise.all(real.map((t) => this.findOrCreateOnuTypeFromDiscovered(t)));
     const filtered = ponType
       ? registered.filter((t) => (t.ponType || '').toUpperCase() === ponType.toUpperCase())
@@ -851,7 +852,7 @@ export class OltCatalogsService {
     const emptyReason = !hasTypes
       ? ponType
         ? `Esta OLT no tiene tipos de ONU configurados para tecnología ${ponType}.`
-        : 'La OLT no tiene tipos de ONU configurados (distintos de ALL).'
+        : 'La OLT no tiene tipos de ONU configurados.'
       : undefined;
 
     return {
@@ -863,8 +864,11 @@ export class OltCatalogsService {
     };
   }
 
-  /** Deriva vendor/model a partir del nombre real del onu-type (ej. "ZTE-F622" -> vendor "ZTE", model "F622"). Sin guion, el nombre completo se usa como model y el vendor queda "Desconocido". */
+  /** Deriva vendor/model a partir del nombre real del onu-type (ej. "ZTE-F622" -> vendor "ZTE", model "F622"). Sin guion, el nombre completo se usa como model y el vendor queda "Desconocido" o "Genérico" para ALL. */
   private splitDiscoveredOnuTypeName(name: string): { vendor: string; model: string } {
+    if (name.toUpperCase() === 'ALL') {
+      return { vendor: 'Genérico', model: 'ALL' };
+    }
     const dashIndex = name.indexOf('-');
     if (dashIndex <= 0 || dashIndex === name.length - 1) {
       return { vendor: 'Desconocido', model: name };

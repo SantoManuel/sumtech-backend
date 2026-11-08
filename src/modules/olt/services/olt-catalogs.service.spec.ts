@@ -1113,7 +1113,7 @@ describe('OltCatalogsService', () => {
   describe('getOltOnuTypesCatalog -- decisión de negocio (2026-11-07, caso real OLT_AZUA_CENTRO_C300): los tipos para autorizar SOLO pueden venir de la OLT real, nunca del catálogo genérico de Sumtech', () => {
     const mockOlt = { id: 'olt-zte-1', name: 'OLT_Tabara_Abajo', vendor: 'ZTE' };
 
-    it('source LIVE: descubre los tipos reales, excluye "ALL", y los registra automáticamente en net.onu_types sin que el operador haga nada', async () => {
+    it('source LIVE: descubre los tipos reales, incluye el perfil universal "ALL", y los registra automáticamente en net.onu_types sin que el operador haga nada', async () => {
       oltRepo.findOneBy.mockResolvedValue(mockOlt);
       const getOnuTypes = jest.fn().mockResolvedValue([
         { name: 'ALL', ponType: 'gpon', maxTcont: 255 },
@@ -1127,8 +1127,11 @@ describe('OltCatalogsService', () => {
       const catalog = await service.getOltOnuTypesCatalog('olt-zte-1');
 
       expect(catalog.source).toBe('LIVE');
-      expect(catalog.onuTypes.map((t: any) => t.vendorTypeName)).toEqual(['ZTE-F622', 'HUAWEY-HG8546M']);
+      expect(catalog.onuTypes.map((t: any) => t.vendorTypeName)).toEqual(['ALL', 'ZTE-F622', 'HUAWEY-HG8546M']);
       expect(catalog.onuTypes.every((t: any) => t.confirmedOnOlt === true)).toBe(true);
+      expect(onuTypeRepo.create).toHaveBeenCalledWith({
+        vendor: 'Genérico', model: 'ALL', vendorTypeName: 'ALL', ponType: 'GPON', ethPorts: undefined, potsPorts: undefined,
+      });
       expect(onuTypeRepo.create).toHaveBeenCalledWith({
         vendor: 'ZTE', model: 'F622', vendorTypeName: 'ZTE-F622', ponType: 'GPON', ethPorts: 4, potsPorts: 2,
       });
