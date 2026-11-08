@@ -12,6 +12,7 @@ import { OltEntity } from '../entities/olt.entity';
 import { OltDriverRegistry } from '../drivers/olt-driver.registry';
 import { OltConnectionResolverService } from './olt-connection-resolver.service';
 import { DiscoveredOnuType, UnknownOltVendorError } from '../ports/olt-driver.port';
+import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
 import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
 
 import { PlanEntity } from '../../plans/entities/plan.entity';
@@ -604,29 +605,31 @@ export class OltCatalogsService {
     if (driver) {
       const connParams = await this.connectionResolver.resolve(olt).catch(() => null);
       if (connParams) {
-        if (driver.getTcontProfiles) {
-          try {
-            const discoveredTconts = await driver.getTcontProfiles(connParams);
-            tcontProfiles = discoveredTconts.map((t) => ({
-              name: t.name,
-              type: t.type,
-              speedKbps: t.speedKbps,
-            }));
-          } catch {
-            /* best-effort */
+        await withOltTelnetLock(olt.id, async () => {
+          if (driver.getTcontProfiles) {
+            try {
+              const discoveredTconts = await driver.getTcontProfiles(connParams);
+              tcontProfiles = discoveredTconts.map((t) => ({
+                name: t.name,
+                type: t.type,
+                speedKbps: t.speedKbps,
+              }));
+            } catch {
+              /* best-effort */
+            }
           }
-        }
-        if (driver.getTrafficProfiles) {
-          try {
-            const discoveredTraffic = await driver.getTrafficProfiles(connParams);
-            trafficProfiles = discoveredTraffic.map((tr) => ({
-              name: tr.name,
-              downKbps: tr.downKbps,
-            }));
-          } catch {
-            /* best-effort */
+          if (driver.getTrafficProfiles) {
+            try {
+              const discoveredTraffic = await driver.getTrafficProfiles(connParams);
+              trafficProfiles = discoveredTraffic.map((tr) => ({
+                name: tr.name,
+                downKbps: tr.downKbps,
+              }));
+            } catch {
+              /* best-effort */
+            }
           }
-        }
+        });
       }
     }
 
@@ -781,7 +784,8 @@ export class OltCatalogsService {
 
   /**
    * Catálogo de Tipos de ONU para autorizar en una OLT específica --
-   * decisión de negocio (2026-11-07, tras el caso real de
+   * dec
+   * isión de negocio (2026-11-07, tras el caso real de
    * `OLT_AZUA_CENTRO_C300`: una ONU Huawei solo podía elegir un tipo ZTE
    * genérico del catálogo, con riesgo real de aplicar límites OMCI
    * incorrectos): los tipos ofrecidos para autorizar SOLO pueden ser los que
@@ -830,7 +834,7 @@ export class OltCatalogsService {
 
     let discovered: DiscoveredOnuType[];
     try {
-      discovered = await driver.getOnuTypes(connParams);
+      discovered = await withOltTelnetLock(olt.id, () => driver.getOnuTypes!(connParams));
     } catch (err: any) {
       return { oltId, vendor: olt.vendor, source: 'UNAVAILABLE', onuTypes: [], reason: err.message || 'La OLT rechazó la consulta de tipos de ONU reales.' };
     }
@@ -840,14 +844,22 @@ export class OltCatalogsService {
     const real = discovered.filter((t) => t.name.toUpperCase() !== 'ALL');
     const registered = await Promise.all(real.map((t) => this.findOrCreateOnuTypeFromDiscovered(t)));
     const filtered = ponType
-      ? registered.filter((t) => t.ponType.toUpperCase() === ponType.toUpperCase())
+      ? registered.filter((t) => (t.ponType || '').toUpperCase() === ponType.toUpperCase())
       : registered;
+
+    const hasTypes = filtered.length > 0;
+    const emptyReason = !hasTypes
+      ? ponType
+        ? `Esta OLT no tiene tipos de ONU configurados para tecnología ${ponType}.`
+        : 'La OLT no tiene tipos de ONU configurados (distintos de ALL).'
+      : undefined;
 
     return {
       oltId,
       vendor: olt.vendor,
-      source: 'LIVE',
+      source: hasTypes ? 'LIVE' : 'UNAVAILABLE',
       onuTypes: filtered.map((t) => ({ ...t, confirmedOnOlt: true as const })),
+      reason: emptyReason,
     };
   }
 

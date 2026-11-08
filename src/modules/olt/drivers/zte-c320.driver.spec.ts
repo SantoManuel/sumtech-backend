@@ -1278,6 +1278,16 @@ Profile name  :SMARTOLT-VOIPMNG-10M
       expect(parsed).toHaveLength(28);
     });
 
+    it('parseOnuTypesFromOutput parsea los 28 tipos incluso cuando executeCommand eliminó las líneas en blanco', () => {
+      const cleanLines = REAL_ONU_TYPE_OUTPUT.split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !l.includes('show onu-type') && !l.endsWith('#'));
+      const parsed = driver.parseOnuTypesFromOutput(cleanLines.join('\n'));
+      expect(parsed).toHaveLength(28);
+      const f601 = parsed.find((t) => t.name === 'ZTE-F601');
+      expect(f601).toEqual({ name: 'ZTE-F601', ponType: 'gpon', description: '1ETH', maxTcont: 8, maxVeip: 0, speed: undefined });
+    });
+
     it('parsea un bloque GPON con Max T-CONT y Max VEIP (sufijo "(default: 1 VEIP)" cuando vale 0)', () => {
       const parsed = driver.parseOnuTypesFromOutput(REAL_ONU_TYPE_OUTPUT);
       const all = parsed.find((t) => t.name === 'ALL');

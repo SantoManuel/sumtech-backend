@@ -302,7 +302,9 @@ export function parseTrafficProfilesFromOutput(output: string): DiscoveredTraffi
  */
 export function parseOnuTypesFromOutput(output: string): DiscoveredOnuType[] {
   const types: DiscoveredOnuType[] = [];
-  const blocks = output.split(/\r?\n\s*\r?\n/);
+  // Segmentación por lookahead de "ONU type name:": robusto ante salidas con líneas
+  // en blanco (fixture crudo) o saneadas por Telnet sin líneas vacías (executeCommand).
+  const blocks = output.split(/(?=ONU type name:)/i).filter((b) => /ONU type name:/i.test(b));
   for (const block of blocks) {
     const nameMatch = block.match(/ONU type name:\s*(\S+)/i);
     if (!nameMatch) continue;
