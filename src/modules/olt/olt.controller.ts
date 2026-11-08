@@ -365,18 +365,17 @@ export class OltController {
     return this.catalogsService.deleteOnuType(id);
   }
 
-  /** Catálogo de Tipos de ONU para una OLT específica, marcando cuáles ya existen realmente en ella. */
+  /**
+   * Tipos de ONU que SE PUEDEN AUTORIZAR en esta OLT específica -- decisión
+   * de negocio (2026-11-07): solo lo que `getOnuTypes` confirma real en la
+   * OLT física, nunca el catálogo genérico de Sumtech (ver
+   * OltCatalogsService.getOltOnuTypesCatalog). Usar esto en
+   * OnuAuthorizeModal, NO `GET /olt/onu-types`.
+   */
   @Get('olts/:oltId/onu-types-catalog')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
   async getOltOnuTypesCatalog(@Param('oltId') oltId: string, @Query('ponType') ponType?: string) {
     return this.catalogsService.getOltOnuTypesCatalog(oltId, ponType);
-  }
-
-  /** Da de alta en el catálogo un tipo de ONU real descubierto por /onu-types-catalog (campo uncatalogedDiscovered) -- no escribe nada en la OLT, ya existía. */
-  @Post('onu-types/import-discovered')
-  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
-  async importDiscoveredOnuType(@Body() body: { name: string; ponType: 'gpon' | 'epon'; description?: string }) {
-    return this.catalogsService.importDiscoveredOnuType(body);
   }
 
   /**

@@ -780,20 +780,32 @@ export class OltCatalogsService {
   }
 
   /**
-   * Catálogo de Tipos de ONU para una OLT específica: devuelve el catálogo
-   * global (`net.onu_types`, mismo filtro de `ponType`/activos que
-   * `findAllOnuTypes`) marcando cada uno con `confirmedOnOlt` según lo que
-   * `getOnuTypes` descubra en vivo en ESA OLT física (comparando por
-   * `vendorTypeName`, el nombre real del objeto en la OLT). Mismo patrón de
-   * "mejor esfuerzo" que `getOltProfilesCatalog`: si la OLT no responde o el
-   * fabricante no soporta descubrimiento, `confirmedOnOlt` queda `false` en
-   * todos (nunca bloquea el modal) y `source` indica 'CATALOG'.
+   * Catálogo de Tipos de ONU para autorizar en una OLT específica --
+   * decisión de negocio (2026-11-07, tras el caso real de
+   * `OLT_AZUA_CENTRO_C300`: una ONU Huawei solo podía elegir un tipo ZTE
+   * genérico del catálogo, con riesgo real de aplicar límites OMCI
+   * incorrectos): los tipos ofrecidos para autorizar SOLO pueden ser los que
+   * `getOnuTypes` confirma que existen REALMENTE en esa OLT física --
+   * `net.onu_types` deja de ser una fuente de opciones, pasa a ser solo el
+   * almacén interno que le da un ID estable a cada tipo real (lo exige
+   * `buildAuthorizeParams`, que resuelve `onuTypeId` como FK). Cada tipo real
+   * se registra ahí automáticamente (mismo nombre/puertos que ya traía
+   * `importDiscoveredOnuType`), sin ningún paso manual del operador.
+   *
+   * Si la OLT no responde o el fabricante no soporta descubrimiento,
+   * `source` queda 'UNAVAILABLE' y `onuTypes` vacío -- a propósito NO cae a
+   * ningún catálogo genérico: mostrar un tipo "por si acaso" es exactamente
+   * el error que esta decisión busca evitar.
    */
-  async getOltOnuTypesCatalog(oltId: string, ponType?: string) {
+  async getOltOnuTypesCatalog(oltId: string, ponType?: string): Promise<{
+    oltId: string;
+    vendor: string;
+    source: 'LIVE' | 'UNAVAILABLE';
+    onuTypes: Array<OnuTypeEntity & { confirmedOnOlt: true }>;
+    reason?: string;
+  }> {
     const olt = await this.oltRepository.findOneBy({ id: oltId });
     if (!olt) throw new NotFoundException('OLT no encontrada.');
-
-    const catalogTypes = await this.findAllOnuTypes(ponType, false);
 
     let driver;
     try {
@@ -801,51 +813,41 @@ export class OltCatalogsService {
     } catch {
       driver = null;
     }
-
-    let discovered: DiscoveredOnuType[] = [];
-    if (driver?.getOnuTypes) {
-      const connParams = await this.connectionResolver.resolve(olt).catch(() => null);
-      if (connParams) {
-        try {
-          discovered = await driver.getOnuTypes(connParams);
-        } catch {
-          /* best-effort */
-        }
-      }
+    if (!driver?.getOnuTypes) {
+      return {
+        oltId,
+        vendor: olt.vendor,
+        source: 'UNAVAILABLE',
+        onuTypes: [],
+        reason: `El fabricante "${olt.vendor}" todavía no soporta descubrir los tipos de ONU reales de esta OLT.`,
+      };
     }
 
-    const confirmedNames = new Set(discovered.map((t) => t.name.toUpperCase()));
-    const source: 'LIVE' | 'CATALOG' = discovered.length > 0 ? 'LIVE' : 'CATALOG';
+    const connParams = await this.connectionResolver.resolve(olt).catch(() => null);
+    if (!connParams) {
+      return { oltId, vendor: olt.vendor, source: 'UNAVAILABLE', onuTypes: [], reason: 'No se pudo conectar a la OLT para consultar sus tipos de ONU reales.' };
+    }
 
-    const onuTypes = catalogTypes.map((t) => ({
-      ...t,
-      confirmedOnOlt: Boolean(t.vendorTypeName) && confirmedNames.has(t.vendorTypeName.toUpperCase()),
-    }));
+    let discovered: DiscoveredOnuType[];
+    try {
+      discovered = await driver.getOnuTypes(connParams);
+    } catch (err: any) {
+      return { oltId, vendor: olt.vendor, source: 'UNAVAILABLE', onuTypes: [], reason: err.message || 'La OLT rechazó la consulta de tipos de ONU reales.' };
+    }
 
-    // Tipos REALES de la OLT que NO existen todavía en el catálogo de
-    // Sumtech -- bug real confirmado (2026-11-07): sin esto, el modal de
-    // autorización solo podía ofrecer los 4 modelos del seed genérico
-    // (ZTE-F660, ZTE-F670L, HW-HG8245H, VSOL-V2801SG), nunca los 28 tipos
-    // reales que esta OLT ya tiene configurados (ZTE-F622, HUAWEY-HG8546M,
-    // etc.) -- el usuario reportó "no veo los tipos de onu" porque
-    // `confirmedOnOlt` solo anotaba el catálogo existente, nunca agregaba lo
-    // que faltaba. "ALL" se excluye a propósito: es la entrada "wildcard"/por
-    // defecto de fábrica de este firmware, no corresponde a ningún modelo de
-    // ONU real que se pueda autorizar.
-    const catalogNames = new Set(
-      catalogTypes.map((t) => t.vendorTypeName).filter(Boolean).map((n) => n!.toUpperCase()),
-    );
-    const uncatalogedDiscovered = discovered.filter(
-      (t) => t.name.toUpperCase() !== 'ALL' && !catalogNames.has(t.name.toUpperCase()),
-    );
+    // "ALL" es la entrada wildcard/por defecto de fábrica de este firmware --
+    // nunca corresponde a un modelo de ONU real que se pueda autorizar.
+    const real = discovered.filter((t) => t.name.toUpperCase() !== 'ALL');
+    const registered = await Promise.all(real.map((t) => this.findOrCreateOnuTypeFromDiscovered(t)));
+    const filtered = ponType
+      ? registered.filter((t) => t.ponType.toUpperCase() === ponType.toUpperCase())
+      : registered;
 
     return {
       oltId,
       vendor: olt.vendor,
-      source,
-      onuTypes,
-      discovered,
-      uncatalogedDiscovered,
+      source: 'LIVE',
+      onuTypes: filtered.map((t) => ({ ...t, confirmedOnOlt: true as const })),
     };
   }
 
@@ -876,30 +878,22 @@ export class OltCatalogsService {
   }
 
   /**
-   * Da de alta en el catálogo de Sumtech (`net.onu_types`) un tipo de ONU
-   * descubierto por `getOltOnuTypesCatalog` (campo `uncatalogedDiscovered`)
-   * -- mismo patrón que `importDiscoveredSpeedProfile` para perfiles TCONT:
-   * no escribe nada en la OLT, el onu-type YA existe ahí (por eso se
-   * descubrió); solo lo registra en Sumtech para que tenga un ID
-   * seleccionable en el modal de autorización.
+   * Da de alta (o reutiliza si ya existe) en `net.onu_types` el registro
+   * interno de un tipo de ONU que la OLT acaba de confirmar como real --
+   * nunca escribe nada en la OLT, el onu-type YA existe ahí. A diferencia de
+   * `createOnuType` (alta manual desde el catálogo administrativo), esto es
+   * "find or create" silencioso: se llama en cada carga de
+   * `getOltOnuTypesCatalog`, así que nunca debe lanzar por duplicado.
    */
-  async importDiscoveredOnuType(discovered: {
-    name: string;
-    ponType: 'gpon' | 'epon';
-    description?: string;
-  }): Promise<OnuTypeEntity> {
-    if (discovered.name.toUpperCase() === 'ALL') {
-      throw new BadRequestException('"ALL" es la entrada por defecto de fábrica de la OLT, no un modelo de ONU real -- no se puede importar.');
-    }
+  private async findOrCreateOnuTypeFromDiscovered(discovered: DiscoveredOnuType): Promise<OnuTypeEntity> {
     const existingByVendorTypeName = await this.onuTypeRepository.findOneBy({ vendorTypeName: discovered.name });
-    if (existingByVendorTypeName) {
-      throw new ConflictException(`El tipo de ONU "${discovered.name}" ya está registrado en el catálogo.`);
-    }
+    if (existingByVendorTypeName) return existingByVendorTypeName;
 
     const { vendor, model } = this.splitDiscoveredOnuTypeName(discovered.name);
-    await this.assertOnuTypeNotDuplicate(vendor, model);
-    const { ethPorts, potsPorts } = this.parsePortsFromOnuTypeDescription(discovered.description);
+    const existingByVendorModel = await this.onuTypeRepository.findOneBy({ vendor, model });
+    if (existingByVendorModel) return existingByVendorModel;
 
+    const { ethPorts, potsPorts } = this.parsePortsFromOnuTypeDescription(discovered.description);
     const onuType = this.onuTypeRepository.create({
       vendor,
       model,

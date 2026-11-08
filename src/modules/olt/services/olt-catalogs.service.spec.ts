@@ -1110,75 +1110,103 @@ describe('OltCatalogsService', () => {
     });
   });
 
-  describe('getOltOnuTypesCatalog / importDiscoveredOnuType -- bug real confirmado (2026-11-07): el modal solo podía ofrecer los 4 modelos del seed genérico, nunca los tipos reales ya configurados en la OLT física', () => {
+  describe('getOltOnuTypesCatalog -- decisión de negocio (2026-11-07, caso real OLT_AZUA_CENTRO_C300): los tipos para autorizar SOLO pueden venir de la OLT real, nunca del catálogo genérico de Sumtech', () => {
     const mockOlt = { id: 'olt-zte-1', name: 'OLT_Tabara_Abajo', vendor: 'ZTE' };
-    const seededCatalog = [{ id: 'type-seed-1', vendor: 'ZTE', model: 'F660', vendorTypeName: 'ZTE-F660', ponType: 'GPON' }];
 
-    it('marca confirmedOnOlt en el catálogo existente y expone uncatalogedDiscovered con lo que falta registrar (excluyendo "ALL")', async () => {
+    it('source LIVE: descubre los tipos reales, excluye "ALL", y los registra automáticamente en net.onu_types sin que el operador haga nada', async () => {
       oltRepo.findOneBy.mockResolvedValue(mockOlt);
       const getOnuTypes = jest.fn().mockResolvedValue([
         { name: 'ALL', ponType: 'gpon', maxTcont: 255 },
-        { name: 'ZTE-F660', ponType: 'gpon', description: '4ETH' },
         { name: 'ZTE-F622', ponType: 'gpon', description: '4ETH, 2POTS' },
         { name: 'HUAWEY-HG8546M', ponType: 'gpon', description: '4ETH,1POTS' },
       ]);
       driverRegistry.resolve.mockReturnValue({ getOnuTypes });
       connectionResolver.resolve.mockResolvedValue({ host: '10.0.0.1' });
-      onuTypeRepo.find.mockResolvedValue(seededCatalog);
+      onuTypeRepo.findOneBy.mockResolvedValue(null); // ninguno existe todavía en net.onu_types
 
       const catalog = await service.getOltOnuTypesCatalog('olt-zte-1');
 
       expect(catalog.source).toBe('LIVE');
-      expect(catalog.onuTypes).toEqual([{ ...seededCatalog[0], confirmedOnOlt: true }]);
-      expect(catalog.uncatalogedDiscovered.map((t: any) => t.name)).toEqual(['ZTE-F622', 'HUAWEY-HG8546M']);
-      expect(catalog.uncatalogedDiscovered.some((t: any) => t.name === 'ALL')).toBe(false);
+      expect(catalog.onuTypes.map((t: any) => t.vendorTypeName)).toEqual(['ZTE-F622', 'HUAWEY-HG8546M']);
+      expect(catalog.onuTypes.every((t: any) => t.confirmedOnOlt === true)).toBe(true);
+      expect(onuTypeRepo.create).toHaveBeenCalledWith({
+        vendor: 'ZTE', model: 'F622', vendorTypeName: 'ZTE-F622', ponType: 'GPON', ethPorts: 4, potsPorts: 2,
+      });
+      expect(onuTypeRepo.create).toHaveBeenCalledWith({
+        vendor: 'HUAWEY', model: 'HG8546M', vendorTypeName: 'HUAWEY-HG8546M', ponType: 'GPON', ethPorts: 4, potsPorts: 1,
+      });
     });
 
-    it('source queda CATALOG y confirmedOnOlt en false si la OLT no responde o el fabricante no soporta descubrimiento', async () => {
+    it('reutiliza el registro existente por vendorTypeName en vez de duplicarlo cuando ya fue registrado en una consulta anterior', async () => {
       oltRepo.findOneBy.mockResolvedValue(mockOlt);
-      driverRegistry.resolve.mockReturnValue({});
-      onuTypeRepo.find.mockResolvedValue(seededCatalog);
+      const getOnuTypes = jest.fn().mockResolvedValue([{ name: 'ZTE-F622', ponType: 'gpon', description: '4ETH, 2POTS' }]);
+      driverRegistry.resolve.mockReturnValue({ getOnuTypes });
+      connectionResolver.resolve.mockResolvedValue({ host: '10.0.0.1' });
+      const existing = { id: 'type-existing', vendor: 'ZTE', model: 'F622', vendorTypeName: 'ZTE-F622', ponType: 'GPON' };
+      onuTypeRepo.findOneBy.mockResolvedValue(existing);
 
       const catalog = await service.getOltOnuTypesCatalog('olt-zte-1');
 
-      expect(catalog.source).toBe('CATALOG');
-      expect(catalog.onuTypes[0].confirmedOnOlt).toBe(false);
-      expect(catalog.uncatalogedDiscovered).toEqual([]);
-    });
-
-    it('importDiscoveredOnuType deriva vendor/model del nombre real y los puertos de la Description', async () => {
-      onuTypeRepo.findOneBy.mockResolvedValue(null); // ni por vendorTypeName ni por vendor+model
-
-      const created = await service.importDiscoveredOnuType({
-        name: 'ZTE-F622',
-        ponType: 'gpon',
-        description: '4ETH, 2POTS',
-      });
-
-      expect(onuTypeRepo.create).toHaveBeenCalledWith({
-        vendor: 'ZTE',
-        model: 'F622',
-        vendorTypeName: 'ZTE-F622',
-        ponType: 'GPON',
-        ethPorts: 4,
-        potsPorts: 2,
-      });
-      expect(created).toMatchObject({ vendorTypeName: 'ZTE-F622' });
-    });
-
-    it('importDiscoveredOnuType rechaza "ALL" -- no es un modelo real, es el wildcard de fábrica', async () => {
-      await expect(
-        service.importDiscoveredOnuType({ name: 'ALL', ponType: 'gpon' }),
-      ).rejects.toThrow(BadRequestException);
+      expect(catalog.onuTypes).toEqual([{ ...existing, confirmedOnOlt: true }]);
       expect(onuTypeRepo.create).not.toHaveBeenCalled();
     });
 
-    it('importDiscoveredOnuType rechaza un nombre ya registrado en el catálogo (vendorTypeName duplicado)', async () => {
-      onuTypeRepo.findOneBy.mockResolvedValueOnce(seededCatalog[0]);
+    it('filtra por ponType cuando se solicita (EPON vs GPON mezclados en la misma OLT)', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      const getOnuTypes = jest.fn().mockResolvedValue([
+        { name: 'ZTE-F622', ponType: 'gpon', description: '4ETH, 2POTS' },
+        { name: 'ZTE-D400', ponType: 'epon', description: '4FE' },
+      ]);
+      driverRegistry.resolve.mockReturnValue({ getOnuTypes });
+      connectionResolver.resolve.mockResolvedValue({ host: '10.0.0.1' });
+      onuTypeRepo.findOneBy.mockImplementation(({ vendorTypeName, vendor, model }: any) =>
+        Promise.resolve(
+          vendorTypeName === 'ZTE-F622' || (vendor === 'ZTE' && model === 'F622')
+            ? { id: 'type-gpon', vendor: 'ZTE', model: 'F622', vendorTypeName: 'ZTE-F622', ponType: 'GPON' }
+            : vendorTypeName === 'ZTE-D400' || (vendor === 'ZTE' && model === 'D400')
+            ? { id: 'type-epon', vendor: 'ZTE', model: 'D400', vendorTypeName: 'ZTE-D400', ponType: 'EPON' }
+            : null,
+        ),
+      );
 
-      await expect(
-        service.importDiscoveredOnuType({ name: 'ZTE-F660', ponType: 'gpon' }),
-      ).rejects.toThrow('ya está registrado en el catálogo');
+      const catalog = await service.getOltOnuTypesCatalog('olt-zte-1', 'GPON');
+
+      expect(catalog.onuTypes.map((t: any) => t.vendorTypeName)).toEqual(['ZTE-F622']);
+    });
+
+    it('source UNAVAILABLE con lista vacía (nunca cae al catálogo genérico) si el fabricante no soporta descubrimiento', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      driverRegistry.resolve.mockReturnValue({}); // sin getOnuTypes
+
+      const catalog = await service.getOltOnuTypesCatalog('olt-zte-1');
+
+      expect(catalog.source).toBe('UNAVAILABLE');
+      expect(catalog.onuTypes).toEqual([]);
+      expect(catalog.reason).toMatch(/no soporta descubrir/i);
+    });
+
+    it('source UNAVAILABLE si no se pudo resolver la conexión a la OLT', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      driverRegistry.resolve.mockReturnValue({ getOnuTypes: jest.fn() });
+      connectionResolver.resolve.mockRejectedValue(new Error('timeout'));
+
+      const catalog = await service.getOltOnuTypesCatalog('olt-zte-1');
+
+      expect(catalog.source).toBe('UNAVAILABLE');
+      expect(catalog.onuTypes).toEqual([]);
+    });
+
+    it('source UNAVAILABLE si la OLT rechaza el comando "show onu-type"', async () => {
+      oltRepo.findOneBy.mockResolvedValue(mockOlt);
+      const getOnuTypes = jest.fn().mockRejectedValue(new Error('%Error 20201: comando no soportado'));
+      driverRegistry.resolve.mockReturnValue({ getOnuTypes });
+      connectionResolver.resolve.mockResolvedValue({ host: '10.0.0.1' });
+
+      const catalog = await service.getOltOnuTypesCatalog('olt-zte-1');
+
+      expect(catalog.source).toBe('UNAVAILABLE');
+      expect(catalog.onuTypes).toEqual([]);
+      expect(catalog.reason).toContain('%Error 20201');
     });
   });
 });
