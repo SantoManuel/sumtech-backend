@@ -76,8 +76,7 @@ describe('ZTE WAN service recipe supplied for Internet PPPoE', () => {
   const lines = [
     'wan 3 ethuni 1-4 ssid 1-4 service internet',
     'wan 3 service internet host 1 pppoe',
-    'pppoe 1 user cliente@example password private-123!',
-    'pppoe 1 nat enable',
+    'pppoe 1 nat enable user cliente@example password private-123!',
     'vlan wan 3 mode tag vlan 400',
   ];
   const dump = (commands: string[]) => `pon-onu-mng ${input.onuInterface}\n ${commands.join('\n ')}\n!`;
@@ -85,14 +84,14 @@ describe('ZTE WAN service recipe supplied for Internet PPPoE', () => {
     let reads = 0;
     return { executeCommand: jest.fn(async command => {
       if (command.startsWith('show gpon onu detail-info')) return detail;
-      if (command === 'show running-config') return reads++ ? after : dump([]);
+      if (command === 'show running-config' || command.startsWith('show onu running config')) return reads++ ? after : dump([]);
       return '';
     }) } as any;
   };
 
-  it('generates bindings, host, credentials, NAT and VLAN as five separate commands', () => {
+  it('generates bindings, host, credentials, NAT and VLAN with pppoe nat enable in one command (ZTE C320/C300)', () => {
     expect(buildZteWanCommands(serviceInput)).toEqual(lines);
-    expect(buildZteWanCommands(serviceInput).find(c => c.includes(' password '))).not.toContain(' nat enable');
+    expect(buildZteWanCommands(serviceInput).find(c => c.includes(' password '))).toContain(' nat enable');
   });
 
   it('sends standard command options without a lab registration or declared firmware', async () => {
@@ -104,7 +103,7 @@ describe('ZTE WAN service recipe supplied for Internet PPPoE', () => {
   it('uses the configured VLAN, WAN index and PPP host instead of hardcoded example values', () => {
     expect(buildZteWanCommands({ ...serviceInput, profile: { ...serviceInput.profile, serviceVlan: 410, wanIndex: 4, hostId: 3, ethUniPorts: '1-2', ssidPorts: '2' } })).toEqual([
       'wan 4 ethuni 1-2 ssid 2 service internet', 'wan 4 service internet host 3 pppoe',
-      'pppoe 3 user cliente@example password private-123!', 'pppoe 3 nat enable', 'vlan wan 4 mode tag vlan 410',
+      'pppoe 3 nat enable user cliente@example password private-123!', 'vlan wan 4 mode tag vlan 410',
     ]);
   });
 
@@ -114,7 +113,7 @@ describe('ZTE WAN service recipe supplied for Internet PPPoE', () => {
     expect(result.status).toBe('APPLIED');
     const commands = session.executeCommand.mock.calls.map(c => c[0]);
     const start = commands.indexOf('configure terminal');
-    expect(commands.slice(start, start + 9)).toEqual(['configure terminal', `pon-onu-mng ${input.onuInterface}`, ...lines, 'end', 'write']);
+    expect(commands.slice(start, start + 8)).toEqual(['configure terminal', `pon-onu-mng ${input.onuInterface}`, ...lines, 'end', 'write']);
     expect(commands.some(c => /^(wan-ip|no |tr069-mgmt|reboot)/.test(c))).toBe(false);
     expect(commands).not.toContain('show gpon onu profile vlan');
     expect(JSON.stringify(result)).not.toContain(input.password);
@@ -144,6 +143,52 @@ describe('ZTE WAN service recipe supplied for Internet PPPoE', () => {
     expect(result.status).toBe('VERIFYING');
   });
 
+  it('generates DHCP commands for OMCI on ZTE C320/C300', () => {
+    const dhcpInput: ConfigureOnuWanParams = {
+      ...serviceInput,
+      wanMode: 'DHCP',
+      username: undefined,
+      password: undefined,
+    };
+    expect(buildZteWanCommands(dhcpInput)).toEqual([
+      'wan 3 ethuni 1-4 ssid 1-4 service internet',
+      'wan 3 service internet host 1 dhcp',
+      'ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable',
+      'vlan wan 3 mode tag vlan 400',
+    ]);
+  });
+
+  it('generates Static IP commands for OMCI on ZTE C320/C300', () => {
+    const staticInput: ConfigureOnuWanParams = {
+      ...serviceInput,
+      wanMode: 'STATIC',
+      username: undefined,
+      password: undefined,
+      wanStaticIp: '192.168.100.50',
+      wanStaticMask: '255.255.255.0',
+      wanStaticGw: '192.168.100.1',
+    };
+    expect(buildZteWanCommands(staticInput)).toEqual([
+      'wan 3 ethuni 1-4 ssid 1-4 service internet',
+      'wan 3 service internet host 1 static',
+      'ip-host 1 ip 192.168.100.50 mask 255.255.255.0 gateway 192.168.100.1 ping-response enable traceroute-response enable',
+      'vlan wan 3 mode tag vlan 400',
+    ]);
+  });
+
+  it('parses direct commands in pon-onu-mng without full service bindings', () => {
+    const rawDirectPppoe = dump(['pppoe 1 nat enable user tt3 password ttx']);
+    const observedPppoe = parseZteWanConfiguration(rawDirectPppoe, input.onuInterface, 1);
+    expect(observedPppoe.mode).toBe('pppoe');
+    expect(observedPppoe.username).toBe('tt3');
+    expect(observedPppoe.natEnabled).toBe(true);
+
+    const rawDirectDhcp = dump(['ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable']);
+    const observedDhcp = parseZteWanConfiguration(rawDirectDhcp, input.onuInterface, 1);
+    expect(observedDhcp.mode).toBe('dhcp');
+    expect(observedDhcp.dhcpEnabled).toBe(true);
+  });
+
   it.each(['4-1', '0', '1-5', '1\nwrite', '1;end'])('rejects invalid bindings before any CLI write: %s', ports => {
     expect(() => buildZteWanCommands({ ...serviceInput, profile: { ...serviceInput.profile, ethUniPorts: ports } })).toThrow();
   });
@@ -151,11 +196,11 @@ describe('ZTE WAN service recipe supplied for Internet PPPoE', () => {
   it('stops at the first rejected WAN command and does not send the remaining commands', async () => {
     const session = createSession();
     const original = session.executeCommand.getMockImplementation();
-    session.executeCommand.mockImplementation(async command => command === lines[3] ? '%Code 63993 : unknown ME' : original(command));
+    session.executeCommand.mockImplementation(async command => command === lines[2] ? '%Code 63993 : unknown ME' : original(command));
     const result = await configureOnuWanWithSession(session, serviceInput);
     expect(result.status).toBe('UNKNOWN');
     expect(result.warning).toContain('63993');
-    expect(session.executeCommand.mock.calls.map(c => c[0])).not.toContain(lines[4]);
+    expect(session.executeCommand.mock.calls.map(c => c[0])).not.toContain(lines[3]);
   });
 
   it('does not overwrite a PPP host already attached to another WAN', async () => {

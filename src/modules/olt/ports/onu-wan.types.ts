@@ -26,8 +26,12 @@ export interface ConfigureOnuWanParams {
   onuInterface: string;
   serialNumber: string;
   profile: OnuOmciWanProfile;
-  username: string;
-  password: string;
+  wanMode?: 'PPPOE' | 'DHCP' | 'STATIC';
+  username?: string;
+  password?: string;
+  wanStaticIp?: string;
+  wanStaticMask?: string;
+  wanStaticGw?: string;
 }
 
 export interface OnuWanConfiguration {
@@ -42,6 +46,10 @@ export interface OnuWanConfiguration {
   ethUniPorts?: string;
   ssidPorts?: string;
   natEnabled?: boolean;
+  dhcpEnabled?: boolean;
+  staticIp?: string;
+  staticMask?: string;
+  staticGw?: string;
   vlanMode?: string;
   serviceVlan?: number;
   hostBindings?: Array<{ wanIndex: number; hostId: number }>;

@@ -22,7 +22,7 @@ import { OltConnectionResolverService } from './olt-connection-resolver.service'
 import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
 import { matchesZteWanConfiguration, validateOmciWanParams, validateOmciWanProfile } from '../drivers/zte-c320-wan';
 import { redactOltCli } from '../utils/redact-olt-cli';
-import { OnuOmciWanProfile, WanApplyStatus, WanProvisioningMethod } from '../ports/onu-wan.types';
+import { ConfigureOnuWanParams, OnuOmciWanProfile, WanApplyStatus, WanProvisioningMethod } from '../ports/onu-wan.types';
 
 @Injectable()
 export class OnuWanProvisioningService {
@@ -69,14 +69,14 @@ export class OnuWanProvisioningService {
 
   capabilities(onu: OnuEntity) {
     const c = onu.serviceConfig;
-    const zte = onu.olt?.vendor === 'ZTE' && /C320/i.test(onu.olt?.model || '');
+    const zte = onu.olt?.vendor === 'ZTE' && (/C320|C300/i.test(onu.olt?.model || '') || !onu.olt?.model);
     return {
       OMCI: {
         status: zte ? 'SUPPORTED' : 'UNSUPPORTED',
         enabled: zte && c?.operationMode === 'ROUTER',
-        wanModes: ['PPPOE'], ipProtocols: ['IPV4'],
-        reason: !zte ? 'El driver OMCI WAN está disponible para ZTE C320.'
-          : c?.operationMode !== 'ROUTER' ? 'PPPoE se configura en el router externo cuando la ONU está en Bridge.' : null,
+        wanModes: ['PPPOE', 'DHCP', 'STATIC'], ipProtocols: ['IPV4'],
+        reason: !zte ? 'El driver OMCI WAN está disponible para ZTE C320 / C300.'
+          : c?.operationMode !== 'ROUTER' ? 'La WAN se configura en el router externo cuando la ONU está en Bridge.' : null,
       },
       TR069: {
         status: 'SUPPORTED', enabled: c?.operationMode === 'ROUTER' && c?.managementMethod === 'TR069' && !!c.tr069NetworkId,
@@ -147,7 +147,14 @@ export class OnuWanProvisioningService {
           evidence = { ...evidence, configuration: observed };
           // A read cannot prove an unreadable PPP password after a timed-out write.
           const access = onu.contractId ? await this.accesses.findOneBy({ contractId: onu.contractId }) : null;
-          const matches = !!access?.username && matchesZteWanConfiguration(observed, p, access.username) &&
+          const wanMode = config.wanMode || 'PPPOE';
+          const matches = (wanMode !== 'PPPOE' || !!access?.username) &&
+            matchesZteWanConfiguration(observed, p, {
+              wanMode,
+              username: access?.username || undefined,
+              staticIp: config.wanStaticIp || undefined,
+              staticMask: config.wanStaticMask || undefined,
+            }) &&
             observed.serialNumber === onu.serialNumber && (!p.vendorTypeName || observed.vendorTypeName === p.vendorTypeName) &&
             observed.configState?.toLowerCase() === 'success';
           status = ['UNKNOWN','APPLYING'].includes(op.status) ? 'UNKNOWN' : matches ? 'APPLIED' : 'VERIFYING';
@@ -167,7 +174,14 @@ export class OnuWanProvisioningService {
       } catch {
         evidence = { ...evidence, observationError: 'No se pudo consultar el equipo.' };
       }
-      await this.finish(config, op, status, status === 'APPLIED' ? null : status === 'QUEUED' ? 'La tarea sigue en la cola de GenieACS.' : 'Pendiente de confirmar en el equipo. Una lectura no confirma por sí sola la contraseña PPPoE.', evidence);
+      const defaultWarning = op.method === 'OMCI'
+        ? (config.wanMode === 'DHCP'
+            ? 'Pendiente de confirmar DHCP en el equipo.'
+            : config.wanMode === 'STATIC'
+            ? 'Pendiente de confirmar IP Estática en el equipo.'
+            : 'Pendiente de confirmar en el equipo. Una lectura no confirma por sí sola la contraseña PPPoE.')
+        : 'Pendiente de confirmar en el equipo. Una lectura no confirma por sí sola la contraseña PPPoE.';
+      await this.finish(config, op, status, status === 'APPLIED' ? null : status === 'QUEUED' ? 'La tarea sigue en la cola de GenieACS.' : defaultWarning, evidence);
       return this.getOperation(onu.id, op.id);
     });
   }
@@ -247,7 +261,7 @@ export class OnuWanProvisioningService {
       if (!['OMCI','TR069'].includes(method) || !['PPPOE','DHCP','STATIC'].includes(mode) || !['IPV4','IPV6','DUAL'].includes(protocol)) throw new BadRequestException('Método o protocolo WAN inválido.');
       const caps = this.capabilities({ ...onu, serviceConfig: { ...config, serviceVlan: onu.serviceConfig?.serviceVlan } } as OnuEntity);
       if (!caps[method]?.enabled) throw new BadRequestException(caps[method]?.reason || 'Método WAN no disponible.');
-      if (method === 'OMCI' && (mode !== 'PPPOE' || protocol !== 'IPV4')) throw new BadRequestException('OMCI implementa PPPoE IPv4 en esta entrega.');
+      if (method === 'OMCI' && (!['PPPOE', 'DHCP', 'STATIC'].includes(mode) || protocol !== 'IPV4')) throw new BadRequestException('OMCI implementa PPPoE, DHCP y Estática IPv4.');
       const ipv6 = resolveCpeIpv6Capabilities(onu.onuType?.vendor || onu.vendor, onu.onuType?.model).capabilities;
       if (protocol !== 'IPV4' && ((mode === 'DHCP' && !ipv6.dhcpDualStack) || (mode === 'STATIC' && !ipv6.staticIpv6))) throw new BadRequestException('Este equipo no tiene soporte IPv6 confirmado para el modo WAN seleccionado.');
       if (!config.serviceVlanId || !onu.serviceConfig?.serviceVlan?.vlanId) throw new BadRequestException('Falta la VLAN real del servicio.');
@@ -255,10 +269,6 @@ export class OnuWanProvisioningService {
       const username = access?.username || undefined;
       const password = access?.pppoePasswordEnc ? decryptCredential(access.pppoePasswordEnc) : undefined;
       if (mode === 'PPPOE' && (!username || !password)) throw new BadRequestException('El contrato necesita usuario y contraseña PPPoE propios guardados.');
-      const iface = this.onuInterface(onu);
-      const effectiveProfile = method === 'OMCI' ? this.resolveOmciProfile(onu, config) : null;
-      const omciInput = effectiveProfile ? { onuInterface: iface, serialNumber: onu.serialNumber, profile: effectiveProfile, username: username!, password: password! } : null;
-      if (omciInput) validateOmciWanParams(omciInput);
 
       const desired = {
         wanMode: mode, ipProtocol: protocol,
@@ -272,6 +282,21 @@ export class OnuWanProvisioningService {
       if (mode === 'STATIC' && (!desired.wanStaticIp || !desired.wanStaticMask || !desired.wanStaticGw)) throw new BadRequestException('Faltan IP, máscara y gateway estáticos.');
       if (mode === 'STATIC' && [desired.wanStaticIp, desired.wanStaticMask, desired.wanStaticGw].some(v => isIP(v || '') !== 4)) throw new BadRequestException('Dirección IPv4 estática inválida.');
       if (mode === 'STATIC' && protocol !== 'IPV4' && (isIP(desired.wanStaticIpv6 || '') !== 6 || isIP(desired.wanStaticIpv6Gw || '') !== 6 || !desired.wanStaticIpv6PrefixLen)) throw new BadRequestException('Faltan parámetros IPv6 estáticos válidos.');
+
+      const iface = this.onuInterface(onu);
+      const effectiveProfile = method === 'OMCI' ? this.resolveOmciProfile(onu, config) : null;
+      const omciInput: ConfigureOnuWanParams | null = effectiveProfile ? {
+        onuInterface: iface,
+        serialNumber: onu.serialNumber,
+        profile: effectiveProfile,
+        wanMode: mode,
+        username,
+        password,
+        wanStaticIp: desired.wanStaticIp || undefined,
+        wanStaticMask: desired.wanStaticMask || undefined,
+        wanStaticGw: desired.wanStaticGw || undefined,
+      } : null;
+      if (omciInput) validateOmciWanParams(omciInput);
       const fingerprint = createHash('sha256').update(JSON.stringify({ desired, method, serial: onu.serialNumber, profile: effectiveProfile, credential: access?.pppoePasswordEnc, username })).digest('hex');
       const prior = await this.operations.createQueryBuilder('op').addSelect('op.requestFingerprint')
         .where('op.onuId = :id AND op.version >= 0', { id: onu.id }).orderBy('op.version', 'DESC').getOne();

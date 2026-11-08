@@ -107,8 +107,7 @@ describe('OnuWanProvisioningService', () => {
 
   it.each([
     ['Bridge', c => c.operationMode = 'BRIDGE', { provisioningMethod: 'OMCI' }],
-    ['missing credentials', (_c, accesses) => accesses.findOneBy.mockResolvedValue(null), { provisioningMethod: 'OMCI' }],
-    ['DHCP over OMCI', () => {}, { provisioningMethod: 'OMCI', wanMode: 'DHCP' }],
+    ['missing credentials for PPPoE', (_c, accesses) => accesses.findOneBy.mockResolvedValue(null), { provisioningMethod: 'OMCI', wanMode: 'PPPOE' }],
     ['Dual-Stack over OMCI', () => {}, { provisioningMethod: 'OMCI', ipProtocol: 'DUAL' }],
     ['stale version', () => {}, { provisioningMethod: 'OMCI', expectedVersion: 99 }],
   ])('rejects %s before any device writes', async (_name, mutate, dto) => {
@@ -116,6 +115,14 @@ describe('OnuWanProvisioningService', () => {
     await expect(service.configure(onu, dto as any)).rejects.toThrow();
     expect(driver.configureOnuWan).not.toHaveBeenCalled(); expect(cpe.configureCpe).not.toHaveBeenCalled();
     expect(operations.save).not.toHaveBeenCalled();
+  });
+
+  it('configures DHCP over OMCI without requiring PPPoE credentials', async () => {
+    accesses.findOneBy.mockResolvedValue(null);
+    driver.configureOnuWan.mockResolvedValue({ status: 'APPLIED', configuration: { wanIndex: 1, mode: 'dhcp', dhcpEnabled: true, evidence: 'ip-host 1 dhcp-enable' } });
+    const op = await service.configure(onu, { provisioningMethod: 'OMCI', wanMode: 'DHCP' });
+    expect(op.status).toBe('APPLIED');
+    expect(driver.configureOnuWan).toHaveBeenCalledWith({}, expect.objectContaining({ wanMode: 'DHCP' }));
   });
 
   it('does not hand ownership to OMCI while an ACS task is pending', async () => {
