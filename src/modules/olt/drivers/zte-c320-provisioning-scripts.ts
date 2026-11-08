@@ -44,11 +44,14 @@ export function buildTr069IpHostCommands(config: AuthorizeOnuParams): string[] {
 }
 
 
-export function buildDhcpIpEthuniCommands(config: AuthorizeOnuParams): string[] {
-  if (config.ethuniDhcpDelegationSupported === false) {
-    return [];
-  }
-  return Array.from({ length: config.ethPorts ?? 4 }, (_, i) => `dhcp-ip ethuni eth_0/${i + 1} from-onu`);
+/**
+ * Eliminado de la plantilla de autorización (2026-11-08):
+ * ONTs de diversos fabricantes (ej. Huawei, Fiberhome o modelos de 1 solo puerto LAN)
+ * rechazan "dhcp-ip ethuni" con "%Code 63993 : unknown ME", lo que deja el "Config state"
+ * en "fail" en la OLT. Se retorna array vacío para no generar estas líneas.
+ */
+export function buildDhcpIpEthuniCommands(_config?: AuthorizeOnuParams): string[] {
+  return [];
 }
 
 

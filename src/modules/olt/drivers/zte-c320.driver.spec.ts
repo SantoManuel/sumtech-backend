@@ -214,7 +214,7 @@ describe('ZteC320Driver', () => {
     expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
   });
 
-  describe('generateAuthorizationScript: "dhcp-ip ethuni ... from-onu" según soporte OMCI del modelo (net.onu_types.supports_ethuni_dhcp_delegation)', () => {
+  describe('generateAuthorizationScript: no genera "dhcp-ip ethuni ... from-onu" (eliminado de autorizaciones por incompatibilidad OMCI)', () => {
     const baseConfig = {
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
@@ -229,33 +229,23 @@ describe('ZteC320Driver', () => {
       ethPorts: 4,
     };
 
-    it('ethuniDhcpDelegationSupported: false -- omite las 4 líneas "dhcp-ip ethuni ... from-onu" (modelo que las rechaza por OMCI con "%Code 63993 : unknown ME", ej. HUAWEY-BT546XG)', () => {
-      const commands = driver.generateAuthorizationScript({
-        ...baseConfig,
-        ethuniDhcpDelegationSupported: false,
-      });
-      expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
-      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 es necesario
-      // incluso cuando ethuniDhcpDelegationSupported=false -- son comandos ortogonales.
-      expect(commands).toContain('veip 1 port udp 1232 host 2');
-      expect(commands).toContain('tr069-mgmt 1 state unlock');
-    });
-
-    it('ethuniDhcpDelegationSupported: true -- genera las 4 líneas según ethPorts', () => {
-      const commands = driver.generateAuthorizationScript({
+    it('omite siempre las líneas "dhcp-ip ethuni ... from-onu" para evitar rechazos OMCI ("%Code 63993 : unknown ME")', () => {
+      const commandsWithTrue = driver.generateAuthorizationScript({
         ...baseConfig,
         ethuniDhcpDelegationSupported: true,
       });
-      expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
-      expect(commands).toContain('dhcp-ip ethuni eth_0/2 from-onu');
-      expect(commands).toContain('dhcp-ip ethuni eth_0/3 from-onu');
-      expect(commands).toContain('dhcp-ip ethuni eth_0/4 from-onu');
-    });
+      expect(commandsWithTrue.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
+      expect(commandsWithTrue).toContain('veip 1 port udp 1232 host 2');
+      expect(commandsWithTrue).toContain('tr069-mgmt 1 state unlock');
 
-    it('ethuniDhcpDelegationSupported no especificado (undefined) -- default seguro, sigue generando las 4 líneas para no alterar modelos ya confirmados en vivo (ZTE-F660, X2251)', () => {
-      const commands = driver.generateAuthorizationScript(baseConfig);
-      expect(commands).toContain('dhcp-ip ethuni eth_0/1 from-onu');
-      expect(commands).toContain('dhcp-ip ethuni eth_0/4 from-onu');
+      const commandsWithFalse = driver.generateAuthorizationScript({
+        ...baseConfig,
+        ethuniDhcpDelegationSupported: false,
+      });
+      expect(commandsWithFalse.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
+
+      const commandsDefault = driver.generateAuthorizationScript(baseConfig);
+      expect(commandsDefault.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
     });
   });
 
@@ -2151,11 +2141,11 @@ Profile name  :SMARTOLT-VOIPMNG-10M
       expect(executeCommand).not.toHaveBeenCalledWith('write');
     });
 
-    it('tolera rechazo OMCI en "dhcp-ip ethuni" (unknown ME) sin abortar la autorización ni omitir el write', async () => {
+    it('tolera rechazo OMCI en comandos secundarios como "security-mgmt" (unknown ME) sin abortar la autorización ni omitir el write', async () => {
       const executeCommand = jest.fn().mockImplementation((cmd: string) => {
         if (cmd.startsWith('show onu-type gpon')) return Promise.resolve('Onu Type Name :Generico');
         if (cmd === 'show gpon profile traffic') return Promise.resolve('Profile name :SMARTOLT-1G-DOWN\n 1024000 1024000 512 1023');
-        if (cmd.startsWith('dhcp-ip ethuni')) {
+        if (cmd.startsWith('security-mgmt')) {
           return Promise.resolve('\r\n%Code 63993-GPONRM : ONT return error:unknown ME.\r\nOLT#');
         }
         return Promise.resolve('\r\n.[Successful]\r\nOLT#');
@@ -2172,7 +2162,7 @@ Profile name  :SMARTOLT-VOIPMNG-10M
       );
 
       expect(result.ok).toBe(true);
-      expect(result.warning).toContain('dhcp-ip ethuni');
+      expect(result.warning).toContain('security-mgmt');
       expect(executeCommand).toHaveBeenCalledWith('write');
     });
 
