@@ -45,9 +45,11 @@ describe('applyTr069ManagementWithSession -- camino rápido cuando ya está apli
     '  flow 2 pri 2 vlan 444',
     '  gemport 2 flow 2',
     '  switchport-bind switch_0/1 iphost 2',
+    '  switchport-bind switch_0/1 veip 1',
     '  ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
     '  vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard',
     '  vlan-filter iphost 2 pri 2 vlan 444',
+    '  veip 1 port udp 1232 host 2',
     '  tr069-mgmt 1 state unlock',
     '  tr069-mgmt 1 acs http://10.46.69.1:7547',
     '  tr069-mgmt 1 tag pri 2 vlan 444',
@@ -202,8 +204,8 @@ describe('ZteC320Driver.previewTr069Plan -- preview honesto (lee la OLT antes de
     '  gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M', '  service-port 2 vport 2 user-vlan 444 vlan 444', '!'].join('\r\n');
   const managementApplied = [`pon-onu-mng ${onuInterface}`, '  flow 2 switch switch_0/1',
     '  flow mode 2 tag-filter vlan-filter untag-filter discard', '  flow 2 pri 2 vlan 444', '  gemport 2 flow 2',
-    '  switchport-bind switch_0/1 iphost 2', '  ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
-    '  vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard', '  vlan-filter iphost 2 pri 2 vlan 444',
+    '  switchport-bind switch_0/1 iphost 2', '  switchport-bind switch_0/1 veip 1', '  ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable',
+    '  vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard', '  vlan-filter iphost 2 pri 2 vlan 444', '  veip 1 port udp 1232 host 2',
     '  tr069-mgmt 1 state unlock', '  tr069-mgmt 1 acs http://10.46.69.1:7547', '  tr069-mgmt 1 tag pri 2 vlan 444',
     '  security-mgmt 998 state enable mode forward ingress-type lan protocol web https',
     '  security-mgmt 999 state enable ingress-type lan protocol tr069', '!'].join('\r\n');

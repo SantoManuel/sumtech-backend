@@ -173,7 +173,7 @@ describe('ZteC320Driver', () => {
     expect(commands.indexOf('no flow 2 pri 2 vlan 46')).toBeLessThan(commands.indexOf('flow 2 pri 2 vlan 46'));
     expect(commands).toContain('gemport 2 flow 2');
     expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
-    expect(commands).not.toContain('switchport-bind switch_0/1 veip 1');
+    expect(commands).toContain('switchport-bind switch_0/1 veip 1');
     expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
     expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
     expect(commands).toContain('vlan-filter iphost 2 pri 2 vlan 46');
@@ -182,7 +182,7 @@ describe('ZteC320Driver', () => {
     );
     // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 es necesario para
     // que la HG8546M enrute el DHCP de gestión hacia iphost 2.
-    expect(commands).not.toContain('veip 1 port udp 1232 host 2');
+    expect(commands).toContain('veip 1 port udp 1232 host 2');
 
     // CONFIRMADO EN VIVO contra SmartOLT (2026-11-01): solo ip-host 2 tiene dhcp-enable
     const ipHost2Idx = commands.indexOf('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
@@ -235,9 +235,9 @@ describe('ZteC320Driver', () => {
         ethuniDhcpDelegationSupported: false,
       });
       expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
-      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 va en buildTr069ApplicationCommands
-      // y es necesario incluso cuando ethuniDhcpDelegationSupported=false -- son comandos ortogonales.
-      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
+      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 es necesario
+      // incluso cuando ethuniDhcpDelegationSupported=false -- son comandos ortogonales.
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
       expect(commands).toContain('tr069-mgmt 1 state unlock');
     });
 
@@ -283,7 +283,7 @@ describe('ZteC320Driver', () => {
       // El resto del canal de gestión (incluido el registro TR-069) debe
       // seguir generándose igual -- security-mgmt no es parte de esa ruta.
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 siempre se incluye.
-      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
       expect(commands).toContain('tr069-mgmt 1 state unlock');
       expect(commands).toContain(`tr069-mgmt 1 acs ${baseConfig.tr069Url}`);
     });
@@ -406,7 +406,7 @@ describe('ZteC320Driver', () => {
       expect(commands).toContain('switchport-bind switch_0/1 iphost 2');
       // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 también debe vincularse --
       // la HG8546M usa veip 1 port udp 1232 host 2 para enrutar DHCP hacia iphost 2.
-      expect(commands).not.toContain('switchport-bind switch_0/1 veip 1');
+      expect(commands).toContain('switchport-bind switch_0/1 veip 1');
       expect(commands).not.toContain('no switchport-bind switch_0/1 veip 1');
       expect(commands).toContain('ip-host 2 dhcp-enable enable ping-response enable traceroute-response enable');
       expect(commands).toContain('vlan-filter-mode iphost 2 tag-filter vlan-filter untag-filter discard');
@@ -418,9 +418,9 @@ describe('ZteC320Driver', () => {
       );
       // En Etapa 2 NO se envían dhcp-ip ethuni de los puertos LAN (eso es de Etapa 1)
       expect(commands.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
-      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 SÍ va en Etapa 2
-      // (dentro de buildTr069ApplicationCommands). Sin él la ONU no envía DISCOVER en VLAN gestión.
-      expect(commands).not.toContain('veip 1 port udp 1232 host 2');
+      // CONFIRMADO EN VIVO SmartOLT (2026-11-01): veip 1 port udp 1232 host 2 SÍ va en Etapa 2.
+      // Sin él la ONU no envía DISCOVER en VLAN gestión.
+      expect(commands).toContain('veip 1 port udp 1232 host 2');
       expect(commands.some((c) => c.includes('voip protocol sip'))).toBe(false);
       expect(commands).toContain('tr069-mgmt 1 state unlock');
       // "acs <url>" y "tag pri <n> vlan <n>" son DOS comandos separados --
@@ -3987,9 +3987,10 @@ OLT#`);
       // Fase 4 Switchport bind
       const bind1 = commands.indexOf('switchport-bind switch_0/1 iphost 1');
       const bind2 = commands.indexOf('switchport-bind switch_0/1 iphost 2');
+      const bindVeip = commands.indexOf('switchport-bind switch_0/1 veip 1');
       expect(bind1).toBeGreaterThan(f1Gem);
       expect(bind2).toBeGreaterThan(bind1);
-      expect(commands).not.toContain('switchport-bind switch_0/1 veip 1');
+      expect(bindVeip).toBeGreaterThan(bind2);
 
       // Fase 5 IP-Host (solo ip-host 2 tiene dhcp-enable, ip-host 1 no lleva DHCP)
       expect(commands).not.toContain('ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable');

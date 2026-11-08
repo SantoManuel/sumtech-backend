@@ -20,7 +20,10 @@ export function buildTr069FlowCommands(config: AuthorizeOnuParams): string[] {
 
 
 export function buildTr069SwitchportBindCommands(): string[] {
-  return ['switchport-bind switch_0/1 iphost 2'];
+  return [
+    'switchport-bind switch_0/1 iphost 2',
+    'switchport-bind switch_0/1 veip 1',
+  ];
 }
 
 export function buildTr069IpHostEnableCommand(): string[] {
@@ -207,15 +210,25 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
   );
 
   if (hasTr069) {
-    commands.push(...buildTr069FlowCommands(config));
+    // flow 2 switch switch_0/1 — debe ir justo después de flow 1 switch
+    commands.push('flow 2 switch switch_0/1');
+    // flow mode 2 — después de que ambos flows tienen su switch asignado
+    commands.push('flow mode 2 tag-filter vlan-filter untag-filter discard');
+    // no flow 2 pri + flow 2 pri (destroy-and-recreate para limpiar VLAN embebida)
+    commands.push(`no flow 2 pri 2 vlan ${config.tr069Vlan}`);
+    commands.push(`flow 2 pri 2 vlan ${config.tr069Vlan}`);
+    // gemport 2 flow 2 — después de ambos flow pri asignados
+    commands.push('gemport 2 flow 2');
   }
 
   commands.push('switchport-bind switch_0/1 iphost 1');
   if (hasTr069) {
-    commands.push('switchport-bind switch_0/1 iphost 2');
+    // switchport-bind iphost 2 + veip 1 (ambos necesarios antes de ip-host 2)
+    commands.push(...buildTr069SwitchportBindCommands());
   }
 
   if (hasTr069) {
+    // ip-host 2 dhcp-enable (después de los tres switchport-bind)
     commands.push(...buildTr069IpHostEnableCommand());
   }
 
@@ -229,6 +242,13 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
 
   // === FASE 6: Capa de Aplicación (Puertos ETH, VoIP, VEIP, TR-069 y Seguridad) ===
   commands.push(...buildDhcpIpEthuniCommands(config));
+
+  if (hasTr069) {
+    // veip 1 port udp 1232 host 2 — enruta el DISCOVER de gestión hacia iphost 2;
+    // va DESPUÉS de dhcp-ip ethuni pero ANTES de tr069-mgmt (orden confirmado en running-config real).
+    commands.push('veip 1 port udp 1232 host 2');
+  }
+
   commands.push(...buildSecurityMgmtCommands(config));
 
   if (hasTr069) {
@@ -256,12 +276,15 @@ export function generateTr069ManagementScript(config: AuthorizeOnuParams): strin
     'configure terminal',
     `pon-onu-mng ${onuInterface}`,
     // 1. Inicializar Flow 2 en orden jerárquico ZTE GPONRM (flow 2 switch switch_0/1 primero)
+    //    buildTr069FlowCommands ya incluye: flow 2 switch, flow mode 2, no flow 2 pri, flow 2 pri, gemport 2 flow 2
     ...buildTr069FlowCommands(config),
-    // 2. Vincular switch interno a iphost 2 (SOLO iphost 2, SIN veip 1)
+    // 2. Vincular switch interno a iphost 2 Y veip 1 (ambos necesarios para enrutar DHCP de gestión)
     ...buildTr069SwitchportBindCommands(),
     // 3. Configurar IP-Host 2 (DHCP activo) y su filtro de VLAN en orden
     ...buildTr069IpHostCommands(config),
-    // 4. TR-069/ACS + reglas seguridad 998+999 (solo tr069)
+    // 4. veip 1 port udp 1232 host 2 — enruta el DISCOVER de gestión hacia iphost 2
+    'veip 1 port udp 1232 host 2',
+    // 5. TR-069/ACS + reglas seguridad 998+999 (solo tr069)
     ...buildTr069ApplicationCommands(config),
     ...buildTr069SecurityMgmtCommands(config),
     'end',
