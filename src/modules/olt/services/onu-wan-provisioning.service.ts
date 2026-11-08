@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { isIP } from 'net';
@@ -26,6 +26,7 @@ import { ConfigureOnuWanParams, OnuOmciWanProfile, WanApplyStatus, WanProvisioni
 
 @Injectable()
 export class OnuWanProvisioningService {
+  private readonly logger = new Logger(OnuWanProvisioningService.name);
   constructor(
     @InjectRepository(OnuServiceConfigEntity) private readonly configs: Repository<OnuServiceConfigEntity>,
     @InjectRepository(OnuWanOperationEntity) private readonly operations: Repository<OnuWanOperationEntity>,
@@ -199,7 +200,10 @@ export class OnuWanProvisioningService {
         const id = await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
         if (id) {
           const tasks = await this.acs.getPendingDeviceTasks(id);
-          if (op.method === 'OMCI' && tasks.length) throw new ConflictException('Todavía hay tareas pendientes en GenieACS.');
+          if (op.method === 'OMCI' && tasks.length) {
+            this.logger.log(`Purgando ${tasks.length} tarea(s) pendientes en GenieACS para reintento OMCI de ${onu.serialNumber}.`);
+            await this.acs.clearDeviceTasks(id);
+          }
           if (op.method === 'TR069') this.assertTr069QueueAvailable(tasks);
         }
       }
@@ -401,15 +405,21 @@ export class OnuWanProvisioningService {
     });
   }
 
-  private async ensureAcsDrained(onu: OnuEntity) {
-    if (!this.acs) {
-      if (onu.serviceConfig?.tr069NetworkId || onu.genieacsDeviceId) throw new ConflictException('No se puede comprobar la cola ACS: GenieACS no está disponible.');
-      return;
+  private async ensureAcsDrained(onu: OnuEntity): Promise<string | undefined> {
+    if (!this.acs) return undefined;
+    try {
+      const deviceId = await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
+      if (!deviceId) return undefined;
+      const tasks = await this.acs.getPendingDeviceTasks(deviceId);
+      if (tasks.length) {
+        this.logger.log(`Limpiando ${tasks.length} tarea(s) pendientes en GenieACS para ${onu.serialNumber} antes de aplicar OMCI.`);
+        await this.acs.clearDeviceTasks(deviceId);
+      }
+      return deviceId;
+    } catch (err: any) {
+      this.logger.warn(`No se pudo purgar la cola ACS de ${onu.serialNumber}: ${err?.message}. Continuando con provisión OMCI.`);
+      return undefined;
     }
-    const deviceId = await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
-    if (!deviceId) return;
-    if ((await this.acs.getPendingDeviceTasks(deviceId)).length) throw new ConflictException('GenieACS tiene tareas pendientes. Espera su finalización antes de aplicar OMCI.');
-    return deviceId;
   }
 
   private onuInterface(onu: OnuEntity): string {

@@ -851,6 +851,70 @@ describe('GenieAcsClient', () => {
     });
   });
 
+  describe('deleteTask', () => {
+    it('elimina la tarea en /tasks/:taskId', async () => {
+      http.delete.mockResolvedValue({ data: {} });
+
+      await client.deleteTask('task-123');
+
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/tasks/task-123/',
+        expect.anything(),
+      );
+    });
+
+    it('maneja y describe errores de la NBI', async () => {
+      http.delete.mockRejectedValue({ response: { status: 404, data: { message: 'task not found' } } });
+
+      await expect(client.deleteTask('task-inexistente')).rejects.toThrow(/404/);
+    });
+  });
+
+  describe('clearDeviceTasks', () => {
+    it('elimina todas las tareas pendientes del dispositivo', async () => {
+      http.get.mockResolvedValue({
+        data: [{ _id: 'task-1' }, { _id: 'task-2' }],
+      });
+      http.delete.mockResolvedValue({ data: {} });
+
+      const result = await client.clearDeviceTasks('00259E-ONT-16');
+
+      expect(result).toEqual({ deleted: 2, failed: 0 });
+      expect(http.delete).toHaveBeenCalledTimes(2);
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/tasks/task-1/',
+        expect.anything(),
+      );
+      expect(http.delete).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/tasks/task-2/',
+        expect.anything(),
+      );
+    });
+
+    it('continúa si una tarea falla al eliminarse', async () => {
+      http.get.mockResolvedValue({
+        data: [{ _id: 'task-1' }, { _id: 'task-2' }],
+      });
+      http.delete
+        .mockRejectedValueOnce(new Error('fail'))
+        .mockResolvedValueOnce({ data: {} });
+
+      const result = await client.clearDeviceTasks('00259E-ONT-16');
+
+      expect(result).toEqual({ deleted: 1, failed: 1 });
+      expect(http.delete).toHaveBeenCalledTimes(2);
+    });
+
+    it('retorna 0 eliminadas si la consulta de tareas falla', async () => {
+      http.get.mockRejectedValue(new Error('connection error'));
+
+      const result = await client.clearDeviceTasks('00259E-ONT-16');
+
+      expect(result).toEqual({ deleted: 0, failed: 0 });
+      expect(http.delete).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getDeviceFaults', () => {
     it('consulta /faults filtrando por "device"', async () => {
       http.get.mockResolvedValue({

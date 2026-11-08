@@ -46,7 +46,7 @@ describe('OnuWanProvisioningService', () => {
     const registry: any = { resolve: () => driver };
     const connections: any = { resolve: jest.fn().mockResolvedValue({}) };
     cpe = { configureCpe: jest.fn().mockResolvedValue({ applicationStatus: 'APPLIED', deviceId: 'device-1', appliedParametersCount: 4 }) };
-    acs = { findDeviceBySerial: jest.fn().mockResolvedValue('device-1'), getPendingDeviceTasks: jest.fn().mockResolvedValue([]), setDeviceTag: jest.fn(), deleteDeviceTag: jest.fn() };
+    acs = { findDeviceBySerial: jest.fn().mockResolvedValue('device-1'), getPendingDeviceTasks: jest.fn().mockResolvedValue([]), setDeviceTag: jest.fn(), deleteDeviceTag: jest.fn(), clearDeviceTasks: jest.fn().mockResolvedValue({ deleted: 0, failed: 0 }), deleteTask: jest.fn().mockResolvedValue(undefined) };
     service = new OnuWanProvisioningService(configs, operations, accesses, tenant, policy, registry, connections, cpe, acs);
   });
 
@@ -125,11 +125,13 @@ describe('OnuWanProvisioningService', () => {
     expect(driver.configureOnuWan).toHaveBeenCalledWith({}, expect.objectContaining({ wanMode: 'DHCP' }));
   });
 
-  it('does not hand ownership to OMCI while an ACS task is pending', async () => {
+  it('tags WAN_OMCI in GenieACS and clears pending tasks when handing ownership to OMCI', async () => {
     acs.getPendingDeviceTasks.mockResolvedValue([{ _id: 'queued-task' }]);
-    await expect(service.configure(onu, { provisioningMethod: 'OMCI' })).rejects.toThrow('pendientes');
-    expect(operations.save).not.toHaveBeenCalled();
-    expect(driver.configureOnuWan).not.toHaveBeenCalled();
+    const op = await service.configure(onu, { provisioningMethod: 'OMCI' });
+    expect(op.status).toBe('APPLIED');
+    expect(acs.setDeviceTag).toHaveBeenCalledWith('device-1', 'WAN_OMCI');
+    expect(acs.clearDeviceTasks).toHaveBeenCalledWith('device-1');
+    expect(driver.configureOnuWan).toHaveBeenCalledTimes(1);
   });
 
   it('preserves queued state instead of advancing applied version', async () => {
@@ -161,10 +163,19 @@ describe('OnuWanProvisioningService', () => {
     expect(cpe.configureCpe).not.toHaveBeenCalled();
   });
 
-  it('continues to require a drained queue when switching to OMCI, including read-only tasks', async () => {
+  it('drains and clears pending ACS tasks when switching to OMCI without blocking the OLT write', async () => {
     acs.getPendingDeviceTasks.mockResolvedValue([{ _id: 'read-1', name: 'getParameterValues' }]);
-    await expect(service.configure(onu, { provisioningMethod: 'OMCI' })).rejects.toThrow('pendientes');
-    expect(driver.configureOnuWan).not.toHaveBeenCalled();
+    const result = await service.configure(onu, { provisioningMethod: 'OMCI' });
+    expect(result.status).toBe('APPLIED');
+    expect(acs.clearDeviceTasks).toHaveBeenCalledWith('device-1');
+    expect(driver.configureOnuWan).toHaveBeenCalledTimes(1);
+  });
+
+  it('proceeds with OMCI provisioning even if ACS task clearance fails or ACS is offline', async () => {
+    acs.getPendingDeviceTasks.mockRejectedValue(new Error('GenieACS down'));
+    const result = await service.configure(onu, { provisioningMethod: 'OMCI' });
+    expect(result.status).toBe('APPLIED');
+    expect(driver.configureOnuWan).toHaveBeenCalledTimes(1);
   });
 
   it('returns the same operation for an equivalent request and blocks an uncertain replacement', async () => {

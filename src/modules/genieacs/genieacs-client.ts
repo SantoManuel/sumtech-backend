@@ -580,6 +580,50 @@ export class GenieAcsClient {
     return response.data;
   }
 
+  /** Elimina una tarea pendiente de la cola de GenieACS (DELETE /api/v1/tasks/:taskId). */
+  async deleteTask(taskId: string): Promise<void> {
+    try {
+      await this.http.delete(
+        this.buildUrl(`tasks/${encodeURIComponent(taskId)}`),
+        this.buildRequestConfig(),
+      );
+    } catch (error) {
+      throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Purgar/eliminar las tareas pendientes de un dispositivo en la cola de GenieACS.
+   * Útil cuando se entrega el control de la WAN a la OLT (OMCI) o para destrabar
+   * dispositivos con tareas encoladas que nunca se van a procesar.
+   */
+  async clearDeviceTasks(deviceId: string): Promise<{ deleted: number; failed: number }> {
+    let tasks: unknown[] = [];
+    try {
+      tasks = await this.getPendingDeviceTasks(deviceId);
+    } catch (error) {
+      this.logger.warn(`No se pudieron consultar tareas pendientes para ${deviceId}: ${this.describeError(error)}`);
+      return { deleted: 0, failed: 0 };
+    }
+
+    let deleted = 0;
+    let failed = 0;
+    for (const task of tasks) {
+      const taskId = task && typeof task === 'object' && typeof (task as any)._id === 'string'
+        ? (task as any)._id
+        : null;
+      if (!taskId) continue;
+      try {
+        await this.deleteTask(taskId);
+        deleted++;
+      } catch (err: any) {
+        failed++;
+        this.logger.warn(`No se pudo eliminar la tarea ${taskId} de GenieACS para ${deviceId}: ${err?.message}`);
+      }
+    }
+    return { deleted, failed };
+  }
+
   async isTaskComplete(deviceId: string, taskId: string): Promise<boolean> {
     await this.assertTaskSucceeded(deviceId, taskId);
     const response = await this.http.get(this.buildUrl('tasks'), {
