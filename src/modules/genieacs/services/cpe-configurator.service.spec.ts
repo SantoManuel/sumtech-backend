@@ -161,7 +161,7 @@ describe('CpeConfiguratorService', () => {
     expect(result.success).toBe(true);
     expect(mockClient.addObject).toHaveBeenCalledWith(
       '00259E-ONT123',
-      'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.',
+      'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection',
     );
     // setParameterValues debe correr DESPUÉS de AddObject, no antes.
     expect(mockClient.addObject.mock.invocationCallOrder[0]).toBeLessThan(
@@ -181,8 +181,8 @@ describe('CpeConfiguratorService', () => {
       return true;
     });
     mockClient.addObject.mockImplementation(async (_id, path) => {
-      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.') createdConnDev = true;
-      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.') createdPpp = true;
+      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice') createdConnDev = true;
+      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection') createdPpp = true;
     });
     mockClient.setParameterValues.mockResolvedValue(undefined);
     mockClient.getParameterValues.mockResolvedValue({});
@@ -197,8 +197,8 @@ describe('CpeConfiguratorService', () => {
     const result = await service.configureCpe(input);
 
     expect(result.success).toBe(true);
-    expect(mockClient.addObject).toHaveBeenCalledWith('00259E-ONT123', 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.');
-    expect(mockClient.addObject).toHaveBeenCalledWith('00259E-ONT123', 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.');
+    expect(mockClient.addObject).toHaveBeenCalledWith('00259E-ONT123', 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice');
+    expect(mockClient.addObject).toHaveBeenCalledWith('00259E-ONT123', 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection');
   });
 
   it('resuelve el vendor por fallback desde deviceStatus.manufacturer si vendor es ALL o genérico', async () => {

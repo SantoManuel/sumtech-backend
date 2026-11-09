@@ -48,9 +48,10 @@ export class TenantResolutionMiddleware implements NestMiddleware {
       slug = 'sumtech';
     }
 
-    // Rutas especiales sin header X-Tenant-Slug (e-CF DGII B2B y Acceso Web Remoto a la ONU vía iframe/navegador directo)
+    // Rutas especiales sin header X-Tenant-Slug (e-CF DGII B2B, Webhooks de GenieACS y Acceso Web Remoto a la ONU vía iframe/navegador directo)
     const isSpecialDirectRoute =
       req.path.startsWith('/fe/') ||
+      req.path.includes('/integrations/genieacs') ||
       req.path.includes('/web-proxy/') ||
       req.path.startsWith('/webcmcc/') ||
       req.path.startsWith('/boaform/') ||

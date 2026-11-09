@@ -797,14 +797,14 @@ describe('GenieAcsClient', () => {
 
       await client.addObject(
         '00259E-ONT-16',
-        'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.',
+        'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection',
       );
 
       expect(http.post).toHaveBeenCalledWith(
         'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
         {
           name: 'addObject',
-          objectName: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.',
+          objectName: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection',
         },
         expect.anything(),
       );
@@ -817,7 +817,7 @@ describe('GenieAcsClient', () => {
       });
 
       await expect(
-        client.addObject('00259E-ONT-16', 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.'),
+        client.addObject('00259E-ONT-16', 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection'),
       ).rejects.toThrow(/No se pudo crear el objeto/);
     });
   });

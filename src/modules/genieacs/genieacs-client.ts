@@ -834,9 +834,15 @@ export class GenieAcsClient {
 
   /**
    * Crea una instancia nueva dentro de una tabla de objetos TR-069 (ej.
-   * "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.",
-   * CON el punto final -- así lo exige CWMP AddObject). Verifica el resultado
-   * real con `assertTaskSucceeded`, igual que `setParameterValues`.
+   * "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection",
+   * SIN el punto final). El RPC SOAP `AddObject` de CWMP sí lo exige, pero la
+   * tarea "addObject" de la NBI de GenieACS NO -- GenieACS arma internamente
+   * la declaración `instances` como `${objectName}.[${attrs}]`; si el
+   * `objectName` ya trae un punto final, el resultado queda con DOS puntos
+   * seguidos y el parser de paths de GenieACS revienta con
+   * "Error: Invalid parameter path" (visto en vivo, log de genieacs-cwmp,
+   * causa real del Fallo #3 del plan WAN TR-069). Verifica el resultado real
+   * con `assertTaskSucceeded`, igual que `setParameterValues`.
    */
   async addObject(deviceId: string, objectPath: string): Promise<void> {
     if (this.config.wanWriteGuard) return this.config.wanWriteGuard(deviceId, [objectPath], () => this.addObjectUnguarded(deviceId, objectPath));

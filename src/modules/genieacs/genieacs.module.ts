@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
 import { JwtModule } from '@nestjs/jwt';
 import { GenieAcsDeviceEntity } from './entities/genieacs-device.entity';
@@ -7,6 +8,7 @@ import { CpeVendorParameterEntity } from './entities/cpe-vendor-parameter.entity
 import { CpeFirmwareEntity } from './entities/cpe-firmware.entity';
 import { SerialNumberEntity } from '../inventory/entities/serial-number.entity';
 import { ContractEntity } from '../clients/entities/contract.entity';
+import { PlanEntity } from '../plans/entities/plan.entity';
 import { TicketEntity } from '../tickets/entities/ticket.entity';
 import { GenieAcsDeviceResolverService } from './genieacs-device-resolver.service';
 import { GenieAcsWifiService } from './genieacs-wifi.service';
@@ -23,6 +25,10 @@ import { GenieAcsPortForwardingService } from './services/genieacs-port-forwardi
 import { GenieAcsDiagnosticsService } from './services/genieacs-diagnostics.service';
 import { GenieAcsVendorParameterService } from './services/genieacs-vendor-parameter.service';
 import { GenieAcsFirmwareService } from './services/genieacs-firmware.service';
+import { GenieAcsProvisioningService } from './services/genieacs-provisioning.service';
+import { GenieAcsWebhookProcessor } from './processors/genieacs-webhook.processor';
+import { GenieAcsContractEventListener } from './listeners/genieacs-contract.listener';
+import { GENIEACS_WEBHOOK_QUEUE } from './genieacs-webhook.constants';
 import { StorageModule } from '../storage/storage.module';
 import { GenieAcsController } from './genieacs.controller';
 import { GenieAcsWebhookController } from './controllers/genieacs-webhook.controller';
@@ -41,8 +47,10 @@ import { TicketsModule } from '../tickets/tickets.module';
       CpeFirmwareEntity,
       SerialNumberEntity,
       ContractEntity,
+      PlanEntity,
       TicketEntity,
     ]),
+    BullModule.registerQueue({ name: GENIEACS_WEBHOOK_QUEUE }),
     TicketsModule,
     JwtModule.register({}),
     StorageModule,
@@ -70,12 +78,16 @@ import { TicketsModule } from '../tickets/tickets.module';
     GenieAcsDiagnosticsService,
     GenieAcsVendorParameterService,
     GenieAcsFirmwareService,
+    GenieAcsProvisioningService,
+    GenieAcsWebhookProcessor,
+    GenieAcsContractEventListener,
     genieAcsClientFactoryProvider,
   ],
   exports: [
     GenieAcsDeviceResolverService,
     GenieAcsWifiService,
     GenieAcsMonitoringService,
+    GenieAcsProvisioningService,
     CpeConfiguratorService,
     CpeWanPolicyService,
     CpeParameterMapper,

@@ -1,4 +1,4 @@
-import { Injectable, Logger, ConflictException, NotFoundException, Inject } from '@nestjs/common';
+import { Injectable, Logger, ConflictException, NotFoundException, Inject, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -11,6 +11,7 @@ import { ROUTEROS_CLIENT_FACTORY, RouterOsClientFactory } from './routeros/route
 import { resolveRouterOsCredentials } from './routeros/routeros-credentials';
 import { OltManagementService } from '../olt/services/olt-management.service';
 import { NETWORK_OPS_QUEUE, NETWORK_OPS_JOBS, RetryPendingOperationJobData } from './network-ops.constants';
+import { GenieAcsProvisioningService } from '../genieacs/services/genieacs-provisioning.service';
 
 export interface ServiceControlContext {
   process: 'MANUAL' | 'CRON_MOROSIDAD' | 'PAGO' | 'QUEUE_RETRY' | 'BILLING';
@@ -45,12 +46,19 @@ export class ServiceControlService {
     private readonly oltService: OltManagementService,
     @InjectQueue(NETWORK_OPS_QUEUE)
     private readonly networkOpsQueue: Queue<RetryPendingOperationJobData>,
+    @Optional()
+    private readonly genieAcsProvisioning?: GenieAcsProvisioningService,
   ) {}
 
   /**
    * Suspende el servicio de internet en el equipo de red del cliente con confirmación y verificación (RF-PPPOE-005/006).
    */
   async suspendService(contractId: string, ctx: ServiceControlContext): Promise<ServiceControlResult> {
+    if (this.genieAcsProvisioning) {
+      await this.genieAcsProvisioning.suspendService(contractId).catch((err) => {
+        this.logger.warn(`No se pudo sincronizar suspensión TR-069 para ${contractId}: ${err.message}`);
+      });
+    }
     return this.executeServiceOperation(contractId, 'SUSPEND', ctx);
   }
 
@@ -58,6 +66,11 @@ export class ServiceControlService {
    * Restaura el servicio de internet en el equipo de red del cliente con confirmación y verificación (RF-SUS-001/002).
    */
   async restoreService(contractId: string, ctx: ServiceControlContext): Promise<ServiceControlResult> {
+    if (this.genieAcsProvisioning) {
+      await this.genieAcsProvisioning.reactivateService(contractId).catch((err) => {
+        this.logger.warn(`No se pudo sincronizar reactivación TR-069 para ${contractId}: ${err.message}`);
+      });
+    }
     return this.executeServiceOperation(contractId, 'RESTORE', ctx);
   }
 

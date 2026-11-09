@@ -248,24 +248,24 @@ export class CpeConfiguratorService {
     }
     if (isTR181) {
       if (input.wanMode === 'PPPOE') {
-        return { instancePath: 'Device.PPP.Interface.1', parentPath: 'Device.PPP.Interface.' };
+        return { instancePath: 'Device.PPP.Interface.1', parentPath: 'Device.PPP.Interface' };
       }
-      return { instancePath: 'Device.IP.Interface.1', parentPath: 'Device.IP.Interface.' };
+      return { instancePath: 'Device.IP.Interface.1', parentPath: 'Device.IP.Interface' };
     }
     const devPath = `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${wanConnectionIndex}`;
     if (input.wanMode === 'PPPOE') {
       return {
         instancePath: `${devPath}.WANPPPConnection.1`,
-        parentPath: `${devPath}.WANPPPConnection.`,
+        parentPath: `${devPath}.WANPPPConnection`,
         devicePath: devPath,
-        deviceParentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.',
+        deviceParentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice',
       };
     }
     return {
       instancePath: `${devPath}.WANIPConnection.1`,
-      parentPath: `${devPath}.WANIPConnection.`,
+      parentPath: `${devPath}.WANIPConnection`,
       devicePath: devPath,
-      deviceParentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.',
+      deviceParentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice',
     };
   }
 

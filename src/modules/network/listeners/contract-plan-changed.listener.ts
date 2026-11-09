@@ -1,14 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { NetworkProvisioningService } from '../network-provisioning.service';
 import { PppManagementService } from '../services/ppp-management.service';
 import { ContractPlanChangedEvent } from '../../billing/events/contract-plan-changed.event';
 import { SystemEvents } from '../../../common/enums/system-events.enum';
+import { GenieAcsProvisioningService } from '../../genieacs/services/genieacs-provisioning.service';
 
 /**
- * Fase 07 del plan de integración con Mikrotik: cuando un contrato cambia de
+ * Fase 07 del plan de integración con Mikrotik y GenieACS: cuando un contrato cambia de
  * plan, sincroniza el perfil de velocidad en el nodo real y opcionalmente
- * reconecta la sesión activa para aplicar el nuevo rate-limit de inmediato.
+ * reconecta la sesión activa para aplicar el nuevo rate-limit de inmediato,
+ * actualizando a la par los tags y presets de GenieACS vía NBI.
  */
 @Injectable()
 export class NetworkContractPlanChangedListener {
@@ -17,6 +19,8 @@ export class NetworkContractPlanChangedListener {
   constructor(
     private readonly provisioningService: NetworkProvisioningService,
     private readonly pppManagementService: PppManagementService,
+    @Optional()
+    private readonly genieAcsProvisioning?: GenieAcsProvisioningService,
   ) {}
 
   @OnEvent(SystemEvents.CONTRACT_PLAN_CHANGED)
@@ -36,6 +40,17 @@ export class NetworkContractPlanChangedListener {
         `Error sincronizando el perfil de red tras el cambio de plan del contrato ${event.contractNumber}: ${error.message}`,
         error.stack,
       );
+    }
+
+    if (this.genieAcsProvisioning) {
+      try {
+        await this.genieAcsProvisioning.changePlan(event.contractId, event.oldPlanId, event.newPlanId);
+      } catch (error: any) {
+        this.logger.error(
+          `Error actualizando plan en GenieACS para contrato ${event.contractNumber}: ${error.message}`,
+          error.stack,
+        );
+      }
     }
   }
 }

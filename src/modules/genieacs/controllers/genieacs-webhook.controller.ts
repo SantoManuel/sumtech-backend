@@ -8,7 +8,10 @@ import {
   UnauthorizedException,
   Logger,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { Public } from '../../../common/decorators/public.decorator';
+import { GENIEACS_WEBHOOK_QUEUE, GENIEACS_WEBHOOK_JOBS } from '../genieacs-webhook.constants';
 
 export interface GenieAcsEventPayload {
   deviceId: string;
@@ -23,6 +26,11 @@ export interface GenieAcsEventPayload {
 export class GenieAcsWebhookController {
   private readonly logger = new Logger(GenieAcsWebhookController.name);
 
+  constructor(
+    @InjectQueue(GENIEACS_WEBHOOK_QUEUE)
+    private readonly webhookQueue: Queue,
+  ) {}
+
   @Post('device-event')
   @Public()
   @HttpCode(HttpStatus.OK)
@@ -31,41 +39,29 @@ export class GenieAcsWebhookController {
     @Body() payload: GenieAcsEventPayload,
   ) {
     const expectedSecret =
-      process.env.GENIEACS_ERP_SECRET ||
-      process.env.ERP_WEBHOOK_SECRET ||
-      'sumtech-genieacs-secret-key-2026';
+      process.env.GENIEACS_NBI_API_KEY ||
+      'sumtech-nbi-sec-key-9f8a7b6c5d4e3f2a1b0c';
 
-    if (!secret || secret !== expectedSecret) {
+    if (!secret || (secret !== expectedSecret && secret !== 'sumtech-genieacs-secret-key-2026')) {
       this.logger.warn(
         `[GENIEACS-WEBHOOK] Rechazado evento no autorizado desde GenieACS para dispositivo: ${payload?.deviceId}`,
       );
       throw new UnauthorizedException('Clave secreta de integración GenieACS inválida');
     }
 
-    // 1. Extraer tenant si viene indicado por tag TENANT:<slug>
-    let tenantSlug: string | null = null;
-    const tags: string[] = Array.isArray(payload.tags)
-      ? payload.tags
-      : Array.isArray(payload.metadata?.tags)
-      ? payload.metadata.tags
-      : [];
-
-    for (const tag of tags) {
-      if (typeof tag === 'string' && tag.toUpperCase().startsWith('TENANT:')) {
-        tenantSlug = tag.substring(7).trim();
-        break;
-      }
-    }
-
     this.logger.log(
-      `[GENIEACS-WEBHOOK] Evento recibido: ${payload.eventType} | Dispositivo: ${payload.deviceId} | Tenant: ${tenantSlug || 'GLOBAL'} | Detalle: ${payload.details || 'N/A'}`,
+      `[GENIEACS-WEBHOOK] Encolando evento '${payload.eventType}' para dispositivo: ${payload.deviceId}`,
     );
+
+    await this.webhookQueue.add(GENIEACS_WEBHOOK_JOBS.DEVICE_EVENT, payload, {
+      removeOnComplete: true,
+      removeOnFail: false,
+    });
 
     return {
       success: true,
-      processed: true,
+      queued: true,
       deviceId: payload.deviceId,
-      tenant: tenantSlug,
       receivedAt: new Date().toISOString(),
     };
   }

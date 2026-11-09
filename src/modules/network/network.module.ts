@@ -37,6 +37,7 @@ import { NetworkAccessManagementController } from './network-access-management.c
 import { UsersModule } from '../users/users.module';
 import { NetworkConnectivityModule } from '../network-connectivity/network-connectivity.module';
 import { OltModule } from '../olt/olt.module';
+import { GenieAcsModule } from '../genieacs/genieacs.module';
 import { OltNativeProvisioningAdapter } from './olt-native-provisioning.adapter';
 import { DhcpProvisioningAdapter } from './dhcp-provisioning.adapter';
 import { SuspensionPortalManagerService } from './services/suspension-portal-manager.service';
@@ -83,6 +84,7 @@ import { PendingOperationsController } from './pending-operations.controller';
     UsersModule,
     JwtModule.register({}),
     OltModule,
+    GenieAcsModule,
   ],
   controllers: [
     ZonesController,
