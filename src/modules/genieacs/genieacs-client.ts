@@ -916,7 +916,23 @@ export class GenieAcsClient {
   /** Refresca un objeto o parámetro en el CPE vía getParameterValues task */
   async refreshObject(deviceId: string, objectPath: string = ''): Promise<void> {
     try {
-      const parameterNames = objectPath ? [objectPath] : ['Device.', 'InternetGatewayDevice.'];
+      let parameterNames: string[];
+      if (objectPath) {
+        parameterNames = [objectPath];
+      } else {
+        // En TR-069, consultar ambas raíces ('Device.' y 'InternetGatewayDevice.') simultáneamente
+        // hace que GenieACS intente refrescar el árbol que el CPE no soporta, disparando
+        // "Error: Invalid parameter path at refresh". Se detecta la raíz real del data model.
+        let isTR181 = false;
+        try {
+          const doc = await this.getDeviceDocument(deviceId);
+          isTR181 = doc?.Device !== undefined;
+        } catch {
+          // Por defecto la flota de ONTs es TR-098
+        }
+        parameterNames = [isTR181 ? 'Device.' : 'InternetGatewayDevice.'];
+      }
+
       await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
         { name: 'getParameterValues', parameterNames },

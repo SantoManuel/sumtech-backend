@@ -1120,4 +1120,48 @@ describe('GenieAcsClient', () => {
       expect(res.deviceExists).toBe(true);
     });
   });
+
+  describe('refreshObject', () => {
+    it('utiliza la ruta explicita objectPath cuando se provee', async () => {
+      http.post.mockResolvedValue({ data: {} });
+
+      await client.refreshObject('00259E-ONT-16', 'InternetGatewayDevice.WANDevice.1.');
+
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
+        { name: 'getParameterValues', parameterNames: ['InternetGatewayDevice.WANDevice.1.'] },
+        expect.anything(),
+      );
+    });
+
+    it('detecta raiz TR-098 (InternetGatewayDevice.) cuando no se pasa objectPath y el CPE no tiene Device', async () => {
+      http.get.mockResolvedValue({
+        data: [{ _id: '00259E-ONT-16', InternetGatewayDevice: {} }],
+      });
+      http.post.mockResolvedValue({ data: {} });
+
+      await client.refreshObject('00259E-ONT-16');
+
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
+        { name: 'getParameterValues', parameterNames: ['InternetGatewayDevice.'] },
+        expect.anything(),
+      );
+    });
+
+    it('detecta raiz TR-181 (Device.) cuando no se pasa objectPath y el CPE tiene Device', async () => {
+      http.get.mockResolvedValue({
+        data: [{ _id: '00259E-ONT-16', Device: {} }],
+      });
+      http.post.mockResolvedValue({ data: {} });
+
+      await client.refreshObject('00259E-ONT-16');
+
+      expect(http.post).toHaveBeenCalledWith(
+        'https://acs.sumtech.local/api/v1/devices/00259E-ONT-16/tasks/?connection_request=true',
+        { name: 'getParameterValues', parameterNames: ['Device.'] },
+        expect.anything(),
+      );
+    });
+  });
 });
