@@ -1643,12 +1643,13 @@ export class OnuManagementService {
     };
   }
 
+  /** verify()/reconcile() ya no exigen el candado por-ONU para su rama de solo lectura (ver OnuWanProvisioningService.verify). */
   async verifyWan(id: string) {
-    return this.wanProvisioning.withMutation(id, async () => this.wanProvisioning.verify(await this.findById(id)));
+    return this.wanProvisioning.verify(await this.findById(id));
   }
 
   async reconcileWan(id: string) {
-    return this.wanProvisioning.withMutation(id, async () => this.wanProvisioning.reconcile(await this.findById(id)));
+    return this.wanProvisioning.reconcile(await this.findById(id));
   }
 
   async retryWan(id: string, operationId: string, acknowledged: boolean, actorUserId?: string) {

@@ -130,61 +130,74 @@ export class OnuWanProvisioningService {
     });
   }
 
-  /** Observation only: uncertain writes are never automatically repeated. */
+  /**
+   * Observation only: uncertain writes are never automatically repeated.
+   *
+   * A propósito NO toma el candado por-ONU de `policy.withOnu`: esta llamada
+   * puede tardar hasta 30s esperando una sesión CWMP real contra el CPE
+   * (`GenieAcsClient.refreshParameterValues`, connection_request=true), y el
+   * reconciliador automático (`OnuCpeSyncReconciliationService`, cada 2 min)
+   * la ejecuta para cualquier ONU que siga "sin confirmar" -- sosteniendo ese
+   * candado durante esos 30s bloqueaba cualquier intento manual de
+   * "Configurar WAN" que cayera en esa ventana con un 409 confuso ("Hay otra
+   * operación WAN en curso"). No hace falta el candado para la consistencia:
+   * `finish()` ya solo escribe si `wan_desired_version` sigue siendo la misma
+   * que cuando empezó esta verificación (optimistic concurrency) -- si una
+   * config() concurrente adelantó la versión mientras tanto, este resultado
+   * simplemente se descarta como obsoleto en vez de corromper nada.
+   */
   async verify(onu: OnuEntity) {
-    return this.policy.withOnu(onu.id, async () => {
-      const config = await this.configs.findOneBy({ onuId: onu.id });
-      const op = await this.operations.findOne({ where: { onuId: onu.id, version: config?.wanDesiredVersion }, order: { version: 'DESC' } });
-      if (!config || !op || !['APPLYING','QUEUED','VERIFYING','UNKNOWN'].includes(op.status)) return op;
-      let evidence: Record<string, unknown> = { ...op.evidence, observedAt: new Date().toISOString() };
-      let status: WanApplyStatus = op.status === 'APPLYING' ? 'UNKNOWN' : op.status;
-      try {
-        if (op.method === 'OMCI') {
-          const driver = this.registry.resolve(onu.olt.vendor);
-          if (!driver.getOnuWanConfiguration) return op;
-          const p = config.omciWanProfile || this.resolveOmciProfile(onu, config);
-          const conn = await this.connections.resolve(onu.olt);
-          const observed = await withOltTelnetLock(onu.oltId, () => driver.getOnuWanConfiguration!(conn, this.onuInterface(onu), p.wanIndex));
-          evidence = { ...evidence, configuration: observed };
-          // A read cannot prove an unreadable PPP password after a timed-out write.
-          const access = onu.contractId ? await this.accesses.findOneBy({ contractId: onu.contractId }) : null;
-          const wanMode = config.wanMode || 'PPPOE';
-          const matches = (wanMode !== 'PPPOE' || !!access?.username) &&
-            matchesZteWanConfiguration(observed, p, {
-              wanMode,
-              username: access?.username || undefined,
-              staticIp: config.wanStaticIp || undefined,
-              staticMask: config.wanStaticMask || undefined,
-            }) &&
-            observed.serialNumber === onu.serialNumber && (!p.vendorTypeName || observed.vendorTypeName === p.vendorTypeName) &&
-            observed.configState?.toLowerCase() === 'success';
-          status = ['UNKNOWN','APPLYING'].includes(op.status) ? 'UNKNOWN' : matches ? 'APPLIED' : 'VERIFYING';
-        } else if (this.acs && typeof op.evidence?.deviceId === 'string') {
-          const tasks = await this.acs.getPendingDeviceTasks(op.evidence.deviceId);
-          const blocking = tasks.filter(affectsWanProvisioning);
-          const ownTaskPending = typeof op.evidence.taskId === 'string' && tasks.some(task => task && typeof task === 'object' && (task as any)._id === op.evidence?.taskId);
-          status = ownTaskPending || blocking.length ? 'QUEUED' : 'VERIFYING';
-          evidence = { ...evidence, pendingTasks: tasks.length, pendingWanTasks: blocking.length };
-          if (!ownTaskPending && !blocking.length && typeof op.evidence.taskId === 'string' && op.evidence.expectedReadback &&
-              await this.acs.isTaskComplete(op.evidence.deviceId, op.evidence.taskId)) {
-            const expected = op.evidence.expectedReadback as Record<string, string>;
-            const values = await this.acs.refreshParameterValues(op.evidence.deviceId, Object.keys(expected));
-            if (Object.keys(expected).length && Object.entries(expected).every(([key, value]) => String(values[key]) === value)) status = 'APPLIED';
-          }
+    const config = await this.configs.findOneBy({ onuId: onu.id });
+    const op = await this.operations.findOne({ where: { onuId: onu.id, version: config?.wanDesiredVersion }, order: { version: 'DESC' } });
+    if (!config || !op || !['APPLYING','QUEUED','VERIFYING','UNKNOWN'].includes(op.status)) return op;
+    let evidence: Record<string, unknown> = { ...op.evidence, observedAt: new Date().toISOString() };
+    let status: WanApplyStatus = op.status === 'APPLYING' ? 'UNKNOWN' : op.status;
+    try {
+      if (op.method === 'OMCI') {
+        const driver = this.registry.resolve(onu.olt.vendor);
+        if (!driver.getOnuWanConfiguration) return op;
+        const p = config.omciWanProfile || this.resolveOmciProfile(onu, config);
+        const conn = await this.connections.resolve(onu.olt);
+        const observed = await withOltTelnetLock(onu.oltId, () => driver.getOnuWanConfiguration!(conn, this.onuInterface(onu), p.wanIndex));
+        evidence = { ...evidence, configuration: observed };
+        // A read cannot prove an unreadable PPP password after a timed-out write.
+        const access = onu.contractId ? await this.accesses.findOneBy({ contractId: onu.contractId }) : null;
+        const wanMode = config.wanMode || 'PPPOE';
+        const matches = (wanMode !== 'PPPOE' || !!access?.username) &&
+          matchesZteWanConfiguration(observed, p, {
+            wanMode,
+            username: access?.username || undefined,
+            staticIp: config.wanStaticIp || undefined,
+            staticMask: config.wanStaticMask || undefined,
+          }) &&
+          observed.serialNumber === onu.serialNumber && (!p.vendorTypeName || observed.vendorTypeName === p.vendorTypeName) &&
+          observed.configState?.toLowerCase() === 'success';
+        status = ['UNKNOWN','APPLYING'].includes(op.status) ? 'UNKNOWN' : matches ? 'APPLIED' : 'VERIFYING';
+      } else if (this.acs && typeof op.evidence?.deviceId === 'string') {
+        const tasks = await this.acs.getPendingDeviceTasks(op.evidence.deviceId);
+        const blocking = tasks.filter(affectsWanProvisioning);
+        const ownTaskPending = typeof op.evidence.taskId === 'string' && tasks.some(task => task && typeof task === 'object' && (task as any)._id === op.evidence?.taskId);
+        status = ownTaskPending || blocking.length ? 'QUEUED' : 'VERIFYING';
+        evidence = { ...evidence, pendingTasks: tasks.length, pendingWanTasks: blocking.length };
+        if (!ownTaskPending && !blocking.length && typeof op.evidence.taskId === 'string' && op.evidence.expectedReadback &&
+            await this.acs.isTaskComplete(op.evidence.deviceId, op.evidence.taskId)) {
+          const expected = op.evidence.expectedReadback as Record<string, string>;
+          const values = await this.acs.refreshParameterValues(op.evidence.deviceId, Object.keys(expected));
+          if (Object.keys(expected).length && Object.entries(expected).every(([key, value]) => String(values[key]) === value)) status = 'APPLIED';
         }
-      } catch {
-        evidence = { ...evidence, observationError: 'No se pudo consultar el equipo.' };
       }
-      const defaultWarning = op.method === 'OMCI'
-        ? (config.wanMode === 'DHCP'
-            ? 'Pendiente de confirmar DHCP en el equipo.'
-            : config.wanMode === 'STATIC'
-            ? 'Pendiente de confirmar IP Estática en el equipo.'
-            : 'Pendiente de confirmar en el equipo. Una lectura no confirma por sí sola la contraseña PPPoE.')
-        : 'Pendiente de confirmar en el equipo. Una lectura no confirma por sí sola la contraseña PPPoE.';
-      await this.finish(config, op, status, status === 'APPLIED' ? null : status === 'QUEUED' ? 'La tarea sigue en la cola de GenieACS.' : defaultWarning, evidence);
-      return this.getOperation(onu.id, op.id);
-    });
+    } catch {
+      evidence = { ...evidence, observationError: 'No se pudo consultar el equipo.' };
+    }
+    const defaultWarning = op.method === 'OMCI'
+      ? (config.wanMode === 'DHCP'
+          ? 'Pendiente de confirmar DHCP en el equipo.'
+          : config.wanMode === 'STATIC'
+          ? 'Pendiente de confirmar IP Estática en el equipo.'
+          : 'Pendiente de confirmar en el equipo. Una lectura no confirma por sí sola la contraseña PPPoE.')
+      : 'Pendiente de confirmar en el equipo. Una lectura no confirma por sí sola la contraseña PPPoE.';
+    await this.finish(config, op, status, status === 'APPLIED' ? null : status === 'QUEUED' ? 'La tarea sigue en la cola de GenieACS.' : defaultWarning, evidence);
+    return this.getOperation(onu.id, op.id);
   }
 
   /** Explicit operator decision after checking the equipment; no automatic fallback. */
@@ -322,11 +335,22 @@ export class OnuWanProvisioningService {
       const fingerprint = createHash('sha256').update(JSON.stringify({ desired, method, serial: onu.serialNumber, profile: effectiveProfile, credential: pppoePasswordEnc, username })).digest('hex');
       const prior = await this.operations.createQueryBuilder('op').addSelect('op.requestFingerprint')
         .where('op.onuId = :id AND op.version >= 0', { id: onu.id }).orderBy('op.version', 'DESC').getOne();
-      if (prior && ['APPLYING', 'QUEUED', 'VERIFYING', 'UNKNOWN'].includes(prior.status)) {
-        if (prior.version === config.wanDesiredVersion && prior.requestFingerprint === fingerprint) return this.getOperation(onu.id, prior.id);
-        throw new ConflictException('Hay una operación WAN pendiente o incierta. Verifica su resultado antes de sustituirla.');
+      // Un envío idéntico al que ya está vigente en esta versión se devuelve tal
+      // cual (evita reencolar dos veces un doble clic accidental) -- pero
+      // cualquier cambio real (otra contraseña, otro modo, etc.) siempre
+      // sustituye a la operación anterior sin esperar a que se resuelva.
+      // TR-069 no permite leer de vuelta una contraseña PPPoE, así que una
+      // operación puede quedar "sin confirmar" indefinidamente sin que eso
+      // deba impedirle al operador reintentar cuantas veces haga falta
+      // (estamos dentro del candado por-ONU de `policy.withOnu`, así que un
+      // estado "APPLYING" encontrado aquí es necesariamente de un intento
+      // anterior ya terminado -- nunca de uno corriendo en este instante).
+      // ERROR queda fuera a propósito: ese estado ya tiene su propio mecanismo
+      // de reintento con backoff más abajo (`resumeSafeAttempt`), que decide
+      // si corresponde reintentar ahora o seguir esperando.
+      if (prior && prior.status !== 'ERROR' && prior.version === config.wanDesiredVersion && prior.requestFingerprint === fingerprint) {
+        return this.getOperation(onu.id, prior.id);
       }
-      if (prior?.status === 'APPLIED' && prior.version === config.wanDesiredVersion && prior.requestFingerprint === fingerprint) return this.getOperation(onu.id, prior.id);
       if (dto.expectedVersion !== undefined && dto.expectedVersion !== (config.wanDesiredVersion || 0)) {
         throw new ConflictException('La configuración WAN cambió. Actualiza la ficha antes de aplicar.');
       }

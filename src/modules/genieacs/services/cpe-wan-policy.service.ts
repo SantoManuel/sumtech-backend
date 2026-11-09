@@ -70,17 +70,22 @@ export class CpeWanPolicyService {
     });
   }
 
+  /**
+   * Solo bloquea la escritura directa cuando genuinamente contradice al
+   * mecanismo que administra la WAN (OMCI, en el lado de la OLT). El
+   * versionado TR-069 (`wan_desired_version`) es un historial de auditoría,
+   * no un candado -- un operador puede corregir PPPoE/usuario/clave las veces
+   * que haga falta sin esperar a que una operación previa "se confirme" (ver
+   * `OnuWanProvisioningService.configure`, que ya trata cada envío como la
+   * intención vigente y no como algo que deba resolverse antes de aceptar la
+   * siguiente).
+   */
   private async assertTr069Owner(onuId: string): Promise<void> {
     const rows = await this.tenant.getDataSource().query(
-      'SELECT wan_provisioning_method, wan_applied_method, wan_desired_version FROM net.onu_service_config WHERE onu_id = $1', [onuId]);
+      'SELECT wan_provisioning_method, wan_applied_method FROM net.onu_service_config WHERE onu_id = $1', [onuId]);
     if (rows[0]?.wan_provisioning_method === 'OMCI' ||
         (!rows[0]?.wan_provisioning_method && rows[0]?.wan_applied_method === 'OMCI')) {
       throw new ConflictException('La WAN está administrada mediante OMCI. Usa Configurar WAN para cambiar de método.');
-    }
-    const c = rows[0];
-    if (c?.wan_provisioning_method === 'TR069' && c.wan_desired_version > 0 &&
-        !this.held.getStore()?.has(`managed:${this.tenant.getTenantId()}:${onuId}:TR069:${c.wan_desired_version}`)) {
-      throw new ConflictException('La WAN tiene configuración versionada. Usa Configurar WAN; las credenciales se editan en el acceso de red del contrato.');
     }
   }
 }

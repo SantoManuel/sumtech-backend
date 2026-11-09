@@ -178,13 +178,16 @@ describe('OnuWanProvisioningService', () => {
     expect(driver.configureOnuWan).toHaveBeenCalledTimes(1);
   });
 
-  it('returns the same operation for an equivalent request and blocks an uncertain replacement', async () => {
+  it('returns the same operation for an equivalent request, but always supersedes an uncertain prior one with a real change', async () => {
     const first = await service.configure(onu, {});
     prior = first;
     expect(await service.configure(onu, {})).toBe(first);
     expect(cpe.configureCpe).toHaveBeenCalledTimes(1);
     prior.status = 'UNKNOWN';
-    await expect(service.configure(onu, { wanMode: 'DHCP' })).rejects.toThrow('incierta');
+    const second = await service.configure(onu, { wanMode: 'DHCP' });
+    expect(second).not.toBe(first);
+    expect(second.version).toBe(2);
+    expect(cpe.configureCpe).toHaveBeenCalledTimes(2);
   });
 
   it('persists IPv4 static parameters for future reconciliation', async () => {

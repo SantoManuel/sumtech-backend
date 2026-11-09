@@ -31,9 +31,11 @@ describe('CpeWanPolicyService', () => {
     await expect(policy.withDeviceWrite('unlinked', ['Device.PPP.Interface.1.Username'], jest.fn())).rejects.toThrow('única ONU');
   });
 
-  it('blocks an ad-hoc PPP write that bypasses a versioned WAN intent', async () => {
-    query.mockResolvedValueOnce([{ id: 'onu-1' }]).mockResolvedValueOnce([{ wan_provisioning_method: 'TR069', wan_desired_version: 4 }]);
-    await expect(policy.withDeviceWrite('device-1', ['Device.PPP.Interface.1.Username'], jest.fn())).rejects.toThrow('versionada');
+  it('allows an ad-hoc PPP write even when the WAN has a versioned TR-069 history', async () => {
+    query.mockResolvedValueOnce([{ id: 'onu-1' }]).mockResolvedValueOnce([{ wan_provisioning_method: 'TR069' }]);
+    const action = jest.fn().mockResolvedValue('ok');
+    await expect(policy.withDeviceWrite('device-1', ['Device.PPP.Interface.1.Username'], action)).resolves.toBe('ok');
+    expect(action).toHaveBeenCalled();
   });
 
   it('allows its orchestrator to write the current version under the shared lock', async () => {
