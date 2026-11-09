@@ -1,5 +1,5 @@
 import * as crypto from 'crypto';
-import { GenieAcsClient } from './genieacs-client';
+import { GenieAcsClient, buildSerialCandidates } from './genieacs-client';
 
 function wpaPsk(ssid: string, password: string): string {
   return crypto.pbkdf2Sync(password, ssid, 4096, 32, 'sha1').toString('hex');
@@ -54,6 +54,49 @@ describe('GenieAcsClient', () => {
       // tiene 12 dígitos hex exactos tras limpiar separadores, así que no
       // vale la pena tantear MACAddress/BSSID.
       expect(http.get).toHaveBeenCalledTimes(1);
+    });
+
+    
+    describe('resolución bidireccional de seriales GPON (ASCII vs Hex)', () => {
+      it('buildSerialCandidates genera correctamente las variantes de Huawei, ZTE, ECOM', () => {
+        expect(buildSerialCandidates('HWTC7C8E7143')).toEqual(['HWTC7C8E7143', '485754437C8E7143', '485754437c8e7143']);
+        expect(buildSerialCandidates('485754437C8E7143')).toEqual(['485754437C8E7143', 'HWTC7C8E7143', 'hwtc7c8e7143']);
+        expect(buildSerialCandidates('ZTEGC7C8E714')).toEqual(['ZTEGC7C8E714', '5A544547C7C8E714', '5a544547c7c8e714']);
+        expect(buildSerialCandidates('45434F4D0EF0CF9B')).toEqual(['45434F4D0EF0CF9B', 'ECOM0EF0CF9B', 'ecom0ef0cf9b']);
+        expect(buildSerialCandidates('16')).toEqual(['16']);
+      });
+
+      it('encuentra el dispositivo cuando el serial GPON se pasa en formato ASCII (HWTC7C8E7143) y GenieACS lo tiene en Hex (485754437C8E7143)', async () => {
+        http.get.mockResolvedValue({ data: [{ _id: '00259E-HG8546M-485754437C8E7143' }] });
+
+        const deviceId = await client.findDeviceBySerial('HWTC7C8E7143');
+
+        expect(deviceId).toBe('00259E-HG8546M-485754437C8E7143');
+        expect(http.get).toHaveBeenCalledTimes(1);
+        const queryArg = JSON.parse(http.get.mock.calls[0][1].params.query);
+        expect(queryArg.$or).toEqual(
+          expect.arrayContaining([
+            { '_deviceId._SerialNumber': 'HWTC7C8E7143' },
+            { '_deviceId._SerialNumber': '485754437C8E7143' },
+          ]),
+        );
+      });
+
+      it('encuentra el dispositivo cuando se pasa en formato Hex (485754437C8E7143) y GenieACS lo tiene en ASCII (HWTC7C8E7143)', async () => {
+        http.get.mockResolvedValue({ data: [{ _id: '00259E-HG8546M-HWTC7C8E7143' }] });
+
+        const deviceId = await client.findDeviceBySerial('485754437C8E7143');
+
+        expect(deviceId).toBe('00259E-HG8546M-HWTC7C8E7143');
+        expect(http.get).toHaveBeenCalledTimes(1);
+        const queryArg = JSON.parse(http.get.mock.calls[0][1].params.query);
+        expect(queryArg.$or).toEqual(
+          expect.arrayContaining([
+            { '_deviceId._SerialNumber': '485754437C8E7143' },
+            { '_deviceId._SerialNumber': 'HWTC7C8E7143' },
+          ]),
+        );
+      });
     });
 
     describe('fallback por MAC (ONUs EPON/HiOSO cuyo "serial" en Sumtech es en realidad una MAC)', () => {

@@ -146,9 +146,24 @@ export class GenieAcsClient {
    * GenieACS. No es un error, es un estado válido y esperable.
    */
   async findDeviceBySerial(serialNumber: string, options?: { exactOnly: boolean }): Promise<string | null> {
-    const bySerial = await this.queryFirstDeviceId({ '_deviceId._SerialNumber': serialNumber }, options?.exactOnly);
-    if (bySerial) {
-      return bySerial;
+    const candidates = buildSerialCandidates(serialNumber);
+
+    // Si solo hay un candidato y es corto (ej. serial simple '16'), consulta directa clásica
+    if (candidates.length === 1 && serialNumber.length < 12) {
+      const bySerial = await this.queryFirstDeviceId({ '_deviceId._SerialNumber': serialNumber }, options?.exactOnly);
+      if (bySerial) {
+        return bySerial;
+      }
+    } else {
+      // Búsqueda multi-variante GPON (coincidencia exacta por _deviceId._SerialNumber o sufijo en _id)
+      const orClauses: Array<Record<string, unknown>> = candidates.flatMap((c) => [
+        { '_deviceId._SerialNumber': c },
+        { _id: { $regex: `${c}$`, $options: 'i' } },
+      ]);
+      const bySerial = await this.queryFirstDeviceId({ $or: orClauses }, options?.exactOnly);
+      if (bySerial) {
+        return bySerial;
+      }
     }
 
     const macOctets = parseMacOctets(serialNumber);
@@ -1110,6 +1125,51 @@ function nodeExists(doc: any, dotPath: string): boolean {
  * así el llamador sabe que no vale la pena intentar un match por MAC (ej. un
  * serial de fábrica real tipo "HWTC..." nunca tiene esta forma).
  */
+/**
+ * Genera candidatos de número de serie para equipos GPON/EPON.
+ * En GPON (ITU-T G.984), el serial se compone de un Vendor ID de 4 letras ASCII
+ * seguido de 8 caracteres hexadecimales (ej. "HWTC7C8E7143").
+ *
+ * La OLT suele representarlo en formato ASCII ("HWTC7C8E7143"), pero el firmware
+ * de la ONT (especialmente Huawei, ZTE, ECOM, etc.) reporta a GenieACS CWMP en
+ * hexadecimal completo ("485754437C8E7143").
+ *
+ * Esta función genera de forma bidireccional las representaciones ASCII y Hex
+ * correspondientes para asegurar que el equipo sea encontrado sin importar cómo
+ * lo haya indexado GenieACS o cómo lo haya enviado el operador.
+ */
+export function buildSerialCandidates(serialNumber: string): string[] {
+  const clean = (serialNumber || '').trim();
+  const candidates = new Set<string>();
+  if (!clean) return [];
+  candidates.add(clean);
+
+  // 1. De formato ASCII GPON (4 letras + 8 hex, ej. HWTC7C8E7143) a Hex completo (485754437C8E7143)
+  if (/^[A-Za-z]{4}[0-9A-Fa-f]{8}$/.test(clean)) {
+    const prefix = clean.slice(0, 4);
+    const suffix = clean.slice(4);
+    const hexPrefix = Buffer.from(prefix, 'ascii').toString('hex');
+    candidates.add(`${hexPrefix}${suffix}`.toUpperCase());
+    candidates.add(`${hexPrefix}${suffix}`.toLowerCase());
+  }
+
+  // 2. De formato Hex completo (16 hex, ej. 485754437C8E7143) a ASCII GPON (HWTC7C8E7143)
+  if (/^[0-9A-Fa-f]{16}$/.test(clean)) {
+    try {
+      const asciiPrefix = Buffer.from(clean.slice(0, 8), 'hex').toString('ascii');
+      if (/^[A-Za-z0-9]{4}$/.test(asciiPrefix)) {
+        const asciiCandidate = `${asciiPrefix}${clean.slice(8)}`;
+        candidates.add(asciiCandidate.toUpperCase());
+        candidates.add(asciiCandidate.toLowerCase());
+      }
+    } catch {
+      // Ignorar si no se puede decodificar
+    }
+  }
+
+  return Array.from(candidates);
+}
+
 function parseMacOctets(value: string): string[] | null {
   const hex = (value || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
   if (hex.length !== 12) {
