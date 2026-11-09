@@ -269,14 +269,15 @@ export class OnuWanProvisioningService {
       const ipv6 = resolveCpeIpv6Capabilities(onu.onuType?.vendor || onu.vendor, onu.onuType?.model).capabilities;
       if (protocol !== 'IPV4' && ((mode === 'DHCP' && !ipv6.dhcpDualStack) || (mode === 'STATIC' && !ipv6.staticIpv6))) throw new BadRequestException('Este equipo no tiene soporte IPv6 confirmado para el modo WAN seleccionado.');
       if (!config.serviceVlanId || !onu.serviceConfig?.serviceVlan?.vlanId) throw new BadRequestException('Falta la VLAN real del servicio.');
-      let access: NetworkAccessEntity | null = null;
+      let pppoePasswordEnc: string | null = null;
       let username: string | undefined;
       let password: string | undefined;
       if (mode === 'PPPOE') {
         if (!onu.contractId) {
           throw new BadRequestException('Esta ONU no tiene un contrato vinculado. Vincula un contrato antes de configurar la WAN PPPoE.');
         }
-        access = await this.accesses.findOneBy({ contractId: onu.contractId });
+        const access = await this.accesses.findOneBy({ contractId: onu.contractId });
+        pppoePasswordEnc = access?.pppoePasswordEnc || null;
         username = access?.username || undefined;
         password = access?.pppoePasswordEnc ? decryptCredential(access.pppoePasswordEnc) : undefined;
         if (!username || !password) {
@@ -311,7 +312,7 @@ export class OnuWanProvisioningService {
         wanStaticGw: desired.wanStaticGw || undefined,
       } : null;
       if (omciInput) validateOmciWanParams(omciInput);
-      const fingerprint = createHash('sha256').update(JSON.stringify({ desired, method, serial: onu.serialNumber, profile: effectiveProfile, credential: access?.pppoePasswordEnc, username })).digest('hex');
+      const fingerprint = createHash('sha256').update(JSON.stringify({ desired, method, serial: onu.serialNumber, profile: effectiveProfile, credential: pppoePasswordEnc, username })).digest('hex');
       const prior = await this.operations.createQueryBuilder('op').addSelect('op.requestFingerprint')
         .where('op.onuId = :id AND op.version >= 0', { id: onu.id }).orderBy('op.version', 'DESC').getOne();
       if (prior && ['APPLYING', 'QUEUED', 'VERIFYING', 'UNKNOWN'].includes(prior.status)) {
