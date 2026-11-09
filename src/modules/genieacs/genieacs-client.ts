@@ -913,16 +913,16 @@ export class GenieAcsClient {
     }
   }
 
-  /** Refresca un objeto o parámetro en el CPE vía getParameterValues task */
+  /** Refresca un objeto o parámetro en el CPE vía refreshObject task */
   async refreshObject(deviceId: string, objectPath: string = ''): Promise<void> {
     try {
-      let parameterNames: string[];
+      let targetPath: string;
       if (objectPath) {
-        parameterNames = [objectPath];
+        // En el parser interno de GenieACS (Xe.parsePath), cualquier ruta que termine en punto '.'
+        // provoca "Error: Invalid parameter path at refresh" al validar (s < e.length).
+        // Se normaliza eliminando cualquier punto final.
+        targetPath = objectPath.replace(/\.+$/, '');
       } else {
-        // En TR-069, consultar ambas raíces ('Device.' y 'InternetGatewayDevice.') simultáneamente
-        // hace que GenieACS intente refrescar el árbol que el CPE no soporta, disparando
-        // "Error: Invalid parameter path at refresh". Se detecta la raíz real del data model.
         let isTR181 = false;
         try {
           const doc = await this.getDeviceDocument(deviceId);
@@ -930,12 +930,12 @@ export class GenieAcsClient {
         } catch {
           // Por defecto la flota de ONTs es TR-098
         }
-        parameterNames = [isTR181 ? 'Device.' : 'InternetGatewayDevice.'];
+        targetPath = isTR181 ? 'Device' : 'InternetGatewayDevice';
       }
 
       await this.http.post(
         `${this.buildUrl(`devices/${encodeURIComponent(deviceId)}/tasks`)}?connection_request=true`,
-        { name: 'getParameterValues', parameterNames },
+        { name: 'refreshObject', objectName: targetPath },
         this.buildRequestConfig(GenieAcsClient.CONNECTION_REQUEST_TIMEOUT_MS),
       );
     } catch (error) {
