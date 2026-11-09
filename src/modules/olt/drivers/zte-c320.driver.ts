@@ -36,7 +36,11 @@ import {
   applyWanIpFixWithSession,
   applyServiceGemportFixWithSession,
 } from './zte-c320-onu-audit';
-import { applyTr069ManagementWithSession, updateTr069AcsUrlWithSession } from './zte-c320-tr069';
+import {
+  applyTr069ManagementWithSession,
+  updateTr069AcsUrlWithSession,
+  batchUpdateTr069AcsUrlWithSession,
+} from './zte-c320-tr069';
 import { Tr069Result, initialTr069Result } from '../ports/tr069-provisioning.types';
 import { redactOltCli } from '../utils/redact-olt-cli';
 import { validateTr069Input } from './zte-c320-tr069-state';
@@ -86,6 +90,8 @@ import {
   OnuWanIpInfo,
   OnuTr069MgmtInfo,
   OltConsoleStream,
+  BatchTr069AcsItemInput,
+  BatchTr069AcsResult,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
@@ -854,6 +860,45 @@ export class ZteC320Driver implements IOltDriver {
   }
 
   /**
+   * Actualización masiva del puntero ACS (TR-069) para un lote de ONUs en la misma OLT.
+   * Ejecuta en una única sesión Telnet la secuencia de configuración para todas las ONUs indicadas.
+   */
+  async batchUpdateTr069AcsUrl(
+    params: OltConnectionParams,
+    items: BatchTr069AcsItemInput[],
+  ): Promise<BatchTr069AcsResult> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return await batchUpdateTr069AcsUrlWithSession(session, items, this.logger, (ms) => this.delay(ms));
+    } catch (err: any) {
+      return {
+        ok: false,
+        total: items.length,
+        successful: 0,
+        failed: items.length,
+        results: items.map((i) => ({
+          onuId: i.onuId,
+          serialNumber: i.serialNumber,
+          onuInterface: `${i.ponInterface}:${i.onuIndex}`,
+          ok: false,
+          error: redactOltCli(err.message, [i.tr069AcsPassword, i.tr069AcsUsername]),
+        })),
+        error: redactOltCli(
+          err.message,
+          items.flatMap((i) => [i.tr069AcsPassword, i.tr069AcsUsername]).filter(Boolean) as string[],
+        ),
+      };
+    } finally {
+      try {
+        await session.close();
+      } catch {
+        this.logger.warn('No se pudo cerrar la sesión TR-069 masiva.');
+      }
+    }
+  }
+
+  /**
    * Busca un perfil TCONT por nombre vía `show gpon profile tcont`.
    * Reutiliza el mismo parser que `getTcontProfiles()` (confirmado en vivo
    * contra OLT_Tabara_Abajo, 2026-10-19) en vez del viejo heurístico
@@ -1345,6 +1390,7 @@ export class ZteC320Driver implements IOltDriver {
       onuTypeProfileProvisioning: true,
       onuReboot: true,
       onuFactoryReset: true,
+      batchTr069AcsUpdate: true,
     };
   }
 

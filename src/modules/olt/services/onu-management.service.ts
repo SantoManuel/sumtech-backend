@@ -3,7 +3,7 @@ import { Tr069Result, initialTr069Result, evidence } from '../ports/tr069-provis
 import { validateTr069Input } from '../drivers/zte-c320-tr069-state';
 import { redactOltCli } from '../utils/redact-olt-cli';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThanOrEqual, Not } from 'typeorm';
+import { Repository, MoreThanOrEqual, Not, In } from 'typeorm';
 import { findFirstFreeOnuId } from '../drivers/zte-c320-parsers';
 import { OnuEntity } from '../entities/onu.entity';
 import { OnuServiceConfigEntity } from '../entities/onu-service-config.entity';
@@ -16,6 +16,7 @@ import { VlanEntity } from '../entities/vlan.entity';
 import { Tr069NetworkEntity } from '../entities/tr069-network.entity';
 import { ListUnconfiguredOnusDto, ListOnusDto } from '../dto/list-onus.dto';
 import { MigrateOnuDto } from '../dto/migrate-onu.dto';
+import { BatchTr069AcsDto } from '../dto/batch-tr069-acs.dto';
 import { NetworkAccessEntity } from '../../network/entities/network-access.entity';
 import { NapPortEntity } from '../../network/entities/nap-port.entity';
 import { ContractEntity } from '../../clients/entities/contract.entity';
@@ -36,6 +37,9 @@ import {
   OnuIpHostInfo,
   OnuWanIpInfo,
   OnuTr069MgmtInfo,
+  BatchTr069AcsItemInput,
+  BatchTr069AcsItemOutput,
+  BatchTr069AcsResult,
 } from '../ports/olt-driver.port';
 import { withOltTelnetLock } from '../utils/olt-telnet-mutex';
 import { OltPartialOperationService } from './olt-partial-operation.service';
@@ -1556,7 +1560,6 @@ export class OnuManagementService {
     return { ...saved, tr069Warning: result.warning };
   }
 
-  
   async updateTr069AcsUrl(id: string, dto: { tr069NetworkId: string; tr069AcsUsername?: string; tr069AcsPassword?: string }, actorUserId?: string) {
     const onu = await this.findById(id);
     const olt = onu.olt;
@@ -1625,6 +1628,244 @@ export class OnuManagementService {
 
     const saved = await this.findById(onu.id);
     return { ...saved, tr069Warning: result.warning };
+  }
+
+  /**
+   * Actualización masiva del puntero ACS TR-069 para 1 a N ONUs.
+   * Agrupa las ONUs por OLT para reutilizar una única sesión Telnet por chasis,
+   * reduciendo drásticamente el tiempo de ejecución y evitando bloqueos repetitivos.
+   */
+  async batchUpdateTr069AcsUrl(dto: BatchTr069AcsDto, actorUserId?: string) {
+    if (!dto.onuIds || dto.onuIds.length === 0) {
+      throw new BadRequestException('Debe seleccionar al menos una ONU.');
+    }
+
+    let acsUrl: string | undefined;
+    let tr069AcsUsername: string | undefined;
+    let tr069AcsPassword: string | undefined;
+    let tr069VlanId: string | undefined;
+
+    if (dto.tr069NetworkId) {
+      const net = await this.tr069Repository.findOne({
+        where: { id: dto.tr069NetworkId },
+        relations: ['vlan'],
+      });
+      if (!net) {
+        throw new NotFoundException(`La Red TR-069 seleccionada no existe.`);
+      }
+      if (!net.acsUrl) {
+        throw new BadRequestException(`La Red TR-069 seleccionada no tiene una URL de ACS configurada.`);
+      }
+      acsUrl = net.acsUrl;
+      tr069AcsUsername = dto.customAcs?.tr069AcsUsername?.trim() || net.acsUsername || undefined;
+      tr069AcsPassword =
+        dto.customAcs?.tr069AcsPassword || (net.acsPasswordEnc ? decryptCredential(net.acsPasswordEnc) : undefined);
+      tr069VlanId = net.vlanId;
+    } else if (dto.customAcs?.acsUrl) {
+      acsUrl = dto.customAcs.acsUrl.trim();
+      tr069AcsUsername = dto.customAcs.tr069AcsUsername?.trim() || undefined;
+      tr069AcsPassword = dto.customAcs.tr069AcsPassword || undefined;
+    } else {
+      throw new BadRequestException('Debe seleccionar una Red TR-069 o proporcionar la URL del ACS en customAcs.');
+    }
+
+    for (const val of [acsUrl, tr069AcsUsername, tr069AcsPassword]) {
+      if (val != null && (typeof val !== 'string' || /[\r\n\x00-\x1f\x7f]/.test(val))) {
+        throw new BadRequestException('Parámetro ACS inválido (contiene caracteres de control no permitidos).');
+      }
+    }
+
+    const requestedIds = Array.from(new Set(dto.onuIds));
+    const onus = await this.onuRepository.find({
+      where: { id: In(requestedIds) },
+      relations: ['olt', 'ponInterface', 'serviceConfig'],
+    });
+
+    const foundOnuMap = new Map(onus.map((o) => [o.id, o]));
+    const results: BatchTr069AcsItemOutput[] = [];
+
+    // Identificar ONUs no encontradas
+    for (const id of requestedIds) {
+      if (!foundOnuMap.has(id)) {
+        results.push({
+          onuId: id,
+          onuInterface: '',
+          ok: false,
+          error: 'ONU no encontrada en la base de datos.',
+        });
+      }
+    }
+
+    // Agrupar ONUs válidas por OLT
+    const onusByOlt = new Map<string, { olt: OltEntity; items: OnuEntity[] }>();
+    for (const onu of onus) {
+      if (!onu.olt) {
+        results.push({
+          onuId: onu.id,
+          serialNumber: onu.serialNumber,
+          onuInterface: '',
+          ok: false,
+          error: 'La ONU no tiene una OLT asociada.',
+        });
+        continue;
+      }
+      if (!onusByOlt.has(onu.olt.id)) {
+        onusByOlt.set(onu.olt.id, { olt: onu.olt, items: [] });
+      }
+      onusByOlt.get(onu.olt.id)!.items.push(onu);
+    }
+
+    let totalSuccessful = 0;
+    let totalFailed = results.filter((r) => !r.ok).length;
+
+    // Procesar cada OLT con su Telnet Lock
+    for (const [, { olt, items }] of onusByOlt.entries()) {
+      const driver = this.resolveDriver(olt);
+      const connParams = await this.connectionResolver.resolve(olt);
+
+      const batchItems: BatchTr069AcsItemInput[] = items.map((onu) => {
+        const { ponInterface, onuId } = this.resolveOnuLocation(onu);
+        return {
+          onuId: onu.id,
+          ponInterface,
+          onuIndex: onuId,
+          serialNumber: onu.serialNumber,
+          tr069Url: acsUrl!,
+          tr069AcsUsername,
+          tr069AcsPassword,
+        };
+      });
+
+      let oltBatchResult: BatchTr069AcsResult;
+
+      if (driver.batchUpdateTr069AcsUrl) {
+        oltBatchResult = await withOltTelnetLock(olt.id, () =>
+          this.callDriver(() => driver.batchUpdateTr069AcsUrl!(connParams, batchItems)),
+        );
+      } else if (driver.updateTr069AcsUrl) {
+        // Fallback para drivers que solo tienen update individual
+        const itemResults: BatchTr069AcsItemOutput[] = [];
+        let okCount = 0;
+        let failCount = 0;
+
+        await withOltTelnetLock(olt.id, async () => {
+          for (const item of batchItems) {
+            try {
+              const res = await this.callDriver(() =>
+                driver.updateTr069AcsUrl!(connParams, {
+                  ponInterface: item.ponInterface,
+                  onuId: item.onuIndex,
+                  tr069Url: item.tr069Url,
+                  serialNumber: item.serialNumber,
+                  tr069AcsUsername: item.tr069AcsUsername,
+                  tr069AcsPassword: item.tr069AcsPassword,
+                }),
+              );
+              if (res.ok) {
+                okCount++;
+                itemResults.push({
+                  onuId: item.onuId,
+                  serialNumber: item.serialNumber,
+                  onuInterface: `${item.ponInterface}:${item.onuIndex}`,
+                  ok: true,
+                });
+              } else {
+                failCount++;
+                itemResults.push({
+                  onuId: item.onuId,
+                  serialNumber: item.serialNumber,
+                  onuInterface: `${item.ponInterface}:${item.onuIndex}`,
+                  ok: false,
+                  error: res.error || 'Fallo desconocido en driver OLT',
+                });
+              }
+            } catch (err: any) {
+              failCount++;
+              itemResults.push({
+                onuId: item.onuId,
+                serialNumber: item.serialNumber,
+                onuInterface: `${item.ponInterface}:${item.onuIndex}`,
+                ok: false,
+                error: err.message,
+              });
+            }
+          }
+        });
+
+        oltBatchResult = {
+          ok: failCount === 0,
+          total: batchItems.length,
+          successful: okCount,
+          failed: failCount,
+          results: itemResults,
+        };
+      } else {
+        oltBatchResult = {
+          ok: false,
+          total: batchItems.length,
+          successful: 0,
+          failed: batchItems.length,
+          results: batchItems.map((b) => ({
+            onuId: b.onuId,
+            serialNumber: b.serialNumber,
+            onuInterface: `${b.ponInterface}:${b.onuIndex}`,
+            ok: false,
+            error: `[${olt.vendor}] Este fabricante no soporta actualización de ACS TR-069.`,
+          })),
+          error: `[${olt.vendor}] No implementado.`,
+        };
+      }
+
+      // Persistir configuración en DB para las ONUs que tuvieron éxito
+      for (const resItem of oltBatchResult.results) {
+        results.push(resItem);
+        if (resItem.ok) {
+          totalSuccessful++;
+          const targetOnu = foundOnuMap.get(resItem.onuId);
+          if (targetOnu) {
+            let config = targetOnu.serviceConfig || (await this.configRepository.findOneBy({ onuId: targetOnu.id }));
+            if (!config) {
+              config = this.configRepository.create({
+                onuId: targetOnu.id,
+                managementMethod: 'TR069',
+                operationMode: 'ROUTER',
+              });
+            }
+            config.managementMethod = 'TR069';
+            if (dto.tr069NetworkId) {
+              config.tr069NetworkId = dto.tr069NetworkId;
+              if (tr069VlanId) config.tr069VlanId = tr069VlanId;
+            }
+            await this.configRepository.save(config);
+          }
+        } else {
+          totalFailed++;
+        }
+      }
+
+      await this.deviceOperationLogger.logEvent({
+        nodeId: olt.viaNodeId || olt.id,
+        eventType: 'PROVISION',
+        status: oltBatchResult.successful > 0 ? 'SUCCESS' : 'FAILURE',
+        message: `[${olt.vendor}] Migración masiva de ACS TR-069: ${oltBatchResult.successful}/${batchItems.length} ONUs exitosas en OLT ${olt.name}.`,
+        actorUserId,
+        rawDetails: {
+          oltId: olt.id,
+          operation: 'batchUpdateTr069AcsUrl',
+          successful: oltBatchResult.successful,
+          failed: oltBatchResult.failed,
+          acsUrl,
+        },
+      });
+    }
+
+    return {
+      ok: totalFailed === 0,
+      total: requestedIds.length,
+      successful: totalSuccessful,
+      failed: totalFailed,
+      results,
+    };
   }
 
   

@@ -1,7 +1,13 @@
 import { Logger } from '@nestjs/common';
 import { isIP } from 'net';
-import { AuthorizeOnuParams } from '../ports/olt-driver.port';
+import {
+  AuthorizeOnuParams,
+  BatchTr069AcsItemInput,
+  BatchTr069AcsItemOutput,
+  BatchTr069AcsResult,
+} from '../ports/olt-driver.port';
 import { Tr069Result, initialTr069Result, evidence } from '../ports/tr069-provisioning.types';
+import { redactOltCli } from '../utils/redact-olt-cli';
 import { ZteSessionLike } from './zte-telnet-session';
 import {
   isOltErrorResponse,
@@ -391,4 +397,104 @@ export async function updateTr069AcsUrlWithSession(
   }
 
   return result;
+}
+
+/**
+ * Actualización masiva del puntero ACS (TR-069) para un lote de ONUs en la misma OLT.
+ * Ejecuta en una única sesión Telnet la secuencia `pon-onu-mng <iface>` -> `tr069-mgmt 1 acs ...` -> `exit`,
+ * seguida de `end` y un único `write` final, minimizando drásticamente la latencia y contención en la OLT.
+ */
+export async function batchUpdateTr069AcsUrlWithSession(
+  session: ZteSessionLike,
+  items: BatchTr069AcsItemInput[],
+  logger: Logger = new Logger('Tr069Batch'),
+  delay: DelayFn = defaultDelay,
+): Promise<BatchTr069AcsResult> {
+  const results: BatchTr069AcsItemOutput[] = [];
+  let successful = 0;
+  let failed = 0;
+
+  try {
+    await session.executeCommand('configure terminal');
+
+    for (const item of items) {
+      const onuInterface = toOnuInterfaceName(item.ponInterface, item.onuIndex);
+      try {
+        const pomOutput = await session.executeCommand(`pon-onu-mng ${onuInterface}`);
+        if (isOltErrorResponse(pomOutput)) {
+          throw new Error(`La OLT rechazó entrar a "pon-onu-mng ${onuInterface}": ${pomOutput.trim()}`);
+        }
+
+        const acsCmd =
+          item.tr069AcsUsername && item.tr069AcsPassword
+            ? `tr069-mgmt 1 acs ${item.tr069Url} validate basic username ${item.tr069AcsUsername} password ${item.tr069AcsPassword}`
+            : `tr069-mgmt 1 acs ${item.tr069Url}`;
+        const acsOutput = await session.executeCommand(acsCmd);
+        if (isOltErrorResponse(acsOutput) && !isAlreadyAppliedResponse(acsOutput)) {
+          throw new Error(`La OLT rechazó "tr069-mgmt 1 acs": ${acsOutput.trim()}`);
+        }
+
+        await session.executeCommand('exit');
+        results.push({
+          onuId: item.onuId,
+          serialNumber: item.serialNumber,
+          onuInterface,
+          ok: true,
+        });
+        successful++;
+      } catch (err: any) {
+        // En caso de fallo dentro de pon-onu-mng, intentamos regresar a (config)#
+        try {
+          await session.executeCommand('exit');
+        } catch {
+          /* best-effort */
+        }
+        results.push({
+          onuId: item.onuId,
+          serialNumber: item.serialNumber,
+          onuInterface,
+          ok: false,
+          error: redactOltCli(err.message, [item.tr069AcsPassword, item.tr069AcsUsername]),
+        });
+        failed++;
+      }
+    }
+
+    await session.executeCommand('end');
+    await session.executeCommand('write');
+
+    return {
+      ok: failed === 0,
+      total: items.length,
+      successful,
+      failed,
+      results,
+    };
+  } catch (err: any) {
+    logger.error(`Error de sesión en lote TR-069: ${err.message}`);
+    const processedIds = new Set(results.map((r) => r.onuId));
+    for (const item of items) {
+      if (!processedIds.has(item.onuId)) {
+        results.push({
+          onuId: item.onuId,
+          serialNumber: item.serialNumber,
+          onuInterface: `${item.ponInterface}:${item.onuIndex}`,
+          ok: false,
+          error: redactOltCli(err.message, [item.tr069AcsPassword, item.tr069AcsUsername]),
+        });
+        failed++;
+      }
+    }
+    return {
+      ok: false,
+      total: items.length,
+      successful,
+      failed,
+      results,
+      error: redactOltCli(
+        err.message,
+        items.flatMap((i) => [i.tr069AcsPassword, i.tr069AcsUsername]).filter(Boolean) as string[],
+      ),
+    };
+  }
 }

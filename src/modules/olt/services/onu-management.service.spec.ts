@@ -187,6 +187,7 @@ describe('OnuManagementService', () => {
       authorizeOnu: jest.fn(),
       applyTr069Management: jest.fn(),
       updateTr069AcsUrl: jest.fn(),
+      batchUpdateTr069AcsUrl: jest.fn(),
       setOnuAdminState: jest.fn(),
       deleteOnu: jest.fn(),
       getOnuDetailInfo: jest.fn(),
@@ -1750,6 +1751,122 @@ describe('OnuManagementService', () => {
         service.updateTr069AcsUrl('onu-uuid-1', { tr069NetworkId: 'tr069-1' }),
       ).rejects.toThrow(BadRequestException);
       expect(configRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('batchUpdateTr069AcsUrl (migración masiva de ACS en lote)', () => {
+    const mockOnu1: any = {
+      id: 'onu-1',
+      serialNumber: 'ZTEG11111111',
+      status: 'ACTIVE',
+      onuIndex: 1,
+      oltId: 'olt-1',
+      olt: { id: 'olt-1', name: 'OLT Central', vendor: 'ZTE' },
+      ponInterface: { id: 'pon-1', name: 'gpon-olt_1/1/1' },
+      serviceConfig: { onuId: 'onu-1', managementMethod: 'TR069', operationMode: 'ROUTER' },
+    };
+    const mockOnu2: any = {
+      id: 'onu-2',
+      serialNumber: 'ZTEG22222222',
+      status: 'ACTIVE',
+      onuIndex: 2,
+      oltId: 'olt-1',
+      olt: { id: 'olt-1', name: 'OLT Central', vendor: 'ZTE' },
+      ponInterface: { id: 'pon-1', name: 'gpon-olt_1/1/1' },
+      serviceConfig: { onuId: 'onu-2', managementMethod: 'TR069', operationMode: 'ROUTER' },
+    };
+
+    it('ejecuta con éxito la migración por lote usando driver.batchUpdateTr069AcsUrl', async () => {
+      onuRepo.find.mockResolvedValue([mockOnu1, mockOnu2]);
+      tr069Repo.findOne.mockResolvedValue({
+        id: 'tr069-1',
+        name: 'GenieACS Red',
+        acsUrl: 'http://10.69.69.1:14501',
+        acsUsername: 'soltcpe',
+        acsPasswordEnc: encryptCredential('FiEpcY4srQj6'),
+        vlanId: 'vlan-46',
+      });
+      zteDriver.batchUpdateTr069AcsUrl.mockResolvedValue({
+        ok: true,
+        total: 2,
+        successful: 2,
+        failed: 0,
+        results: [
+          { onuId: 'onu-1', serialNumber: 'ZTEG11111111', onuInterface: 'gpon-onu_1/1/1:1', ok: true },
+          { onuId: 'onu-2', serialNumber: 'ZTEG22222222', onuInterface: 'gpon-onu_1/1/1:2', ok: true },
+        ],
+      });
+
+      const result = await service.batchUpdateTr069AcsUrl({
+        onuIds: ['onu-1', 'onu-2'],
+        tr069NetworkId: 'tr069-1',
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.successful).toBe(2);
+      expect(result.failed).toBe(0);
+      expect(zteDriver.batchUpdateTr069AcsUrl).toHaveBeenCalled();
+      expect(configRepo.save).toHaveBeenCalledTimes(2);
+      expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'PROVISION', status: 'SUCCESS' }),
+      );
+    });
+
+    it('soporta configuración manual con customAcs sin requerir tr069NetworkId', async () => {
+      onuRepo.find.mockResolvedValue([mockOnu1]);
+      zteDriver.batchUpdateTr069AcsUrl.mockResolvedValue({
+        ok: true,
+        total: 1,
+        successful: 1,
+        failed: 0,
+        results: [{ onuId: 'onu-1', serialNumber: 'ZTEG11111111', onuInterface: 'gpon-onu_1/1/1:1', ok: true }],
+      });
+
+      const result = await service.batchUpdateTr069AcsUrl({
+        onuIds: ['onu-1'],
+        customAcs: {
+          acsUrl: 'http://10.69.69.1:14501',
+          tr069AcsUsername: 'soltcpe',
+          tr069AcsPassword: 'FiEpcY4srQj6',
+        },
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.successful).toBe(1);
+      expect(zteDriver.batchUpdateTr069AcsUrl).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.arrayContaining([
+          expect.objectContaining({
+            tr069Url: 'http://10.69.69.1:14501',
+            tr069AcsUsername: 'soltcpe',
+            tr069AcsPassword: 'FiEpcY4srQj6',
+          }),
+        ]),
+      );
+    });
+
+    it('reporta fallo por ONU individual si la OLT rechaza una de ellas', async () => {
+      onuRepo.find.mockResolvedValue([mockOnu1, mockOnu2]);
+      zteDriver.batchUpdateTr069AcsUrl.mockResolvedValue({
+        ok: false,
+        total: 2,
+        successful: 1,
+        failed: 1,
+        results: [
+          { onuId: 'onu-1', serialNumber: 'ZTEG11111111', onuInterface: 'gpon-onu_1/1/1:1', ok: true },
+          { onuId: 'onu-2', serialNumber: 'ZTEG22222222', onuInterface: 'gpon-onu_1/1/1:2', ok: false, error: 'Rechazado' },
+        ],
+      });
+
+      const result = await service.batchUpdateTr069AcsUrl({
+        onuIds: ['onu-1', 'onu-2'],
+        customAcs: { acsUrl: 'http://10.69.69.1:14501' },
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.successful).toBe(1);
+      expect(result.failed).toBe(1);
+      expect(configRepo.save).toHaveBeenCalledTimes(1);
     });
   });
 

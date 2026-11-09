@@ -356,6 +356,33 @@ export interface OnuTr069MgmtInfo {
   raw: string;
 }
 
+export interface BatchTr069AcsItemInput {
+  onuId: string;
+  ponInterface: string;
+  onuIndex: number;
+  serialNumber?: string;
+  tr069Url: string;
+  tr069AcsUsername?: string;
+  tr069AcsPassword?: string;
+}
+
+export interface BatchTr069AcsItemOutput {
+  onuId: string;
+  serialNumber?: string;
+  onuInterface: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface BatchTr069AcsResult {
+  ok: boolean;
+  total: number;
+  successful: number;
+  failed: number;
+  results: BatchTr069AcsItemOutput[];
+  error?: string;
+}
+
 /**
  * Refleja qué operaciones de IOltDriver tienen comunicación real implementada
  * contra el hardware para este fabricante. `false` en cualquier campo significa
@@ -487,6 +514,7 @@ export interface OltDriverCapabilities {
   onuTypeProfileProvisioning: boolean;
   onuReboot: boolean;
   onuFactoryReset: boolean;
+  batchTr069AcsUpdate?: boolean;
 }
 
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
@@ -516,6 +544,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   onuTypeProfileProvisioning: false,
   onuReboot: false,
   onuFactoryReset: false,
+  batchTr069AcsUpdate: false,
 };
 
 /**
@@ -657,6 +686,15 @@ export interface IOltDriver {
       tr069AcsPassword?: string;
     },
   ): Promise<Partial<Tr069Result> & { ok: boolean }>;
+  /**
+   * Actualización en lote del puntero ACS TR-069 para múltiples ONUs en la misma OLT.
+   * Ejecuta en una sola sesión Telnet la secuencia pon-onu-mng de cada equipo,
+   * optimizando tiempos y evitando bloqueos repetitivos de conexión.
+   */
+  batchUpdateTr069AcsUrl?(
+    params: OltConnectionParams,
+    items: BatchTr069AcsItemInput[],
+  ): Promise<BatchTr069AcsResult>;
   setOnuAdminState(params: OltConnectionParams, onuTarget: string, state: 'ACTIVE' | 'BLOCKED'): Promise<{ ok: boolean; error?: string }>;
   deleteOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;
   rebootOnu?(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }>;

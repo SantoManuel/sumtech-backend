@@ -25,6 +25,7 @@ import { MigrateOnuDto } from './dto/migrate-onu.dto';
 import { ConfigureOnuWanDto } from './dto/configure-onu-wan.dto';
 import { OnuOmciWanProfileDto } from './dto/onu-omci-wan-profile.dto';
 import { RetryOnuWanDto } from './dto/retry-onu-wan.dto';
+import { BatchTr069AcsDto } from './dto/batch-tr069-acs.dto';
 
 @Controller('olt/onus')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -72,6 +73,20 @@ export class OnuController {
   @RequireOltAction('OPERATE')
   async scanAuthorized(@Body() body: { oltId: string; ponInterface: string }, @Req() req: any) {
     return this.onuService.scanAuthorizedOnus(body.oltId, body.ponInterface, req.user?.id);
+  }
+
+  /**
+   * Actualización masiva (1 a N) del puntero ACS TR-069.
+   * Ejecuta la reconfiguración agrupada por OLT optimizando las sesiones Telnet.
+   */
+  @Post('batch-tr069-acs')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('OPERATE')
+  async batchUpdateTr069AcsUrl(
+    @Body() dto: BatchTr069AcsDto,
+    @Req() req: any,
+  ) {
+    return this.onuService.batchUpdateTr069AcsUrl(dto, req.user?.id);
   }
 
   /**
