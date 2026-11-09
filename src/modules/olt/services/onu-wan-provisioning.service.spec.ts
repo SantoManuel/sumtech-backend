@@ -322,11 +322,28 @@ describe('OnuWanProvisioningService', () => {
     expect(cpe.configureCpe).toHaveBeenCalledTimes(1);
   });
 
-  it('lanza BadRequestException si se intenta configurar WAN PPPoE sin un contrato vinculado', async () => {
+  it('lanza BadRequestException si se intenta configurar WAN PPPoE sin un contrato vinculado ni credenciales manuales', async () => {
     onu.contractId = null;
     await expect(service.configure(onu, { provisioningMethod: 'TR069', wanMode: 'PPPOE' }))
-      .rejects.toThrow('Esta ONU no tiene un contrato vinculado. Vincula un contrato antes de configurar la WAN PPPoE.');
+      .rejects.toThrow('Esta ONU no tiene un contrato vinculado. Introduce las credenciales PPPoE manualmente o vincula un contrato.');
     expect(cpe.configureCpe).not.toHaveBeenCalled();
+  });
+
+  it('permite configurar WAN PPPoE con credenciales manuales cuando la ONU no tiene contrato vinculado', async () => {
+    onu.contractId = null;
+    const result = await service.configure(onu, {
+      provisioningMethod: 'TR069',
+      wanMode: 'PPPOE',
+      pppoeUsername: 'manual_user@sumtech',
+      pppoePassword: 'ManualPassword123!',
+    });
+    expect(cpe.configureCpe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pppoeUsername: 'manual_user@sumtech',
+        pppoePassword: 'ManualPassword123!',
+      })
+    );
+    expect(result.status).toBe('APPLIED');
   });
 
   it('resuelve effectiveVendor desde acs.getDeviceStatus si onuType.vendor es ALL', async () => {

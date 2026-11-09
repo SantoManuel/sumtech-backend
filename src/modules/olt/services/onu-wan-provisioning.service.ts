@@ -11,7 +11,7 @@ import { resolveCpeIpv6Capabilities } from '../../genieacs/services/cpe-capabili
 import { GENIEACS_CLIENT } from '../../genieacs/genieacs-client-factory';
 import { GenieAcsClient } from '../../genieacs/genieacs-client';
 import { NetworkAccessEntity } from '../../network/entities/network-access.entity';
-import { decryptCredential } from '../../network-connectivity/utils/crypto.util';
+import { decryptCredential, encryptCredential } from '../../network-connectivity/utils/crypto.util';
 import { ConfigureOnuWanDto } from '../dto/configure-onu-wan.dto';
 import { OnuOmciWanProfileDto } from '../dto/onu-omci-wan-profile.dto';
 import { OnuEntity } from '../entities/onu.entity';
@@ -273,15 +273,22 @@ export class OnuWanProvisioningService {
       let username: string | undefined;
       let password: string | undefined;
       if (mode === 'PPPOE') {
-        if (!onu.contractId) {
-          throw new BadRequestException('Esta ONU no tiene un contrato vinculado. Vincula un contrato antes de configurar la WAN PPPoE.');
+        if (dto.pppoeUsername && dto.pppoePassword) {
+          username = dto.pppoeUsername.trim();
+          password = dto.pppoePassword.trim();
+          pppoePasswordEnc = encryptCredential(password);
+        } else if (onu.contractId) {
+          const access = await this.accesses.findOneBy({ contractId: onu.contractId });
+          pppoePasswordEnc = access?.pppoePasswordEnc || null;
+          username = access?.username || undefined;
+          password = access?.pppoePasswordEnc ? decryptCredential(access.pppoePasswordEnc) : undefined;
         }
-        const access = await this.accesses.findOneBy({ contractId: onu.contractId });
-        pppoePasswordEnc = access?.pppoePasswordEnc || null;
-        username = access?.username || undefined;
-        password = access?.pppoePasswordEnc ? decryptCredential(access.pppoePasswordEnc) : undefined;
+
         if (!username || !password) {
-          throw new BadRequestException('El contrato necesita usuario y contraseña PPPoE propios guardados.');
+          if (!onu.contractId) {
+            throw new BadRequestException('Esta ONU no tiene un contrato vinculado. Introduce las credenciales PPPoE manualmente o vincula un contrato.');
+          }
+          throw new BadRequestException('El contrato necesita usuario y contraseña PPPoE propios guardados. Introdúcelos manualmente o configúralos en el contrato.');
         }
       }
 

@@ -1,10 +1,12 @@
-import { IsIn, IsInt, IsIP, IsOptional, Min, Max, ValidateIf } from 'class-validator';
+import { IsIn, IsInt, IsIP, IsOptional, IsString, Min, Max, ValidateIf } from 'class-validator';
 
 export class ConfigureOnuWanDto {
   @IsOptional() @IsIn(['OMCI', 'TR069']) provisioningMethod?: 'OMCI' | 'TR069';
   @IsOptional() @IsIn(['PPPOE', 'DHCP', 'STATIC']) wanMode?: 'PPPOE' | 'DHCP' | 'STATIC';
   @IsOptional() @IsIn(['IPV4', 'IPV6', 'DUAL']) ipProtocol?: 'IPV4' | 'IPV6' | 'DUAL';
   @IsOptional() @IsInt() @Min(0) expectedVersion?: number;
+  @IsOptional() @IsString() pppoeUsername?: string;
+  @IsOptional() @IsString() pppoePassword?: string;
   @ValidateIf(o => o.wanMode === 'STATIC') @IsIP('4') wanStaticIp?: string;
   @ValidateIf(o => o.wanMode === 'STATIC') @IsIP('4') wanStaticMask?: string;
   @ValidateIf(o => o.wanMode === 'STATIC') @IsIP('4') wanStaticGw?: string;
