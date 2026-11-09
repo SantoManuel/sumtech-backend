@@ -1002,4 +1002,79 @@ describe('GenieAcsClient', () => {
       await expect(client.rebootDevice('00259E-ONT-16')).rejects.toThrow(/tiempo de espera/i);
     });
   });
+
+  describe('resolveWanConnectionIndex', () => {
+    it('detecta que la instancia 1 es gestión TR-069 y resuelve el índice 2 para nueva conexión PPPoE', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            _id: '00259E-ONT-16',
+            InternetGatewayDevice: {
+              WANDevice: {
+                '1': {
+                  WANConnectionDevice: {
+                    '1': {
+                      WANIPConnection: {
+                        '1': {
+                          X_HW_SERVICELIST: { _value: 'TR069' },
+                          X_HW_VLAN: { _value: '444' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      });
+
+      const res = await client.resolveWanConnectionIndex('00259E-ONT-16', 'PPPOE', 400);
+
+      expect(res.index).toBe(2);
+      expect(res.connectionExists).toBe(false);
+      expect(res.deviceExists).toBe(false);
+    });
+
+    it('reusa la instancia existente que ya tiene PPPoE de internet', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            _id: '00259E-ONT-16',
+            InternetGatewayDevice: {
+              WANDevice: {
+                '1': {
+                  WANConnectionDevice: {
+                    '1': {
+                      WANIPConnection: {
+                        '1': {
+                          X_HW_SERVICELIST: { _value: 'TR069' },
+                          X_HW_VLAN: { _value: '444' },
+                        },
+                      },
+                    },
+                    '2': {
+                      WANPPPConnection: {
+                        '1': {
+                          X_HW_SERVICELIST: { _value: 'INTERNET' },
+                          X_HW_VLAN: { _value: '405' },
+                          Username: { _value: 'cliente@sumtech' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      });
+
+      const res = await client.resolveWanConnectionIndex('00259E-ONT-16', 'PPPOE', 405);
+
+      expect(res.index).toBe(2);
+      expect(res.connectionExists).toBe(true);
+      expect(res.deviceExists).toBe(true);
+    });
+  });
 });

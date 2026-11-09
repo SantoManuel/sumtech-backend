@@ -46,7 +46,7 @@ describe('OnuWanProvisioningService', () => {
     const registry: any = { resolve: () => driver };
     const connections: any = { resolve: jest.fn().mockResolvedValue({}) };
     cpe = { configureCpe: jest.fn().mockResolvedValue({ applicationStatus: 'APPLIED', deviceId: 'device-1', appliedParametersCount: 4 }) };
-    acs = { findDeviceBySerial: jest.fn().mockResolvedValue('device-1'), getPendingDeviceTasks: jest.fn().mockResolvedValue([]), setDeviceTag: jest.fn(), deleteDeviceTag: jest.fn(), clearDeviceTasks: jest.fn().mockResolvedValue({ deleted: 0, failed: 0 }), deleteTask: jest.fn().mockResolvedValue(undefined) };
+    acs = { findDeviceBySerial: jest.fn().mockResolvedValue('device-1'), getPendingDeviceTasks: jest.fn().mockResolvedValue([]), setDeviceTag: jest.fn(), deleteDeviceTag: jest.fn(), clearDeviceTasks: jest.fn().mockResolvedValue({ deleted: 0, failed: 0 }), deleteTask: jest.fn().mockResolvedValue(undefined), getDeviceStatus: jest.fn().mockResolvedValue({ manufacturer: "Huawei Technologies Co., Ltd" }) };
     service = new OnuWanProvisioningService(configs, operations, accesses, tenant, policy, registry, connections, cpe, acs);
   });
 
@@ -320,5 +320,25 @@ describe('OnuWanProvisioningService', () => {
     onu.serviceConfig = { ...onu.serviceConfig, wanApplyStatus: 'ERROR', wanDesiredVersion: 1 };
     await service.reconcile(onu);
     expect(cpe.configureCpe).toHaveBeenCalledTimes(1);
+  });
+
+  it('lanza BadRequestException si se intenta configurar WAN PPPoE sin un contrato vinculado', async () => {
+    onu.contractId = null;
+    await expect(service.configure(onu, { provisioningMethod: 'TR069', wanMode: 'PPPOE' }))
+      .rejects.toThrow('Esta ONU no tiene un contrato vinculado. Vincula un contrato antes de configurar la WAN PPPoE.');
+    expect(cpe.configureCpe).not.toHaveBeenCalled();
+  });
+
+  it('resuelve effectiveVendor desde acs.getDeviceStatus si onuType.vendor es ALL', async () => {
+    onu.onuType = { vendor: 'ALL', model: 'HG8546M', vendorTypeName: 'HG8546M' };
+    acs.getDeviceStatus.mockResolvedValue({ manufacturer: 'Huawei Technologies Co., Ltd' });
+
+    await service.configure(onu, { provisioningMethod: 'TR069' });
+
+    expect(cpe.configureCpe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        vendor: 'Huawei Technologies Co., Ltd',
+      })
+    );
   });
 });

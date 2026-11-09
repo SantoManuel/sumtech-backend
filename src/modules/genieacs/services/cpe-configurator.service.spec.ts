@@ -19,11 +19,13 @@ describe('CpeConfiguratorService', () => {
     factoryReset: jest.fn(),
     objectInstanceExists: jest.fn(),
     addObject: jest.fn(),
+    resolveWanConnectionIndex: jest.fn(),
   };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     mockClient.refreshParameterValues.mockImplementation((...args) => (mockClient.getParameterValues as any)(...args));
+    mockClient.resolveWanConnectionIndex.mockResolvedValue({ index: 1, isExisting: false });
     // Por defecto, el objeto WAN ya existe en el CPE (caso mas comun en los
     // tests existentes, que no se enfocan en el flujo de creacion) -- los
     // tests nuevos de AddObject sobreescriben esto explicitamente.
@@ -136,9 +138,13 @@ describe('CpeConfiguratorService', () => {
   it('crea el objeto WANPPPConnection con AddObject si todavía no existe en el CPE (TR-098)', async () => {
     mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
     mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-ONT123', isTR181: false, tags: [] });
-    mockClient.objectInstanceExists
-      .mockResolvedValueOnce(false) // antes de AddObject: no existe
-      .mockResolvedValueOnce(true); // después de AddObject: ya existe
+    mockClient.objectInstanceExists.mockImplementation(async (_id, path) => {
+      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1') return true;
+      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1') {
+        return mockClient.addObject.mock.calls.length > 0;
+      }
+      return true;
+    });
     mockClient.addObject.mockResolvedValue(undefined);
     mockClient.setParameterValues.mockResolvedValue(undefined);
     mockClient.getParameterValues.mockResolvedValue({});
@@ -157,15 +163,73 @@ describe('CpeConfiguratorService', () => {
       '00259E-ONT123',
       'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.',
     );
-    expect(mockClient.objectInstanceExists).toHaveBeenNthCalledWith(
-      1,
-      '00259E-ONT123',
-      'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1',
-    );
     // setParameterValues debe correr DESPUÉS de AddObject, no antes.
     expect(mockClient.addObject.mock.invocationCallOrder[0]).toBeLessThan(
       mockClient.setParameterValues.mock.invocationCallOrder[0],
     );
+  });
+
+  it('crea tanto WANConnectionDevice como WANPPPConnection si ambos no existen para un índice dinámico (ej. índice 2)', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
+    mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-ONT123', isTR181: false, tags: [] });
+    mockClient.resolveWanConnectionIndex.mockResolvedValue({ index: 2, isExisting: false });
+    let createdConnDev = false;
+    let createdPpp = false;
+    mockClient.objectInstanceExists.mockImplementation(async (_id, path) => {
+      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2') return createdConnDev;
+      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.1') return createdPpp;
+      return true;
+    });
+    mockClient.addObject.mockImplementation(async (_id, path) => {
+      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.') createdConnDev = true;
+      if (path === 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.') createdPpp = true;
+    });
+    mockClient.setParameterValues.mockResolvedValue(undefined);
+    mockClient.getParameterValues.mockResolvedValue({});
+
+    const input: CpeConfigurationInput = {
+      serialNumber: 'ONT123',
+      wanMode: 'PPPOE',
+      pppoeUsername: 'cliente@sumtech',
+      pppoePassword: 'pass',
+    };
+
+    const result = await service.configureCpe(input);
+
+    expect(result.success).toBe(true);
+    expect(mockClient.addObject).toHaveBeenCalledWith('00259E-ONT123', 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.');
+    expect(mockClient.addObject).toHaveBeenCalledWith('00259E-ONT123', 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.');
+  });
+
+  it('resuelve el vendor por fallback desde deviceStatus.manufacturer si vendor es ALL o genérico', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
+    mockClient.getDeviceStatus.mockResolvedValue({
+      deviceId: '00259E-ONT123',
+      isTR181: false,
+      tags: [],
+      manufacturer: 'Huawei Technologies Co., Ltd',
+    });
+    mockClient.resolveWanConnectionIndex.mockResolvedValue({ index: 1, isExisting: true });
+    mockClient.objectInstanceExists.mockResolvedValue(true);
+    mockClient.setParameterValues.mockResolvedValue(undefined);
+    mockClient.getParameterValues.mockResolvedValue({});
+
+    const input: CpeConfigurationInput = {
+      serialNumber: 'ONT123',
+      vendor: 'ALL',
+      wanMode: 'PPPOE',
+      pppoeUsername: 'cliente@sumtech',
+      pppoePassword: 'pass',
+      serviceVlan: 700,
+    };
+
+    const result = await service.configureCpe(input);
+    expect(result.success).toBe(true);
+    const setParamCalls = mockClient.setParameterValues.mock.calls;
+    expect(setParamCalls.length).toBeGreaterThan(0);
+    const paramsMap = new Map(setParamCalls[0][1]);
+    expect(paramsMap.get('InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.X_HW_SERVICELIST')).toBe('INTERNET');
+    expect(paramsMap.get('InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.NATEnabled')).toBe('true');
   });
 
   it('NO llama a refreshObject en el flujo de configureCpe -- GenieACS rechaza rutas recursivas para este tipo de chequeo (ver nota en el servicio)', async () => {

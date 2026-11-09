@@ -6,14 +6,14 @@
  */
 
 /** Misma ruta base PPP ya usada (y confirmada en vivo) por CpeParameterMapper. */
-export function pppBasePath(isTR181: boolean): string {
+export function pppBasePath(isTR181: boolean, wanConnectionIndex: number = 1): string {
   return isTR181
     ? 'Device.PPP.Interface.1'
-    : 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
+    : `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${wanConnectionIndex}.WANPPPConnection.1`;
 }
 
-export function pppLanInterfacePath(isTR181: boolean): string | undefined {
-  return isTR181 ? undefined : 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.X_CMCC_LanInterface';
+export function pppLanInterfacePath(isTR181: boolean, wanConnectionIndex: number = 1): string | undefined {
+  return isTR181 ? undefined : `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${wanConnectionIndex}.WANPPPConnection.1.X_CMCC_LanInterface`;
 }
 
 export interface WirelessLanPaths {
@@ -104,8 +104,8 @@ export function wlanConfigurationCountPath(isTR181: boolean): string {
 }
 
 /** Base de la conexión WAN IP (STATIC/DHCP) en TR-098 -- misma ruta ya usada por CpeParameterMapper. */
-export function wanIpConnectionBasePath(): string {
-  return 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1';
+export function wanIpConnectionBasePath(wanConnectionIndex: number = 1): string {
+  return `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${wanConnectionIndex}.WANIPConnection.1`;
 }
 
 export interface PortMappingFieldPaths {

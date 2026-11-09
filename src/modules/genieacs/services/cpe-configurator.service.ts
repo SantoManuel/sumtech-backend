@@ -75,6 +75,21 @@ export class CpeConfiguratorService {
     const deviceStatus = await client.getDeviceStatus(deviceId);
     const isTR181 = deviceStatus.isTR181;
 
+    // Fallback de fabricante si fue registrado como genérico o nulo (Fallo #2)
+    if (!input.vendor || input.vendor.toUpperCase() === 'ALL' || input.vendor.toUpperCase() === 'GENERIC') {
+      if (deviceStatus.manufacturer) {
+        input.vendor = deviceStatus.manufacturer;
+      }
+    }
+
+    // Resolver dinámicamente el índice de WANConnectionDevice en TR-098 (Fallo #1)
+    let wanConnectionIndex = input.wanConnectionIndex ?? 1;
+    if (!isTR181 && input.wanMode) {
+      const resolved = await client.resolveWanConnectionIndex(deviceId, input.wanMode, input.serviceVlan);
+      wanConnectionIndex = resolved.index;
+      input.wanConnectionIndex = wanConnectionIndex;
+    }
+
     // 2.5. Asegurar que la instancia de objeto WAN exista ANTES de escribirle
     // parámetros -- "SetParameterValues" nunca puede crear una instancia
     // nueva (solo "AddObject" puede). `objectInstanceExists` ya resuelve el
@@ -92,8 +107,23 @@ export class CpeConfiguratorService {
     // silenciosa y el refresh nunca hacía nada útil -- solo ensuciaba el log
     // de faults del dispositivo en GenieACS, generando ruido confuso para
     // cualquiera que revise esa pestaña después. Se quita por completo.
-    const wanObject = this.getWanObjectPaths(input, isTR181);
+    const wanObject = this.getWanObjectPaths(input, isTR181, wanConnectionIndex);
     if (wanObject) {
+      // Si el WANConnectionDevice contenedor no existe aún (ej. instancia 2 o nueva), intentar crearlo primero
+      if (wanObject.devicePath && wanObject.deviceParentPath) {
+        const devExists = await client.objectInstanceExists(deviceId, wanObject.devicePath);
+        if (!devExists) {
+          this.logger.log(
+            `[CPE-CONFIG] "${wanObject.devicePath}" no existe en ${deviceId} -- creándolo con AddObject.`,
+          );
+          try {
+            await client.addObject(deviceId, wanObject.deviceParentPath);
+          } catch (err: any) {
+            this.logger.warn(`[CPE-CONFIG] No se pudo crear ${wanObject.devicePath} con AddObject: ${err.message}. Continuando.`);
+          }
+        }
+      }
+
       const exists = await client.objectInstanceExists(deviceId, wanObject.instancePath);
       if (!exists) {
         this.logger.log(
@@ -115,8 +145,8 @@ export class CpeConfiguratorService {
       }
     }
 
-    // 3. Generar parámetros con el mapper técnico
-    const parameterValues = this.parameterMapper.buildParameterValues(input, isTR181);
+    // 3. Generar parámetros con el mapper técnico usando el wanConnectionIndex resuelto
+    const parameterValues = this.parameterMapper.buildParameterValues(input, isTR181, wanConnectionIndex);
     const ipv6Warning = this.parameterMapper.getIpv6Warning(input, isTR181);
 
     if (parameterValues.length === 0) {
@@ -171,7 +201,7 @@ export class CpeConfiguratorService {
     // 6. Verificar lectura de parámetros clave
     const readableExpected = parameterValues.filter(([key]) => !/password|passphrase|presharedkey/i.test(key));
     const verificationKeys = [...new Set([
-      ...this.parameterMapper.getVerificationParameters(input, isTR181),
+      ...this.parameterMapper.getVerificationParameters(input, isTR181, wanConnectionIndex),
       ...readableExpected.map(([key]) => key),
     ])];
     let verification: Record<string, string | undefined> = {};
@@ -183,7 +213,7 @@ export class CpeConfiguratorService {
       }
     }
 
-    const ipv6Readback = this.parameterMapper.extractIpv6Readback(verification, isTR181);
+    const ipv6Readback = this.parameterMapper.extractIpv6Readback(verification, isTR181, wanConnectionIndex);
     const expected = parameterValues.filter(([key]) => !/password|passphrase|presharedkey/i.test(key));
     const confirmed = delivery?.status === 'COMPLETED' && expected.length > 0 &&
       expected.every(([key, value]) => String(verification[key]) === String(value));
@@ -211,7 +241,8 @@ export class CpeConfiguratorService {
   private getWanObjectPaths(
     input: CpeConfigurationInput,
     isTR181: boolean,
-  ): { instancePath: string; parentPath: string } | null {
+    wanConnectionIndex: number = 1,
+  ): { instancePath: string; parentPath: string; devicePath?: string; deviceParentPath?: string } | null {
     if (!input.wanMode) {
       return null;
     }
@@ -221,15 +252,20 @@ export class CpeConfiguratorService {
       }
       return { instancePath: 'Device.IP.Interface.1', parentPath: 'Device.IP.Interface.' };
     }
+    const devPath = `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${wanConnectionIndex}`;
     if (input.wanMode === 'PPPOE') {
       return {
-        instancePath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1',
-        parentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.',
+        instancePath: `${devPath}.WANPPPConnection.1`,
+        parentPath: `${devPath}.WANPPPConnection.`,
+        devicePath: devPath,
+        deviceParentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.',
       };
     }
     return {
-      instancePath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1',
-      parentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.',
+      instancePath: `${devPath}.WANIPConnection.1`,
+      parentPath: `${devPath}.WANIPConnection.`,
+      devicePath: devPath,
+      deviceParentPath: 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.',
     };
   }
 

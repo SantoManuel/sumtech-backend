@@ -269,10 +269,20 @@ export class OnuWanProvisioningService {
       const ipv6 = resolveCpeIpv6Capabilities(onu.onuType?.vendor || onu.vendor, onu.onuType?.model).capabilities;
       if (protocol !== 'IPV4' && ((mode === 'DHCP' && !ipv6.dhcpDualStack) || (mode === 'STATIC' && !ipv6.staticIpv6))) throw new BadRequestException('Este equipo no tiene soporte IPv6 confirmado para el modo WAN seleccionado.');
       if (!config.serviceVlanId || !onu.serviceConfig?.serviceVlan?.vlanId) throw new BadRequestException('Falta la VLAN real del servicio.');
-      const access = mode === 'PPPOE' && onu.contractId ? await this.accesses.findOneBy({ contractId: onu.contractId }) : null;
-      const username = access?.username || undefined;
-      const password = access?.pppoePasswordEnc ? decryptCredential(access.pppoePasswordEnc) : undefined;
-      if (mode === 'PPPOE' && (!username || !password)) throw new BadRequestException('El contrato necesita usuario y contraseña PPPoE propios guardados.');
+      let access: NetworkAccessEntity | null = null;
+      let username: string | undefined;
+      let password: string | undefined;
+      if (mode === 'PPPOE') {
+        if (!onu.contractId) {
+          throw new BadRequestException('Esta ONU no tiene un contrato vinculado. Vincula un contrato antes de configurar la WAN PPPoE.');
+        }
+        access = await this.accesses.findOneBy({ contractId: onu.contractId });
+        username = access?.username || undefined;
+        password = access?.pppoePasswordEnc ? decryptCredential(access.pppoePasswordEnc) : undefined;
+        if (!username || !password) {
+          throw new BadRequestException('El contrato necesita usuario y contraseña PPPoE propios guardados.');
+        }
+      }
 
       const desired = {
         wanMode: mode, ipProtocol: protocol,
@@ -352,12 +362,25 @@ export class OnuWanProvisioningService {
         } else {
           const net = onu.serviceConfig?.tr069Network;
           if (!net) throw new BadRequestException('La red TR-069 ya no está disponible.');
+          let acsDeviceId: string | undefined;
+          let acsManufacturer: string | undefined;
           if (this.acs) {
-            const deviceId = await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
-            if (deviceId) await this.acs.deleteDeviceTag(deviceId, 'WAN_OMCI');
+            acsDeviceId = (await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true })) || undefined;
+            if (acsDeviceId) {
+              await this.acs.deleteDeviceTag(acsDeviceId, 'WAN_OMCI');
+              try {
+                const status = await this.acs.getDeviceStatus(acsDeviceId);
+                acsManufacturer = status.manufacturer;
+              } catch { /* continuar si la consulta de estado falla */ }
+            }
           }
+          const rawVendor = onu.onuType?.vendor || onu.vendor;
+          const effectiveVendor = (!rawVendor || rawVendor.toUpperCase() === 'ALL' || rawVendor.toUpperCase() === 'GENERIC')
+            ? (acsManufacturer || rawVendor)
+            : rawVendor;
+
           const result = await this.policy.withManagedWrite(onu.id, 'TR069', version, () => this.cpe.configureCpe({
-            serialNumber: onu.serialNumber, vendor: onu.onuType?.vendor, model: onu.onuType?.model,
+            serialNumber: onu.serialNumber, vendor: effectiveVendor, model: onu.onuType?.model,
             tenantSlug: this.tenant.getSlug(), oltName: onu.olt.name, operationMode: 'ROUTER',
             ...desired, pppoeUsername: username, pppoePassword: password, serviceVlan: onu.serviceConfig!.serviceVlan!.vlanId,
             dns1: desired.wanDns1 || undefined, dns2: desired.wanDns2 || undefined,

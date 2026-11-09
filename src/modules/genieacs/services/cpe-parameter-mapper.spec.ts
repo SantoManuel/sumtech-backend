@@ -82,7 +82,7 @@ describe('CpeParameterMapper', () => {
       expect(paramMap.get(`${base}.X_ZTE-COM_VLAN`)).toBe('200');
     });
 
-    it('genera parámetros PPPoE con VLAN específica para HUAWEI en TR-098', () => {
+    it('genera parámetros PPPoE con VLAN, NATEnabled y X_HW_SERVICELIST para HUAWEI en TR-098', () => {
       const input: CpeConfigurationInput = {
         serialNumber: 'HWTC-11223344',
         vendor: 'Huawei Technologies',
@@ -97,8 +97,35 @@ describe('CpeParameterMapper', () => {
 
       const base = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
       expect(paramMap.get(`${base}.X_HW_VLAN`)).toBe('300');
-      expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toContain('WLANConfiguration.1');
-      expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toContain('LANEthernetInterfaceConfig.1');
+      expect(paramMap.get(`${base}.NATEnabled`)).toBe('true');
+      expect(paramMap.get(`${base}.X_HW_SERVICELIST`)).toBe('INTERNET');
+      // No debe inyectar X_CMCC_LanInterface a Huawei retail/estándar para evitar Fault 9005
+      expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toBeUndefined();
+    });
+
+    it('respeta wanConnectionIndex dinámico cuando la conexión está en una instancia diferente de 1', () => {
+      const input: CpeConfigurationInput = {
+        serialNumber: 'HWTC-11223344',
+        vendor: 'Huawei Technologies',
+        wanMode: 'PPPOE',
+        pppoeUsername: 'hwuser@sumtech',
+        pppoePassword: 'hwpassword',
+        serviceVlan: 405,
+        wanConnectionIndex: 2,
+      };
+
+      const params = mapper.buildParameterValues(input, false);
+      const paramMap = new Map(params.map(([k, v]) => [k, v]));
+
+      const base2 = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.1';
+      expect(paramMap.get(`${base2}.Enable`)).toBe('true');
+      expect(paramMap.get(`${base2}.Username`)).toBe('hwuser@sumtech');
+      expect(paramMap.get(`${base2}.X_HW_VLAN`)).toBe('405');
+      expect(paramMap.get(`${base2}.NATEnabled`)).toBe('true');
+
+      const verify = mapper.getVerificationParameters(input, false, 2);
+      expect(verify).toContain(`${base2}.Enable`);
+      expect(verify).toContain(`${base2}.Username`);
     });
 
     it('genera Port Binding (X_CMCC_LanInterface) vinculando LAN 1-4 y WLAN 1-2 para CMDC en TR-098 PPPoE', () => {
@@ -143,7 +170,8 @@ describe('CpeParameterMapper', () => {
       expect(paramMap.get(`${base}.ExternalIPAddress`)).toBe('192.168.10.50');
       expect(paramMap.get(`${base}.SubnetMask`)).toBe('255.255.255.0');
       expect(paramMap.get(`${base}.DefaultGateway`)).toBe('192.168.10.1');
-      expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toContain('WLANConfiguration.1');
+      expect(paramMap.get(`${base}.NATEnabled`)).toBe('true');
+      expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toBeUndefined();
     });
   });
 

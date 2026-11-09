@@ -25,6 +25,8 @@ export interface CpeConfigurationInput {
   ipProtocol?: 'IPV4' | 'IPV6' | 'DUAL';
   wanMode?: 'STATIC' | 'DHCP' | 'PPPOE';
   serviceVlan?: number;
+  /** Índice de la instancia WANConnectionDevice en TR-098 (1 por defecto, o 2+ cuando la gestión TR-069 ocupa el 1). */
+  wanConnectionIndex?: number;
   // PPPoE
   pppoeUsername?: string;
   pppoePassword?: string;
@@ -79,14 +81,16 @@ export class CpeParameterMapper {
   buildParameterValues(
     config: CpeConfigurationInput,
     isTR181: boolean,
+    wanConnectionIndex?: number,
   ): Array<[string, string, string]> {
     const params: Array<[string, string, string]> = [];
     const vendorUpper = (config.vendor || '').toUpperCase();
+    const effectiveIndex = wanConnectionIndex ?? config.wanConnectionIndex ?? 1;
 
     if (isTR181) {
       this.buildTR181Params(config, params, vendorUpper);
     } else {
-      this.buildTR098Params(config, params, vendorUpper);
+      this.buildTR098Params(config, params, vendorUpper, effectiveIndex);
     }
 
     return params;
@@ -150,6 +154,7 @@ export class CpeParameterMapper {
   extractIpv6Readback(
     verification: Record<string, string | undefined>,
     isTR181: boolean,
+    wanConnectionIndex: number = 1,
   ): { prefix?: string; address?: string } {
     if (!verification) return {};
 
@@ -162,7 +167,7 @@ export class CpeParameterMapper {
       };
     }
 
-    const pppBase = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
+    const pppBase = `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${wanConnectionIndex}.WANPPPConnection.1`;
     const prefix =
       verification[`${pppBase}.X_BROADCOM_COM_IPv6PrefixDelegationPrefix`] ||
       verification[`${pppBase}.X_CMCC_IPv6Prefix`] ||
@@ -182,8 +187,14 @@ export class CpeParameterMapper {
   /**
    * Parámetros clave a verificar tras la aplicación para comprobar que el CPE los aceptó.
    */
-  getVerificationParameters(config: CpeConfigurationInput, isTR181: boolean): string[] {
+  getVerificationParameters(
+    config: CpeConfigurationInput,
+    isTR181: boolean,
+    wanConnectionIndex?: number,
+  ): string[] {
     const verification: string[] = [];
+    const effectiveIndex = wanConnectionIndex ?? config.wanConnectionIndex ?? 1;
+
     if (isTR181) {
       if (config.wanMode === 'PPPOE') {
         verification.push('Device.PPP.Interface.1.Enable', 'Device.PPP.Interface.1.Username');
@@ -204,8 +215,8 @@ export class CpeParameterMapper {
         verification.push('Device.ManagementServer.URL');
       }
     } else {
-      const pppBase = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
-      const ipBase = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1';
+      const pppBase = `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${effectiveIndex}.WANPPPConnection.1`;
+      const ipBase = `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${effectiveIndex}.WANIPConnection.1`;
       if (config.wanMode === 'PPPOE') {
         verification.push(
           `${pppBase}.Enable`,
@@ -339,6 +350,7 @@ export class CpeParameterMapper {
     config: CpeConfigurationInput,
     params: Array<[string, string, string]>,
     vendorUpper: string,
+    wanConnectionIndex: number = 1,
   ): void {
     // 1. ManagementServer
     if (config.managementServer) {
@@ -361,12 +373,13 @@ export class CpeParameterMapper {
       params.push(['InternetGatewayDevice.ManagementServer.PeriodicInformEnable', 'true', 'xsd:boolean']);
     }
 
-    // 2. WAN & PPP (Ruta común TR-098 IGD)
-    const pppBase = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
-    const ipBase = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1';
+    // 2. WAN & PPP (Ruta común TR-098 IGD con índice dinámico de WANConnectionDevice)
+    const pppBase = `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${wanConnectionIndex}.WANPPPConnection.1`;
+    const ipBase = `InternetGatewayDevice.WANDevice.1.WANConnectionDevice.${wanConnectionIndex}.WANIPConnection.1`;
 
     if (config.wanMode === 'PPPOE') {
       params.push([`${pppBase}.Enable`, 'true', 'xsd:boolean']);
+      params.push([`${pppBase}.NATEnabled`, 'true', 'xsd:boolean']);
       params.push([`${pppBase}.ConnectionType`, 'IP_Routed', 'xsd:string']);
       if (config.pppoeUsername) {
         params.push([`${pppBase}.Username`, config.pppoeUsername, 'xsd:string']);
@@ -374,6 +387,13 @@ export class CpeParameterMapper {
       if (config.pppoePassword) {
         params.push([`${pppBase}.Password`, config.pppoePassword, 'xsd:string']);
       }
+      // ServiceList requerido por firmware GPON para enrutar el tráfico de clientes
+      if (vendorUpper.includes('HUAWEI') || vendorUpper.includes('CMDC')) {
+        params.push([`${pppBase}.X_HW_SERVICELIST`, 'INTERNET', 'xsd:string']);
+      } else if (vendorUpper.includes('ZTE')) {
+        params.push([`${pppBase}.X_ZTE-COM_ServiceList`, 'INTERNET', 'xsd:string']);
+      }
+
       // Manejo de VLAN por fabricante TR-098
       if (config.serviceVlan) {
         if (vendorUpper.includes('ZTE')) {
@@ -392,8 +412,14 @@ export class CpeParameterMapper {
       this.pushPortBindingParams(params, pppBase, vendorUpper);
     } else if (config.wanMode === 'STATIC') {
       params.push([`${ipBase}.Enable`, 'true', 'xsd:boolean']);
+      params.push([`${ipBase}.NATEnabled`, 'true', 'xsd:boolean']);
       params.push([`${ipBase}.ConnectionType`, 'IP_Routed', 'xsd:string']);
       params.push([`${ipBase}.AddressingType`, 'Static', 'xsd:string']);
+      if (vendorUpper.includes('HUAWEI') || vendorUpper.includes('CMDC')) {
+        params.push([`${ipBase}.X_HW_SERVICELIST`, 'INTERNET', 'xsd:string']);
+      } else if (vendorUpper.includes('ZTE')) {
+        params.push([`${ipBase}.X_ZTE-COM_ServiceList`, 'INTERNET', 'xsd:string']);
+      }
       if (config.wanStaticIp) {
         params.push([`${ipBase}.ExternalIPAddress`, config.wanStaticIp, 'xsd:string']);
       }
@@ -429,8 +455,14 @@ export class CpeParameterMapper {
       this.pushPortBindingParams(params, ipBase, vendorUpper);
     } else if (config.wanMode === 'DHCP') {
       params.push([`${ipBase}.Enable`, 'true', 'xsd:boolean']);
+      params.push([`${ipBase}.NATEnabled`, 'true', 'xsd:boolean']);
       params.push([`${ipBase}.ConnectionType`, 'IP_Routed', 'xsd:string']);
       params.push([`${ipBase}.AddressingType`, 'DHCP', 'xsd:string']);
+      if (vendorUpper.includes('HUAWEI') || vendorUpper.includes('CMDC')) {
+        params.push([`${ipBase}.X_HW_SERVICELIST`, 'INTERNET', 'xsd:string']);
+      } else if (vendorUpper.includes('ZTE')) {
+        params.push([`${ipBase}.X_ZTE-COM_ServiceList`, 'INTERNET', 'xsd:string']);
+      }
       if (config.ipProtocol === 'DUAL' || config.ipProtocol === 'IPV6') {
         if (vendorUpper.includes('ZTE')) {
           params.push([`${ipBase}.X_ZTE-COM_IPv6Enable`, 'true', 'xsd:boolean']);
@@ -476,7 +508,9 @@ export class CpeParameterMapper {
 
   /**
    * Vincula los puertos Ethernet LAN 1-4 y las interfaces WLAN 1-2 a la conexión WAN
-   * en equipos con firmware CMCC / China Mobile / Huawei / ZTE (Port Binding).
+   * en equipos con firmware CMCC / China Mobile (Port Binding).
+   * En firmware estándar Huawei (EchoLife) o ZTE estándar, no se inyecta X_CMCC_LanInterface
+   * porque el parámetro no existe y provoca un Fault 9005 que rechaza la transacción atómica completa.
    */
   private pushPortBindingParams(
     params: Array<[string, string, string]>,
@@ -484,11 +518,8 @@ export class CpeParameterMapper {
     vendorUpper: string,
   ): void {
     if (
-      !vendorUpper ||
       vendorUpper.includes('CMDC') ||
-      vendorUpper.includes('CMCC') ||
-      vendorUpper.includes('HUAWEI') ||
-      vendorUpper.includes('ZTE')
+      vendorUpper.includes('CMCC')
     ) {
       params.push([`${base}.X_CMCC_LanInterface`, DEFAULT_TR098_LAN_WLAN_BINDING, 'xsd:string']);
     }

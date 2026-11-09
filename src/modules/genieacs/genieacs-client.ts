@@ -238,8 +238,8 @@ export class GenieAcsClient {
     return results[0]._id;
   }
 
-  /** Devuelve el estado cacheado (telemetría + SSID actual) de un dispositivo ya conocido. */
-  async getDeviceStatus(deviceId: string): Promise<GenieAcsDeviceStatus> {
+  /** Obtiene el documento crudo de un dispositivo en GenieACS. */
+  async getDeviceDocument(deviceId: string): Promise<any> {
     let response;
     try {
       response = await this.http.get(this.buildUrl('devices'), {
@@ -255,7 +255,12 @@ export class GenieAcsClient {
       throw new Error(`GenieACS no tiene ningún dispositivo con el id "${deviceId}".`);
     }
 
-    const doc = results[0];
+    return results[0];
+  }
+
+  /** Devuelve el estado cacheado (telemetría + SSID actual) de un dispositivo ya conocido. */
+  async getDeviceStatus(deviceId: string): Promise<GenieAcsDeviceStatus> {
+    const doc = await this.getDeviceDocument(deviceId);
     const isTR181 = doc.Device !== undefined;
 
     return {
@@ -643,15 +648,7 @@ export class GenieAcsClient {
    */
   async objectInstanceExists(deviceId: string, dotPath: string): Promise<boolean> {
     try {
-      const response = await this.http.get(this.buildUrl('devices'), {
-        ...this.buildRequestConfig(),
-        params: { query: JSON.stringify({ _id: deviceId }) },
-      });
-      const results = Array.isArray(response.data) ? response.data : [];
-      if (results.length === 0) {
-        throw new Error(`GenieACS no tiene ningún dispositivo con el id "${deviceId}".`);
-      }
-      const doc = results[0];
+      const doc = await this.getDeviceDocument(deviceId);
 
       // TR-098: si existe un parámetro hermano "<NombreTabla>NumberOfEntries"
       // (ej. "WANPPPConnectionNumberOfEntries" junto a "WANPPPConnection"),
@@ -681,6 +678,142 @@ export class GenieAcsClient {
       return nodeExists(doc, dotPath);
     } catch (error) {
       throw new Error(this.describeError(error));
+    }
+  }
+
+  /**
+   * Resuelve dinámicamente cuál es el índice real de WANConnectionDevice.{i} a utilizar
+   * en TR-098 para el modo WAN solicitado (PPPOE, DHCP, STATIC).
+   * Protege cualquier interfaz dedicada a gestión TR-069 (ej. VLAN 444 o ServiceList con 'TR069')
+   * para no sobreescribirla ni interrumpir el canal ACS.
+   */
+  async resolveWanConnectionIndex(
+    deviceId: string,
+    wanMode: 'PPPOE' | 'DHCP' | 'STATIC',
+    serviceVlan?: number,
+  ): Promise<{ index: number; connectionExists: boolean; deviceExists: boolean }> {
+    try {
+      const doc = await this.getDeviceDocument(deviceId);
+      const igd = doc?.InternetGatewayDevice;
+      if (!igd) {
+        return { index: 1, connectionExists: false, deviceExists: false };
+      }
+
+      const wanDevice = igd.WANDevice?.['1'] || (igd.WANDevice && typeof igd.WANDevice === 'object' ? Object.values(igd.WANDevice)[0] : null);
+      const wanConnDevices = (wanDevice as any)?.WANConnectionDevice;
+      if (!wanConnDevices || typeof wanConnDevices !== 'object') {
+        return { index: 1, connectionExists: false, deviceExists: false };
+      }
+
+      const numericIndices: number[] = [];
+      const instances: Array<{
+        index: number;
+        hasPpp: boolean;
+        hasIp: boolean;
+        isManagement: boolean;
+        vlan?: number;
+        serviceList?: string;
+      }> = [];
+
+      for (const [key, value] of Object.entries(wanConnDevices)) {
+        const idx = parseInt(key, 10);
+        if (!Number.isFinite(idx) || idx <= 0 || typeof value !== 'object' || value === null) {
+          continue;
+        }
+        numericIndices.push(idx);
+
+        const conn = value as any;
+        const pppEntries = conn.WANPPPConnection;
+        const ipEntries = conn.WANIPConnection;
+
+        const ppp1 = pppEntries?.['1'] || (pppEntries && typeof pppEntries === 'object' ? Object.values(pppEntries)[0] : null);
+        const ip1 = ipEntries?.['1'] || (ipEntries && typeof ipEntries === 'object' ? Object.values(ipEntries)[0] : null);
+
+        const serviceList = (
+          getParamValue(conn, 'WANIPConnection.1.X_HW_SERVICELIST') ||
+          getParamValue(conn, 'WANPPPConnection.1.X_HW_SERVICELIST') ||
+          getParamValue(conn, 'WANIPConnection.1.X_ZTE-COM_ServiceList') ||
+          getParamValue(conn, 'WANPPPConnection.1.X_ZTE-COM_ServiceList') ||
+          getParamValue(conn, 'WANIPConnection.1.ServiceList') ||
+          getParamValue(conn, 'WANPPPConnection.1.ServiceList') ||
+          ''
+        ).toUpperCase();
+
+        const rawVlan = (
+          getParamValue(conn, 'WANIPConnection.1.X_HW_VLAN') ||
+          getParamValue(conn, 'WANPPPConnection.1.X_HW_VLAN') ||
+          getParamValue(conn, 'WANIPConnection.1.X_ZTE-COM_VLAN') ||
+          getParamValue(conn, 'WANPPPConnection.1.X_ZTE-COM_VLAN') ||
+          getParamValue(conn, 'WANIPConnection.1.X_BROADCOM_COM_VLANID') ||
+          getParamValue(conn, 'WANPPPConnection.1.X_BROADCOM_COM_VLANID') ||
+          getParamValue(conn, 'WANIPConnection.1.VLANID') ||
+          getParamValue(conn, 'WANPPPConnection.1.VLANID')
+        );
+        const vlan = rawVlan ? parseInt(rawVlan, 10) : undefined;
+
+        // Se considera canal de gestión si el serviceList incluye TR069 pero no INTERNET,
+        // o si opera en la VLAN 444 reservada para gestión.
+        const isManagement = (serviceList.includes('TR069') && !serviceList.includes('INTERNET')) ||
+                             (vlan !== undefined && vlan === 444 && !serviceList.includes('INTERNET'));
+
+        instances.push({
+          index: idx,
+          hasPpp: !!ppp1,
+          hasIp: !!ip1,
+          isManagement,
+          vlan,
+          serviceList,
+        });
+      }
+
+      if (instances.length === 0) {
+        return { index: 1, connectionExists: false, deviceExists: false };
+      }
+
+      if (wanMode === 'PPPOE') {
+        const exactMatch = instances.find(inst => !inst.isManagement && inst.hasPpp && (
+          (serviceVlan !== undefined && inst.vlan === serviceVlan) ||
+          (inst.serviceList && inst.serviceList.includes('INTERNET'))
+        ));
+        if (exactMatch) {
+          return { index: exactMatch.index, connectionExists: true, deviceExists: true };
+        }
+
+        const anyPpp = instances.find(inst => !inst.isManagement && inst.hasPpp);
+        if (anyPpp) {
+          return { index: anyPpp.index, connectionExists: true, deviceExists: true };
+        }
+
+        const emptyInstance = instances.find(inst => !inst.isManagement && !inst.hasIp && !inst.hasPpp);
+        if (emptyInstance) {
+          return { index: emptyInstance.index, connectionExists: false, deviceExists: true };
+        }
+      } else {
+        const exactMatch = instances.find(inst => !inst.isManagement && inst.hasIp && (
+          (serviceVlan !== undefined && inst.vlan === serviceVlan) ||
+          (inst.serviceList && inst.serviceList.includes('INTERNET'))
+        ));
+        if (exactMatch) {
+          return { index: exactMatch.index, connectionExists: true, deviceExists: true };
+        }
+
+        const anyIp = instances.find(inst => !inst.isManagement && inst.hasIp);
+        if (anyIp) {
+          return { index: anyIp.index, connectionExists: true, deviceExists: true };
+        }
+
+        const emptyInstance = instances.find(inst => !inst.isManagement && !inst.hasIp && !inst.hasPpp);
+        if (emptyInstance) {
+          return { index: emptyInstance.index, connectionExists: false, deviceExists: true };
+        }
+      }
+
+      // Si todas las instancias están ocupadas por otros servicios (ej. gestión TR-069):
+      const maxIndex = Math.max(...numericIndices, 0);
+      return { index: maxIndex + 1, connectionExists: false, deviceExists: false };
+    } catch (error) {
+      this.logger.warn(`No se pudo resolver dinámicamente el índice de WANConnectionDevice para ${deviceId}: ${this.describeError(error)}. Usando índice 1 por defecto.`);
+      return { index: 1, connectionExists: false, deviceExists: false };
     }
   }
 
