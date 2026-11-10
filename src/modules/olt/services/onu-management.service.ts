@@ -292,19 +292,22 @@ export class OnuManagementService {
     (onu as any).cpeIpv6Capabilities = cpeCaps.capabilities;
     (onu as any).cpeIpv6CapabilityNotes = cpeCaps.notes;
 
-    // BUG REAL corregido (2026-10-25): `onu.genieacsDeviceId` (columna propia
-    // de net.onus) nunca se escribe en ningún lugar del backend -- el
-    // vínculo real con GenieACS vive en net.genieacs_devices, indexado por
-    // contractId (ver GenieAcsDeviceResolverService, que SÍ se mantiene
-    // sincronizado vía GenieAcsReconciliationService). Sin esto, la Ficha 360
-    // mostraba "CPE SIN CONECTAR" para equipos que llevaban horas reportando
-    // con éxito a GenieACS -- confirmado en vivo contra un ONU real
-    // (CMDCDD4D131E / contrato CTR-394574) cuyo genieacs_devices.genieacs_
-    // device_id SÍ estaba poblado mientras onus.genieacs_device_id seguía NULL.
+    // Resolución de dispositivo GenieACS:
+    // 1. Si la ONU tiene contrato vinculado, consultar por contractId en net.genieacs_devices
     if (onu.contract?.id) {
       const genieAcsDevice = await this.genieAcsDeviceResolver.findByContractId(onu.contract.id);
       if (genieAcsDevice?.genieacsDeviceId) {
         onu.genieacsDeviceId = genieAcsDevice.genieacsDeviceId;
+      }
+    }
+
+    // 2. Si no tiene contrato (ej. brownfield/en despliegue) o la tabla de contratos aún no lo tiene,
+    // buscar directamente en GenieACS por el número de serie de la ONU física.
+    if (!onu.genieacsDeviceId && onu.serialNumber) {
+      const directDeviceId = await this.genieAcsDeviceResolver.resolveBySerialNumber(onu.serialNumber);
+      if (directDeviceId) {
+        onu.genieacsDeviceId = directDeviceId;
+        await this.onuRepository.update(onu.id, { genieacsDeviceId: directDeviceId });
       }
     }
 

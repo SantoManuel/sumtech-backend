@@ -38,6 +38,24 @@ export class GenieAcsDeviceResolverService {
   }
 
   /**
+   * Resuelve el identificador de un dispositivo en GenieACS buscando directamente
+   * por su número de serie (o candidatos GPON), útil para ONUs sin contrato vinculado.
+   */
+  async resolveBySerialNumber(serialNumber: string): Promise<string | null> {
+    if (!this.client || !serialNumber) {
+      return null;
+    }
+    try {
+      return await this.client.findDeviceBySerial(serialNumber);
+    } catch (error) {
+      this.logger.warn(
+        `Error buscando en GenieACS por serial "${serialNumber}": ${(error as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * Devuelve (y si hace falta, resuelve) el dispositivo GenieACS de un
    * contrato. Devuelve null solo cuando el contrato no tiene ningún equipo
    * asignado todavía en inventario — eso no es un error, es un estado

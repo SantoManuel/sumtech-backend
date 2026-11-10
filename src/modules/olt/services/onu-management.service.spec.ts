@@ -224,6 +224,7 @@ describe('OnuManagementService', () => {
 
     genieAcsDeviceResolver = {
       findByContractId: jest.fn().mockResolvedValue(null),
+      resolveBySerialNumber: jest.fn().mockResolvedValue(null),
     };
 
     tenantContext = {
@@ -2068,22 +2069,39 @@ describe('OnuManagementService', () => {
       expect(result.genieacsDeviceId).toBe('987DDD-HG8546M%2DXPON-CMDCDD4D131E');
     });
 
-    it('sin contrato vinculado, no intenta resolver GenieACS y genieacsDeviceId queda undefined', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contract: null });
+    it('sin contrato vinculado, resuelve directamente por serialNumber en GenieACS', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contract: null, serialNumber: 'CMDCDD4D131E' });
+      genieAcsDeviceResolver.resolveBySerialNumber.mockResolvedValue('987DDD-HG8546M%2DXPON-CMDCDD4D131E');
 
       const result = await service.findById('onu-uuid-1');
 
       expect(genieAcsDeviceResolver.findByContractId).not.toHaveBeenCalled();
-      expect(result.genieacsDeviceId).toBeUndefined();
+      expect(genieAcsDeviceResolver.resolveBySerialNumber).toHaveBeenCalledWith('CMDCDD4D131E');
+      expect(result.genieacsDeviceId).toBe('987DDD-HG8546M%2DXPON-CMDCDD4D131E');
+      expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', { genieacsDeviceId: '987DDD-HG8546M%2DXPON-CMDCDD4D131E' });
     });
 
-    it('con contrato pero sin dispositivo GenieACS resuelto todavía, deja genieacsDeviceId undefined (CPE realmente sin conectar)', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contract: { id: 'contract-1' } });
-      genieAcsDeviceResolver.findByContractId.mockResolvedValue({ contractId: 'contract-1', genieacsDeviceId: null });
+    it('sin contrato vinculado y sin coincidencia en GenieACS, deja genieacsDeviceId undefined', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contract: null, serialNumber: 'CMDCDD4D131E' });
+      genieAcsDeviceResolver.resolveBySerialNumber.mockResolvedValue(null);
 
       const result = await service.findById('onu-uuid-1');
 
-      expect(result.genieacsDeviceId).toBeFalsy();
+      expect(genieAcsDeviceResolver.findByContractId).not.toHaveBeenCalled();
+      expect(genieAcsDeviceResolver.resolveBySerialNumber).toHaveBeenCalledWith('CMDCDD4D131E');
+      expect(result.genieacsDeviceId).toBeUndefined();
+    });
+
+    it('con contrato pero sin dispositivo GenieACS resuelto todavía en contrato, intenta resolver por serial', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, contract: { id: 'contract-1' }, serialNumber: 'CMDCDD4D131E' });
+      genieAcsDeviceResolver.findByContractId.mockResolvedValue({ contractId: 'contract-1', genieacsDeviceId: null });
+      genieAcsDeviceResolver.resolveBySerialNumber.mockResolvedValue('987DDD-HG8546M%2DXPON-CMDCDD4D131E');
+
+      const result = await service.findById('onu-uuid-1');
+
+      expect(genieAcsDeviceResolver.findByContractId).toHaveBeenCalledWith('contract-1');
+      expect(genieAcsDeviceResolver.resolveBySerialNumber).toHaveBeenCalledWith('CMDCDD4D131E');
+      expect(result.genieacsDeviceId).toBe('987DDD-HG8546M%2DXPON-CMDCDD4D131E');
     });
   });
 

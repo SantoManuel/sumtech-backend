@@ -50,3 +50,4 @@ export class BatchTr069AcsDto {
   @Type(() => CustomAcsDto)
   customAcs?: CustomAcsDto;
 }
+
