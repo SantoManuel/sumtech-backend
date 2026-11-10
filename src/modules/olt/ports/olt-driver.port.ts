@@ -517,6 +517,21 @@ export interface OltDriverCapabilities {
   batchTr069AcsUpdate?: boolean;
 }
 
+export interface OnuRunningConfigResult {
+  name?: string;
+  description?: string;
+  raw?: string;
+  metadata?: {
+    zone?: string;
+    latitude?: string;
+    longitude?: string;
+    authorizedAt?: string;
+  };
+  tconts?: Array<{ id: number; profile: string }>;
+  gemports?: Array<{ id: number; tcont: number; trafficLimit?: string }>;
+  servicePorts?: Array<{ id: number; vport: number; userVlan: number; vlan: number }>;
+}
+
 export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   omciWanPppoe: false,
   testConnection: false,
@@ -624,7 +639,7 @@ export interface IOltDriver {
   getOnuRunningConfig?(
     params: OltConnectionParams,
     onuInterface: string,
-  ): Promise<{ name?: string; description?: string; raw?: string }>;
+  ): Promise<OnuRunningConfigResult>;
   getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower>;
   /**
    * `warning` (opcional, solo con `ok: true`): la autorización en sí tuvo

@@ -92,6 +92,7 @@ import {
   OltConsoleStream,
   BatchTr069AcsItemInput,
   BatchTr069AcsResult,
+  OnuRunningConfigResult,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'ZTE';
@@ -315,7 +316,7 @@ export class ZteC320Driver implements IOltDriver {
    * Parsea name y description de la salida de "show running-config interface gpon-onu_X/Y/Z:ID".
    */
   /** Expuesto como método público porque las pruebas lo ejercitan directo (`driver.parseOnuRunningConfig(...)`) sin pasar por una sesión Telnet mock. */
-  parseOnuRunningConfig(output: string): { name?: string; description?: string } {
+  parseOnuRunningConfig(output: string): OnuRunningConfigResult {
     return parseOnuRunningConfig(output);
   }
 
@@ -326,7 +327,7 @@ export class ZteC320Driver implements IOltDriver {
   async getOnuRunningConfig(
     params: OltConnectionParams,
     onuInterface: string,
-  ): Promise<{ name?: string; description?: string; raw?: string }> {
+  ): Promise<OnuRunningConfigResult> {
     const session = this.createSession(params);
     try {
       await session.connectAndLogin();

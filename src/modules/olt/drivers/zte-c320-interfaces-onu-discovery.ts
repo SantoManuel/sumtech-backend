@@ -6,6 +6,7 @@ import {
   DiscoveredUncfgOnu,
   DiscoveredAuthorizedOnu,
   OnuOpticalPower,
+  OnuRunningConfigResult,
 } from '../ports/olt-driver.port';
 import { ZteSessionLike } from './zte-telnet-session';
 import { isOltErrorResponse, parseCards, parseVlanList, inferVendorFromSerial, parseOnuRunningConfig } from './zte-c320-parsers';
@@ -321,7 +322,7 @@ export async function getAuthorizedOnusWithSession(
 export async function getOnuRunningConfigWithSession(
   session: ZteSessionLike,
   onuInterface: string,
-): Promise<{ name?: string; description?: string; raw?: string }> {
+): Promise<OnuRunningConfigResult> {
   const output = await session.executeCommand(`show running-config interface ${onuInterface}`, 15000);
   const parsed = parseOnuRunningConfig(output);
   return { ...parsed, raw: output };

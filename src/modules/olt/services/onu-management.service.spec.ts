@@ -180,6 +180,7 @@ describe('OnuManagementService', () => {
     zteDriver = {
       getUnconfiguredOnus: jest.fn(),
       getAuthorizedOnus: jest.fn(),
+      getOnuRunningConfig: jest.fn(),
       getOnuOpticalPower: jest.fn(),
       generateAuthorizationScript: jest.fn(),
       generateTr069ManagementScript: jest.fn(),
@@ -665,6 +666,57 @@ describe('OnuManagementService', () => {
       const telemetry = await service.getOpticalTelemetry('onu-uuid-1');
 
       expect(telemetry.signalStatus).toBe('CRITICAL_LOW');
+    });
+  });
+
+  describe('getOnuRunningConfig', () => {
+    it('consulta la configuración activa de la sub-interfaz y actualiza name y description en BD', async () => {
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        status: 'ACTIVE',
+        onuIndex: '43',
+        ponInterface: { id: 'iface-14', name: 'gpon-olt_1/2/14' },
+      });
+      zteDriver.getOnuRunningConfig.mockResolvedValue({
+        name: 'M1449',
+        description: 'zone_Tabara Abajo_lat_18.4690866_long_-70.8743567_authd_20261109',
+        metadata: {
+          zone: 'Tabara Abajo',
+          latitude: '18.4690866',
+          longitude: '-70.8743567',
+          authorizedAt: '2026-11-09',
+        },
+        tconts: [{ id: 1, profile: 'SMARTOLT-200M-UP' }],
+        gemports: [{ id: 1, tcont: 1, trafficLimit: 'SMARTOLT-1G-DOWN' }],
+        servicePorts: [{ id: 1, vport: 1, userVlan: 400, vlan: 400 }],
+        raw: 'interface gpon-onu_1/2/14:43\n  name M1449\n!',
+      });
+
+      const result = await service.getOnuRunningConfig('onu-uuid-1');
+
+      expect(zteDriver.getOnuRunningConfig).toHaveBeenCalledWith(
+        expect.anything(),
+        'gpon-onu_1/2/14:43',
+      );
+      expect(result.name).toBe('M1449');
+      expect(result.metadata?.zone).toBe('Tabara Abajo');
+      expect(result.metadata?.latitude).toBe('18.4690866');
+      expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', {
+        name: 'M1449',
+        description: 'zone_Tabara Abajo_lat_18.4690866_long_-70.8743567_authd_20261109',
+      });
+    });
+
+    it('rechaza si la ONU no tiene índice o está UNCONFIGURED', async () => {
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        status: 'UNCONFIGURED',
+        onuIndex: '',
+      });
+
+      await expect(service.getOnuRunningConfig('onu-uuid-1')).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 

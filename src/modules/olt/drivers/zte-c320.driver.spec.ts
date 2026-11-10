@@ -798,6 +798,47 @@ end`;
       const parsed = driver.parseOnuRunningConfig(output);
       expect(parsed.name).toBe('Test_3');
       expect(parsed.description).toBe('zone_Azua_Tabara_Abajo_authd_20261027');
+      expect(parsed.tconts).toEqual([
+        { id: 1, profile: 'SMARTOLT-VOIPMNG-10M-UP' },
+        { id: 2, profile: 'SMARTOLT-VOIPMNG-10M' },
+      ]);
+      expect(parsed.gemports).toEqual([
+        { id: 1, tcont: 1, trafficLimit: 'SMARTOLT-1G-DOWN' },
+        { id: 2, tcont: 2, trafficLimit: 'SMARTOLT-VOIPMNG-10M' },
+      ]);
+      expect(parsed.servicePorts).toEqual([
+        { id: 1, vport: 1, userVlan: 400, vlan: 400 },
+        { id: 2, vport: 2, userVlan: 4069, vlan: 4069 },
+      ]);
+    });
+
+    it('parseOnuRunningConfig() extrae metadatos GPS, zona y fecha desde description con formato SmartOLT', () => {
+      const output = `
+interface gpon-onu_1/2/14:43
+  name M1449
+  description zone_Tabara Abajo_lat_18.4690866_long_-70.8743567_authd_20261109
+  sn-bind enable sn
+  tcont 1 profile SMARTOLT-200M-UP
+  tcont 2 profile SMARTOLT-VOIPMNG-10M
+  gemport 1 tcont 1
+  gemport 1 traffic-limit downstream SMARTOLT-1G-DOWN 
+  gemport 2 tcont 2
+  gemport 2 traffic-limit downstream SMARTOLT-VOIPMNG-10M 
+  service-port 1 vport 1 user-vlan 400 vlan 400 
+  service-port 2 vport 2 user-vlan 46 vlan 46 
+!`;
+      const parsed = driver.parseOnuRunningConfig(output);
+      expect(parsed.name).toBe('M1449');
+      expect(parsed.description).toBe('zone_Tabara Abajo_lat_18.4690866_long_-70.8743567_authd_20261109');
+      expect(parsed.metadata).toEqual({
+        zone: 'Tabara Abajo',
+        latitude: '18.4690866',
+        longitude: '-70.8743567',
+        authorizedAt: '2026-11-09',
+      });
+      expect(parsed.servicePorts).toHaveLength(2);
+      expect(parsed.servicePorts![0]).toEqual({ id: 1, vport: 1, userVlan: 400, vlan: 400 });
+      expect(parsed.servicePorts![1]).toEqual({ id: 2, vport: 2, userVlan: 46, vlan: 46 });
     });
 
     it('parseOnuRunningConfig() maneja salidas sin name ni description limpiamente', () => {

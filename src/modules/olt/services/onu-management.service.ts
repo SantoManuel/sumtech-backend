@@ -652,6 +652,52 @@ export class OnuManagementService {
   }
 
   /**
+   * Consulta la configuración activa ("show running-config interface <iface>")
+   * directamente en la OLT para extraer name, description, metadatos (zona, GPS),
+   * TCONTs, Gemports y Service-ports (útil para identificar a qué cliente pertenece
+   * una ONU activa sin contrato y auditar sus perfiles).
+   */
+  async getOnuRunningConfig(id: string) {
+    const onu = await this.findById(id);
+    if (!onu.olt) {
+      throw new NotFoundException(`La ONU ${id} no tiene una OLT asociada.`);
+    }
+
+    if (!onu.onuIndex || onu.status === 'UNCONFIGURED') {
+      throw new BadRequestException('Esta ONU no está configurada o autorizada en la OLT.');
+    }
+
+    const driver = this.resolveDriver(onu.olt);
+    if (!driver.getOnuRunningConfig) {
+      throw new DriverNotImplementedError(onu.olt.vendor, 'getOnuRunningConfig');
+    }
+
+    const connParams = await this.connectionResolver.resolve(onu.olt);
+    const onuTarget = this.buildOnuTarget(onu);
+
+    const result = await withOltTelnetLock(onu.olt.id, () =>
+      driver.getOnuRunningConfig!(connParams, onuTarget),
+    );
+
+    if ((result.name && result.name !== onu.name) || (result.description && result.description !== onu.description)) {
+      await this.onuRepository.update(onu.id, {
+        name: result.name || onu.name,
+        description: result.description || onu.description,
+      });
+      onu.name = result.name || onu.name;
+      onu.description = result.description || onu.description;
+    }
+
+    return {
+      onuId: onu.id,
+      serialNumber: onu.serialNumber,
+      onuInterface: onuTarget,
+      oltName: onu.olt.name,
+      ...result,
+    };
+  }
+
+  /**
    * Auditoría de aprovisionamiento (pestaña "Auditoría" de la Ficha 360 de
    * la ONU) -- corre en vivo contra la OLT los mismos comandos `show` que
    * hasta ahora se interpretaban a mano (pegados en texto) cuando una ONU

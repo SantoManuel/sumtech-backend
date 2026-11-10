@@ -123,6 +123,18 @@ export class OnuController {
   }
 
   /**
+   * Configuración activa ("show this" / running-config de la sub-interfaz gpon-onu)
+   * consultada directamente en la OLT con name, description, zona, GPS, VLANs y perfiles.
+   */
+  @Get(':id/running-config')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO, Role.AGENTE_CRM)
+  @RequireOltAction('VIEW')
+  @OltIdFrom('ONU_ID_PARAM')
+  async getOnuRunningConfig(@Param('id') id: string) {
+    return this.onuService.getOnuRunningConfig(id);
+  }
+
+  /**
    * Telemetría óptica en vivo (dBm RX/TX y atenuación) (RF-OLT-015).
    */
   @Get(':id/optical-power')

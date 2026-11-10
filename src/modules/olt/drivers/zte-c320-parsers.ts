@@ -1,4 +1,4 @@
-import { DiscoveredCard, DiscoveredOnuType, DiscoveredTcontProfile, DiscoveredTrafficProfile, DiscoveredVlanProfile, OnuDetailInfo } from '../ports/olt-driver.port';
+import { DiscoveredCard, DiscoveredOnuType, DiscoveredTcontProfile, DiscoveredTrafficProfile, DiscoveredVlanProfile, OnuDetailInfo, OnuRunningConfigResult } from '../ports/olt-driver.port';
 
 /**
  * Funciones puras de parseo/clasificación de texto del driver ZTE C320 --
@@ -146,13 +146,90 @@ export function inferVendorFromSerial(serialNumber: string): string {
   return 'Desconocido';
 }
 
-export function parseOnuRunningConfig(output: string): { name?: string; description?: string } {
+export function parseOnuRunningConfig(output: string): OnuRunningConfigResult {
   if (!output || typeof output !== 'string') return {};
   const nameMatch = output.match(/^\s*name\s+(\S+)/mi);
-  const descMatch = output.match(/^\s*description\s+(\S+)/mi);
+  const descMatch = output.match(/^\s*description\s+(.+)$/mi);
+
+  const name = nameMatch ? nameMatch[1].trim() : undefined;
+  const description = descMatch ? descMatch[1].trim() : undefined;
+
+  let metadata: OnuRunningConfigResult['metadata'];
+  if (description) {
+    let zone: string | undefined;
+    let latitude: string | undefined;
+    let longitude: string | undefined;
+    let authorizedAt: string | undefined;
+
+    const smartOltMatch = description.match(/zone_(.+?)_lat_([-\d.]+)_long_([-\d.]+)(?:_authd_(\d{8}))?/i);
+    if (smartOltMatch) {
+      zone = smartOltMatch[1].replace(/_/g, ' ').trim();
+      latitude = smartOltMatch[2];
+      longitude = smartOltMatch[3];
+      if (smartOltMatch[4]) {
+        const rawDate = smartOltMatch[4];
+        authorizedAt = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
+      }
+    } else {
+      const zMatch = description.match(/zone_([^_]+)/i);
+      if (zMatch) zone = zMatch[1].replace(/_/g, ' ').trim();
+      const latM = description.match(/lat_([-\d.]+)/i);
+      if (latM) latitude = latM[1];
+      const longM = description.match(/long_([-\d.]+)/i);
+      if (longM) longitude = longM[1];
+      const authM = description.match(/authd_(\d{8})/i);
+      if (authM) {
+        const rawDate = authM[1];
+        authorizedAt = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
+      }
+    }
+
+    if (zone || latitude || longitude || authorizedAt) {
+      metadata = { zone, latitude, longitude, authorizedAt };
+    }
+  }
+
+  // Parse TCONTs
+  const tconts: Array<{ id: number; profile: string }> = [];
+  const tcontMatches = output.matchAll(/^\s*tcont\s+(\d+)\s+profile\s+(\S+)/gmi);
+  for (const m of tcontMatches) {
+    tconts.push({ id: Number(m[1]), profile: m[2] });
+  }
+
+  // Parse GEMPORTs
+  const gemportMap = new Map<number, { id: number; tcont: number; trafficLimit?: string }>();
+  const gemportMatches = output.matchAll(/^\s*gemport\s+(\d+)\s+tcont\s+(\d+)/gmi);
+  for (const m of gemportMatches) {
+    gemportMap.set(Number(m[1]), { id: Number(m[1]), tcont: Number(m[2]) });
+  }
+  const trafficMatches = output.matchAll(/^\s*gemport\s+(\d+)\s+traffic-limit\s+downstream\s+(\S+)/gmi);
+  for (const m of trafficMatches) {
+    const id = Number(m[1]);
+    const existing = gemportMap.get(id) || { id, tcont: 0 };
+    existing.trafficLimit = m[2];
+    gemportMap.set(id, existing);
+  }
+  const gemports = Array.from(gemportMap.values());
+
+  // Parse Service Ports
+  const servicePorts: Array<{ id: number; vport: number; userVlan: number; vlan: number }> = [];
+  const servicePortMatches = output.matchAll(/^\s*service-port\s+(\d+)\s+vport\s+(\d+)\s+user-vlan\s+(\d+)\s+vlan\s+(\d+)/gmi);
+  for (const m of servicePortMatches) {
+    servicePorts.push({
+      id: Number(m[1]),
+      vport: Number(m[2]),
+      userVlan: Number(m[3]),
+      vlan: Number(m[4]),
+    });
+  }
+
   return {
-    name: nameMatch ? nameMatch[1] : undefined,
-    description: descMatch ? descMatch[1] : undefined,
+    name,
+    description,
+    metadata,
+    tconts: tconts.length > 0 ? tconts : undefined,
+    gemports: gemports.length > 0 ? gemports : undefined,
+    servicePorts: servicePorts.length > 0 ? servicePorts : undefined,
   };
 }
 
