@@ -181,6 +181,7 @@ describe('OnuManagementService', () => {
       getUnconfiguredOnus: jest.fn(),
       getAuthorizedOnus: jest.fn(),
       getOnuRunningConfig: jest.fn(),
+      updateOnuOltInfo: jest.fn(),
       getOnuOpticalPower: jest.fn(),
       generateAuthorizationScript: jest.fn(),
       generateTr069ManagementScript: jest.fn(),
@@ -717,6 +718,52 @@ describe('OnuManagementService', () => {
       await expect(service.getOnuRunningConfig('onu-uuid-1')).rejects.toThrow(
         BadRequestException,
       );
+    });
+  });
+
+  describe('updateOnuOltInfo', () => {
+    it('actualiza name y description en la OLT y persiste en BD', async () => {
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        status: 'ACTIVE',
+        onuIndex: '43',
+        ponInterface: { id: 'iface-14', name: 'gpon-olt_1/2/14' },
+      });
+      zteDriver.updateOnuOltInfo.mockResolvedValue({ ok: true });
+      zteDriver.getOnuRunningConfig.mockResolvedValue({
+        name: 'Wandy_Bido',
+        description: 'zone_Tabara_Abajo',
+      });
+
+      const res = await service.updateOnuOltInfo('onu-uuid-1', {
+        name: 'Wandy Bido',
+        description: 'zone_Tabara_Abajo',
+      });
+
+      expect(zteDriver.updateOnuOltInfo).toHaveBeenCalledWith(
+        expect.anything(),
+        'gpon-onu_1/2/14:43',
+        { name: 'Wandy Bido', description: 'zone_Tabara_Abajo' },
+      );
+      expect(onuRepo.update).toHaveBeenCalledWith('onu-uuid-1', {
+        name: 'Wandy Bido',
+        description: 'zone_Tabara_Abajo',
+      });
+      expect(res.name).toBe('Wandy_Bido');
+    });
+
+    it('rechaza con BadRequestException si el driver reporta fallo', async () => {
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        status: 'ACTIVE',
+        onuIndex: '43',
+        ponInterface: { id: 'iface-14', name: 'gpon-olt_1/2/14' },
+      });
+      zteDriver.updateOnuOltInfo.mockResolvedValue({ ok: false, error: 'OLT timeout' });
+
+      await expect(
+        service.updateOnuOltInfo('onu-uuid-1', { name: 'Test' }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

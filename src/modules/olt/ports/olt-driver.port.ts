@@ -515,6 +515,7 @@ export interface OltDriverCapabilities {
   onuReboot: boolean;
   onuFactoryReset: boolean;
   batchTr069AcsUpdate?: boolean;
+  onuInfoUpdate?: boolean;
 }
 
 export interface OnuRunningConfigResult {
@@ -560,6 +561,7 @@ export const NO_DRIVER_CAPABILITIES: OltDriverCapabilities = {
   onuReboot: false,
   onuFactoryReset: false,
   batchTr069AcsUpdate: false,
+  onuInfoUpdate: false,
 };
 
 /**
@@ -640,6 +642,14 @@ export interface IOltDriver {
     params: OltConnectionParams,
     onuInterface: string,
   ): Promise<OnuRunningConfigResult>;
+  /**
+   * Actualiza los metadatos administrativos (name y description) de la sub-interfaz de la ONU en la OLT.
+   */
+  updateOnuOltInfo?(
+    params: OltConnectionParams,
+    onuInterface: string,
+    info: { name?: string; description?: string },
+  ): Promise<{ ok: boolean; error?: string }>;
   getOnuOpticalPower(params: OltConnectionParams, onuTarget: string): Promise<OnuOpticalPower>;
   /**
    * `warning` (opcional, solo con `ok: true`): la autorización en sí tuvo

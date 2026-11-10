@@ -59,6 +59,7 @@ import {
   getUnconfiguredOnusWithSession,
   getAuthorizedOnusWithSession,
   getOnuRunningConfigWithSession,
+  updateOnuOltInfoWithSession,
   getOnuOpticalPowerWithSession,
   setOnuAdminStateWithSession,
   deleteOnuWithSession,
@@ -332,6 +333,23 @@ export class ZteC320Driver implements IOltDriver {
     try {
       await session.connectAndLogin();
       return await getOnuRunningConfigWithSession(session, onuInterface);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Actualiza los datos administrativos (name y/o description) de la sub-interfaz de la ONU en la OLT.
+   */
+  async updateOnuOltInfo(
+    params: OltConnectionParams,
+    onuInterface: string,
+    info: { name?: string; description?: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return await updateOnuOltInfoWithSession(session, onuInterface, info);
     } finally {
       await session.close();
     }
@@ -1392,6 +1410,7 @@ export class ZteC320Driver implements IOltDriver {
       onuReboot: true,
       onuFactoryReset: true,
       batchTr069AcsUpdate: true,
+      onuInfoUpdate: true,
     };
   }
 

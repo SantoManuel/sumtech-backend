@@ -698,6 +698,61 @@ export class OnuManagementService {
   }
 
   /**
+   * Actualiza los datos administrativos (name y/o description) de la ONU
+   * directamente en la sub-interfaz de la OLT y sincroniza la base de datos (net.onus).
+   */
+  async updateOnuOltInfo(id: string, dto: { name?: string; description?: string }, actorUserId?: string) {
+    const onu = await this.findById(id);
+    if (!onu.olt) {
+      throw new NotFoundException(`La ONU ${id} no tiene una OLT asociada.`);
+    }
+
+    if (!onu.onuIndex || onu.status === 'UNCONFIGURED') {
+      throw new BadRequestException('Esta ONU no está configurada o autorizada en la OLT.');
+    }
+
+    const driver = this.resolveDriver(onu.olt);
+    if (!driver.updateOnuOltInfo) {
+      throw new DriverNotImplementedError(onu.olt.vendor, 'updateOnuOltInfo');
+    }
+
+    const connParams = await this.connectionResolver.resolve(onu.olt);
+    const onuTarget = this.buildOnuTarget(onu);
+
+    const result = await withOltTelnetLock(onu.olt.id, () =>
+      driver.updateOnuOltInfo!(connParams, onuTarget, dto),
+    );
+
+    if (!result.ok) {
+      throw new BadRequestException(`No se pudo actualizar la ONU en la OLT: ${result.error}`);
+    }
+
+    // Persistir en base de datos
+    const updateData: { name?: string; description?: string } = {};
+    if (dto.name !== undefined) {
+      updateData.name = dto.name.trim();
+    }
+    if (dto.description !== undefined) {
+      updateData.description = dto.description.trim();
+    }
+
+    if (Object.keys(updateData).length > 0) {
+      await this.onuRepository.update(onu.id, updateData);
+    }
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: onu.olt.viaNodeId || onu.olt.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `[${onu.olt.vendor}] ONU ${onu.serialNumber} datos OLT actualizados en ${onuTarget}: name="${dto.name ?? ''}", description="${dto.description ?? ''}"`,
+      actorUserId,
+      rawDetails: { onuId: onu.id, oltId: onu.olt.id, onuTarget, ...dto },
+    });
+
+    return await this.getOnuRunningConfig(onu.id);
+  }
+
+  /**
    * Auditoría de aprovisionamiento (pestaña "Auditoría" de la Ficha 360 de
    * la ONU) -- corre en vivo contra la OLT los mismos comandos `show` que
    * hasta ahora se interpretaban a mano (pegados en texto) cuando una ONU

@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Delete,
   Body,
   Param,
@@ -26,6 +27,7 @@ import { ConfigureOnuWanDto } from './dto/configure-onu-wan.dto';
 import { OnuOmciWanProfileDto } from './dto/onu-omci-wan-profile.dto';
 import { RetryOnuWanDto } from './dto/retry-onu-wan.dto';
 import { BatchTr069AcsDto } from './dto/batch-tr069-acs.dto';
+import { UpdateOnuOltInfoDto } from './dto/update-onu-olt-info.dto';
 
 @Controller('olt/onus')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -132,6 +134,22 @@ export class OnuController {
   @OltIdFrom('ONU_ID_PARAM')
   async getOnuRunningConfig(@Param('id') id: string) {
     return this.onuService.getOnuRunningConfig(id);
+  }
+
+  /**
+   * Actualiza los datos administrativos (name / description) de la ONU directamente
+   * en la sub-interfaz de la OLT y sincroniza la base de datos.
+   */
+  @Patch(':id/olt-info')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async updateOnuOltInfo(
+    @Param('id') id: string,
+    @Body() dto: UpdateOnuOltInfoDto,
+    @Req() req: any,
+  ) {
+    return this.onuService.updateOnuOltInfo(id, dto, req.user?.id);
   }
 
   /**

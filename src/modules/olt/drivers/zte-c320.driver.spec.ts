@@ -874,6 +874,47 @@ interface gpon-onu_1/2/15:1
       expect(res.description).toBe('Sector_Norte');
       expect(res.raw).toBe(mockConfig);
     });
+
+    it('updateOnuOltInfo() ejecuta la secuencia CLI para actualizar name y description', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('OLT#');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const res = await driver.updateOnuOltInfo!(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-onu_1/2/14:43',
+        { name: 'Wandy Bido', description: 'zone_Tabara Abajo' },
+      );
+
+      expect(res.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('configure terminal');
+      expect(executeCommand).toHaveBeenCalledWith('interface gpon-onu_1/2/14:43');
+      expect(executeCommand).toHaveBeenCalledWith('name Wandy_Bido');
+      expect(executeCommand).toHaveBeenCalledWith('description zone_Tabara_Abajo');
+      expect(executeCommand).toHaveBeenCalledWith('exit');
+      expect(executeCommand).toHaveBeenCalledWith('write');
+    });
+
+    it('updateOnuOltInfo() ejecuta "no description" si la descripcion se pasa como cadena vacia', async () => {
+      const executeCommand = jest.fn().mockResolvedValue('OLT#');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const res = await driver.updateOnuOltInfo!(
+        { host: '10.0.0.10', port: 23, username: 'admin', password: 'password' },
+        'gpon-onu_1/2/14:43',
+        { description: '' },
+      );
+
+      expect(res.ok).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith('no description');
+    });
   });
 
   it('getVlanConfigForInterface() expande rangos con guión en la lista de VLANs reales (RF: brownfield -- confirmado en vivo contra OLT_Tabara_Abajo)', async () => {

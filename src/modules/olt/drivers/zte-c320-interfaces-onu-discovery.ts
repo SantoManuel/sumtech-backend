@@ -329,6 +329,49 @@ export async function getOnuRunningConfigWithSession(
 }
 
 /**
+ * Actualiza name y/o description en la sub-interfaz de la ONU en la OLT.
+ * Sintaxis ZTE C320:
+ *   configure terminal
+ *   interface gpon-onu_X/Y/Z:ID
+ *   name <name>
+ *   description <description> (o "no description" si está vacío)
+ *   exit
+ *   write
+ */
+export async function updateOnuOltInfoWithSession(
+  session: ZteSessionLike,
+  onuInterface: string,
+  info: { name?: string; description?: string },
+): Promise<{ ok: boolean; error?: string }> {
+  const commands: string[] = ['configure terminal', `interface ${onuInterface}`];
+
+  if (info.name !== undefined && info.name.trim() !== '') {
+    const cleanName = info.name.trim().replace(/\s+/g, '_');
+    commands.push(`name ${cleanName}`);
+  }
+
+  if (info.description !== undefined) {
+    if (info.description.trim() === '') {
+      commands.push('no description');
+    } else {
+      const cleanDesc = info.description.trim().replace(/\s+/g, '_');
+      commands.push(`description ${cleanDesc}`);
+    }
+  }
+
+  commands.push('exit', 'write');
+
+  for (const cmd of commands) {
+    const output = await session.executeCommand(cmd);
+    if (isOltErrorResponse(output)) {
+      return { ok: false, error: `OLT rechazó "${cmd}": ${output.trim()}` };
+    }
+  }
+
+  return { ok: true };
+}
+
+/**
  * Consulta los niveles de potencia óptica RX/TX de una ONU (RF-OLT-015).
  * Ejecuta `show pon power attenuation gpon-onu_X:Y`.
  */
