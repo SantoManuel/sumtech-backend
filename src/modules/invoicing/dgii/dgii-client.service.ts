@@ -34,6 +34,23 @@ export interface DgiiSendResult {
   rawResponse?: any;
 }
 
+/**
+ * Identifica un trackId sintético de rechazo PRE-VUELO (firma XMLDSig o XSD
+ * oficial fallidos localmente, ver `submitEcf`/`submitRfce`/`submitAcecf`) —
+ * el documento nunca llegó a transmitirse a la DGII. Distinto de un rechazo
+ * real de la DGII (estado `RECHAZADO` tras la recepción), donde el documento
+ * sí fue transmitido. Solo un rechazo pre-vuelo es seguro de reintentar
+ * reutilizando el mismo e-NCF, porque la DGII nunca lo consumió.
+ */
+export function isPreflightRejectionTrackId(trackId?: string | null): boolean {
+  if (!trackId) return false;
+  return (
+    trackId.startsWith('TRK-SIG-ERR-') ||
+    trackId.startsWith('TRK-XSD-ERR-') ||
+    trackId.startsWith('TRK-ACE-XSD-ERR-')
+  );
+}
+
 export interface ConnectionDiagnosticResult {
   environment: string;
   baseUrl: string;

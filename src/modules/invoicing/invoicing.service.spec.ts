@@ -1006,6 +1006,107 @@ describe('InvoicingService', () => {
     });
   });
 
+  describe('rechazo pre-vuelo (XSD/firma) — persistencia del detalle del error', () => {
+    it('guarda validationErrors en dgiiResponse cuando el e-CF es rechazado antes de transmitirse', async () => {
+      const dgiiClient = (service as any).dgiiClient;
+      dgiiClient.submitEcf.mockResolvedValueOnce({
+        trackId: 'TRK-XSD-ERR-1700000000000',
+        status: 'REJECTED',
+        securityCode: 'ABC123',
+        qrCodeUrl: 'https://ecf.dgii.gov.do/testecf/consultatimbre?rncemisor=131000000',
+        signedXml: '<ECF></ECF>',
+        responseMessage: 'El documento no cumple el esquema XSD oficial de la DGII — no fue enviado.',
+        timestamp: new Date(),
+        validationErrors: ["Element 'RazonSocialComprador': This element is not expected."],
+      });
+
+      saleRepo.findOne.mockResolvedValue({
+        id: 'sale-rej-1',
+        clientId: 'client-1',
+        subtotal: 1000,
+        itbisTotal: 180,
+        grandTotal: 1180,
+        client: { id: 'client-1', name: 'Cliente Rechazado', docType: 'RNC', docNumber: '131000001' },
+        details: [
+          { itemType: 'PLAN_SUBSCRIPTION', concept: 'Fibra', quantity: 1, unitPrice: 1000, itbisAmount: 180, subtotal: 1000 },
+        ],
+      });
+      sequenceRepo.findOne.mockResolvedValue({ id: 'seq-e31', ncfType: 'E31', currentSequence: 1, endSequence: 1000 });
+
+      const invoice = await service.emitInvoice({ saleId: 'sale-rej-1', ncfType: 'E31' });
+
+      expect(invoice.dgiiStatus).toBe('REJECTED');
+      expect(invoice.dgiiResponse).toEqual({
+        preflightRejection: true,
+        trackId: 'TRK-XSD-ERR-1700000000000',
+        validationErrors: ["Element 'RazonSocialComprador': This element is not expected."],
+      });
+    });
+  });
+
+  describe('resendRejectedInvoiceToDgii (reintento de rechazo pre-vuelo, mismo e-NCF)', () => {
+    const baseSale = {
+      id: 'sale-200',
+      clientId: 'client-1',
+      subtotal: 1000,
+      itbisTotal: 180,
+      grandTotal: 1180,
+      client: { id: 'client-1', name: 'Cliente VIP', docType: 'RNC', docNumber: '131000001' },
+      details: [
+        { itemType: 'PLAN_SUBSCRIPTION', concept: 'Fibra Simétrica 100Mbps', quantity: 1, unitPrice: 1000, itbisAmount: 180, subtotal: 1000 },
+      ],
+    };
+
+    it('reutiliza el mismo e-NCF (no consume la secuencia) y retransmite exitosamente', async () => {
+      invoiceRepo.findOne.mockResolvedValue({
+        id: 'inv-rejected-1',
+        ncfNumber: 'E310000000007',
+        ncfType: 'E31',
+        ncfExpiryDate: '31-12-2028',
+        dgiiStatus: 'REJECTED',
+        dgiiTrackId: 'TRK-XSD-ERR-1700000000000',
+        subtotal: 1000,
+        cdtAmount: 0,
+        iscAmount: 0,
+        sale: baseSale,
+      });
+
+      const invoice = await service.resendRejectedInvoiceToDgii('inv-rejected-1');
+
+      expect(invoice.ncfNumber).toBe('E310000000007');
+      expect(invoice.dgiiStatus).toBe('ACCEPTED');
+      // No debe haberse consultado la secuencia: se reutilizó el e-NCF existente.
+      expect(sequenceRepo.findOne).not.toHaveBeenCalled();
+      expect(invoiceRepo.save).toHaveBeenCalled();
+    });
+
+    it('rechaza el reintento si la factura no está REJECTED', async () => {
+      invoiceRepo.findOne.mockResolvedValue({
+        id: 'inv-accepted-1',
+        ncfNumber: 'E310000000008',
+        ncfType: 'E31',
+        dgiiStatus: 'ACCEPTED',
+        dgiiTrackId: 'TRK-DGII-999',
+        sale: baseSale,
+      });
+
+      await expect(service.resendRejectedInvoiceToDgii('inv-accepted-1')).rejects.toThrow(ConflictException);
+    });
+
+    it('rechaza el reintento si el rechazo fue DE la DGII (ya transmitido), no pre-vuelo', async () => {
+      invoiceRepo.findOne.mockResolvedValue({
+        id: 'inv-dgii-rejected-1',
+        ncfNumber: 'E310000000009',
+        ncfType: 'E31',
+        dgiiStatus: 'REJECTED',
+        dgiiTrackId: 'TRK-DGII-555',
+        sale: baseSale,
+      });
+
+      await expect(service.resendRejectedInvoiceToDgii('inv-dgii-rejected-1')).rejects.toThrow(ConflictException);
+    });
+  });
+
   describe('getInvoiceXml', () => {
     it('lanza NotFoundException si la factura no tiene signedXmlContent', async () => {
       invoiceRepo.findOne.mockResolvedValue({ id: 'inv-no-xml' });

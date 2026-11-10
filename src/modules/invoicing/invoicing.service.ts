@@ -17,7 +17,7 @@ import { EmitInvoiceDto } from './dto/emit-invoice.dto';
 import { GenerateEcfDto } from './dto/generate-ecf.dto';
 import { UpdateEcfSequenceDto } from './dto/update-ecf-sequence.dto';
 import { DgiiXmlGeneratorService, EcfItemInput, UNIDAD_MEDIDA_UND, usesNcfExpiryDate, sanitizeProvincia } from './dgii/dgii-xml-generator.service';
-import { DgiiClientService, DgiiSendResult } from './dgii/dgii-client.service';
+import { DgiiClientService, DgiiSendResult, isPreflightRejectionTrackId } from './dgii/dgii-client.service';
 import { DgiiSignerService } from './dgii/dgii-signer.service';
 import { PdfGeneratorService } from '../printing/pdf-generator.service';
 import { InvoiceReceiptMetadata } from '../printing/pdf-generator.types';
@@ -170,11 +170,17 @@ export class InvoicingService {
       // "Servicios de Telecomunicaciones", ver ecf-31.xsd).
       iscAmount?: number;
       iscTasa?: number;
+      // Reintento de un e-CF rechazado PRE-VUELO (ver resendRejectedInvoiceToDgii):
+      // la DGII nunca lo recibió, así que se reutiliza el mismo e-NCF ya
+      // reservado en vez de consumir uno nuevo de la secuencia.
+      forcedNcf?: { ncfNumber: string; ncfExpiryDate?: string };
     },
     queryRunner?: QueryRunner,
   ) {
-    // 1. Obtener correlativo autorizado
-    const { ncfNumber, expiryDate: sequenceExpiryDate } = await this.getNextNcfSequence(ncfType, queryRunner);
+    // 1. Obtener correlativo autorizado (o reutilizar el de un reintento)
+    const { ncfNumber, expiryDate: sequenceExpiryDate } = options?.forcedNcf
+      ? { ncfNumber: options.forcedNcf.ncfNumber, expiryDate: options.forcedNcf.ncfExpiryDate }
+      : await this.getNextNcfSequence(ncfType, queryRunner);
 
     if (!sale.client && sale.clientId && this.clientRepository) {
       try {
@@ -339,7 +345,15 @@ export class InvoicingService {
           : sendResult.qrCodeUrl,
       signedXmlContent: baseSignedXml || sendResult.signedXml,
       responseMessage: sendResult.responseMessage,
-      dgiiResponse: sendResult.rawResponse,
+      // `rawResponse` solo existe si el documento se transmitió a la DGII. Un
+      // rechazo pre-vuelo (firma/XSD local, ver isPreflightRejectionTrackId)
+      // no tiene rawResponse — sin esto, el detalle exacto del error solo
+      // quedaba en el log del proceso y se perdía en el siguiente deploy.
+      dgiiResponse:
+        sendResult.rawResponse ??
+        (sendResult.validationErrors?.length
+          ? { preflightRejection: true, trackId: sendResult.trackId, validationErrors: sendResult.validationErrors }
+          : undefined),
       contingencyMode: sendResult.status === 'CONTINGENCY',
       buyerDocType: sale.client?.docType,
       buyerDocNumber: sale.client?.docNumber,
@@ -456,6 +470,57 @@ export class InvoicingService {
     });
 
     return invoiceRepo.save(invoice);
+  }
+
+  /**
+   * Reintenta el envío a la DGII de una factura rechazada PRE-VUELO (firma
+   * XMLDSig o validación XSD local fallidas, ver `isPreflightRejectionTrackId`)
+   * — la DGII nunca recibió ese documento, así que el e-NCF no fue consumido
+   * ante ella y se reutiliza el MISMO número (no se asigna uno nuevo de la
+   * secuencia). Reconstruye el e-CF desde la venta asociada (mismos montos,
+   * cliente e impuestos ya persistidos en la factura) y vuelve a firmar,
+   * validar y transmitir. No aplica a un rechazo real DE la DGII (`RECHAZADO`
+   * tras recepción): ese documento sí fue transmitido y requiere una Nota de
+   * Crédito o una factura nueva, no un reintento.
+   */
+  async resendRejectedInvoiceToDgii(invoiceId: string): Promise<InvoiceEntity> {
+    const invoice = await this.findById(invoiceId);
+
+    if (invoice.dgiiStatus !== 'REJECTED' || !isPreflightRejectionTrackId(invoice.dgiiTrackId)) {
+      throw new ConflictException(
+        `La factura ${invoice.ncfNumber || invoiceId} no es reintentable: solo se puede reenviar un rechazo previo ` +
+          `a la transmisión (firma/XSD local). Estado DGII actual: ${invoice.dgiiStatus} / trackId ${invoice.dgiiTrackId || 'N/A'}.`,
+      );
+    }
+    if (!invoice.sale || !invoice.ncfNumber || !invoice.ncfType) {
+      throw new ConflictException(
+        `La factura ${invoiceId} no tiene una venta asociada o le falta el e-NCF/tipo — no se puede reconstruir el e-CF.`,
+      );
+    }
+
+    const sale = invoice.sale;
+    if (!sale.client && invoice.client) {
+      sale.client = invoice.client;
+    }
+
+    const cdtAmount = Number(invoice.cdtAmount || 0);
+    const iscAmount = Number(invoice.iscAmount || 0);
+    const invoiceSubtotal = Number(invoice.subtotal || 0);
+    const cdtTasa = cdtAmount > 0 && invoiceSubtotal > 0 ? (cdtAmount / invoiceSubtotal) * 100 : 0;
+    const iscTasa = iscAmount > 0 && invoiceSubtotal > 0 ? (iscAmount / invoiceSubtotal) * 100 : 0;
+
+    const ecfPayload = await this.buildEcfPayload(sale, invoice.ncfType, {
+      cdtAmount,
+      cdtTasa,
+      iscAmount,
+      iscTasa,
+      forcedNcf: { ncfNumber: invoice.ncfNumber, ncfExpiryDate: invoice.ncfExpiryDate },
+    });
+
+    Object.assign(invoice, ecfPayload);
+    const saved = await this.invoiceRepository.save(invoice);
+    await this.archiveFiscalDocuments(saved);
+    return saved;
   }
 
   /**

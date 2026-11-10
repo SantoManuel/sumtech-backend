@@ -101,6 +101,12 @@ export class InvoicingController {
     return this.invoicingService.syncDgiiStatus(id);
   }
 
+  @Patch(':id/resend-dgii')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
+  async resendRejectedInvoiceToDgii(@Param('id') id: string) {
+    return this.invoicingService.resendRejectedInvoiceToDgii(id);
+  }
+
   @Get(':id/xml')
   @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO)
   async getInvoiceXml(@Param('id') id: string, @Res() res: Response) {
