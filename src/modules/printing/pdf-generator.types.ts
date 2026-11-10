@@ -35,6 +35,8 @@ export interface InvoiceReceiptMetadata {
     razonModificacion?: string;
     // true cuando la factura está pendiente de pago (PENDING_PAYMENT / aviso de cobro / proforma)
     isProforma?: boolean;
+    // Contenido del XML firmado original — Fuente Única de Verdad
+    signedXmlContent?: string;
   };
   client: {
     name: string;

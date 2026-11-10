@@ -435,4 +435,36 @@ describe('DgiiXmlGeneratorService', () => {
       expect(xml).toContain('<Totales><MontoExento>42000.00</MontoExento><MontoTotal>42000.00</MontoTotal><TotalISRRetencion>0.00</TotalISRRetencion></Totales>');
     });
   });
+
+  describe('parseSignedEcfMetadata y buildQrUrlFromSignedXml', () => {
+    it('debe extraer metadatos y construir la URL exacta de consultatimbre con 0 drift en fechafirma', () => {
+      const mockSignedXml =
+        `<ECF>` +
+          `<Encabezado>` +
+            `<Version>1.0</Version>` +
+            `<IdDoc><TipoeCF>45</TipoeCF><eNCF>E450000000004</eNCF></IdDoc>` +
+            `<Emisor><RNCEmisor>131148697</RNCEmisor><FechaEmision>10-11-2026</FechaEmision></Emisor>` +
+            `<Comprador><RNCComprador>131880681</RNCComprador></Comprador>` +
+            `<Totales><MontoTotal>650.00</MontoTotal></Totales>` +
+          `</Encabezado>` +
+          `<FechaHoraFirma>10-11-2026 09:38:48</FechaHoraFirma>` +
+          `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">` +
+            `<SignatureValue>DmVj1i999ABCDEF123456789==</SignatureValue>` +
+          `</Signature>` +
+        `</ECF>`;
+
+      const meta = service.parseSignedEcfMetadata(mockSignedXml);
+      expect(meta.rncEmisor).toBe('131148697');
+      expect(meta.rncComprador).toBe('131880681');
+      expect(meta.eNcf).toBe('E450000000004');
+      expect(meta.fechaEmision).toBe('10-11-2026');
+      expect(meta.fechaHoraFirma).toBe('10-11-2026 09:38:48');
+      expect(meta.montoTotal).toBe('650.00');
+      expect(meta.securityCode).toBe('DmVj1i');
+
+      const qrUrl = service.buildQrUrlFromSignedXml(mockSignedXml, 'testecf');
+      const expectedUrl = 'https://ecf.dgii.gov.do/testecf/consultatimbre?rncemisor=131148697&rnccomprador=131880681&encf=E450000000004&fechaemision=10-11-2026&montototal=650.00&fechafirma=10-11-2026%2009%3A38%3A48&codigoseguridad=DmVj1i';
+      expect(qrUrl).toBe(expectedUrl);
+    });
+  });
 });

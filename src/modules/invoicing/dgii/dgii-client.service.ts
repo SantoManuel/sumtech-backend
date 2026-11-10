@@ -10,7 +10,7 @@ import * as crypto from 'crypto';
 import { DgiiConfig } from './dgii-config.interface';
 import { DgiiSignerService } from './dgii-signer.service';
 import { DgiiXsdValidatorService } from './dgii-xsd-validator.service';
-import { ecfTipoDoc, sanitizeRnc } from './dgii-xml-generator.service';
+import { ecfTipoDoc, sanitizeRnc, buildQrUrlFromSignedXml, parseSignedEcfMetadata } from './dgii-xml-generator.service';
 import { DgiiCertificationRun } from './entities/dgii-certification-run.entity';
 import { CompanyService } from '../../company/company.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
@@ -432,24 +432,18 @@ export class DgiiClientService {
     securityCode: string,
     fechaEmision: Date = new Date(),
     rncComprador?: string,
+    fechafirmaStr?: string,
   ): string {
     const env = config.environment === 'ecf' ? 'ecf' : config.environment === 'certecf' ? 'certecf' : 'testecf';
-    // Hora de RD explícita (no la del proceso/contenedor) — debe coincidir con la
-    // FechaHoraFirma embebida en el XML firmado (ver DgiiXmlGeneratorService), que
-    // es justo lo que la DGII usa para validar la consulta por QR.
     const fechaEmiStr = formatDateDgii(fechaEmision);
-    const fechaFirStr = formatDateTimeDgii(fechaEmision);
+    const fechaFirStr = fechafirmaStr || formatDateTimeDgii(fechaEmision);
     const montoStr = Number(montoTotal || 0).toFixed(2);
 
     const isConsumoMenor = eNcf.startsWith('E32') && montoTotal < 250000;
 
-if (isConsumoMenor) {
-    // Según especificación DGII: QR del Resumen de Factura de Consumo (RFCE)
-    // tipo 32 < RD$250,000 en ambiente de certificación/pre-certificación/producción
-    // usa host `fc.dgii.gov.do`, ruta `/consultatimbrefc` y parámetros:
-    // RNCEmisor, ENCF, MontoTotal, CodigoSeguridad.
-    return `https://fc.dgii.gov.do/${env}/consultatimbrefc?rncemisor=${encodeURIComponent(config.rncEmisor)}&encf=${encodeURIComponent(eNcf)}&montototal=${encodeURIComponent(montoStr)}&codigoseguridad=${encodeURIComponent(securityCode)}`;
-  }
+    if (isConsumoMenor) {
+      return `https://fc.dgii.gov.do/${env}/consultatimbrefc?rncemisor=${encodeURIComponent(config.rncEmisor)}&encf=${encodeURIComponent(eNcf)}&montototal=${encodeURIComponent(montoStr)}&codigoseguridad=${encodeURIComponent(securityCode)}`;
+    }
 
     let compradorQuery = '';
     const cleanRnc = (rncComprador || '').replace(/\D/g, '');
@@ -477,14 +471,26 @@ if (isConsumoMenor) {
 
     // 1. Firmar el documento XML
     const { signedXml, securityCode } = this.signerService.signXml(rawXml, config.certPath, config.certPassword);
-    // `signedAt` se toma AQUÍ, no antes de enviar: el round-trip con la DGII puede
-    // tardar segundos, y el parámetro `fechafirma` del QR debe reflejar el
-    // instante de la firma que realmente recibió la DGII. Es además la misma
-    // firma de la que se deriva el `securityCode` de arriba.
     const signedAt = new Date();
 
-    // 1.b Validar contra el XSD oficial de la DGII — un documento mal armado
-    // no debe siquiera intentar enviarse (ni consumir un intento de red/e-NCF).
+    // 1.a Verificación criptográfica automática pre-vuelo (Problema 2)
+    const sigValidation = this.signerService.verifySignature(signedXml);
+    if (!sigValidation.valid) {
+      this.logger.error(`e-CF ${eNcf} no superó la verificación criptográfica: ${sigValidation.error}`);
+      return {
+        trackId: `TRK-SIG-ERR-${Date.now()}`,
+        status: 'REJECTED',
+        securityCode,
+        qrCodeUrl: buildQrUrlFromSignedXml(signedXml, config.environment),
+        responseMessage: `Firma digital XMLDSig no válida: ${sigValidation.error}`,
+        timestamp: new Date(),
+        signedAt,
+        signedXml,
+        validationErrors: [sigValidation.error || 'Firma digital no válida'],
+      };
+    }
+
+    // 1.b Validar contra el XSD oficial de la DGII
     const tipoDoc = ecfTipoDoc(ncfType);
     const validation = this.xsdValidator.validateEcf(signedXml, tipoDoc);
     if (!validation.valid) {
@@ -493,7 +499,7 @@ if (isConsumoMenor) {
         trackId: `TRK-XSD-ERR-${Date.now()}`,
         status: 'REJECTED',
         securityCode,
-        qrCodeUrl: this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, signedAt, rncComprador),
+        qrCodeUrl: buildQrUrlFromSignedXml(signedXml, config.environment),
         responseMessage: 'El documento no cumple el esquema XSD oficial de la DGII — no fue enviado.',
         timestamp: new Date(),
         signedAt,
@@ -502,9 +508,8 @@ if (isConsumoMenor) {
       };
     }
 
-    // 2. Generar URL QR — se pasa `signedAt` (no `new Date()`) para que `fechaemision`
-    // y `fechafirma` del QR sean el instante real de la firma, no el de este punto.
-    const qrCodeUrl = this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, signedAt, rncComprador);
+    // 2. Generar URL QR directamente del XML firmado (Fuente Única de Verdad: 0 drift)
+    const qrCodeUrl = buildQrUrlFromSignedXml(signedXml, config.environment);
 
     // 3. Enviar a DGII si no estamos en sandbox puro
     if (config.environment !== 'sandbox') {
@@ -529,8 +534,32 @@ if (isConsumoMenor) {
 
         const data = sendRes.data;
         const trackId = data?.trackId || `TRK-DGII-${Date.now()}`;
-        const status = data?.estado === 'RECHAZADO' ? 'REJECTED' : 'ACCEPTED';
-        const responseMessage = data?.mensaje || 'Comprobante Fiscal Electrónico Timbrado y Aceptado por DGII';
+        let status: 'ACCEPTED' | 'PENDING' | 'REJECTED' = 'ACCEPTED';
+        let responseMessage = data?.mensaje || 'Comprobante Fiscal Electrónico Timbrado y Aceptado por DGII';
+
+        // Comprobación activa de estado si DGII devolvió trackId real (Problema 4)
+        if (data?.trackId && !data.trackId.startsWith('TRK-')) {
+          try {
+            await new Promise((r) => setTimeout(r, 1200));
+            const statusRes = await this.queryTrackIdStatus(data.trackId);
+            if (statusRes?.estado === 'ACEPTADO' || statusRes?.estado === 'Aceptado') {
+              status = 'ACCEPTED';
+              responseMessage = statusRes.mensaje || 'Comprobante Fiscal Electrónico Timbrado y Aceptado por DGII';
+            } else if (statusRes?.estado === 'RECHAZADO' || statusRes?.estado === 'Rechazado') {
+              status = 'REJECTED';
+              const rejectDetails = statusRes.mensajes?.map((m: any) => m.valor || m.mensaje || m).join('; ');
+              responseMessage = `Rechazado por DGII: ${rejectDetails || statusRes.mensaje || 'Documento no cumple validaciones DGII'}`;
+            } else if (statusRes?.estado === 'EN_PROCESO' || statusRes?.estado === 'EnProceso') {
+              status = 'PENDING';
+              responseMessage = `En proceso de validación en DGII (TrackId: ${data.trackId})`;
+            }
+          } catch (statusErr: any) {
+            this.logger.warn(`No se pudo verificar inmediatamente el estado del TrackId ${data.trackId}: ${statusErr.message}`);
+          }
+        } else if (data?.estado === 'RECHAZADO' || data?.estado === 'Rechazado') {
+          status = 'REJECTED';
+          responseMessage = data?.mensaje || 'Rechazado por DGII en recepción';
+        }
 
         return {
           trackId,
@@ -539,7 +568,7 @@ if (isConsumoMenor) {
           qrCodeUrl,
           responseMessage,
           timestamp: new Date(),
-        signedAt,
+          signedAt,
           signedXml,
           rawResponse: data,
         };
@@ -552,7 +581,7 @@ if (isConsumoMenor) {
           qrCodeUrl,
           responseMessage: 'Comprobante emitido en Contingencia por indisponibilidad de enlace DGII',
           timestamp: new Date(),
-        signedAt,
+          signedAt,
           signedXml,
         };
       }
@@ -566,7 +595,7 @@ if (isConsumoMenor) {
       qrCodeUrl,
       responseMessage: 'Comprobante Fiscal Electrónico Simulado y Certificado en Sandbox DGII',
       timestamp: new Date(),
-        signedAt,
+      signedAt,
       signedXml,
     };
   }
@@ -581,6 +610,23 @@ if (isConsumoMenor) {
     const config = await this.resolveConfig();
     const { signedXml, securityCode } = this.signerService.signXml(rawXml, config.certPath, config.certPassword);
     const signedAt = new Date();
+
+    // Verificación criptográfica automática pre-vuelo (Problema 2)
+    const sigValidation = this.signerService.verifySignature(signedXml);
+    if (!sigValidation.valid) {
+      this.logger.error(`RFCE ${eNcf} no superó la verificación criptográfica: ${sigValidation.error}`);
+      return {
+        trackId: `TRK-SIG-ERR-${Date.now()}`,
+        status: 'REJECTED',
+        securityCode,
+        qrCodeUrl: this.generateQrCodeUrl(config, eNcf, montoTotal, securityCode, signedAt),
+        responseMessage: `Error criptográfico en firma digital XMLDSig de RFCE: ${sigValidation.error}`,
+        timestamp: new Date(),
+        signedAt,
+        signedXml,
+        validationErrors: [sigValidation.error || 'Firma digital no válida'],
+      };
+    }
 
     const validation = this.xsdValidator.validateRfce(signedXml);
     if (!validation.valid) {

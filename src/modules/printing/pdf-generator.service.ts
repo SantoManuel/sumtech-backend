@@ -4,6 +4,7 @@ import * as QRCode from 'qrcode';
 import { CONTRACT_CLAUSES_PLACEHOLDER } from './contract-clauses.constant';
 import { ClientsListPdfData, CompanyPdfInfo, ContractPdfData, EquipmentListPdfData, InvoiceReceiptMetadata } from './pdf-generator.types';
 import { formatDateDgii, formatDateTimeDgii } from '../../common/utils/dgii-date.util';
+import { buildQrUrlFromSignedXml } from '../invoicing/dgii/dgii-xml-generator.service';
 
 const PRINT_TIME_ZONE = 'America/Santo_Domingo';
 
@@ -68,7 +69,16 @@ function shouldShowNcfExpiry(ncfType?: string, ncfNumber?: string): boolean {
 }
 
 function buildDgiiQrUrl(metadata: InvoiceReceiptMetadata): string {
-  // Si la factura ya trae una URL oficial que contenga codigoseguridad o consultatimbrefc (no la URL dummy corta)
+  // 1. Si la factura trae el XML firmado, extraer la URL oficial directamente del XML (Fuente Única de Verdad)
+  if (metadata.invoice.signedXmlContent) {
+    try {
+      return buildQrUrlFromSignedXml(metadata.invoice.signedXmlContent);
+    } catch {
+      // Continuar al siguiente paso si falla parseo
+    }
+  }
+
+  // 2. Si la factura ya trae una URL oficial que contenga codigoseguridad o consultatimbrefc (no la URL dummy corta)
   if (
     metadata.invoice.qrCodeUrl &&
     !metadata.invoice.qrCodeUrl.includes('/consulta?encf=') &&

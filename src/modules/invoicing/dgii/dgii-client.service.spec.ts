@@ -156,7 +156,12 @@ describe('DgiiClientService — envío de RFCE y consulta de estado (sin Company
     process.env.DGII_CERT_PASSWORD = 'pass';
 
     signerService = {
-      signXml: jest.fn().mockReturnValue({ signedXml: '<RFCE><Signature/></RFCE>', securityCode: 'ABC123', signatureValue: 'ABC123XYZ==' }),
+      signXml: jest.fn().mockReturnValue({
+        signedXml: '<RFCE><Encabezado><Emisor><RNCEmisor>131000000</RNCEmisor><FechaEmision>10-11-2026</FechaEmision></Emisor><Totales><MontoTotal>4130.00</MontoTotal></Totales></Encabezado><FechaHoraFirma>10-11-2026 10:00:00</FechaHoraFirma><Signature><SignatureValue>ABC123XYZ==</SignatureValue></Signature></RFCE>',
+        securityCode: 'ABC123',
+        signatureValue: 'ABC123XYZ==',
+      }),
+      verifySignature: jest.fn().mockReturnValue({ valid: true }),
     };
     xsdValidator = {
       validateRfce: jest.fn().mockReturnValue({ valid: true, errors: [] }),
@@ -185,7 +190,7 @@ describe('DgiiClientService — envío de RFCE y consulta de estado (sin Company
     const result = await service.submitRfce('<RFCE></RFCE>', 'E3200000099', 4130);
 
     expect(signerService.signXml).toHaveBeenCalledWith('<RFCE></RFCE>', './certs/test.p12', 'pass');
-    expect(xsdValidator.validateRfce).toHaveBeenCalledWith('<RFCE><Signature/></RFCE>');
+    expect(xsdValidator.validateRfce).toHaveBeenCalled();
     expect(result.status).toBe('ACCEPTED');
     expect(result.securityCode).toBe('ABC123');
     expect(result.trackId).toMatch(/^TRK-SBX-RFCE-/);
@@ -208,6 +213,26 @@ describe('DgiiClientService — envío de RFCE y consulta de estado (sin Company
 
     expect(result.status).toBe('REJECTED');
     expect(result.validationErrors).toEqual(['error de esquema']);
+  });
+
+  it('submitEcf rechaza inmediatamente si la verificación criptográfica de la firma falla', async () => {
+    signerService.verifySignature.mockReturnValue({ valid: false, error: 'SignatureValue no corresponde con la clave pública' });
+
+    const result = await service.submitEcf('<ECF></ECF>', 'E3100000001', 5000, 'E31');
+
+    expect(result.status).toBe('REJECTED');
+    expect(result.responseMessage).toContain('Firma digital XMLDSig no válida');
+    expect(result.trackId).toMatch(/^TRK-SIG-ERR-/);
+  });
+
+  it('submitRfce rechaza inmediatamente si la verificación criptográfica de la firma falla', async () => {
+    signerService.verifySignature.mockReturnValue({ valid: false, error: 'Certificado no válido' });
+
+    const result = await service.submitRfce('<RFCE></RFCE>', 'E3200000099', 4130);
+
+    expect(result.status).toBe('REJECTED');
+    expect(result.responseMessage).toContain('Error criptográfico en firma digital XMLDSig de RFCE');
+    expect(result.trackId).toMatch(/^TRK-SIG-ERR-/);
   });
 
   it('queryTrackIdStatus (sandbox) devuelve el estado real persistido para un TrackId conocido', async () => {

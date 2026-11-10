@@ -45,4 +45,39 @@ describe('DgiiSignerService', () => {
     const code = service.extractSecurityCodeFromSignedXml(mockSigned);
     expect(code).toBe('ABC123');
   });
+
+  describe('verifySignature', () => {
+    const rawXml =
+      `<ECF>` +
+        `<Encabezado>` +
+          `<Version>1.0</Version>` +
+          `<IdDoc><TipoeCF>45</TipoeCF><eNCF>E450000000004</eNCF></IdDoc>` +
+          `<Emisor><RNCEmisor>131148697</RNCEmisor><RazonSocialEmisor>SUMTECH TELECOM SRL</RazonSocialEmisor></Emisor>` +
+          `<Totales><MontoTotal>650.00</MontoTotal></Totales>` +
+        `</Encabezado>` +
+        `<FechaHoraFirma>10-11-2026 09:38:48</FechaHoraFirma>` +
+      `</ECF>`;
+
+    it('debe verificar criptográficamente como válida una firma recién generada', () => {
+      const { signedXml } = service.signXml(rawXml, './certs/22817887_identity.p12', 'hagmauhig1255');
+      const result = service.verifySignature(signedXml);
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('debe detectar alteración del contenido (tampering) y rechazar la firma', () => {
+      const { signedXml } = service.signXml(rawXml, './certs/22817887_identity.p12', 'hagmauhig1255');
+      // Alteramos un monto en el XML firmado
+      const tamperedXml = signedXml.replace('<MontoTotal>650.00</MontoTotal>', '<MontoTotal>999.00</MontoTotal>');
+      const result = service.verifySignature(tamperedXml);
+      expect(result.valid).toBe(false);
+      expect(result.error).toBeDefined();
+    });
+
+    it('debe rechazar un XML sin bloque de firma', () => {
+      const result = service.verifySignature(rawXml);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('No se encontró el certificado X.509');
+    });
+  });
 });

@@ -334,8 +334,8 @@ export class InvoicingService {
       dgiiTrackId: sendResult.trackId,
       securityCode: baseSecurityCode || sendResult.securityCode,
       qrCodeContent:
-        isConsumoMenor && baseSecurityCode && typeof this.dgiiClient.generateQrCodeUrl === 'function'
-          ? this.dgiiClient.generateQrCodeUrl(effectiveConfig, ncfNumber, Number(sale.grandTotal), baseSecurityCode, new Date())
+        baseSignedXml
+          ? this.xmlGenerator.buildQrUrlFromSignedXml(baseSignedXml, effectiveConfig.environment)
           : sendResult.qrCodeUrl,
       signedXmlContent: baseSignedXml || sendResult.signedXml,
       responseMessage: sendResult.responseMessage,
@@ -1122,8 +1122,16 @@ export class InvoicingService {
         }
       }
 
-      // Código QR oficial DGII: regenerar si está vacío o si proviene de seed/dummy sin parámetros
+      // Código QR oficial DGII: Fuente única de verdad a partir del XML firmado
       let qrCodeUrl = invoice.qrCodeContent;
+      if (invoice.signedXmlContent) {
+        try {
+          const config = await this.dgiiClient.getConfig();
+          qrCodeUrl = this.xmlGenerator.buildQrUrlFromSignedXml(invoice.signedXmlContent, config.environment);
+        } catch {
+          // Mantener qrCodeUrl actual si falla
+        }
+      }
       const isLegacyDummy = !qrCodeUrl || qrCodeUrl.includes('/consulta?encf=') || (!qrCodeUrl.includes('codigoseguridad') && !qrCodeUrl.includes('consultatimbrefc'));
       if (isLegacyDummy && invoice.ncfNumber) {
         try {
@@ -1177,6 +1185,7 @@ export class InvoicingService {
           ncfModificado: invoice.ncfModificado,
           razonModificacion: invoice.razonModificacion,
           isProforma: false,
+          signedXmlContent: invoice.signedXmlContent,
         },
         client: {
           name: sale?.client?.name || invoice.client?.name || 'Consumidor Final',

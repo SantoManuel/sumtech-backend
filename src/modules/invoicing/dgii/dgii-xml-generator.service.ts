@@ -1267,4 +1267,92 @@ export class DgiiXmlGeneratorService {
       `</ARECF>`
     );
   }
+
+  /**
+   * Extrae los metadatos fiscales oficiales directamente del XML firmado como FUENTE ÚNICA DE VERDAD.
+   * Garantiza que la fecha y hora de firma, montos y códigos coincidan con precisión absoluta.
+   */
+  parseSignedEcfMetadata(signedXml: string): SignedEcfMetadata {
+    return parseSignedEcfMetadata(signedXml);
+  }
+
+  /**
+   * Construye la URL oficial del Código QR de la DGII exclusivamente desde el XML firmado,
+   * erradicando discrepancias de segundos (0-drift) y garantizando coincidencia caracter por caracter.
+   */
+  buildQrUrlFromSignedXml(
+    signedXml: string,
+    environment?: 'ecf' | 'certecf' | 'testecf' | 'sandbox',
+  ): string {
+    return buildQrUrlFromSignedXml(signedXml, environment);
+  }
+}
+
+export interface SignedEcfMetadata {
+  rncEmisor: string;
+  rncComprador?: string;
+  eNcf: string;
+  ncfType: string;
+  fechaEmision: string; // dd-MM-yyyy
+  fechaHoraFirma: string; // dd-MM-yyyy HH:mm:ss
+  montoTotal: string; // Formateado a 2 decimales (ej. "650.00")
+  securityCode: string; // Primeros 6 caracteres alfanuméricos de SignatureValue
+  signatureValue: string;
+}
+
+/**
+ * Función pura que extrae los metadatos del XML firmado.
+ */
+export function parseSignedEcfMetadata(signedXml: string): SignedEcfMetadata {
+  if (!signedXml || typeof signedXml !== 'string') {
+    throw new Error('El XML firmado es requerido para extraer metadatos');
+  }
+
+  const rncEmisor = signedXml.match(/<RNCEmisor[^>]*>([\s\S]*?)<\/RNCEmisor>/i)?.[1]?.trim() || '';
+  const rncComprador = signedXml.match(/<RNCComprador[^>]*>([\s\S]*?)<\/RNCComprador>/i)?.[1]?.trim();
+  const eNcf = signedXml.match(/<eNCF[^>]*>([\s\S]*?)<\/eNCF>/i)?.[1]?.trim() || '';
+  const tipoeCF = signedXml.match(/<TipoeCF[^>]*>([\s\S]*?)<\/TipoeCF>/i)?.[1]?.trim() || '';
+  const ncfType = eNcf ? (eNcf.startsWith('E') ? eNcf.substring(0, 3) : `E${tipoeCF}`) : (tipoeCF ? `E${tipoeCF}` : 'E31');
+  const fechaEmision = signedXml.match(/<FechaEmision[^>]*>([\s\S]*?)<\/FechaEmision>/i)?.[1]?.trim() || '';
+  const fechaHoraFirma = signedXml.match(/<FechaHoraFirma[^>]*>([\s\S]*?)<\/FechaHoraFirma>/i)?.[1]?.trim() || '';
+  const montoTotal = signedXml.match(/<MontoTotal[^>]*>([\s\S]*?)<\/MontoTotal>/i)?.[1]?.trim() || '0.00';
+  const sigValue = signedXml.match(/<SignatureValue[^>]*>([\s\S]*?)<\/SignatureValue>/i)?.[1]?.trim() || '';
+  const cleanSig = sigValue.replace(/[^a-zA-Z0-9]/g, '');
+  const securityCode = cleanSig.length >= 6 ? cleanSig.substring(0, 6) : '';
+
+  return {
+    rncEmisor: rncEmisor.replace(/\D/g, ''),
+    rncComprador: rncComprador ? rncComprador.replace(/\D/g, '') : undefined,
+    eNcf,
+    ncfType,
+    fechaEmision,
+    fechaHoraFirma,
+    montoTotal: Number(montoTotal).toFixed(2),
+    securityCode,
+    signatureValue: sigValue,
+  };
+}
+
+/**
+ * Función pura que construye la URL oficial del Código QR de la DGII directamente desde el XML firmado.
+ */
+export function buildQrUrlFromSignedXml(
+  signedXml: string,
+  environment?: 'ecf' | 'certecf' | 'testecf' | 'sandbox',
+): string {
+  const meta = parseSignedEcfMetadata(signedXml);
+  const env = environment === 'ecf' ? 'ecf' : environment === 'certecf' ? 'certecf' : 'testecf';
+  const montoNum = parseFloat(meta.montoTotal) || 0;
+  const isConsumoMenor = meta.eNcf.startsWith('E32') && montoNum < 250000;
+
+  if (isConsumoMenor) {
+    return `https://fc.dgii.gov.do/${env}/consultatimbrefc?rncemisor=${encodeURIComponent(meta.rncEmisor)}&encf=${encodeURIComponent(meta.eNcf)}&montototal=${encodeURIComponent(meta.montoTotal)}&codigoseguridad=${encodeURIComponent(meta.securityCode)}`;
+  }
+
+  let compradorQuery = '';
+  if (meta.rncComprador && !meta.eNcf.startsWith('E43') && !meta.eNcf.startsWith('E47')) {
+    compradorQuery = `&rnccomprador=${encodeURIComponent(meta.rncComprador)}`;
+  }
+
+  return `https://ecf.dgii.gov.do/${env}/consultatimbre?rncemisor=${encodeURIComponent(meta.rncEmisor)}${compradorQuery}&encf=${encodeURIComponent(meta.eNcf)}&fechaemision=${encodeURIComponent(meta.fechaEmision)}&montototal=${encodeURIComponent(meta.montoTotal)}&fechafirma=${encodeURIComponent(meta.fechaHoraFirma)}&codigoseguridad=${encodeURIComponent(meta.securityCode)}`;
 }

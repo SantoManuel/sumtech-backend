@@ -2,6 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as forge from 'node-forge';
+import * as crypto from 'crypto';
+import { DOMParser } from '@xmldom/xmldom';
+import { SignedXml, C14nCanonicalization } from 'xml-crypto';
 import { Signature, P12Reader } from 'dgii-ecf';
 
 @Injectable()
@@ -154,5 +157,87 @@ export class DgiiSignerService {
       }
     }
     return Math.random().toString(36).substring(2, 8).toUpperCase();
+  }
+
+  /**
+   * Realiza una verificación criptográfica exhaustiva de la firma XMLDSig
+   * comprobando:
+   * 1. Presencia del certificado X.509 en KeyInfo
+   * 2. Integridad de los datos mediante DigestValue (SHA-256)
+   * 3. Validez criptográfica del SignatureValue mediante la clave pública del certificado X.509
+   * 4. Canonicalización estricta de SignedInfo bajo C14N estándar DGII
+   */
+  verifySignature(signedXml: string): { valid: boolean; error?: string } {
+    if (!signedXml || typeof signedXml !== 'string') {
+      return { valid: false, error: 'Documento XML no proporcionado o vacío' };
+    }
+
+    try {
+      const certMatch = signedXml.match(/<X509Certificate[^>]*>([\s\S]*?)<\/X509Certificate>/i);
+      if (!certMatch || !certMatch[1].trim()) {
+        return { valid: false, error: 'No se encontró el certificado X.509 en el bloque KeyInfo' };
+      }
+      const rawCertBase64 = certMatch[1].replace(/\s+/g, '');
+      const certPem = `-----BEGIN CERTIFICATE-----\n${rawCertBase64}\n-----END CERTIFICATE-----`;
+
+      const parser = new DOMParser({
+        errorHandler: (level: string, msg: string) => {
+          if (level === 'error' || level === 'fatalError') {
+            throw new Error(msg);
+          }
+        },
+      } as any);
+      const doc = parser.parseFromString(signedXml, 'text/xml');
+      const sigNode = doc.getElementsByTagNameNS('http://www.w3.org/2000/09/xmldsig#', 'Signature')[0]
+        || doc.getElementsByTagName('Signature')[0];
+
+      if (!sigNode) {
+        return { valid: false, error: 'No se encontró el elemento Signature en el documento' };
+      }
+
+      // 1. Verificación completa XMLDSig con xml-crypto
+      const xmlVerifier = new SignedXml({ publicCert: certPem });
+      try {
+        const Digest = require('dgii-ecf/dist/Signature/custom/Digest').default;
+        if (Digest) {
+          xmlVerifier.HashAlgorithms['http://myDigestAlgorithm'] = Digest;
+        }
+      } catch {
+        // En caso de que no requiera el digest custom
+      }
+
+      xmlVerifier.loadSignature(sigNode as any);
+      const isXmlCryptoValid = xmlVerifier.checkSignature(signedXml);
+      if (!isXmlCryptoValid) {
+        const err = ((xmlVerifier as any).validationErrors || []).join('; ') || 'Digest o firma no coinciden con el contenido del XML';
+        return { valid: false, error: err };
+      }
+
+      // 2. Verificación criptográfica directa de SignedInfo con RSA-SHA256
+      const signedInfoNode = sigNode.getElementsByTagName('SignedInfo')[0];
+      if (!signedInfoNode) {
+        return { valid: false, error: 'No se encontró el elemento SignedInfo en la firma' };
+      }
+
+      const c14n = new C14nCanonicalization();
+      const c14nSignedInfo = c14n.process(signedInfoNode as any, {} as any);
+
+      const sigValue = this.extractSignatureValue(signedXml);
+      const verifier = crypto.createVerify('RSA-SHA256');
+      verifier.update(c14nSignedInfo);
+      const isRsaValid = verifier.verify(certPem, Buffer.from(sigValue, 'base64'));
+
+      if (!isRsaValid) {
+        return {
+          valid: false,
+          error: 'La firma RSA-SHA256 del bloque SignedInfo no corresponde con la clave pública del certificado X.509',
+        };
+      }
+
+      return { valid: true };
+    } catch (err: any) {
+      this.logger.error(`Error en verificación criptográfica de firma: ${err.message}`, err.stack);
+      return { valid: false, error: `Excepción durante la verificación de firma: ${err.message}` };
+    }
   }
 }
