@@ -276,7 +276,7 @@ export class PdfGeneratorService {
     } else if (metadata.invoice.ncfExpiryDate && shouldShowNcfExpiry(metadata.invoice.ncfType, metadata.invoice.ncfNumber)) {
       // Vencimiento de la secuencia de NCF (ya viene en formato dd-MM-yyyy desde
       // EcfSequenceEntity — no pasar por formatDate, que espera un Date/ISO).
-      doc.text(`Fecha Vencimiento: ${metadata.invoice.ncfExpiryDate}`, boxX + 8, doc.y + 1, { width: boxWidth - 16 });
+      doc.text(`Fecha Vencimiento Secuencia: ${metadata.invoice.ncfExpiryDate}`, boxX + 8, doc.y + 1, { width: boxWidth - 16 });
     }
 
     // Comprobantes Modificativos (E33 / E34): la DGII exige que la Representación Impresa

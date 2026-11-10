@@ -271,15 +271,14 @@ describe('PdfGeneratorService', () => {
       expect(text80).not.toContain('Fecha Vencimiento Secuencia');
     });
 
-    it('muestra "Fecha Vencimiento" con el vencimiento real de la secuencia de NCF (no la fecha de cobro)', async () => {
+    it('muestra "Fecha Vencimiento Secuencia" con el vencimiento real de la secuencia de NCF (no la fecha de cobro)', async () => {
       const e31WithExpiry: InvoiceReceiptMetadata = {
         ...metadata,
         invoice: { ...metadata.invoice, ncfType: 'E31', ncfNumber: 'E3100000010', ncfExpiryDate: '31-12-2028' },
       };
 
       const text = extractPdfText(await service.generateInvoiceA4Pdf(e31WithExpiry));
-      expect(text).toContain('Fecha Vencimiento');
-      expect(text).toContain('31-12-2028');
+      expect(text).toContain('Fecha Vencimiento Secuencia: 31-12-2028');
     });
 
     it('para una Nota de Crédito (E34) muestra el NCF Modificado y el Motivo de forma destacada', async () => {
