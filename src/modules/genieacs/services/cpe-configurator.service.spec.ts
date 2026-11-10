@@ -135,6 +135,52 @@ describe('CpeConfiguratorService', () => {
     expect(mockClient.setDeviceTag).not.toHaveBeenCalled();
   });
 
+  it('habilita HTTPWanEnable (acceso web remoto) para un CPE Huawei -- de fábrica bloquea HTTP por WAN', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('00259E-HG8546M-485754437BDC60D9');
+    mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-HG8546M-485754437BDC60D9', isTR181: false, tags: [] });
+    mockClient.setParameterValues.mockResolvedValue(undefined);
+    mockClient.getParameterValues.mockResolvedValue({});
+
+    const input: CpeConfigurationInput = {
+      serialNumber: 'HWTC7BDC60D9',
+      vendor: 'Huawei',
+      wanMode: 'PPPOE',
+      pppoeUsername: 'cliente@sumtech',
+      pppoePassword: 'pass',
+      tenantSlug: 'isp-azua',
+    };
+
+    await service.configureCpe(input);
+
+    expect(mockClient.setParameterValues).toHaveBeenCalledWith(
+      '00259E-HG8546M-485754437BDC60D9',
+      [['InternetGatewayDevice.X_HW_Security.AclServices.HTTPWanEnable', 'true', 'xsd:boolean']],
+    );
+  });
+
+  it('no toca HTTPWanEnable para un CPE no-Huawei (el ACL de ZTE es una tabla distinta, sin solución verificada todavía)', async () => {
+    mockClient.findDeviceBySerial.mockResolvedValue('2CB272-F660-ZTEGC687ABB0234');
+    mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '2CB272-F660-ZTEGC687ABB0234', isTR181: false, tags: [] });
+    mockClient.setParameterValues.mockResolvedValue(undefined);
+    mockClient.getParameterValues.mockResolvedValue({});
+
+    const input: CpeConfigurationInput = {
+      serialNumber: 'ZTEGC687ABB0234',
+      vendor: 'ZTE',
+      wanMode: 'PPPOE',
+      pppoeUsername: 'cliente@sumtech',
+      pppoePassword: 'pass',
+      tenantSlug: 'isp-azua',
+    };
+
+    await service.configureCpe(input);
+
+    const aclCalls = mockClient.setParameterValues.mock.calls.filter(([, params]) =>
+      params.some(([path]: [string]) => path.includes('HTTPWanEnable')),
+    );
+    expect(aclCalls).toHaveLength(0);
+  });
+
   it('crea el objeto WANPPPConnection con AddObject si todavía no existe en el CPE (TR-098)', async () => {
     mockClient.findDeviceBySerial.mockResolvedValue('00259E-ONT123');
     mockClient.getDeviceStatus.mockResolvedValue({ deviceId: '00259E-ONT123', isTR181: false, tags: [] });

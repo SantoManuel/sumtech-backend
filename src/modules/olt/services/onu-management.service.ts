@@ -1401,20 +1401,50 @@ export class OnuManagementService {
     return this.wanProvisioning.withMutation(onu.id, async () => {
       const current = await this.findById(onu.id);
       if (current.serviceConfig?.operationMode === 'BRIDGE') return {};
+      let result: { cpeConfigured?: boolean; cpeConfigWarning?: string };
       try {
         const pending = ['APPLYING', 'QUEUED', 'VERIFYING', 'UNKNOWN'].includes(current.serviceConfig?.wanApplyStatus || '');
         if (pending && (current.serviceConfig?.wanDesiredVersion || 0) > 0) {
           const op = await this.wanProvisioning.verify(current);
-          return { cpeConfigured: op?.status === 'APPLIED', cpeConfigWarning: op?.lastError || undefined };
+          result = { cpeConfigured: op?.status === 'APPLIED', cpeConfigWarning: op?.lastError || undefined };
+        } else {
+          const op = await this.wanProvisioning.configure(current, {
+            provisioningMethod: 'TR069', wanMode: config.wanMode, ipProtocol: config.ipProtocol, ...wanStatic,
+          }, options.actorUserId);
+          result = { cpeConfigured: op.status === 'APPLIED', cpeConfigWarning: op.lastError || undefined };
         }
-        const op = await this.wanProvisioning.configure(current, {
-          provisioningMethod: 'TR069', wanMode: config.wanMode, ipProtocol: config.ipProtocol, ...wanStatic,
-        }, options.actorUserId);
-        return { cpeConfigured: op.status === 'APPLIED', cpeConfigWarning: op.lastError || undefined };
       } catch (error: any) {
-        return { cpeConfigured: false, cpeConfigWarning: `${options.warningPrefix}: ${error.message}` };
+        result = { cpeConfigured: false, cpeConfigWarning: `${options.warningPrefix}: ${error.message}` };
       }
+      if (current.serviceConfig) {
+        await this.persistCpeConfigStatus(current.serviceConfig, result);
+      }
+      return result;
     });
+  }
+
+  /**
+   * Escribe el resultado REAL de `pushCpeConfiguration` en `cpe_config_status`
+   * (migración 093) -- hasta ahora esa columna se declaraba, se leía (UI
+   * "Confirmación del CPE", `OnuCpeSyncReconciliationService`) y jamás se
+   * escribía, así que quedaba congelada en 'PENDING' para siempre sin
+   * importar si GenieACS confirmaba todo. `result.cpeConfigured === undefined`
+   * (no boolean) significa que esta llamada fue un no-op real (OMCI/BRIDGE/
+   * sin tr069NetworkId) -- ahí no se toca el estado, porque no se intentó nada.
+   */
+  private async persistCpeConfigStatus(
+    config: OnuServiceConfigEntity,
+    result: { cpeConfigured?: boolean; cpeConfigWarning?: string },
+  ): Promise<void> {
+    if (result.cpeConfigured === undefined) return;
+    config.cpeConfigStatus = result.cpeConfigured ? 'APPLIED' : 'ERROR';
+    config.lastCpeConfigError = result.cpeConfigured ? null : result.cpeConfigWarning || 'Error desconocido aplicando configuración CPE.';
+    if (result.cpeConfigured) config.cpeConfigSyncedAt = new Date();
+    try {
+      await this.configRepository.save(config);
+    } catch (err: any) {
+      this.logger.warn(`No se pudo persistir cpeConfigStatus para la ONU ${config.onuId}: ${err.message}`);
+    }
   }
   /**
    * Etapa 2 del flujo de 3 etapas: apunta una ONU YA autorizada ópticamente

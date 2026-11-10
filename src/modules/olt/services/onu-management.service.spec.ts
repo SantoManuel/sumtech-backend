@@ -2042,8 +2042,14 @@ describe('OnuManagementService', () => {
       );
     });
 
-    it('con managementMethod TR069, reintenta el push a GenieACS y marca cpeConfigured:true', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: 'contract-1', onuTypeId: 'type-1' });
+    it('con managementMethod TR069, reintenta el push a GenieACS, marca cpeConfigured:true y persiste cpeConfigStatus=APPLIED', async () => {
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        status: 'ACTIVE',
+        contractId: 'contract-1',
+        onuTypeId: 'type-1',
+        serviceConfig: { ...mockConfig, cpeConfigStatus: 'PENDING' },
+      });
       configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
 
       const result = await service.reprovisionOnu('onu-uuid-1', {
@@ -2053,10 +2059,19 @@ describe('OnuManagementService', () => {
 
       expect(wanProvisioning.configure).toHaveBeenCalledWith(expect.objectContaining({ serialNumber: mockOnu.serialNumber }), expect.objectContaining({ provisioningMethod: 'TR069' }), 'admin-id');
       expect((result as any).cpeConfigured).toBe(true);
+      expect(configRepo.save).toHaveBeenLastCalledWith(
+        expect.objectContaining({ cpeConfigStatus: 'APPLIED', lastCpeConfigError: null, cpeConfigSyncedAt: expect.any(Date) }),
+      );
     });
 
-    it('si el push a GenieACS falla, no revierte la configuración guardada y marca cpeConfigured:false con advertencia', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: 'contract-1', onuTypeId: 'type-1' });
+    it('si el push a GenieACS falla, no revierte la configuración guardada, marca cpeConfigured:false con advertencia y persiste cpeConfigStatus=ERROR + lastCpeConfigError', async () => {
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        status: 'ACTIVE',
+        contractId: 'contract-1',
+        onuTypeId: 'type-1',
+        serviceConfig: { ...mockConfig, cpeConfigStatus: 'PENDING' },
+      });
       configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
       wanProvisioning.configure.mockResolvedValue({ id: 'op-1', status: 'UNKNOWN', lastError: 'GenieACS no confirmó la configuración' });
 
@@ -2068,16 +2083,24 @@ describe('OnuManagementService', () => {
       expect(configRepo.save).toHaveBeenCalled();
       expect((result as any).cpeConfigured).toBe(false);
       expect((result as any).cpeConfigWarning).toContain('GenieACS');
+      expect(configRepo.save).toHaveBeenLastCalledWith(
+        expect.objectContaining({ cpeConfigStatus: 'ERROR', lastCpeConfigError: expect.stringContaining('GenieACS') }),
+      );
     });
 
-    it('con managementMethod OMCI, no llama a GenieACS', async () => {
-      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE' });
+    it('con managementMethod OMCI, no llama a GenieACS y no toca cpeConfigStatus (no-op real, nada que confirmar)', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', serviceConfig: { ...mockConfig, cpeConfigStatus: 'PENDING' } });
       configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      configRepo.save.mockClear();
 
       const result = await service.reprovisionOnu('onu-uuid-1', { managementMethod: 'OMCI' }, 'admin-id');
 
       expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
       expect((result as any).cpeConfigured).toBeUndefined();
+      // Solo el save de reprovisionOnu en sí (persistir managementMethod=OMCI) --
+      // ninguno adicional de persistCpeConfigStatus, porque pushCpeConfiguration
+      // no intentó nada (guardia wanProvisioningMethod==='OMCI'/managementMethod!=='TR069').
+      expect(configRepo.save).toHaveBeenCalledTimes(1);
     });
   });
 

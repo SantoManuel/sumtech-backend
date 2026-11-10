@@ -198,6 +198,27 @@ export class CpeConfiguratorService {
       }
     }
 
+    // 5.b Habilitar acceso HTTP por WAN a la GUI web del CPE (RF-OLT Ficha 360
+    // "Interfaz Web de la ONU") -- de fábrica el ACL del equipo bloquea HTTP
+    // desde el lado WAN/gestión, así que el proxy del ERP nunca puede
+    // alcanzarlo aunque el equipo esté online (confirmado en vivo 2026-11-10,
+    // ONU HWTC7BDC60D9: timeout consistente en el puerto 80 hasta activar
+    // este parámetro, 200 OK inmediato después). Solo Huawei por ahora --
+    // el ACL de ZTE es una tabla de reglas (X_ZTE-COM_Security.AclServices),
+    // no un flag simple, y no se encontró todavía la combinación correcta de
+    // campos que de verdad abra el puerto (un intento real no lo logró).
+    // Best-effort: nunca debe hacer fallar el resto de la configuración.
+    const isHuawei = (input.vendor || '').toUpperCase().includes('HUAWEI') || (input.serialNumber || '').toUpperCase().startsWith('HWTC');
+    if (isHuawei) {
+      try {
+        await client.setParameterValues(deviceId, [
+          ['InternetGatewayDevice.X_HW_Security.AclServices.HTTPWanEnable', 'true', 'xsd:boolean'],
+        ]);
+      } catch (err: any) {
+        this.logger.warn(`[CPE-CONFIG] No se pudo habilitar acceso HTTP WAN en ${deviceId}: ${err.message}`);
+      }
+    }
+
     // 6. Verificar lectura de parámetros clave
     const readableExpected = parameterValues.filter(([key]) => !/password|passphrase|presharedkey/i.test(key));
     const verificationKeys = [...new Set([

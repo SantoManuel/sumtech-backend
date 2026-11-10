@@ -169,7 +169,7 @@ export class OnuServiceConfigEntity {
   cpeConfigStatus: 'PENDING' | 'APPLIED' | 'ERROR';
 
   @Column({ name: 'last_cpe_config_error', type: 'text', nullable: true })
-  lastCpeConfigError?: string;
+  lastCpeConfigError?: string | null;
 
   @Column({ name: 'cpe_config_synced_at', type: 'timestamp with time zone', nullable: true })
   cpeConfigSyncedAt?: Date;
