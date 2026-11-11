@@ -81,8 +81,23 @@ describe('CpeProxyMiddleware', () => {
     expect(result).toBe('/cpe/abc123/webcmcc/login.html');
   });
 
-  it('reescribe un Location absoluto hacia la IP LAN fija del CPE (http://192.168.1.1/x) a solo la ruta con prefijo', () => {
-    const result = (middleware as any).rewriteLocation('http://192.168.1.1/webcmcc/login.html?a=1', 'abc123');
-    expect(result).toBe('/cpe/abc123/webcmcc/login.html?a=1');
+  it('reescribe un Location absoluto hacia la IP LAN fija del CPE (http://192.168.1.1/x o http://192.168.100.1/x) a solo la ruta con prefijo', () => {
+    const result1 = (middleware as any).rewriteLocation('http://192.168.1.1/webcmcc/login.html?a=1', 'abc123');
+    expect(result1).toBe('/cpe/abc123/webcmcc/login.html?a=1');
+
+    const result2 = (middleware as any).rewriteLocation('http://192.168.100.1/webcmcc/login.html', 'abc123');
+    expect(result2).toBe('/cpe/abc123/webcmcc/login.html');
+  });
+
+  it('reescribe URLs absolutas hacia 192.168.1.1 y 192.168.100.1 embebidas en HTML para que no escapen del proxy', () => {
+    const html = `
+      <form action="http://192.168.100.1/boaform/admin/formLogin" method="POST"></form>
+      <script>var url = "http://192.168.1.1/webcmcc/index.html";</script>
+      <img src="http://192.168.100.1:80/images/logo.png">
+    `;
+    const result = (middleware as any).rewriteHtml(html, 'abc123');
+    expect(result).toContain('action="/cpe/abc123/boaform/admin/formLogin"');
+    expect(result).toContain('/cpe/abc123/webcmcc/index.html');
+    expect(result).toContain('src="/cpe/abc123/images/logo.png"');
   });
 });

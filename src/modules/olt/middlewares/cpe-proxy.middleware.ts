@@ -84,19 +84,51 @@ export class CpeProxyMiddleware implements NestMiddleware {
         const rest = req.originalUrl.startsWith(prefix) ? req.originalUrl.slice(prefix.length) : req.originalUrl;
         return rest || '/';
       },
-      onProxyReq: (proxyReq) => {
+      onProxyReq: (proxyReq, req: any) => {
+        const session = (req as any).cpeSession;
+        const isHuawei = Boolean(
+          session?.serialNumber?.toUpperCase().startsWith('HWTC') ||
+          session?.serialNumber?.toUpperCase().startsWith('CMDC'),
+        );
+
+        // Si la ONU es Huawei o su IP de destino está en la subred 192.168.100.0/24,
+        // su IP LAN de fábrica es 192.168.100.1; para ZTE, VSOL y otros fabricantes es 192.168.1.1.
+        let lanHost = '192.168.1.1';
+        if (session?.targetIp === '192.168.100.1' || session?.targetIp?.startsWith('192.168.100.') || isHuawei) {
+          lanHost = '192.168.100.1';
+        }
+
         // Los firmwares embebidos de CPE (Huawei Boa, ZTE, etc.) exigen que
-        // el encabezado Host sea su IP de LAN fija, o fuerzan una
-        // redirección de seguridad a su portal cautivo.
-        proxyReq.setHeader('host', '192.168.1.1');
-        proxyReq.removeHeader('cookie');
+        // el encabezado Host sea su IP de LAN fija (o la IP con la que fueron consultados),
+        // o fuerzan una redirección de seguridad a su portal cautivo.
+        proxyReq.setHeader('host', lanHost);
+
+        // Filtrar cookies de la plataforma Sumtech para que no viajen a la ONU,
+        // pero permitir que las cookies de sesión del CPE (ej. SessionID de Huawei)
+        // se envíen en peticiones subsecuentes tras autenticarse en su GUI.
+        const cookieHeader = req.headers?.['cookie'];
+        if (typeof cookieHeader === 'string') {
+          const cpeCookies = cookieHeader
+            .replace(/sumtech_[^=]+=[^;]+;?\s*/g, '')
+            .trim();
+          if (cpeCookies) {
+            proxyReq.setHeader('cookie', cpeCookies);
+          } else {
+            proxyReq.removeHeader('cookie');
+          }
+        } else {
+          proxyReq.removeHeader('cookie');
+        }
       },
       onProxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
         const sessionId = (req as any).cpeSessionId as string;
+        const targetIp = (req as any).cpeSession?.targetIp;
         const headers = proxyRes.headers;
 
         delete headers['x-frame-options'];
         delete headers['content-security-policy'];
+        (res as any).removeHeader?.('x-frame-options');
+        (res as any).removeHeader?.('content-security-policy');
         const requestOrigin = (req.headers.origin as string) || undefined;
         if (requestOrigin) {
           (res as any).setHeader('access-control-allow-origin', requestOrigin);
@@ -124,7 +156,7 @@ export class CpeProxyMiddleware implements NestMiddleware {
           return responseBuffer;
         }
         try {
-          return this.rewriteHtml(responseBuffer.toString('utf8'), sessionId);
+          return this.rewriteHtml(responseBuffer.toString('utf8'), sessionId, targetIp);
         } catch (err: any) {
           this.logger.warn(`No se pudo reescribir el HTML del CPE (sesión ${sessionId}): ${err.message}`);
           return responseBuffer;
@@ -147,10 +179,21 @@ export class CpeProxyMiddleware implements NestMiddleware {
     };
   }
 
-  /** Reescribe src/href/action/form que apunten a una ruta absoluta ("/algo") para que sigan dentro del prefijo de esta sesión. */
-  private rewriteHtml(html: string, sessionId: string): string {
-    const $ = cheerio.load(html);
+  /** Reescribe src/href/action/form y URLs absolutas a 192.168.1.1, 192.168.100.1 o targetIp para que sigan dentro del prefijo de esta sesión. */
+  private rewriteHtml(html: string, sessionId: string, targetIp?: string): string {
     const prefix = `/cpe/${sessionId}`;
+
+    // Reemplazar URLs absolutas incrustadas en scripts o atributos que apunten a 192.168.1.1 o 192.168.100.1
+    let processedHtml = html
+      .replace(/https?:\/\/192\.168\.100\.1(?::\d+)?\//gi, `${prefix}/`)
+      .replace(/https?:\/\/192\.168\.1\.1(?::\d+)?\//gi, `${prefix}/`);
+
+    if (targetIp && targetIp !== '192.168.1.1' && targetIp !== '192.168.100.1') {
+      const escapedIp = targetIp.replace(/\./g, '\\.');
+      processedHtml = processedHtml.replace(new RegExp(`https?:\\/\\/${escapedIp}(?::\\d+)?\\/`, 'gi'), `${prefix}/`);
+    }
+
+    const $ = cheerio.load(processedHtml);
     const attrsByTag: Array<[string, string]> = [
       ['[src]', 'src'],
       ['link[href]', 'href'],

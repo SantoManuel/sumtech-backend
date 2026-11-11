@@ -127,14 +127,12 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
     OnuWanProvisioningService,
     OltPartialOperationService,
     OnuWebProxyService,
+    CpeSessionStoreService,
+    CpeProxyMiddleware,
     OltMonitoringService,
     OltDriverRegistry,
     ZteC320Driver,
   ],
 })
-export class OltModule implements NestModule {
-  configure(consumer: MiddlewareConsumer) {
-    consumer.apply(CpeProxyMiddleware).forRoutes('*');
-  }
-}
+export class OltModule {}
 

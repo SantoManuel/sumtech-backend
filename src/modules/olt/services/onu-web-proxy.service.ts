@@ -199,8 +199,27 @@ export class OnuWebProxyService {
     if (cfg?.tr069Ip) return cfg.tr069Ip;
     if (cfg?.wanStaticIp) return cfg.wanStaticIp;
 
+    // 3. Probar si responde en las IPs de fábrica comunes (192.168.100.1 para Huawei, 192.168.1.1 para ZTE/otros)
+    const vendorStr = (onu.vendor || onu.onuType?.vendor || '').toUpperCase();
+    const serialStr = (onu.serialNumber || '').toUpperCase();
+    const isHuawei = vendorStr.includes('HUAWEI') || serialStr.startsWith('HWTC') || serialStr.startsWith('CMDC');
+    const primaryLanIp = isHuawei ? '192.168.100.1' : '192.168.1.1';
+    const secondaryLanIp = isHuawei ? '192.168.1.1' : '192.168.100.1';
+
+    const primaryOk = await this.checkPortConnectivity(primaryLanIp, 80, 800);
+    if (primaryOk) {
+      this.logger.log(`Conectividad detectada con la IP de fábrica primaria para ONU ${onu.serialNumber}: ${primaryLanIp}`);
+      return primaryLanIp;
+    }
+
+    const secondaryOk = await this.checkPortConnectivity(secondaryLanIp, 80, 800);
+    if (secondaryOk) {
+      this.logger.log(`Conectividad detectada con la IP de fábrica secundaria para ONU ${onu.serialNumber}: ${secondaryLanIp}`);
+      return secondaryLanIp;
+    }
+
     throw new BadRequestException(
-      `No se pudo determinar la dirección IP de gestión ni WAN para la ONU ${onu.serialNumber}. Asegúrese de que el equipo esté conectado a TR-069 o tenga IP asignada.`,
+      `No se pudo determinar la dirección IP de gestión ni WAN para la ONU ${onu.serialNumber}. Asegúrese de que el equipo esté conectado a TR-069 o ingrese manualmente su IP (ej. 192.168.1.1 o 192.168.100.1).`,
     );
   }
 

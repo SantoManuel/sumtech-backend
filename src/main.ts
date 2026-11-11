@@ -5,6 +5,7 @@ import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { assertRequiredEnvVars } from './common/utils/required-env.util';
 import { getConfiguredCorsOrigins, isAllowedCorsOrigin } from './common/utils/cors-origin.util';
+import { CpeProxyMiddleware } from './modules/olt/middlewares/cpe-proxy.middleware';
 
 async function bootstrap() {
   const logger = new Logger('SumtechBootstrap');
@@ -18,11 +19,11 @@ async function bootstrap() {
 
   app.use(cookieParser());
 
-  // El proxy inverso a la interfaz web de ONUs (CPE) ya no se registra acá --
-  // vive como middleware de Nest scoped en OltModule.configure() (ver
-  // CpeProxyMiddleware), montado solo para rutas /cpe/<sessionId>/... en vez
-  // de interceptar cada petición al backend con una lista manual de
-  // exclusiones (duplicaba este registro antes, redundante).
+  // Proxy inverso para la interfaz web de ONUs (CPE) montado a nivel Express.
+  // Debe ejecutarse antes del prefijo global de NestJS (setGlobalPrefix 'api/v1')
+  // para interceptar directamente las rutas de sesión aisladas /cpe/<sessionId>/...
+  const cpeProxyMiddleware = app.get(CpeProxyMiddleware);
+  app.use((req: any, res: any, next: any) => cpeProxyMiddleware.use(req, res, next));
 
   // Habilitar CORS multi-tenant (soporta *.localhost:3000, *.localhost:3001, IPs locales y dominios SaaS)
   // Política de orígenes en cors-origin.util.ts -- reutilizada también por

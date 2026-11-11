@@ -50,6 +50,7 @@ export class TenantResolutionMiddleware implements NestMiddleware {
 
     // Rutas especiales sin header X-Tenant-Slug (e-CF DGII B2B, Webhooks de GenieACS y Acceso Web Remoto a la ONU vía iframe/navegador directo)
     const isSpecialDirectRoute =
+      req.path.startsWith('/cpe/') ||
       req.path.startsWith('/fe/') ||
       req.path.includes('/integrations/genieacs') ||
       req.path.includes('/web-proxy/') ||
