@@ -50,6 +50,7 @@ import { OltPartialOperationService } from './services/olt-partial-operation.ser
 import { OltMonitoringService } from './services/olt-monitoring.service';
 import { OltExportService } from './services/olt-export.service';
 import { OnuWebProxyService } from './services/onu-web-proxy.service';
+import { CpeSessionStoreService } from './services/cpe-session-store.service';
 import { OltPermissionGuard } from './guards/olt-permission.guard';
 import { OltConsoleGateway } from './gateways/olt-console.gateway';
 import { OltController } from './olt.controller';
@@ -110,6 +111,7 @@ import { MiddlewareConsumer, NestModule } from '@nestjs/common';
     OltMonitoringService,
     OltExportService,
     OnuWebProxyService,
+    CpeSessionStoreService,
     CpeProxyMiddleware,
     OltPermissionGuard,
     OltConsoleGateway,

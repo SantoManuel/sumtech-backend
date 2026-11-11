@@ -17,11 +17,15 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { Role } from '../../../common/enums/role.enum';
 import { OnuWebProxyService } from '../services/onu-web-proxy.service';
+import { CpeSessionStoreService } from '../services/cpe-session-store.service';
 import { CreateWebProxySessionDto } from '../dto/create-web-proxy-session.dto';
 
 @Controller('olt/onus')
 export class OnuWebProxyController {
-  constructor(private readonly proxyService: OnuWebProxyService) {}
+  constructor(
+    private readonly proxyService: OnuWebProxyService,
+    private readonly sessionStore: CpeSessionStoreService,
+  ) {}
 
   /**
    * Genera un token y URL segura para acceder a la GUI web de la ONU de forma remota.
@@ -42,8 +46,11 @@ export class OnuWebProxyController {
   }
 
   /**
-   * Endpoint de lanzamiento de la sesión: valida el token, fija la cookie de sesión
-   * y reenvía directamente la página principal de la ONU al navegador o iframe.
+   * Endpoint de lanzamiento de la sesión: valida el token de un solo uso y
+   * crea una sesión de proxy aislada por ruta (`/cpe/<sessionId>/...`) -- ver
+   * CpeSessionStoreService para por qué ya NO se usa una cookie compartida
+   * (abrir una segunda ONU en otra pestaña pisaba silenciosamente la sesión
+   * de la primera, confirmado en vivo 2026-11-10).
    */
   @Get('web-proxy/launch')
   async launchWebSession(
@@ -60,19 +67,15 @@ export class OnuWebProxyController {
       throw new UnauthorizedException('El token de sesión ha expirado o es inválido.');
     }
 
-    // Fijar la cookie sumtech_cpe_token en el dominio para que las peticiones
-    // subsiguientes (scripts, estilos, llamadas AJAX de la ONU) viajen autorizadas.
-    res.cookie('sumtech_cpe_token', token, {
-      path: '/',
-      httpOnly: false,
-      secure: true,
-      sameSite: 'none',
-      maxAge: 2 * 60 * 60 * 1000, // 2 horas
+    const sessionId = this.sessionStore.create({
+      onuId: session.onuId,
+      serialNumber: session.serialNumber,
+      targetIp: session.targetIp,
+      port: session.port,
+      userId: session.userId,
     });
 
-    // Redirigir a la interfaz web correspondiente con el token adjunto
     const targetPath = session.defaultPath || '/';
-    const separator = targetPath.includes('?') ? '&' : '?';
-    return res.redirect(302, `${targetPath}${separator}token=${encodeURIComponent(token)}`);
+    return res.redirect(302, `/cpe/${sessionId}${targetPath}`);
   }
 }
