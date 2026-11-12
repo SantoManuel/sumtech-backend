@@ -707,6 +707,9 @@ export class DgiiCertificationService {
       results.push(res);
       if (res.status === 'ACCEPTED') aceptadosEtapa1++;
       globalLogs.push(`[${now()}] [Etapa 1] ${item.eNCF} (${item.tipoeCF}) -> ${res.status} | TrackId: ${res.trackId || 'N/A'}`);
+      if (res.status === 'REJECTED' || res.status === 'ERROR') {
+        globalLogs.push(`   ❌ Detalle: ${res.responseMessage || 'Sin detalle de rechazo'}`);
+      }
     }
 
     // ETAPA 2: 3 Notas de Débito y Crédito
@@ -721,6 +724,9 @@ export class DgiiCertificationService {
       results.push(res);
       if (res.status === 'ACCEPTED') aceptadosEtapa2++;
       globalLogs.push(`[${now()}] [Etapa 2] ${item.eNCF} (${item.tipoeCF}) -> ${res.status} | TrackId: ${res.trackId || 'N/A'}`);
+      if (res.status === 'REJECTED' || res.status === 'ERROR') {
+        globalLogs.push(`   ❌ Detalle: ${res.responseMessage || 'Sin detalle de rechazo'}`);
+      }
     }
 
     // ETAPA 3: 4 Resúmenes RFCE
@@ -730,6 +736,9 @@ export class DgiiCertificationService {
       results.push(res);
       if (res.status === 'ACCEPTED') aceptadosEtapa3++;
       globalLogs.push(`[${now()}] [Etapa 3 RFCE] ${item.eNCF} (${item.tipoeCF}) -> ${res.status} | TrackId: ${res.trackId || 'N/A'}`);
+      if (res.status === 'REJECTED' || res.status === 'ERROR') {
+        globalLogs.push(`   ❌ Detalle: ${res.responseMessage || 'Sin detalle de rechazo'}`);
+      }
     }
 
     globalLogs.push(`\n[${now()}] ===============================================================`);
@@ -1031,6 +1040,8 @@ export class DgiiCertificationService {
           };
         }
 
+        const isGravado = !isExempt && !isTasaCero && !isTextoCorrige;
+
         input = {
           ncfType: item.tipoeCF,
           eNcf: normalizedEncf,
@@ -1039,7 +1050,7 @@ export class DgiiCertificationService {
           correoComprador: 'cliente.simulacion@sumtech.com.do',
           direccionComprador: 'Av. Winston Churchill #100, Santo Domingo',
           tipoPago: '1',
-          indicadorMontoGravado: undefined,
+          indicadorMontoGravado: isGravado ? '0' : undefined,
           indicadorNotaCredito: esNota ? '0' : undefined,
           fechaVencimientoSecuencia:
             item.fechaVencimientoSecuencia ||
@@ -1296,6 +1307,7 @@ export class DgiiCertificationService {
         razonSocialComprador: fallbackItem?.razonSocialComprador || 'Consumidor Final',
         correoComprador: 'cliente.simulacion@sumtech.com.do',
         tipoPago: '1',
+        indicadorMontoGravado: '0',
         items: [
           {
             numeroLinea: 1,
