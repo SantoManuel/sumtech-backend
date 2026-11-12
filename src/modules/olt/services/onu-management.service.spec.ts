@@ -2225,6 +2225,61 @@ describe('OnuManagementService', () => {
       expect(genieAcsDeviceResolver.resolveBySerialNumber).toHaveBeenCalledWith('CMDCDD4D131E');
       expect(result.genieacsDeviceId).toBe('987DDD-HG8546M%2DXPON-CMDCDD4D131E');
     });
+
+    it('cuando la ONU tiene genieacsDeviceId y liveStatus en GenieACS con tags e inform, actualiza cpeConfigStatus a APPLIED', async () => {
+      const mockServiceConfig = { id: 'cfg-1', onuId: 'onu-uuid-1', cpeConfigStatus: 'PENDING' };
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        genieacsDeviceId: '00259E-HG8546M-485754437C8E7143',
+        serviceConfig: mockServiceConfig,
+        olt: { name: 'OLT_AZUA_CENTRO_C300' },
+      });
+      genieAcsDeviceResolver.getDeviceStatus = jest.fn().mockResolvedValue({
+        deviceId: '00259E-HG8546M-485754437C8E7143',
+        lastInformAt: new Date(),
+        ip: '192.168.44.11',
+        tags: ['TENANT:sumtech', 'OLT:OLT_AZUA_CENTRO_C300'],
+      });
+
+      const result = await service.findById('onu-uuid-1');
+
+      expect(result.serviceConfig?.cpeConfigStatus).toBe('APPLIED');
+      expect((result as any).genieacsDeviceStatus?.isOnline).toBe(true);
+      expect((result as any).genieacsDeviceStatus?.ip).toBe('192.168.44.11');
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        cpeConfigStatus: 'APPLIED',
+      }));
+    });
+  });
+
+  describe('syncCpe', () => {
+    it('sincroniza tags y marca cpeConfigStatus a APPLIED en GenieACS y Sumtech', async () => {
+      const mockServiceConfig = { id: 'cfg-1', onuId: 'onu-uuid-1', cpeConfigStatus: 'PENDING' };
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        genieacsDeviceId: '00259E-HG8546M-485754437C8E7143',
+        serviceConfig: mockServiceConfig,
+        olt: { name: 'OLT_AZUA_CENTRO_C300' },
+      });
+      genieAcsDeviceResolver.ensureDeviceTags = jest.fn().mockResolvedValue([]);
+      genieAcsDeviceResolver.refreshDevice = jest.fn().mockResolvedValue(undefined);
+      genieAcsDeviceResolver.getDeviceStatus = jest.fn().mockResolvedValue({
+        deviceId: '00259E-HG8546M-485754437C8E7143',
+        lastInformAt: new Date(),
+        tags: ['TENANT:sumtech', 'OLT:OLT_AZUA_CENTRO_C300'],
+      });
+
+      const result = await service.syncCpe('onu-uuid-1', 'admin-1');
+
+      expect(genieAcsDeviceResolver.ensureDeviceTags).toHaveBeenCalledWith(
+        '00259E-HG8546M-485754437C8E7143',
+        expect.arrayContaining(['TENANT:sumtech', 'OLT:OLT_AZUA_CENTRO_C300']),
+      );
+      expect(genieAcsDeviceResolver.refreshDevice).toHaveBeenCalledWith('00259E-HG8546M-485754437C8E7143');
+      expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        cpeConfigStatus: 'APPLIED',
+      }));
+    });
   });
 
   describe('deleteOnu', () => {

@@ -489,6 +489,7 @@ export class OnuWanProvisioningService {
       const updated = await manager.getRepository(OnuServiceConfigEntity).update({ id: config.id, wanDesiredVersion: op.version, wanProvisioningMethod: op.method }, {
         wanApplyStatus: status, wanLastError: error,
         ...(applied ? { wanAppliedVersion: op.version, wanAppliedMethod: op.method, wanVerifiedAt: new Date() } : {}),
+        ...(applied && op.method === 'TR069' ? { cpeConfigStatus: 'APPLIED', cpeConfigSyncedAt: new Date(), lastCpeConfigError: null } : {}),
       });
       if (updated.affected !== 1) throw new ConflictException('El resultado pertenece a una versión WAN obsoleta.');
       await manager.getRepository(OnuWanOperationEntity).update(op.id, { status, lastError: error, evidence: evidence as any, finishedAt: ['APPLIED', 'ERROR'].includes(status) ? new Date() : null });

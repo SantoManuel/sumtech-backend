@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { GenieAcsDeviceEntity } from './entities/genieacs-device.entity';
 import { SerialNumberEntity } from '../inventory/entities/serial-number.entity';
-import { GenieAcsClient } from './genieacs-client';
+import { GenieAcsClient, GenieAcsDeviceStatus } from './genieacs-client';
 import { GENIEACS_CLIENT } from './genieacs-client-factory';
 
 /**
@@ -53,6 +53,60 @@ export class GenieAcsDeviceResolverService {
       );
       return null;
     }
+  }
+
+  /**
+   * Obtiene la telemetría viva y tags actuales del dispositivo en GenieACS.
+   */
+  async getDeviceStatus(deviceId: string): Promise<GenieAcsDeviceStatus | null> {
+    if (!this.client || !deviceId) {
+      return null;
+    }
+    try {
+      return await this.client.getDeviceStatus(deviceId);
+    } catch (error) {
+      this.logger.warn(
+        `Error obteniendo estado de GenieACS para dispositivo "${deviceId}": ${(error as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Asegura que el dispositivo en GenieACS tenga los tags requeridos (ej. TENANT:slug, OLT:nombre).
+   * No duplica tags si ya existen.
+   */
+  async ensureDeviceTags(deviceId: string, tags: string[]): Promise<string[]> {
+    if (!this.client || !deviceId || tags.length === 0) {
+      return [];
+    }
+    try {
+      const status = await this.client.getDeviceStatus(deviceId);
+      const existingTags = status?.tags || [];
+      const added: string[] = [];
+      for (const tag of tags) {
+        if (!existingTags.includes(tag)) {
+          await this.client.setDeviceTag(deviceId, tag);
+          added.push(tag);
+        }
+      }
+      return added;
+    } catch (error) {
+      this.logger.warn(
+        `Error asegurando tags en GenieACS para "${deviceId}": ${(error as Error).message}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Solicita refresco del árbol CWMP al CPE en GenieACS.
+   */
+  async refreshDevice(deviceId: string): Promise<void> {
+    if (!this.client || !deviceId) {
+      return;
+    }
+    await this.client.refreshObject(deviceId);
   }
 
   /**

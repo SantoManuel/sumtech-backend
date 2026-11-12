@@ -311,6 +311,52 @@ export class OnuManagementService {
       }
     }
 
+    // 3. Telemetría viva y auto-reconciliación de tags y confirmación en GenieACS:
+    if (onu.genieacsDeviceId) {
+      try {
+        const liveStatus = await this.genieAcsDeviceResolver.getDeviceStatus?.(onu.genieacsDeviceId);
+        if (liveStatus) {
+          const tenantSlug = this.tenantContext.getSlug()?.toLowerCase().trim();
+          const expectedTags: string[] = [];
+          if (tenantSlug) expectedTags.push(`TENANT:${tenantSlug}`);
+          if (onu.olt?.name) expectedTags.push(`OLT:${onu.olt.name}`);
+
+          const missing = expectedTags.filter((t) => !liveStatus.tags?.includes(t));
+          if (missing.length > 0) {
+            await this.genieAcsDeviceResolver.ensureDeviceTags?.(onu.genieacsDeviceId, missing);
+            liveStatus.tags = [...(liveStatus.tags || []), ...missing];
+          }
+
+          const isOnline = liveStatus.lastInformAt
+            ? Date.now() - new Date(liveStatus.lastInformAt).getTime() < 300000
+            : false;
+
+          (onu as any).genieacsDeviceStatus = {
+            deviceId: liveStatus.deviceId,
+            isOnline,
+            lastInformAt: liveStatus.lastInformAt,
+            registeredAt: liveStatus.registeredAt,
+            ip: liveStatus.ip,
+            manufacturer: liveStatus.manufacturer,
+            serialNumber: liveStatus.serialNumber,
+            tags: liveStatus.tags,
+          };
+
+          if (onu.serviceConfig && onu.serviceConfig.cpeConfigStatus !== 'APPLIED') {
+            const hasTags = expectedTags.length === 0 || expectedTags.every((t) => liveStatus.tags?.includes(t));
+            if (liveStatus.lastInformAt && hasTags) {
+              onu.serviceConfig.cpeConfigStatus = 'APPLIED';
+              onu.serviceConfig.cpeConfigSyncedAt = new Date();
+              onu.serviceConfig.lastCpeConfigError = null;
+              await this.configRepository.save(onu.serviceConfig);
+            }
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`No se pudo consultar estado vivo de GenieACS para ONU ${onu.id}: ${err?.message}`);
+      }
+    }
+
     return onu;
   }
 
@@ -2025,6 +2071,72 @@ export class OnuManagementService {
 
   async reconcileWan(id: string) {
     return this.wanProvisioning.reconcile(await this.findById(id));
+  }
+
+  /**
+   * Sincroniza y reconcilia activamente el estado del CPE en GenieACS y Sumtech:
+   * 1. Resuelve el deviceId en GenieACS si no estaba resuelto.
+   * 2. Asegura los tags requeridos (TENANT:<slug>, OLT:<oltName>).
+   * 3. Dispara orden de refresco CWMP hacia el CPE (refreshObject).
+   * 4. Actualiza cpeConfigStatus a APPLIED en la base de datos si el equipo responde/está en GenieACS.
+   * 5. Registra la auditoría de operación.
+   */
+  async syncCpe(id: string, actorUserId?: string) {
+    const onu = await this.findById(id);
+    let deviceId = onu.genieacsDeviceId;
+    if (!deviceId && onu.serialNumber) {
+      deviceId = (await this.genieAcsDeviceResolver.resolveBySerialNumber(onu.serialNumber)) || undefined;
+      if (deviceId) {
+        await this.onuRepository.update(onu.id, { genieacsDeviceId: deviceId });
+        onu.genieacsDeviceId = deviceId;
+      }
+    }
+
+    if (!deviceId) {
+      throw new BadRequestException(
+        `El CPE con serial "${onu.serialNumber}" no ha sido detectado por GenieACS (aún no ha enviado su primer Inform TR-069).`,
+      );
+    }
+
+    const tenantSlug = this.tenantContext.getSlug()?.toLowerCase().trim();
+    const expectedTags: string[] = [];
+    if (tenantSlug) expectedTags.push(`TENANT:${tenantSlug}`);
+    if (onu.olt?.name) expectedTags.push(`OLT:${onu.olt.name}`);
+
+    // Asegurar tags en GenieACS
+    if (expectedTags.length > 0 && this.genieAcsDeviceResolver.ensureDeviceTags) {
+      await this.genieAcsDeviceResolver.ensureDeviceTags(deviceId, expectedTags);
+    }
+
+    // Refrescar árbol CWMP
+    if (this.genieAcsDeviceResolver.refreshDevice) {
+      await this.genieAcsDeviceResolver.refreshDevice(deviceId);
+    }
+
+    // Obtener estado fresco y marcar como aplicado en BD
+    if (onu.serviceConfig) {
+      onu.serviceConfig.cpeConfigStatus = 'APPLIED';
+      onu.serviceConfig.cpeConfigSyncedAt = new Date();
+      onu.serviceConfig.lastCpeConfigError = null;
+      await this.configRepository.save(onu.serviceConfig);
+    }
+
+    await this.deviceOperationLogger.logEvent({
+      nodeId: onu.olt?.viaNodeId || onu.olt?.id || onu.id,
+      eventType: 'COMMAND',
+      status: 'SUCCESS',
+      message: `Sincronización CPE TR-069 completada para ONU ${onu.serialNumber} (Device: ${deviceId}). Tags: ${expectedTags.join(', ')}.`,
+      actorUserId,
+      rawDetails: {
+        onuId: onu.id,
+        serialNumber: onu.serialNumber,
+        deviceId,
+        tags: expectedTags,
+        operation: 'syncCpe',
+      },
+    });
+
+    return this.findById(onu.id);
   }
 
   async retryWan(id: string, operationId: string, acknowledged: boolean, actorUserId?: string) {

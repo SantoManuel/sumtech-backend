@@ -14,6 +14,7 @@ export interface GenieAcsClientConfig {
 export interface GenieAcsDeviceStatus {
   deviceId: string;
   isTR181: boolean;
+  ip?: string;
   lastInformAt?: Date;
   registeredAt?: Date;
   manufacturer?: string;
@@ -277,10 +278,17 @@ export class GenieAcsClient {
   async getDeviceStatus(deviceId: string): Promise<GenieAcsDeviceStatus> {
     const doc = await this.getDeviceDocument(deviceId);
     const isTR181 = doc.Device !== undefined;
+    const ip = doc._ip || (
+      isTR181
+        ? getParamValue(doc, 'Device.IP.Interface.1.IPv4Address.1.IPAddress')
+        : (getParamValue(doc, 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.ExternalIPAddress') ||
+           getParamValue(doc, 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.ExternalIPAddress'))
+    );
 
     return {
       deviceId: doc._id,
       isTR181,
+      ip: ip ? String(ip) : undefined,
       lastInformAt: doc._lastInform ? new Date(doc._lastInform) : undefined,
       registeredAt: doc._registered ? new Date(doc._registered) : undefined,
       manufacturer: doc._deviceId?._Manufacturer,

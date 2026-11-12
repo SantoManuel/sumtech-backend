@@ -339,6 +339,14 @@ export class OnuController {
     return this.onuService.saveOmciWanProfile(id, dto, req.user?.id);
   }
 
+  @Post(':id/sync-cpe')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async syncCpe(@Param('id') id: string, @Req() req: any) {
+    return this.onuService.syncCpe(id, req.user?.id);
+  }
+
   @Post(':id/wan-verify')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')
