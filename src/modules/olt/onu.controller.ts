@@ -28,6 +28,7 @@ import { OnuOmciWanProfileDto } from './dto/onu-omci-wan-profile.dto';
 import { RetryOnuWanDto } from './dto/retry-onu-wan.dto';
 import { BatchTr069AcsDto } from './dto/batch-tr069-acs.dto';
 import { UpdateOnuOltInfoDto } from './dto/update-onu-olt-info.dto';
+import { StaffChangeWifiCredentialsDto } from '../genieacs/dto/staff-change-wifi-credentials.dto';
 
 @Controller('olt/onus')
 @UseGuards(AuthGuard, RolesGuard, SaasFeatureGuard, OltPermissionGuard)
@@ -345,6 +346,18 @@ export class OnuController {
   @OltIdFrom('ONU_ID_PARAM')
   async syncCpe(@Param('id') id: string, @Req() req: any) {
     return this.onuService.syncCpe(id, req.user?.id);
+  }
+
+  @Patch(':id/wifi')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async changeWifi(
+    @Param('id') id: string,
+    @Body() dto: StaffChangeWifiCredentialsDto,
+    @Req() req: any,
+  ) {
+    return this.onuService.changeWifi(id, dto, req.user?.id);
   }
 
   @Post(':id/wan-verify')

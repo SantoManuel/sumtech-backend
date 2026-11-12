@@ -27,6 +27,8 @@ import { decryptCredential } from '../../network-connectivity/utils/crypto.util'
 
 import { resolveCpeIpv6Capabilities } from '../../genieacs/services/cpe-capabilities';
 import { GenieAcsDeviceResolverService } from '../../genieacs/genieacs-device-resolver.service';
+import { GenieAcsWifiService } from '../../genieacs/genieacs-wifi.service';
+import { StaffChangeWifiCredentialsDto } from '../../genieacs/dto/staff-change-wifi-credentials.dto';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import {
   IOltDriver,
@@ -100,6 +102,7 @@ export class OnuManagementService {
     private readonly deviceOperationLogger: DeviceOperationLogger,
 
     private readonly genieAcsDeviceResolver: GenieAcsDeviceResolverService,
+    private readonly genieAcsWifiService: GenieAcsWifiService,
     private readonly tenantContext: TenantContextService,
     private readonly partialOperations: OltPartialOperationService,
     private readonly wanProvisioning: OnuWanProvisioningService,
@@ -340,6 +343,8 @@ export class OnuManagementService {
             manufacturer: liveStatus.manufacturer,
             serialNumber: liveStatus.serialNumber,
             tags: liveStatus.tags,
+            ssid: liveStatus.ssid,
+            ssid5g: liveStatus.ssid5g,
           };
 
           if (onu.serviceConfig && onu.serviceConfig.cpeConfigStatus !== 'APPLIED') {
@@ -2825,5 +2830,48 @@ export class OnuManagementService {
     } catch (err: any) {
       this.logger.warn(`[auto-learn] Error al auto-actualizar capacidades de OnuType ${onuTypeId}: ${err.message}`);
     }
+  }
+
+  /**
+   * Cambia las credenciales WiFi (SSID, SSID 5GHz y contraseña) de una ONU
+   * empujando la configuración vía GenieACS (TR-069).
+   */
+  async changeWifi(id: string, dto: StaffChangeWifiCredentialsDto, actorUserId?: string) {
+    const onu = await this.onuRepository.findOne({
+      where: { id },
+      relations: ['contract'],
+    });
+    if (!onu) {
+      throw new NotFoundException(`ONU no encontrada: ${id}`);
+    }
+
+    let deviceId = onu.genieacsDeviceId;
+    if (!deviceId && onu.serialNumber) {
+      deviceId = (await this.genieAcsDeviceResolver.resolveBySerialNumber(onu.serialNumber)) || undefined;
+      if (deviceId) {
+        onu.genieacsDeviceId = deviceId;
+        await this.onuRepository.update(onu.id, { genieacsDeviceId: deviceId });
+      }
+    }
+
+    if (!deviceId) {
+      throw new NotFoundException(
+        'Esta ONU aún no ha contactado a GenieACS ni tiene un Device ID registrado. Asegúrate de que el equipo esté conectado y reporte vía TR-069.',
+      );
+    }
+
+    const res = await this.genieAcsWifiService.changeWifiForDevice(
+      deviceId,
+      { ssid: dto.ssid, ssid5g: dto.ssid5g, password: dto.password },
+      'STAFF',
+      onu.contract?.id,
+    );
+
+    return {
+      success: true,
+      ssid: res.ssid,
+      ssid5g: res.ssid5g,
+      message: 'Configuración Wi-Fi enviada al equipo. El CPE se reiniciará brevemente para aplicar los cambios.',
+    };
   }
 }

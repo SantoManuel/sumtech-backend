@@ -20,6 +20,7 @@ import { OltConnectionResolverService } from './olt-connection-resolver.service'
 import { DeviceOperationLogger } from '../../network-connectivity/services/device-operation-logger.service';
 import { CpeConfiguratorService } from '../../genieacs/services/cpe-configurator.service';
 import { GenieAcsDeviceResolverService } from '../../genieacs/genieacs-device-resolver.service';
+import { GenieAcsWifiService } from '../../genieacs/genieacs-wifi.service';
 import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 import { UnknownOltVendorError, DriverNotImplementedError } from '../ports/olt-driver.port';
 import { encryptCredential } from '../../network-connectivity/utils/crypto.util';
@@ -45,6 +46,7 @@ describe('OnuManagementService', () => {
   let deviceOperationLogger: any;
   let cpeConfiguratorService: any;
   let genieAcsDeviceResolver: any;
+  let genieAcsWifiService: any;
   let tenantContext: any;
   let onuQueryBuilder: any;
   let wanProvisioning: any;
@@ -229,6 +231,10 @@ describe('OnuManagementService', () => {
       resolveBySerialNumber: jest.fn().mockResolvedValue(null),
     };
 
+    genieAcsWifiService = {
+      changeWifiForDevice: jest.fn().mockResolvedValue({ ssid: 'NewWifi', ssid5g: 'NewWifi5G' }),
+    };
+
     tenantContext = {
       getSlug: jest.fn().mockReturnValue('sumtech'),
     };
@@ -255,6 +261,7 @@ describe('OnuManagementService', () => {
         { provide: DeviceOperationLogger, useValue: deviceOperationLogger },
         { provide: CpeConfiguratorService, useValue: cpeConfiguratorService },
         { provide: GenieAcsDeviceResolverService, useValue: genieAcsDeviceResolver },
+        { provide: GenieAcsWifiService, useValue: genieAcsWifiService },
         { provide: TenantContextService, useValue: tenantContext },
         { provide: OltPartialOperationService, useValue: { record: jest.fn().mockResolvedValue({}) } },
       ],
@@ -2279,6 +2286,53 @@ describe('OnuManagementService', () => {
       expect(configRepo.save).toHaveBeenCalledWith(expect.objectContaining({
         cpeConfigStatus: 'APPLIED',
       }));
+    });
+  });
+
+  describe('changeWifi', () => {
+    it('cambia las credenciales WiFi de la ONU delegando a GenieAcsWifiService', async () => {
+      onuRepo.findOne.mockResolvedValue({
+        id: 'onu-uuid-1',
+        serialNumber: '485754437C8E7143',
+        genieacsDeviceId: '00259E-HG8546M-485754437C8E7143',
+        contract: { id: 'contract-1' },
+      });
+
+      const res = await service.changeWifi(
+        'onu-uuid-1',
+        {
+          ssid: 'NuevoWifi',
+          ssid5g: 'NuevoWifi-5G',
+          password: 'Password123!',
+        },
+        'user-1',
+      );
+
+      expect(genieAcsWifiService.changeWifiForDevice).toHaveBeenCalledWith(
+        '00259E-HG8546M-485754437C8E7143',
+        { ssid: 'NuevoWifi', ssid5g: 'NuevoWifi-5G', password: 'Password123!' },
+        'STAFF',
+        'contract-1',
+      );
+      expect(res.success).toBe(true);
+      expect(res.ssid).toBe('NewWifi');
+    });
+
+    it('lanza NotFoundException si la ONU no existe', async () => {
+      onuRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.changeWifi('onu-inexistente', { ssid: 'W', password: 'P' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('lanza NotFoundException si la ONU no tiene deviceId y no resuelve por serial', async () => {
+      onuRepo.findOne.mockResolvedValue({ id: 'onu-1', serialNumber: 'SN123' });
+      genieAcsDeviceResolver.resolveBySerialNumber.mockResolvedValue(null);
+
+      await expect(
+        service.changeWifi('onu-1', { ssid: 'W', password: 'P' }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 

@@ -47,6 +47,64 @@ export class GenieAcsWifiService {
     return { linked: true, ssid: device.ssid ?? undefined, ssid5g: device.ssid5g ?? undefined, lastSyncError: device.lastSyncError };
   }
 
+  async changeWifiForDevice(
+    genieacsDeviceId: string,
+    credentials: WifiCredentialsInput,
+    actor: 'CLIENTE' | 'STAFF' = 'STAFF',
+    contractId?: string,
+    existingDevice?: GenieAcsDeviceEntity | null,
+  ): Promise<{ ssid: string; ssid5g?: string }> {
+    if (!this.client) {
+      throw new ServiceUnavailableException('El servicio de gestión de red no está disponible en este momento.');
+    }
+
+    let device = existingDevice;
+    if (device === undefined) {
+      if (contractId && this.deviceRepository.findOneBy) {
+        device = await this.deviceRepository.findOneBy({ contractId });
+      } else if (this.deviceRepository.findOneBy) {
+        device = await this.deviceRepository.findOneBy({ genieacsDeviceId });
+      }
+    }
+
+    if (device?.lastWifiChangeAt) {
+      const elapsedMs = Date.now() - device.lastWifiChangeAt.getTime();
+      if (elapsedMs < WIFI_CHANGE_RATE_LIMIT_MS) {
+        const waitMinutes = Math.ceil((WIFI_CHANGE_RATE_LIMIT_MS - elapsedMs) / 60000);
+        throw new ConflictException(
+          `Ya cambiaste tu WiFi hace poco. Esperá ${waitMinutes} minuto(s) antes de volver a intentarlo.`,
+        );
+      }
+    }
+
+    const oldSsid = device?.ssid ?? undefined;
+
+    try {
+      const status = await this.client.getDeviceStatus(genieacsDeviceId);
+      await this.client.setWifiCredentials(genieacsDeviceId, status.isTR181, credentials);
+
+      if (device) {
+        device.ssid = credentials.ssid;
+        device.ssid5g = credentials.ssid5g ?? device.ssid5g;
+        device.lastWifiChangeAt = new Date();
+        device.lastSyncError = null;
+        await this.deviceRepository.save(device);
+      }
+
+      await this.recordAudit(contractId || device?.contractId || 'UNKNOWN', genieacsDeviceId, 'OK', undefined, oldSsid, credentials.ssid, actor);
+      return { ssid: credentials.ssid, ssid5g: credentials.ssid5g };
+    } catch (error) {
+      const message = (error as Error).message;
+      if (device) {
+        device.lastSyncError = message;
+        await this.deviceRepository.save(device);
+      }
+      await this.recordAudit(contractId || device?.contractId || 'UNKNOWN', genieacsDeviceId, 'ERROR', message, oldSsid, credentials.ssid, actor);
+      this.logger.error(`Error cambiando el WiFi del dispositivo ${genieacsDeviceId}: ${message}`);
+      throw new BadGatewayException(`No se pudo aplicar el cambio de WiFi: ${message}`);
+    }
+  }
+
   async changeWifiCredentials(
     contractId: string,
     credentials: WifiCredentialsInput,
@@ -59,43 +117,8 @@ export class GenieAcsWifiService {
       );
     }
 
-    if (!this.client) {
-      throw new ServiceUnavailableException('El servicio de gestión de red no está disponible en este momento.');
-    }
-
-    if (device.lastWifiChangeAt) {
-      const elapsedMs = Date.now() - device.lastWifiChangeAt.getTime();
-      if (elapsedMs < WIFI_CHANGE_RATE_LIMIT_MS) {
-        const waitMinutes = Math.ceil((WIFI_CHANGE_RATE_LIMIT_MS - elapsedMs) / 60000);
-        throw new ConflictException(
-          `Ya cambiaste tu WiFi hace poco. Esperá ${waitMinutes} minuto(s) antes de volver a intentarlo.`,
-        );
-      }
-    }
-
-    const oldSsid = device.ssid ?? undefined;
-    const genieacsDeviceId = device.genieacsDeviceId;
-
-    try {
-      const status = await this.client.getDeviceStatus(genieacsDeviceId);
-      await this.client.setWifiCredentials(genieacsDeviceId, status.isTR181, credentials);
-
-      device.ssid = credentials.ssid;
-      device.ssid5g = credentials.ssid5g ?? device.ssid5g;
-      device.lastWifiChangeAt = new Date();
-      device.lastSyncError = null;
-      const saved = await this.deviceRepository.save(device);
-
-      await this.recordAudit(contractId, genieacsDeviceId, 'OK', undefined, oldSsid, credentials.ssid, actor);
-      return saved;
-    } catch (error) {
-      const message = (error as Error).message;
-      device.lastSyncError = message;
-      await this.deviceRepository.save(device);
-      await this.recordAudit(contractId, genieacsDeviceId, 'ERROR', message, oldSsid, credentials.ssid, actor);
-      this.logger.error(`Error cambiando el WiFi del contrato ${contractId}: ${message}`);
-      throw new BadGatewayException(`No se pudo aplicar el cambio de WiFi: ${message}`);
-    }
+    await this.changeWifiForDevice(device.genieacsDeviceId, credentials, actor, contractId, device);
+    return device;
   }
 
   private async recordAudit(
