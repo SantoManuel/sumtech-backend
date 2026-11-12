@@ -855,11 +855,15 @@ export class DgiiXmlGeneratorService {
       if (effMontoNoFacturable !== undefined) {
         totalesXml += `<MontoNoFacturable>${this.formatDecimal(effMontoNoFacturable)}</MontoNoFacturable>`;
       }
-      const effMontoPeriodo = input.totalesOverride?.montoPeriodo ?? (effMontoNoFacturable !== undefined ? Number((effMontoTotal + effMontoNoFacturable).toFixed(2)) : undefined);
+      const effMontoPeriodo = input.totalesOverride !== undefined
+        ? input.totalesOverride.montoPeriodo
+        : (effMontoNoFacturable !== undefined ? Number((effMontoTotal + effMontoNoFacturable).toFixed(2)) : undefined);
       if (effMontoPeriodo !== undefined) {
         totalesXml += `<MontoPeriodo>${this.formatDecimal(effMontoPeriodo)}</MontoPeriodo>`;
       }
-      const effValorPagar = input.totalesOverride?.valorPagar ?? (effMontoNoFacturable !== undefined ? effMontoTotal : undefined);
+      const effValorPagar = input.totalesOverride !== undefined
+        ? input.totalesOverride.valorPagar
+        : (effMontoNoFacturable !== undefined ? effMontoTotal : undefined);
       if (effValorPagar !== undefined) {
         totalesXml += `<ValorPagar>${this.formatDecimal(effValorPagar)}</ValorPagar>`;
       }
