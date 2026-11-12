@@ -143,15 +143,15 @@ export class DgiiSignerService {
   }
 
   /**
-   * Extrae el código de seguridad de 6 dígitos alfanuméricos de un documento XML ya firmado
+   * Extrae el código de seguridad de 6 caracteres de un documento XML ya firmado
    */
   extractSecurityCodeFromSignedXml(signedXml: string): string {
     const sigValue = this.extractSignatureValue(signedXml);
     if (sigValue) {
-      // IMPORTANTE: NO convertir a uppercase — la DGII compara los 6 primeros
+      // IMPORTANTE: NO convertir a uppercase ni eliminar '+' o '/' — la DGII compara los 6 primeros
       // caracteres del SignatureValue del e-CF base contra el CodigoSeguridadeCF
-      // declarado en el RFCE de forma CASE-SENSITIVE.
-      const cleanSig = sigValue.replace(/[^a-zA-Z0-9]/g, '');
+      // declarado en el RFCE de forma CASE-SENSITIVE y literal. Solo se limpian espacios en blanco.
+      const cleanSig = sigValue.replace(/\s+/g, '');
       if (cleanSig.length >= 6) {
         return cleanSig.substring(0, 6);
       }

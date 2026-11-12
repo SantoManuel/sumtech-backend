@@ -1156,10 +1156,11 @@ export class DgiiXmlGeneratorService {
     totalesXml += `<MontoTotal>${this.formatDecimal(montoTotalVal)}</MontoTotal>`;
     totalesXml += '</Totales>';
 
-    // Código de seguridad (exactamente 6 caracteres alfanuméricos en CodigoSeguridadeCF)
-    // IMPORTANTE: NO convertir a uppercase — debe coincidir exactamente con los primeros
-    // 6 caracteres del SignatureValue del e-CF base firmado (case-sensitive).
-    const rawSec = (codigoSeguridad || '').replace(/[^a-zA-Z0-9]/g, '');
+    // Código de seguridad (primeros 6 caracteres del SignatureValue del e-CF base firmado)
+    // IMPORTANTE: NO convertir a uppercase ni eliminar '+' o '/' — la DGII compara los 6 primeros
+    // caracteres del SignatureValue del e-CF base contra el CodigoSeguridadeCF
+    // declarado en el RFCE de forma literal (case-sensitive) y exacta. Conforme a rfce-32.xsd (pattern .{6}).
+    const rawSec = (codigoSeguridad || '').replace(/\s+/g, '');
     const cleanSec = (rawSec + 'XXXXXX').substring(0, 6);
 
     return (
@@ -1325,7 +1326,7 @@ export function parseSignedEcfMetadata(signedXml: string): SignedEcfMetadata {
   const fechaHoraFirma = signedXml.match(/<FechaHoraFirma[^>]*>([\s\S]*?)<\/FechaHoraFirma>/i)?.[1]?.trim() || '';
   const montoTotal = signedXml.match(/<MontoTotal[^>]*>([\s\S]*?)<\/MontoTotal>/i)?.[1]?.trim() || '0.00';
   const sigValue = signedXml.match(/<SignatureValue[^>]*>([\s\S]*?)<\/SignatureValue>/i)?.[1]?.trim() || '';
-  const cleanSig = sigValue.replace(/[^a-zA-Z0-9]/g, '');
+  const cleanSig = sigValue.replace(/\s+/g, '');
   const securityCode = cleanSig.length >= 6 ? cleanSig.substring(0, 6) : '';
 
   return {
