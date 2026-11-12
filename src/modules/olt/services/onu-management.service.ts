@@ -2846,6 +2846,21 @@ export class OnuManagementService {
     }
 
     let deviceId = onu.genieacsDeviceId;
+
+    // 1. Si la ONU tiene contrato vinculado, intentar resolver por contractId si aún no tiene deviceId
+    if (!deviceId && (onu.contractId || onu.contract?.id)) {
+      const contractId = onu.contractId || onu.contract?.id;
+      if (contractId) {
+        const genieAcsDevice = await this.genieAcsDeviceResolver.findByContractId(contractId);
+        if (genieAcsDevice?.genieacsDeviceId) {
+          deviceId = genieAcsDevice.genieacsDeviceId;
+          onu.genieacsDeviceId = deviceId;
+          await this.onuRepository.update(onu.id, { genieacsDeviceId: deviceId });
+        }
+      }
+    }
+
+    // 2. Si aún no tiene deviceId, buscar directamente en GenieACS por número de serie
     if (!deviceId && onu.serialNumber) {
       deviceId = (await this.genieAcsDeviceResolver.resolveBySerialNumber(onu.serialNumber)) || undefined;
       if (deviceId) {
@@ -2860,11 +2875,13 @@ export class OnuManagementService {
       );
     }
 
+    const resolvedContractId = onu.contractId || onu.contract?.id;
+
     const res = await this.genieAcsWifiService.changeWifiForDevice(
       deviceId,
       { ssid: dto.ssid, ssid5g: dto.ssid5g, password: dto.password },
       'STAFF',
-      onu.contract?.id,
+      resolvedContractId,
     );
 
     return {

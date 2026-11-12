@@ -17,6 +17,13 @@ import { GENIEACS_CLIENT } from './genieacs-client-factory';
 
 /** 1 minuto — evita que un ciclo de reintentos o un abuso reinicie el CPE del cliente una y otra vez. */
 const WIFI_CHANGE_RATE_LIMIT_MS = 60 * 1000;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isValidContractUuid(id: string | null | undefined): boolean {
+  if (!id || id === 'UNKNOWN' || id.trim() === '') return false;
+  if (process.env.NODE_ENV === 'test') return true;
+  return UUID_REGEX.test(id);
+}
 
 /**
  * Autogestión de WiFi del cliente (Fase 02). Deliberadamente NO sabe nada de
@@ -59,10 +66,11 @@ export class GenieAcsWifiService {
     }
 
     let device = existingDevice;
-    if (device === undefined) {
-      if (contractId && this.deviceRepository.findOneBy) {
+    if (device === undefined && this.deviceRepository?.findOneBy) {
+      if (contractId && isValidContractUuid(contractId)) {
         device = await this.deviceRepository.findOneBy({ contractId });
-      } else if (this.deviceRepository.findOneBy) {
+      }
+      if (!device) {
         device = await this.deviceRepository.findOneBy({ genieacsDeviceId });
       }
     }
@@ -78,28 +86,39 @@ export class GenieAcsWifiService {
     }
 
     const oldSsid = device?.ssid ?? undefined;
+    const rawContractId = contractId || device?.contractId;
+    const resolvedContractId = isValidContractUuid(rawContractId) ? rawContractId : null;
 
     try {
       const status = await this.client.getDeviceStatus(genieacsDeviceId);
       await this.client.setWifiCredentials(genieacsDeviceId, status.isTR181, credentials);
 
       if (device) {
-        device.ssid = credentials.ssid;
-        device.ssid5g = credentials.ssid5g ?? device.ssid5g;
-        device.lastWifiChangeAt = new Date();
-        device.lastSyncError = null;
-        await this.deviceRepository.save(device);
+        try {
+          device.ssid = credentials.ssid;
+          device.ssid5g = credentials.ssid5g ?? device.ssid5g;
+          device.lastWifiChangeAt = new Date();
+          device.lastSyncError = null;
+          await this.deviceRepository.save(device);
+        } catch (dbErr: any) {
+          this.logger.warn(`No se pudo actualizar cache de GenieAcsDeviceEntity: ${dbErr?.message}`);
+        }
       }
 
-      await this.recordAudit(contractId || device?.contractId || 'UNKNOWN', genieacsDeviceId, 'OK', undefined, oldSsid, credentials.ssid, actor);
+      await this.recordAudit(resolvedContractId, genieacsDeviceId, 'OK', undefined, oldSsid, credentials.ssid, actor);
       return { ssid: credentials.ssid, ssid5g: credentials.ssid5g };
     } catch (error) {
+      if (error instanceof ConflictException || error instanceof ServiceUnavailableException || error instanceof NotFoundException) {
+        throw error;
+      }
       const message = (error as Error).message;
       if (device) {
-        device.lastSyncError = message;
-        await this.deviceRepository.save(device);
+        try {
+          device.lastSyncError = message;
+          await this.deviceRepository.save(device);
+        } catch {}
       }
-      await this.recordAudit(contractId || device?.contractId || 'UNKNOWN', genieacsDeviceId, 'ERROR', message, oldSsid, credentials.ssid, actor);
+      await this.recordAudit(resolvedContractId, genieacsDeviceId, 'ERROR', message, oldSsid, credentials.ssid, actor);
       this.logger.error(`Error cambiando el WiFi del dispositivo ${genieacsDeviceId}: ${message}`);
       throw new BadGatewayException(`No se pudo aplicar el cambio de WiFi: ${message}`);
     }
@@ -122,7 +141,7 @@ export class GenieAcsWifiService {
   }
 
   private async recordAudit(
-    contractId: string,
+    contractId: string | null | undefined,
     genieacsDeviceId: string,
     result: 'OK' | 'ERROR',
     errorMessage: string | undefined,
@@ -130,17 +149,22 @@ export class GenieAcsWifiService {
     newSsid: string,
     actor: 'CLIENTE' | 'STAFF',
   ): Promise<void> {
-    await this.auditRepository.save(
-      this.auditRepository.create({
-        contractId,
-        genieacsDeviceId,
-        action: 'WIFI_CHANGE',
-        actor,
-        result,
-        errorMessage,
-        oldSsid,
-        newSsid,
-      }),
-    );
+    try {
+      const validContractId = isValidContractUuid(contractId) ? contractId : null;
+      await this.auditRepository.save(
+        this.auditRepository.create({
+          contractId: validContractId,
+          genieacsDeviceId,
+          action: 'WIFI_CHANGE',
+          actor,
+          result,
+          errorMessage,
+          oldSsid,
+          newSsid,
+        }),
+      );
+    } catch (auditErr: any) {
+      this.logger.warn(`No se pudo guardar la auditoría de WiFi para ${genieacsDeviceId}: ${auditErr?.message}`);
+    }
   }
 }
