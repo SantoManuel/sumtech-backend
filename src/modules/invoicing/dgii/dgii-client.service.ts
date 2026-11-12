@@ -564,7 +564,11 @@ export class DgiiClientService {
               responseMessage = statusRes.mensaje || 'Comprobante Fiscal Electrónico Timbrado y Aceptado por DGII';
             } else if (statusRes?.estado === 'RECHAZADO' || statusRes?.estado === 'Rechazado') {
               status = 'REJECTED';
-              const rejectDetails = statusRes.mensajes?.map((m: any) => m.valor || m.mensaje || m).join('; ');
+              const rejectDetails = statusRes.mensajes?.map((m: any) => {
+                const code = m.codigo ? `[Código ${m.codigo}] ` : '';
+                const desc = m.valor || m.mensaje || (typeof m === 'string' ? m : JSON.stringify(m));
+                return `${code}${desc}`;
+              }).join('; ');
               responseMessage = `Rechazado por DGII: ${rejectDetails || statusRes.mensaje || 'Documento no cumple validaciones DGII'}`;
             } else if (statusRes?.estado === 'EN_PROCESO' || statusRes?.estado === 'EnProceso') {
               status = 'PENDING';
@@ -575,7 +579,12 @@ export class DgiiClientService {
           }
         } else if (data?.estado === 'RECHAZADO' || data?.estado === 'Rechazado') {
           status = 'REJECTED';
-          responseMessage = data?.mensaje || 'Rechazado por DGII en recepción';
+          const rejectDetails = data?.mensajes?.map((m: any) => {
+            const code = m.codigo ? `[Código ${m.codigo}] ` : '';
+            const desc = m.valor || m.mensaje || (typeof m === 'string' ? m : JSON.stringify(m));
+            return `${code}${desc}`;
+          }).join('; ');
+          responseMessage = `Rechazado por DGII en recepción: ${rejectDetails || data?.mensaje || 'Documento no cumple validaciones DGII'}`;
         }
 
         return {
@@ -691,7 +700,15 @@ export class DgiiClientService {
           const trackId = data?.trackId || `TRK-RFCE-${Date.now()}`;
           const isRejected = data?.estado === 'RECHAZADO' || data?.estado === 'Rechazado';
           const status = isRejected ? 'REJECTED' : 'ACCEPTED';
-          const responseMessage = data?.mensaje || (data?.estado ? `Resumen RFCE ${data.estado} por DGII` : 'Resumen RFCE recibido y aceptado por DGII');
+          let responseMessage = data?.mensaje || (data?.estado ? `Resumen RFCE ${data.estado} por DGII` : 'Resumen RFCE recibido y aceptado por DGII');
+          if (isRejected && data?.mensajes?.length) {
+            const rejectDetails = data.mensajes.map((m: any) => {
+              const code = m.codigo ? `[Código ${m.codigo}] ` : '';
+              const desc = m.valor || m.mensaje || (typeof m === 'string' ? m : JSON.stringify(m));
+              return `${code}${desc}`;
+            }).join('; ');
+            responseMessage = `Rechazado por DGII: ${rejectDetails}`;
+          }
 
           return { trackId, status, securityCode, qrCodeUrl, responseMessage, timestamp: new Date(),
         signedAt, signedXml, rawResponse: data };
@@ -700,7 +717,12 @@ export class DgiiClientService {
           const isDgiiReject = err.response?.status === 400 || errorData?.estado === 'Rechazado' || errorData?.estado === 'RECHAZADO';
           if (isDgiiReject) {
             // Un rechazo explícito de la DGII NO se reintenta — es un error de datos, no de red.
-            const msgVal = errorData?.mensajes?.[0]?.valor || errorData?.mensaje || (typeof errorData === 'string' ? errorData : JSON.stringify(errorData));
+            const rejectDetails = errorData?.mensajes?.map((m: any) => {
+              const code = m.codigo ? `[Código ${m.codigo}] ` : '';
+              const desc = m.valor || m.mensaje || (typeof m === 'string' ? m : JSON.stringify(m));
+              return `${code}${desc}`;
+            }).join('; ');
+            const msgVal = rejectDetails || errorData?.mensaje || (typeof errorData === 'string' ? errorData : JSON.stringify(errorData));
             this.logger.warn(`RFCE ${eNcf} rechazado por DGII: ${msgVal}`);
             return {
               trackId: errorData?.trackId || `TRK-RFCE-REJ-${Date.now()}`,

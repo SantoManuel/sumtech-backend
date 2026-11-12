@@ -40,6 +40,7 @@ export interface TestCaseItem {
   esRfce?: boolean;
   extraRfceData?: Record<string, any>;
   extraEcfData?: DgiiTestSetEcfRow;
+  responseMessage?: string;
 }
 
 export interface SimulationDataset {
@@ -778,11 +779,12 @@ export class DgiiCertificationService {
       const baseRun = await this.getLastStatus(this.normalizeENcf(item.eNCFModificado));
       if (!baseRun || baseRun.status !== 'ACCEPTED') {
         const motivo = baseRun ? `tiene estado ${baseRun.status}` : 'no tiene ninguna corrida registrada todavía';
+        const blockedMsg = `Bloqueado localmente: el e-CF base ${item.eNCFModificado} no está aceptado (${motivo}).`;
         logs.push(`[${now()}] ⛔ Nota bloqueada localmente: el e-CF base ${item.eNCFModificado} ${motivo} — la DGII rechazaría esta nota (error 615, referencia a comprobante inexistente/no aceptado).`);
-        const blocked: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs };
+        const blocked: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs, responseMessage: blockedMsg };
         await this.persistRun(source, blocked, {
           status: 'ERROR',
-          responseMessage: `Bloqueado localmente: el e-CF base ${item.eNCFModificado} no está aceptado (${motivo}).`,
+          responseMessage: blockedMsg,
         });
         return blocked;
       }
@@ -1098,6 +1100,9 @@ export class DgiiCertificationService {
       }
 
       logs.push(`[${now()}] 📥 Respuesta DGII recibida: ${result.status} | TrackId: ${result.trackId}`);
+      if (result.status === 'REJECTED') {
+        logs.push(`[${now()}] ❌ Detalle de Rechazo DGII: ${result.responseMessage || 'Comprobante no cumple las validaciones de negocio de la DGII'}`);
+      }
       if (result.status === 'CONTINGENCY') {
         logs.push(`[${now()}] ⚠️ La DGII no fue alcanzable — el comprobante quedó en modo CONTINGENCIA.`);
       }
@@ -1110,6 +1115,7 @@ export class DgiiCertificationService {
         status: result.status,
         trackId: result.trackId,
         securityCode: result.securityCode,
+        responseMessage: result.responseMessage,
         executedAt: new Date(),
         logs,
       };
@@ -1117,7 +1123,7 @@ export class DgiiCertificationService {
       return executed;
     } catch (error: any) {
       logs.push(`[${now()}] ❌ ERROR durante la ejecución: ${error.message}`);
-      const failed: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs };
+      const failed: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs, responseMessage: error.message };
       await this.persistRun(source, failed, { status: 'ERROR', responseMessage: error.message });
       return failed;
     }
@@ -1428,6 +1434,9 @@ export class DgiiCertificationService {
       const result: DgiiSendResult = await this.dgiiClient.submitRfce(rfceRawXml, normalizedEncf, item.montoTotal);
 
       logs.push(`[${now()}] 📥 Respuesta DGII recibida: ${result.status} | TrackId: ${result.trackId}`);
+      if (result.status === 'REJECTED') {
+        logs.push(`[${now()}] ❌ Detalle de Rechazo DGII (RFCE): ${result.responseMessage || 'Resumen no cumple las validaciones de la DGII'}`);
+      }
       if (result.validationErrors?.length) {
         result.validationErrors.forEach((e) => logs.push(`[${now()}] ⛔ XSD: ${e}`));
       }
@@ -1438,6 +1447,7 @@ export class DgiiCertificationService {
         status: result.status,
         trackId: result.trackId,
         securityCode: result.securityCode,
+        responseMessage: result.responseMessage,
         executedAt: new Date(),
         logs,
       };
@@ -1445,7 +1455,7 @@ export class DgiiCertificationService {
       return executed;
     } catch (error: any) {
       logs.push(`[${now()}] ❌ ERROR durante la ejecución del RFCE: ${error.message}`);
-      const failed: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs };
+      const failed: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs, responseMessage: error.message };
       await this.persistRun(source, failed, { status: 'ERROR', responseMessage: error.message });
       return failed;
     }
