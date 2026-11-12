@@ -436,6 +436,7 @@ export class DgiiXmlGeneratorService {
     let montoGravadoI2 = 0; // Gravado 16%
     let montoGravadoI3 = 0; // Gravado 0%
     let montoExento = 0;
+    let montoNoFacturable = 0;
 
     for (const item of input.items) {
       const lineTotal = item.montoItem !== undefined ? item.montoItem : (item.cantidad * item.precioUnitario);
@@ -445,6 +446,10 @@ export class DgiiXmlGeneratorService {
         montoGravadoI2 += lineTotal;
       } else if (item.indicadorFacturacion === '3') {
         montoGravadoI3 += lineTotal;
+      } else if (item.indicadorFacturacion === '4') {
+        montoExento += lineTotal;
+      } else if (item.indicadorFacturacion === '0') {
+        montoNoFacturable += lineTotal;
       } else {
         montoExento += lineTotal;
       }
@@ -501,20 +506,16 @@ export class DgiiXmlGeneratorService {
     }
 
     // IndicadorMontoGravado solo aplica a 31, 32, 33, 34, 41 y 45 según sus respectivos esquemas oficiales
-    // En el XSD de la DGII:
+    // En el XSD de la DGII es opcional (minOccurs="0"):
     //   0 = Los montos en las líneas NO tienen ITBIS incluido (precio neto + ITBIS = MontoTotal)
     //   1 = Los montos en las líneas tienen ITBIS incluido
-    // En facturación estándar y en la simulación oficial, MontoItem es NETO sin ITBIS,
-    // por lo que IndicadorMontoGravado debe ser '0' (nunca '1', lo que causaría que la DGII
-    // divida MontoItem entre 1.18 y rechace por descuadre con MontoGravadoI1).
+    // Si el caso de prueba o la factura no lo define (ej. '#e' en set oficial DGII),
+    // se omite para no contradecir el conjunto de datos entregados por la DGII.
     const supportsIndicadorMontoGravado = ['31', '32', '33', '34', '41', '45'].includes(tipoDoc);
     if (supportsIndicadorMontoGravado) {
-      const finalIndicadorMontoGravado =
-        input.indicadorMontoGravado !== undefined && input.indicadorMontoGravado !== ''
-          ? input.indicadorMontoGravado
-          : '0';
-
-      idDocXml += `<IndicadorMontoGravado>${finalIndicadorMontoGravado}</IndicadorMontoGravado>`;
+      if (input.indicadorMontoGravado !== undefined && input.indicadorMontoGravado !== null && input.indicadorMontoGravado !== '') {
+        idDocXml += `<IndicadorMontoGravado>${input.indicadorMontoGravado}</IndicadorMontoGravado>`;
+      }
     }
 
     // TipoIngresos no existe en E41, E43 ni E47 según sus respectivos esquemas oficiales
@@ -850,14 +851,17 @@ export class DgiiXmlGeneratorService {
 
       totalesXml += `<MontoTotal>${input.totalesOverride?.montoTotalStr || this.formatDecimal(effMontoTotal)}</MontoTotal>`;
 
-      if (input.totalesOverride?.montoNoFacturable !== undefined) {
-        totalesXml += `<MontoNoFacturable>${this.formatDecimal(input.totalesOverride.montoNoFacturable)}</MontoNoFacturable>`;
+      const effMontoNoFacturable = input.totalesOverride?.montoNoFacturable ?? (montoNoFacturable > 0 ? montoNoFacturable : undefined);
+      if (effMontoNoFacturable !== undefined) {
+        totalesXml += `<MontoNoFacturable>${this.formatDecimal(effMontoNoFacturable)}</MontoNoFacturable>`;
       }
-      if (input.totalesOverride?.montoPeriodo !== undefined) {
-        totalesXml += `<MontoPeriodo>${this.formatDecimal(input.totalesOverride.montoPeriodo)}</MontoPeriodo>`;
+      const effMontoPeriodo = input.totalesOverride?.montoPeriodo ?? (effMontoNoFacturable !== undefined ? Number((effMontoTotal + effMontoNoFacturable).toFixed(2)) : undefined);
+      if (effMontoPeriodo !== undefined) {
+        totalesXml += `<MontoPeriodo>${this.formatDecimal(effMontoPeriodo)}</MontoPeriodo>`;
       }
-      if (input.totalesOverride?.valorPagar !== undefined) {
-        totalesXml += `<ValorPagar>${this.formatDecimal(input.totalesOverride.valorPagar)}</ValorPagar>`;
+      const effValorPagar = input.totalesOverride?.valorPagar ?? (effMontoNoFacturable !== undefined ? effMontoTotal : undefined);
+      if (effValorPagar !== undefined) {
+        totalesXml += `<ValorPagar>${this.formatDecimal(effValorPagar)}</ValorPagar>`;
       }
 
       if (tipoDoc === '41') {

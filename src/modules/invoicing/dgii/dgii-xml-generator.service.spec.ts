@@ -434,6 +434,81 @@ describe('DgiiXmlGeneratorService', () => {
       expect(xml).toContain('<Retencion><IndicadorAgenteRetencionoPercepcion>1</IndicadorAgenteRetencionoPercepcion><MontoISRRetenido>0.00</MontoISRRetenido></Retencion>');
       expect(xml).toContain('<Totales><MontoExento>42000.00</MontoExento><MontoTotal>42000.00</MontoTotal><TotalISRRetencion>0.00</TotalISRRetencion></Totales>');
     });
+    it('genera E45 (Gubernamental) con ítems no facturables sin incluir MontoExento erróneo en Totales', () => {
+      const xml = service.generateEcfXml({
+        ncfType: 'E45',
+        eNcf: 'E450000000008',
+        rncComprador: '131880681',
+        razonSocialComprador: 'DOCUMENTOS ELECTRONICOS DE 03',
+        indicadorMontoGravado: '1',
+        items: [
+          {
+            numeroLinea: 1,
+            nombreItem: 'LAVAPLATOS 12/12OZ',
+            indicadorBienoServicio: '1',
+            indicadorFacturacion: '0', // No Facturable
+            cantidad: 100,
+            precioUnitario: 450,
+            montoItem: 45000,
+          },
+          {
+            numeroLinea: 2,
+            nombreItem: 'LATA DE HABICHUELAS 12/12OZ',
+            indicadorBienoServicio: '1',
+            indicadorFacturacion: '1', // Gravado 18%
+            cantidad: 300,
+            precioUnitario: 350,
+            montoItem: 105000,
+          },
+        ],
+        totalesOverride: {
+          montoGravadoTotal: 88983.05,
+          montoGravadoTotalStr: '88983.05',
+          montoGravadoI1: 88983.05,
+          montoGravadoI1Str: '88983.05',
+          totalITBIS: 16016.95,
+          totalITBISStr: '16016.95',
+          totalITBIS1: 16016.95,
+          totalITBIS1Str: '16016.95',
+          montoTotal: 105000,
+          montoTotalStr: '105000.00',
+          montoNoFacturable: 45000,
+          montoPeriodo: 150000,
+          valorPagar: 105000,
+        },
+      });
+
+      expect(xml).toContain('<TipoeCF>45</TipoeCF>');
+      expect(xml).toContain('<IndicadorMontoGravado>1</IndicadorMontoGravado>');
+      expect(xml).not.toContain('<MontoExento>');
+      expect(xml).toContain('<MontoTotal>105000.00</MontoTotal>');
+      expect(xml).toContain('<MontoNoFacturable>45000.00</MontoNoFacturable>');
+      expect(xml).toContain('<MontoPeriodo>150000.00</MontoPeriodo>');
+      expect(xml).toContain('<ValorPagar>105000.00</ValorPagar>');
+    });
+
+    it('omite <IndicadorMontoGravado> cuando no se especifica en el input', () => {
+      const xml = service.generateEcfXml({
+        ncfType: 'E33',
+        eNcf: 'E330000000001',
+        razonSocialComprador: 'DOCUMENTOS ELECTRONICOS DE 03',
+        ncfModificado: 'E320000000006',
+        items: [
+          {
+            numeroLinea: 1,
+            nombreItem: 'Ajuste de débito',
+            indicadorBienoServicio: '2',
+            indicadorFacturacion: '1',
+            cantidad: 1,
+            precioUnitario: 400000,
+            montoItem: 400000,
+          },
+        ],
+      });
+
+      expect(xml).toContain('<TipoeCF>33</TipoeCF>');
+      expect(xml).not.toContain('<IndicadorMontoGravado>');
+    });
   });
 
   describe('parseSignedEcfMetadata y buildQrUrlFromSignedXml', () => {

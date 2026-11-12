@@ -124,8 +124,10 @@ export class DgiiCertificationService {
    * aceptado por la DGII (evita el error 615 de la DGII: referencia a un
    * comprobante que no existe/no fue aceptado).
    */
-  private async getLastStatus(eNcf: string): Promise<DgiiCertificationRun | null> {
-    return this.runRepository.findOne({ where: { eNcf }, order: { executedAt: 'DESC' } });
+  private async getLastStatus(eNcf: string, environment?: string): Promise<DgiiCertificationRun | null> {
+    const where: any = { eNcf };
+    if (environment) where.environment = environment;
+    return this.runRepository.findOne({ where, order: { executedAt: 'DESC' } });
   }
 
   /**
@@ -774,26 +776,26 @@ export class DgiiCertificationService {
       return this.runConsumerMinorLocalCase(item, logs, source);
     }
 
-    const esNota = item.tipoeCF === 'E33' || item.tipoeCF === 'E34';
-    if (esNota && item.eNCFModificado) {
-      const baseRun = await this.getLastStatus(this.normalizeENcf(item.eNCFModificado));
-      if (!baseRun || baseRun.status !== 'ACCEPTED') {
-        const motivo = baseRun ? `tiene estado ${baseRun.status}` : 'no tiene ninguna corrida registrada todavía';
-        const blockedMsg = `Bloqueado localmente: el e-CF base ${item.eNCFModificado} no está aceptado (${motivo}).`;
-        logs.push(`[${now()}] ⛔ Nota bloqueada localmente: el e-CF base ${item.eNCFModificado} ${motivo} — la DGII rechazaría esta nota (error 615, referencia a comprobante inexistente/no aceptado).`);
-        const blocked: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs, responseMessage: blockedMsg };
-        await this.persistRun(source, blocked, {
-          status: 'ERROR',
-          responseMessage: blockedMsg,
-        });
-        return blocked;
-      }
-      logs.push(`[${now()}] ✅ e-CF base ${item.eNCFModificado} verificado como ACCEPTED en el historial — se procede a emitir la nota.`);
-    }
-
     try {
       const config = await this.dgiiClient.getConfig();
       logs.push(`[${now()}] ⚙️ Entorno: ${config.environment.toUpperCase()} | Emisor: ${config.rncEmisor}`);
+
+      const esNota = item.tipoeCF === 'E33' || item.tipoeCF === 'E34';
+      if (esNota && item.eNCFModificado) {
+        const baseRun = await this.getLastStatus(this.normalizeENcf(item.eNCFModificado), config.environment);
+        if (!baseRun || baseRun.status !== 'ACCEPTED') {
+          const motivo = baseRun ? `tiene estado ${baseRun.status} en ${config.environment.toUpperCase()}` : `no tiene corrida registrada todavía en ${config.environment.toUpperCase()}`;
+          const blockedMsg = `Bloqueado localmente: el e-CF base ${item.eNCFModificado} no está aceptado en ${config.environment.toUpperCase()} (${motivo}). Primero debes ejecutar y lograr que se apruebe el comprobante base.`;
+          logs.push(`[${now()}] ⛔ Nota bloqueada localmente: el e-CF base ${item.eNCFModificado} ${motivo} — la DGII rechazaría esta nota ([Código 614] El eNCF modificado no ha sido emitido).`);
+          const blocked: TestCaseItem = { ...item, status: 'ERROR', executedAt: new Date(), logs, responseMessage: blockedMsg };
+          await this.persistRun(source, blocked, {
+            status: 'ERROR',
+            responseMessage: blockedMsg,
+          });
+          return blocked;
+        }
+        logs.push(`[${now()}] ✅ e-CF base ${item.eNCFModificado} verificado como ACCEPTED en el historial de ${config.environment.toUpperCase()} — se procede a emitir la nota.`);
+      }
 
       // Caso especial: Comprobante de Compras E41, Nota de Crédito Informativa E34, Exento y Tasa Cero
       const isE41 = item.tipoeCF === 'E41';
