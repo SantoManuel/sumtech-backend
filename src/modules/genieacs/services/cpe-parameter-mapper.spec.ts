@@ -97,6 +97,8 @@ describe('CpeParameterMapper', () => {
 
       const base = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
       expect(paramMap.get(`${base}.X_HW_VLAN`)).toBe('300');
+      expect(paramMap.get(`${base}.X_HW_VLAN_ENABLE`)).toBe('true');
+      expect(paramMap.get(`${base}.X_HW_VlanMode`)).toBe('1');
       expect(paramMap.get(`${base}.NATEnabled`)).toBe('true');
       expect(paramMap.get(`${base}.X_HW_SERVICELIST`)).toBe('INTERNET');
       // No debe inyectar X_CMCC_LanInterface a Huawei retail/estándar para evitar Fault 9005
@@ -142,6 +144,8 @@ describe('CpeParameterMapper', () => {
       const paramMap = new Map(params.map(([k, v]) => [k, v]));
 
       const base = 'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1';
+      expect(paramMap.get(`${base}.X_CMCC_VLANIDMark`)).toBe('400');
+      expect(paramMap.get(`${base}.X_CMCC_VLANMode`)).toBe('1');
       expect(paramMap.get(`${base}.X_CMCC_LanInterface`)).toBe(
         'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1,' +
           'InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.2,' +

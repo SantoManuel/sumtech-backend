@@ -85,7 +85,7 @@ export class CpeConfiguratorService {
     // Resolver dinámicamente el índice de WANConnectionDevice en TR-098 (Fallo #1)
     let wanConnectionIndex = input.wanConnectionIndex ?? 1;
     if (!isTR181 && input.wanMode) {
-      const resolved = await client.resolveWanConnectionIndex(deviceId, input.wanMode, input.serviceVlan);
+      const resolved = await client.resolveWanConnectionIndex(deviceId, input.wanMode, input.serviceVlan, input.managementVlan);
       wanConnectionIndex = resolved.index;
       input.wanConnectionIndex = wanConnectionIndex;
     }

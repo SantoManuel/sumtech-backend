@@ -714,6 +714,7 @@ export class GenieAcsClient {
     deviceId: string,
     wanMode: 'PPPOE' | 'DHCP' | 'STATIC',
     serviceVlan?: number,
+    managementVlan?: number,
   ): Promise<{ index: number; connectionExists: boolean; deviceExists: boolean }> {
     try {
       const doc = await this.getDeviceDocument(deviceId);
@@ -755,6 +756,8 @@ export class GenieAcsClient {
         const serviceList = (
           getParamValue(conn, 'WANIPConnection.1.X_HW_SERVICELIST') ||
           getParamValue(conn, 'WANPPPConnection.1.X_HW_SERVICELIST') ||
+          getParamValue(conn, 'WANIPConnection.1.X_CMCC_ServiceList') ||
+          getParamValue(conn, 'WANPPPConnection.1.X_CMCC_ServiceList') ||
           getParamValue(conn, 'WANIPConnection.1.X_ZTE-COM_ServiceList') ||
           getParamValue(conn, 'WANPPPConnection.1.X_ZTE-COM_ServiceList') ||
           getParamValue(conn, 'WANIPConnection.1.ServiceList') ||
@@ -765,19 +768,26 @@ export class GenieAcsClient {
         const rawVlan = (
           getParamValue(conn, 'WANIPConnection.1.X_HW_VLAN') ||
           getParamValue(conn, 'WANPPPConnection.1.X_HW_VLAN') ||
+          getParamValue(conn, 'WANIPConnection.1.X_CMCC_VLANIDMark') ||
+          getParamValue(conn, 'WANPPPConnection.1.X_CMCC_VLANIDMark') ||
           getParamValue(conn, 'WANIPConnection.1.X_ZTE-COM_VLAN') ||
           getParamValue(conn, 'WANPPPConnection.1.X_ZTE-COM_VLAN') ||
           getParamValue(conn, 'WANIPConnection.1.X_BROADCOM_COM_VLANID') ||
           getParamValue(conn, 'WANPPPConnection.1.X_BROADCOM_COM_VLANID') ||
           getParamValue(conn, 'WANIPConnection.1.VLANID') ||
-          getParamValue(conn, 'WANPPPConnection.1.VLANID')
+          getParamValue(conn, 'WANPPPConnection.1.VLANID') ||
+          getParamValue(conn, 'WANIPConnection.1.X_HW_VLANID') ||
+          getParamValue(conn, 'WANPPPConnection.1.X_HW_VLANID') ||
+          getParamValue(conn, 'WANIPConnection.1.VLANIDMark') ||
+          getParamValue(conn, 'WANPPPConnection.1.VLANIDMark')
         );
         const vlan = rawVlan ? parseInt(rawVlan, 10) : undefined;
 
         // Se considera canal de gestión si el serviceList incluye TR069 pero no INTERNET,
-        // o si opera en la VLAN 444 reservada para gestión.
+        // o si opera en la VLAN de gestión conocida (ej. 444 o managementVlan) sin INTERNET.
+        const isMgmtVlan = vlan !== undefined && (vlan === 444 || (managementVlan !== undefined && vlan === managementVlan));
         const isManagement = (serviceList.includes('TR069') && !serviceList.includes('INTERNET')) ||
-                             (vlan !== undefined && vlan === 444 && !serviceList.includes('INTERNET'));
+                             (isMgmtVlan && !serviceList.includes('INTERNET'));
 
         instances.push({
           index: idx,
@@ -794,12 +804,14 @@ export class GenieAcsClient {
       }
 
       if (wanMode === 'PPPOE') {
-        const exactMatch = instances.find(inst => !inst.isManagement && inst.hasPpp && (
-          (serviceVlan !== undefined && inst.vlan === serviceVlan) ||
-          (inst.serviceList && inst.serviceList.includes('INTERNET'))
-        ));
-        if (exactMatch) {
-          return { index: exactMatch.index, connectionExists: true, deviceExists: true };
+        const vlanMatch = instances.find(inst => !inst.isManagement && inst.hasPpp && serviceVlan !== undefined && inst.vlan === serviceVlan);
+        if (vlanMatch) {
+          return { index: vlanMatch.index, connectionExists: true, deviceExists: true };
+        }
+
+        const internetMatch = instances.find(inst => !inst.isManagement && inst.hasPpp && inst.serviceList && inst.serviceList.includes('INTERNET'));
+        if (internetMatch) {
+          return { index: internetMatch.index, connectionExists: true, deviceExists: true };
         }
 
         const anyPpp = instances.find(inst => !inst.isManagement && inst.hasPpp);
@@ -812,12 +824,14 @@ export class GenieAcsClient {
           return { index: emptyInstance.index, connectionExists: false, deviceExists: true };
         }
       } else {
-        const exactMatch = instances.find(inst => !inst.isManagement && inst.hasIp && (
-          (serviceVlan !== undefined && inst.vlan === serviceVlan) ||
-          (inst.serviceList && inst.serviceList.includes('INTERNET'))
-        ));
-        if (exactMatch) {
-          return { index: exactMatch.index, connectionExists: true, deviceExists: true };
+        const vlanMatch = instances.find(inst => !inst.isManagement && inst.hasIp && serviceVlan !== undefined && inst.vlan === serviceVlan);
+        if (vlanMatch) {
+          return { index: vlanMatch.index, connectionExists: true, deviceExists: true };
+        }
+
+        const internetMatch = instances.find(inst => !inst.isManagement && inst.hasIp && inst.serviceList && inst.serviceList.includes('INTERNET'));
+        if (internetMatch) {
+          return { index: internetMatch.index, connectionExists: true, deviceExists: true };
         }
 
         const anyIp = instances.find(inst => !inst.isManagement && inst.hasIp);

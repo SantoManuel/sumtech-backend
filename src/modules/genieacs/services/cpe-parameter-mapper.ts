@@ -25,6 +25,8 @@ export interface CpeConfigurationInput {
   ipProtocol?: 'IPV4' | 'IPV6' | 'DUAL';
   wanMode?: 'STATIC' | 'DHCP' | 'PPPOE';
   serviceVlan?: number;
+  /** VLAN del canal de gestión TR-069 para evitar asociar la WAN de cliente a la instancia de gestión. */
+  managementVlan?: number;
   /** Índice de la instancia WANConnectionDevice en TR-098 (1 por defecto, o 2+ cuando la gestión TR-069 ocupa el 1). */
   wanConnectionIndex?: number;
   // PPPoE
@@ -396,14 +398,7 @@ export class CpeParameterMapper {
 
       // Manejo de VLAN por fabricante TR-098
       if (config.serviceVlan) {
-        if (vendorUpper.includes('ZTE')) {
-          params.push([`${pppBase}.X_ZTE-COM_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
-        } else if (vendorUpper.includes('HUAWEI')) {
-          params.push([`${pppBase}.X_HW_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
-        } else {
-          // Broadcom standard extension
-          params.push([`${pppBase}.X_BROADCOM_COM_VLANID`, String(config.serviceVlan), 'xsd:int']);
-        }
+        this.pushTR098VlanParams(params, pppBase, config.serviceVlan, vendorUpper, config.model);
       }
       if (config.ipProtocol === 'DUAL') {
         params.push([`${pppBase}.X_BROADCOM_COM_IPv6PrefixDelegationEnabled`, 'true', 'xsd:boolean']);
@@ -445,11 +440,7 @@ export class CpeParameterMapper {
         }
       }
       if (config.serviceVlan) {
-        if (vendorUpper.includes('ZTE')) {
-          params.push([`${ipBase}.X_ZTE-COM_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
-        } else if (vendorUpper.includes('HUAWEI')) {
-          params.push([`${ipBase}.X_HW_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
-        }
+        this.pushTR098VlanParams(params, ipBase, config.serviceVlan, vendorUpper, config.model);
       }
       this.pushDnsOverrideParams(params, ipBase, config);
       this.pushPortBindingParams(params, ipBase, vendorUpper);
@@ -474,11 +465,7 @@ export class CpeParameterMapper {
         }
       }
       if (config.serviceVlan) {
-        if (vendorUpper.includes('ZTE')) {
-          params.push([`${ipBase}.X_ZTE-COM_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
-        } else if (vendorUpper.includes('HUAWEI')) {
-          params.push([`${ipBase}.X_HW_VLAN`, String(config.serviceVlan), 'xsd:unsignedInt']);
-        }
+        this.pushTR098VlanParams(params, ipBase, config.serviceVlan, vendorUpper, config.model);
       }
       this.pushPortBindingParams(params, ipBase, vendorUpper);
     }
@@ -522,6 +509,42 @@ export class CpeParameterMapper {
       vendorUpper.includes('CMCC')
     ) {
       params.push([`${base}.X_CMCC_LanInterface`, DEFAULT_TR098_LAN_WLAN_BINDING, 'xsd:string']);
+    }
+  }
+
+  /**
+   * Configura los parámetros de VLAN según el fabricante y variante de firmware en TR-098.
+   * - ZTE: X_ZTE-COM_VLAN
+   * - CMDC / CMCC (China Mobile clones/firmwares HG8546M): X_CMCC_VLANIDMark + X_CMCC_VLANMode=1 (Tag)
+   * - Huawei estándar (EchoLife retail): X_HW_VLAN + X_HW_VLAN_ENABLE=true + X_HW_VlanMode=1 (Tag)
+   * - Genérico: X_BROADCOM_COM_VLANID
+   */
+  private pushTR098VlanParams(
+    params: Array<[string, string, string]>,
+    base: string,
+    vlan: number,
+    vendorUpper: string,
+    model?: string,
+  ): void {
+    const isZte = vendorUpper.includes('ZTE');
+    const isCmcc =
+      vendorUpper.includes('CMDC') ||
+      vendorUpper.includes('CMCC') ||
+      (model || '').toUpperCase().includes('CMDC') ||
+      (model || '').toUpperCase().includes('XPON');
+    const isHuawei = vendorUpper.includes('HUAWEI') || isCmcc;
+
+    if (isZte) {
+      params.push([`${base}.X_ZTE-COM_VLAN`, String(vlan), 'xsd:unsignedInt']);
+    } else if (isCmcc) {
+      params.push([`${base}.X_CMCC_VLANIDMark`, String(vlan), 'xsd:unsignedInt']);
+      params.push([`${base}.X_CMCC_VLANMode`, '1', 'xsd:unsignedInt']);
+    } else if (isHuawei) {
+      params.push([`${base}.X_HW_VLAN`, String(vlan), 'xsd:unsignedInt']);
+      params.push([`${base}.X_HW_VLAN_ENABLE`, 'true', 'xsd:boolean']);
+      params.push([`${base}.X_HW_VlanMode`, '1', 'xsd:unsignedInt']);
+    } else {
+      params.push([`${base}.X_BROADCOM_COM_VLANID`, String(vlan), 'xsd:int']);
     }
   }
 

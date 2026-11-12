@@ -5,6 +5,8 @@ export class ConfigureOnuWanDto {
   @IsOptional() @IsIn(['PPPOE', 'DHCP', 'STATIC']) wanMode?: 'PPPOE' | 'DHCP' | 'STATIC';
   @IsOptional() @IsIn(['IPV4', 'IPV6', 'DUAL']) ipProtocol?: 'IPV4' | 'IPV6' | 'DUAL';
   @IsOptional() @IsInt() @Min(0) expectedVersion?: number;
+  /** UUID de la VLAN de servicio autorizada en la OLT para verificación de coherencia. */
+  @IsOptional() @IsString() serviceVlanId?: string;
   @IsOptional() @IsString() pppoeUsername?: string;
   @IsOptional() @IsString() pppoePassword?: string;
   @ValidateIf(o => o.wanMode === 'STATIC') @IsIP('4') wanStaticIp?: string;

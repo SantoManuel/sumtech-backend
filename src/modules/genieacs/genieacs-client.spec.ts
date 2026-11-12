@@ -1119,6 +1119,46 @@ describe('GenieAcsClient', () => {
       expect(res.connectionExists).toBe(true);
       expect(res.deviceExists).toBe(true);
     });
+
+    it('detecta X_CMCC_VLANIDMark y respeta managementVlan dinámica diferente de 444', async () => {
+      http.get.mockResolvedValue({
+        data: [
+          {
+            _id: '00259E-ONT-16',
+            InternetGatewayDevice: {
+              WANDevice: {
+                '1': {
+                  WANConnectionDevice: {
+                    '1': {
+                      WANIPConnection: {
+                        '1': {
+                          X_CMCC_ServiceList: { _value: 'TR069' },
+                          X_CMCC_VLANIDMark: { _value: '100' },
+                        },
+                      },
+                    },
+                    '2': {
+                      WANPPPConnection: {
+                        '1': {
+                          X_CMCC_ServiceList: { _value: 'INTERNET' },
+                          X_CMCC_VLANIDMark: { _value: '400' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      });
+
+      const res = await client.resolveWanConnectionIndex('00259E-ONT-16', 'PPPOE', 400, 100);
+
+      expect(res.index).toBe(2);
+      expect(res.connectionExists).toBe(true);
+      expect(res.deviceExists).toBe(true);
+    });
   });
 
   describe('refreshObject', () => {

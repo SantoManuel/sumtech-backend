@@ -282,6 +282,9 @@ export class OnuWanProvisioningService {
       const ipv6 = resolveCpeIpv6Capabilities(onu.onuType?.vendor || onu.vendor, onu.onuType?.model).capabilities;
       if (protocol !== 'IPV4' && ((mode === 'DHCP' && !ipv6.dhcpDualStack) || (mode === 'STATIC' && !ipv6.staticIpv6))) throw new BadRequestException('Este equipo no tiene soporte IPv6 confirmado para el modo WAN seleccionado.');
       if (!config.serviceVlanId || !onu.serviceConfig?.serviceVlan?.vlanId) throw new BadRequestException('Falta la VLAN real del servicio.');
+      if (dto.serviceVlanId && dto.serviceVlanId !== config.serviceVlanId) {
+        throw new BadRequestException('La VLAN indicada no coincide con la VLAN de servicio autorizada en la OLT.');
+      }
       let pppoePasswordEnc: string | null = null;
       let username: string | undefined;
       let password: string | undefined;
@@ -414,7 +417,9 @@ export class OnuWanProvisioningService {
           const result = await this.policy.withManagedWrite(onu.id, 'TR069', version, () => this.cpe.configureCpe({
             serialNumber: onu.serialNumber, vendor: effectiveVendor, model: onu.onuType?.model,
             tenantSlug: this.tenant.getSlug(), oltName: onu.olt.name, operationMode: 'ROUTER',
-            ...desired, pppoeUsername: username, pppoePassword: password, serviceVlan: onu.serviceConfig!.serviceVlan!.vlanId,
+            ...desired, pppoeUsername: username, pppoePassword: password,
+            serviceVlan: onu.serviceConfig!.serviceVlan!.vlanId,
+            managementVlan: onu.serviceConfig?.tr069Vlan?.vlanId,
             dns1: desired.wanDns1 || undefined, dns2: desired.wanDns2 || undefined,
             managementServer: {
               acsUrl: net.acsUrl, acsUsername: net.acsUsername || undefined,
