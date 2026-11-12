@@ -50,6 +50,8 @@ ENV NODE_ENV=production \
 # Copiar dependencias de producción y artefactos compilados
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/src/modules/invoicing/dgii/schemas ./dist/modules/invoicing/dgii/schemas
+COPY --from=builder /app/src/modules/invoicing/dgii/schemas ./src/modules/invoicing/dgii/schemas
 COPY --from=builder /app/package.json ./package.json
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 

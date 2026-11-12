@@ -922,7 +922,7 @@ export class DgiiCertificationService {
           indicadorMontoGravado:
             extra.indicadorMontoGravado !== undefined && extra.indicadorMontoGravado !== ''
               ? extra.indicadorMontoGravado
-              : '0',
+              : undefined,
           fechaVencimientoSecuencia:
             extra.fechaVencimientoSecuencia ||
             item.fechaVencimientoSecuencia ||
@@ -1039,7 +1039,7 @@ export class DgiiCertificationService {
           correoComprador: 'cliente.simulacion@sumtech.com.do',
           direccionComprador: 'Av. Winston Churchill #100, Santo Domingo',
           tipoPago: '1',
-          indicadorMontoGravado: '0',
+          indicadorMontoGravado: undefined,
           indicadorNotaCredito: esNota ? '0' : undefined,
           fechaVencimientoSecuencia:
             item.fechaVencimientoSecuencia ||
@@ -1213,7 +1213,7 @@ export class DgiiCertificationService {
         indicadorMontoGravado:
           extra.indicadorMontoGravado !== undefined && extra.indicadorMontoGravado !== ''
             ? extra.indicadorMontoGravado
-            : '1',
+            : undefined,
         fechaVencimientoSecuencia: extra.fechaVencimientoSecuencia,
         items,
         descuentosORecargos: extra.descuentosORecargos,
@@ -1564,7 +1564,7 @@ export class DgiiCertificationService {
             correoComprador: 'cliente.simulacion@sumtech.com.do',
             direccionComprador: 'Av. Winston Churchill #100, Santo Domingo',
             tipoPago: '1',
-            indicadorMontoGravado: '0',
+            indicadorMontoGravado: undefined,
             indicadorNotaCredito: esNota ? '0' : undefined,
             ncfModificado: esNota ? this.normalizeENcf(item.eNCFModificado || 'E310000000001') : undefined,
             codigoModificacion: isTextoCorrige ? '2' : '1',

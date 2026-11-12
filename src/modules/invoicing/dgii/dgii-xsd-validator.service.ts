@@ -46,11 +46,28 @@ export class DgiiXsdValidatorService {
     '47': 'ecf-47.xsd',
   };
 
+  private resolveSchemaPath(fileName: string): string {
+    const candidates = [
+      path.join(SCHEMAS_DIR, fileName),
+      path.join(process.cwd(), 'dist', 'modules', 'invoicing', 'dgii', 'schemas', fileName),
+      path.join(process.cwd(), 'src', 'modules', 'invoicing', 'dgii', 'schemas', fileName),
+      path.resolve(__dirname, '../../../../src/modules/invoicing/dgii/schemas', fileName),
+      path.resolve(__dirname, '../../../src/modules/invoicing/dgii/schemas', fileName),
+      path.join(process.cwd(), 'schemas', fileName),
+    ];
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) {
+        return cand;
+      }
+    }
+    throw new Error(`Esquema XSD no encontrado: ${fileName}. Se buscó en: ${candidates.join(' ; ')}`);
+  }
+
   private loadSchema(fileName: string): any {
     let schema = this.schemaCache.get(fileName);
     if (schema) return schema;
 
-    const fullPath = path.join(SCHEMAS_DIR, fileName);
+    const fullPath = this.resolveSchemaPath(fileName);
     const xsdContent = fs.readFileSync(fullPath, 'utf8');
     schema = libxmljs.parseXml(xsdContent);
     this.schemaCache.set(fileName, schema);
