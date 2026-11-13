@@ -151,6 +151,7 @@ export class PosService {
       let cdtTotal = 0;
       let iscTotal = 0;
       const details: SaleDetailEntity[] = [];
+      const isExemptNcf = dto.ncfType === 'E44';
 
       for (const item of dto.items) {
         const itemSubtotal = Number(item.unitPrice) * item.quantity;
@@ -159,6 +160,7 @@ export class PosService {
           subtotal: itemSubtotal,
           plan: item.itemId ? plansById.get(item.itemId) : undefined,
           serviceFee: item.itemId ? feesById.get(item.itemId) : undefined,
+          isExempt: isExemptNcf,
         });
 
         const clientItbis = Number(item.itbisAmount) || 0;

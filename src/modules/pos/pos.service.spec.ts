@@ -253,6 +253,49 @@ describe('PosService', () => {
     );
   });
 
+  it('checkout: exonera de ITBIS, CDT e ISC cuando ncfType es E44 (Regímenes Especiales)', async () => {
+    const saleSaveSpy = jest.fn((entity) => Promise.resolve({ id: 'saved-e44', ...entity }));
+    const saleRepoMock = {
+      create: jest.fn((dto) => dto),
+      save: saleSaveSpy,
+    };
+    jest.spyOn(queryRunner.manager, 'getRepository').mockImplementation(((entity: any) => {
+      if (entity === SaleEntity) return saleRepoMock;
+      return {
+        create: jest.fn((dto) => dto),
+        save: jest.fn((dto) => Promise.resolve({ id: 'saved-id', ...dto })),
+        findOne: jest.fn().mockResolvedValue({ id: 'contract-1', billingDay: 15, status: 'SUSPENDED' }),
+      };
+    }) as any);
+
+    const checkoutDto: any = {
+      clientId: 'client-1',
+      items: [
+        {
+          itemType: 'PLAN_SUBSCRIPTION',
+          concept: 'Internet 100 Mbps',
+          quantity: 1,
+          unitPrice: 1000,
+          itbisAmount: 180,
+        },
+      ],
+      paymentMethod: 'CASH',
+      ncfType: 'E44',
+    };
+
+    await service.checkout('user-admin-1', checkoutDto);
+
+    expect(saleSaveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subtotal: 1000,
+        itbisTotal: 0,
+        cdtAmount: 0,
+        iscTotal: 0,
+        grandTotal: 1000,
+      }),
+    );
+  });
+
   it('debe permitir abrir un turno de caja si no hay uno previo abierto', async () => {
     cashRegisterRepo.findOne.mockResolvedValue(null);
     const shift = await service.openCashRegister('user-1', {

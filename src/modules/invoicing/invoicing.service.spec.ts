@@ -467,6 +467,35 @@ describe('InvoicingService', () => {
       );
     });
 
+    it('en comprobantes E44 (Regímenes Especiales), fuerza IndicadorFacturacion="4" y anula ITBIS/CDT/ISC (evita error 244 DGII)', async () => {
+      saleRepo.findOne.mockResolvedValue({
+        id: 'sale-e44',
+        clientId: 'client-zf',
+        subtotal: 50000,
+        itbisTotal: 9000,
+        cdtAmount: 1000,
+        iscTotal: 5000,
+        grandTotal: 65000,
+        client: { id: 'client-zf', name: 'Zona Franca Santiago S.A.', docType: 'RNC', docNumber: '131880681' },
+        details: [
+          { itemType: 'PLAN_SUBSCRIPTION', concept: 'Enlace Dedicado 1Gbps', quantity: 1, unitPrice: 50000, itbisAmount: 9000, subtotal: 50000 },
+        ],
+      });
+      sequenceRepo.findOne.mockResolvedValue({ id: 'seq-e44', ncfType: 'E44', currentSequence: 2, endSequence: 1000, expiryDate: '31-12-2028' });
+      const genSpy = jest.spyOn((service as any).xmlGenerator, 'generateEcfXml');
+
+      await service.emitInvoice({ saleId: 'sale-e44', ncfType: 'E44' });
+
+      const payload = genSpy.mock.calls[genSpy.mock.calls.length - 1][0] as any;
+      expect(payload.ncfType).toBe('E44');
+      expect(payload.items[0].indicadorFacturacion).toBe('4');
+      expect(payload.items[0].itbisRate).toBe(0);
+      expect(payload.items[0].itbisMonto).toBe(0);
+      expect(payload.items[0].tiposImpuestoAdicional).toBeUndefined();
+      expect(payload.impuestosAdicionales).toBeUndefined();
+      expect(payload.indicadorMontoGravado).toBeUndefined();
+    });
+
     it('pasa el vencimiento real de la secuencia (no un valor fijo) como FechaVencimientoSecuencia', async () => {
       saleRepo.findOne.mockResolvedValue({
         id: 'sale-201',

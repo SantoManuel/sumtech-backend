@@ -918,10 +918,16 @@ export class DgiiXmlGeneratorService {
         retencionXml += `</Retencion>`;
       }
 
+      // Para comprobantes tipo 44 (Regímenes Especiales), la DGII solo permite indicador '4' (Exento)
+      // o '0' (No facturable) [Código 244]. Si el llamador envió cualquier otro valor, se normaliza a '4'.
+      const indFacturacion = tipoDoc === '44' && item.indicadorFacturacion !== '0'
+        ? '4'
+        : (item.indicadorFacturacion || '1');
+
       itemsXml +=
         `<Item>` +
           `<NumeroLinea>${lineNum}</NumeroLinea>` +
-          `<IndicadorFacturacion>${item.indicadorFacturacion || '1'}</IndicadorFacturacion>` +
+          `<IndicadorFacturacion>${indFacturacion}</IndicadorFacturacion>` +
           retencionXml +
           `<NombreItem>${this.escapeXml(item.nombreItem)}</NombreItem>` +
           `<IndicadorBienoServicio>${item.indicadorBienoServicio || '2'}</IndicadorBienoServicio>`;

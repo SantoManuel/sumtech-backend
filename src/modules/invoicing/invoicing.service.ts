@@ -195,19 +195,24 @@ export class InvoicingService {
     }
 
     // 2. Mapear líneas de detalle al formato fiscal DGII
+    // Para E44 (Regímenes Especiales), la DGII solo permite indicador '4' (Exento) o '0' (No Facturable)
+    // [Código de error DGII 244]. No puede llevar tasas ni montos de ITBIS ni impuestos adicionales (CDT/ISC).
+    const isSpecialRegimeDoc = ncfType === 'E44';
+
     const ecfItems: EcfItemInput[] = (sale.details || []).map((detail, index) => {
       const isHardware = detail.itemType === 'PRODUCT_HARDWARE';
-      const isExempt = Number(detail.itbisAmount) === 0;
+      const isDetailZero = (detail as any).indicadorFacturacion === '0';
+      const isExempt = isSpecialRegimeDoc || Number(detail.itbisAmount) === 0;
       return {
         numeroLinea: index + 1,
         nombreItem: detail.concept,
         indicadorBienoServicio: isHardware ? '1' : '2',
-        indicadorFacturacion: isExempt ? '4' : '1', // 1=18% gravado, 4=exento
+        indicadorFacturacion: isDetailZero ? '0' : (isExempt ? '4' : '1'), // 1=18% gravado, 4=exento, 0=no facturable
         cantidad: Number(detail.quantity),
         precioUnitario: Number(detail.unitPrice),
         montoItem: Number(detail.subtotal),
         itbisRate: isExempt ? 0 : 0.18,
-        itbisMonto: Number(detail.itbisAmount),
+        itbisMonto: isExempt ? 0 : Number(detail.itbisAmount),
         unidadMedida: isHardware ? UNIDAD_MEDIDA_UND : undefined,
       };
     });
@@ -217,17 +222,17 @@ export class InvoicingService {
         numeroLinea: 1,
         nombreItem: 'Servicio de Internet Fibra Óptica',
         indicadorBienoServicio: '2',
-        indicadorFacturacion: '1',
+        indicadorFacturacion: isSpecialRegimeDoc ? '4' : '1',
         cantidad: 1,
         precioUnitario: Number(sale.subtotal),
         montoItem: Number(sale.subtotal),
-        itbisRate: 0.18,
-        itbisMonto: Number(sale.itbisTotal),
+        itbisRate: isSpecialRegimeDoc ? 0 : 0.18,
+        itbisMonto: isSpecialRegimeDoc ? 0 : Number(sale.itbisTotal),
       });
     }
 
-    const cdtAmount = Number(options?.cdtAmount || 0);
-    const iscAmount = Number(options?.iscAmount || 0);
+    const cdtAmount = isSpecialRegimeDoc ? 0 : Number(options?.cdtAmount || 0);
+    const iscAmount = isSpecialRegimeDoc ? 0 : Number(options?.iscAmount || 0);
     const tiposImpuestoAdicional: string[] = [];
     if (cdtAmount > 0) tiposImpuestoAdicional.push('002');
     if (iscAmount > 0) tiposImpuestoAdicional.push('004');
