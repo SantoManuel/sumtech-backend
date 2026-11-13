@@ -414,6 +414,57 @@ describe('InvoicingService', () => {
       const callArgs = genSpy.mock.calls[0][0] as any;
       expect(callArgs.items[0].unidadMedida).toBeUndefined();
       expect(callArgs.items[1].unidadMedida).toBe(43);
+      expect(callArgs.indicadorMontoGravado).toBe('0');
+    });
+
+    it('asigna IndicadorMontoGravado="0" en E31 cuando la factura tiene ítems gravados (evita error 176 DGII)', async () => {
+      saleRepo.findOne.mockResolvedValue({
+        id: 'sale-e31-gravado',
+        clientId: 'client-1',
+        subtotal: 1000,
+        itbisTotal: 180,
+        grandTotal: 1180,
+        client: { id: 'client-1', name: 'Empresa Cliente', docType: 'RNC', docNumber: '131000001' },
+        details: [
+          { itemType: 'PLAN_SUBSCRIPTION', concept: 'Servicio Internet Fibra', quantity: 1, unitPrice: 1000, itbisAmount: 180, subtotal: 1000 },
+        ],
+      });
+      sequenceRepo.findOne.mockResolvedValue({ id: 'seq-e31', ncfType: 'E31', currentSequence: 3, endSequence: 1000, expiryDate: '31-12-2028' });
+      const genSpy = jest.spyOn((service as any).xmlGenerator, 'generateEcfXml');
+
+      await service.emitInvoice({ saleId: 'sale-e31-gravado', ncfType: 'E31' });
+
+      expect(genSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ncfType: 'E31',
+          indicadorMontoGravado: '0',
+        }),
+      );
+    });
+
+    it('omite IndicadorMontoGravado en E31 cuando todos los ítems son exentos', async () => {
+      saleRepo.findOne.mockResolvedValue({
+        id: 'sale-e31-exento',
+        clientId: 'client-1',
+        subtotal: 1000,
+        itbisTotal: 0,
+        grandTotal: 1000,
+        client: { id: 'client-1', name: 'Empresa Exenta', docType: 'RNC', docNumber: '131000001' },
+        details: [
+          { itemType: 'PLAN_SUBSCRIPTION', concept: 'Servicio Exento', quantity: 1, unitPrice: 1000, itbisAmount: 0, subtotal: 1000 },
+        ],
+      });
+      sequenceRepo.findOne.mockResolvedValue({ id: 'seq-e31', ncfType: 'E31', currentSequence: 4, endSequence: 1000, expiryDate: '31-12-2028' });
+      const genSpy = jest.spyOn((service as any).xmlGenerator, 'generateEcfXml');
+
+      await service.emitInvoice({ saleId: 'sale-e31-exento', ncfType: 'E31' });
+
+      expect(genSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ncfType: 'E31',
+          indicadorMontoGravado: undefined,
+        }),
+      );
     });
 
     it('pasa el vencimiento real de la secuencia (no un valor fijo) como FechaVencimientoSecuencia', async () => {

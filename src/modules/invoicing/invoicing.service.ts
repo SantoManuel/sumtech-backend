@@ -162,6 +162,7 @@ export class InvoicingService {
       codigoModificacion?: '1' | '2' | '3' | '4' | '5';
       razonModificacion?: string;
       indicadorNotaCredito?: '0' | '1';
+      indicadorMontoGravado?: '0' | '1';
       // CDT (Contribución al Desarrollo de las Telecomunicaciones, Ley 153-98 Art.
       // 45, código DGII '002') u otro impuesto adicional propio de la factura.
       cdtAmount?: number;
@@ -253,6 +254,22 @@ export class InvoicingService {
     }
 
     // 3. Generar XML e-CF conforme a XSD
+    // IndicadorMontoGravado:
+    // Conforme a la normativa oficial DGII y sus esquemas (ecf-31, ecf-32, ecf-33, ecf-34, ecf-41, ecf-45):
+    //   '0' = Los montos en las líneas de detalle NO tienen ITBIS incluido (precio neto antes de impuestos).
+    //   '1' = Los montos en las líneas de detalle SÍ tienen ITBIS incluido.
+    // En Sumtech, los precios unitarios y subtotales se registran netos (sin ITBIS).
+    // Si la factura tiene ítems gravados (indicadorFacturacion 1, 2 o 3 / ITBIS > 0),
+    // la DGII exige obligatoriamente IndicadorMontoGravado (Código 176 si falta).
+    // Si la factura es 100% exenta, se omite según la especificación técnica de la DGII.
+    const supportsIndicadorMontoGravado = ['E31', 'E32', 'E33', 'E34', 'E41', 'E45'].includes(ncfType);
+    const hasGravado = ecfItems.some((item) =>
+      ['1', '2', '3'].includes(item.indicadorFacturacion || ''),
+    );
+    const resolvedIndicadorMontoGravado =
+      options?.indicadorMontoGravado ??
+      (supportsIndicadorMontoGravado && hasGravado ? '0' : undefined);
+
     const ecfPayload = {
       ncfType,
       eNcf: ncfNumber,
@@ -265,6 +282,7 @@ export class InvoicingService {
       codigoModificacion: options?.codigoModificacion,
       razonModificacion: options?.razonModificacion,
       indicadorNotaCredito: options?.indicadorNotaCredito,
+      indicadorMontoGravado: resolvedIndicadorMontoGravado,
       items: ecfItems,
       impuestosAdicionales: (() => {
         const list: Array<{ tipoImpuesto: string; tasa: number; monto: number }> = [];
