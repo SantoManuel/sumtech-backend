@@ -6,6 +6,8 @@ import { DgiiSignerService } from './dgii-signer.service';
 import { DgiiClientService } from './dgii-client.service';
 import { DgiiXsdValidatorService } from './dgii-xsd-validator.service';
 import { DgiiReceivedInvoice } from '../entities/dgii-received-invoice.entity';
+import { TenantConnectionManagerService } from '../../../common/tenancy/tenant-connection-manager.service';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 
 describe('DgiiB2bService', () => {
   let service: DgiiB2bService;
@@ -14,6 +16,8 @@ describe('DgiiB2bService', () => {
   let signerService: any;
   let dgiiClient: any;
   let xsdValidator: DgiiXsdValidatorService;
+  let connectionManager: any;
+  let tenantContext: any;
 
   beforeEach(async () => {
     receivedInvoiceRepo = {
@@ -41,6 +45,22 @@ describe('DgiiB2bService', () => {
       }),
     };
 
+    connectionManager = {
+      resolveTenantByRnc: jest.fn().mockImplementation(async (rnc: string) => {
+        if (rnc === '131972004') {
+          return { id: 'tenant-isp-azua', slug: 'isp_azua', rnc: '131972004', dbName: 'tenant_isp_azua' };
+        }
+        return null;
+      }),
+      getDataSourceForTenant: jest.fn().mockResolvedValue({}),
+    };
+
+    tenantContext = {
+      run: jest.fn().mockImplementation((ctx, cb) => cb()),
+      getSlug: jest.fn().mockReturnValue('isp_azua'),
+      hasContext: jest.fn().mockReturnValue(true),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DgiiB2bService,
@@ -49,6 +69,8 @@ describe('DgiiB2bService', () => {
         { provide: getRepositoryToken(DgiiReceivedInvoice), useValue: receivedInvoiceRepo },
         { provide: DgiiSignerService, useValue: signerService },
         { provide: DgiiClientService, useValue: dgiiClient },
+        { provide: TenantConnectionManagerService, useValue: connectionManager },
+        { provide: TenantContextService, useValue: tenantContext },
       ],
     }).compile();
 
@@ -148,5 +170,86 @@ describe('DgiiB2bService', () => {
     expect(respXml).toContain('<RespuestaAprobacionComercial');
     expect(respXml).toContain('<eNCF>E310000000099</eNCF>');
     expect(respXml).toContain('<Estado>0</Estado>');
+  });
+
+  it('debe conmutar dinámicamente al contexto del tenant receptor según RNCComprador y firmar con su certificado', async () => {
+    dgiiClient.getConfig.mockReturnValueOnce({
+      environment: 'certecf',
+      rncEmisor: '131972004',
+      razonSocialEmisor: 'ISP AZUA S.R.L.',
+      certPath: './certs/tenant_131972004.p12',
+      certPassword: 'tenant_cert_pass',
+    });
+
+    const ecfMultiTenantXml = `<?xml version="1.0" encoding="utf-8"?>
+<ECF>
+  <Encabezado>
+    <Version>1.0</Version>
+    <IdDoc>
+      <TipoeCF>31</TipoeCF>
+      <eNCF>E310000000777</eNCF>
+    </IdDoc>
+    <Emisor>
+      <RNCEmisor>131880681</RNCEmisor>
+      <RazonSocialEmisor>PROVEEDOR FIBRA OPTICA SRL</RazonSocialEmisor>
+    </Emisor>
+    <Comprador>
+      <RNCComprador>131972004</RNCComprador>
+    </Comprador>
+    <Totales>
+      <MontoTotal>50000.00</MontoTotal>
+      <MontoExento>0.00</MontoExento>
+      <TotalITBIS>9000.00</TotalITBIS>
+    </Totales>
+  </Encabezado>
+</ECF>`;
+
+    const arecfSigned = await service.procesarEcfRecibido(ecfMultiTenantXml);
+
+    expect(connectionManager.resolveTenantByRnc).toHaveBeenCalledWith('131972004');
+    expect(tenantContext.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 'tenant-isp-azua',
+        slug: 'isp_azua',
+      }),
+      expect.any(Function),
+    );
+    expect(signerService.signXml).toHaveBeenCalledWith(
+      expect.any(String),
+      './certs/tenant_131972004.p12',
+      'tenant_cert_pass',
+    );
+    expect(arecfSigned).toContain('<RNCComprador>131972004</RNCComprador>');
+    expect(arecfSigned).toContain('<eNCF>E310000000777</eNCF>');
+    expect(receivedInvoiceRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rncComprador: '131972004',
+        eNcf: 'E310000000777',
+      }),
+    );
+  });
+
+  it('debe conmutar dinámicamente al tenant receptor al recibir ACECF comercial con RNCComprador específico', async () => {
+    const acecfXml = `<?xml version="1.0" encoding="utf-8"?>
+<ACECF>
+  <DetalleAprobacionComercial>
+    <Version>1.0</Version>
+    <RNCEmisor>131880681</RNCEmisor>
+    <RNCComprador>131972004</RNCComprador>
+    <eNCF>E310000000777</eNCF>
+    <EstadoAprobacion>1</EstadoAprobacion>
+  </DetalleAprobacionComercial>
+</ACECF>`;
+
+    await service.procesarAcecfRecibido(acecfXml);
+
+    expect(connectionManager.resolveTenantByRnc).toHaveBeenCalledWith('131972004');
+    expect(tenantContext.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 'tenant-isp-azua',
+        slug: 'isp_azua',
+      }),
+      expect.any(Function),
+    );
   });
 });

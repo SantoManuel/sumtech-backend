@@ -1,7 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { TENANT_DATA_SOURCE } from '../../common/tenancy/tenant-datasource.provider';
+import { TenantContextService } from '../../common/tenancy/tenant-context.service';
+import { TenantConnectionManagerService } from '../../common/tenancy/tenant-connection-manager.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MinioStorageService } from '../storage/minio-storage.service';
 import { CompanyProfileEntity } from './entities/company-profile.entity';
@@ -55,6 +57,8 @@ export class CompanyService {
     @Inject(TENANT_DATA_SOURCE) private readonly dataSource: DataSource,
     private readonly eventEmitter: EventEmitter2,
     private readonly minioStorage: MinioStorageService,
+    @Optional() private readonly connectionManager?: TenantConnectionManagerService,
+    @Optional() private readonly tenantContext?: TenantContextService,
   ) {}
 
   /**
@@ -118,13 +122,23 @@ export class CompanyService {
       delete patch.dgiiCertPassword;
     }
 
-    return await this.dataSource.transaction(async (manager) => {
+    const saved = await this.dataSource.transaction(async (manager) => {
       const repo = manager.getRepository(CompanyProfileEntity);
       Object.assign(profile, patch);
-      const saved = await repo.save(profile);
-      this.eventEmitter.emit('company.profile.updated', { profileId: saved.id });
-      return saved;
+      const res = await repo.save(profile);
+      this.eventEmitter.emit('company.profile.updated', { profileId: res.id });
+      return res;
     });
+
+    if (patch.rnc && this.connectionManager && this.tenantContext?.hasContext()) {
+      try {
+        await this.connectionManager.syncTenantRnc(this.tenantContext.getSlug(), patch.rnc);
+      } catch (syncErr: any) {
+        this.logger.warn(`No se pudo sincronizar RNC con platform.tenants: ${syncErr.message}`);
+      }
+    }
+
+    return saved;
   }
 
   /**

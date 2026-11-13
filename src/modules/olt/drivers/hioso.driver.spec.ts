@@ -42,6 +42,11 @@ describe('HiosoDriver', () => {
       trafficDiscovery: false,
       downstreamTrafficProfile: false,
       onuTypeProfileProvisioning: false,
+      onuReboot: false,
+      onuFactoryReset: false,
+      batchTr069AcsUpdate: false,
+      onuInfoUpdate: false,
+      onuTypeDiscovery: false,
     });
   });
 

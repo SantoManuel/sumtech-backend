@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as xml2js from 'xml2js';
@@ -8,6 +8,8 @@ import { DgiiXmlGeneratorService, ArecfGenerationInput } from './dgii-xml-genera
 import { DgiiSignerService } from './dgii-signer.service';
 import { DgiiClientService } from './dgii-client.service';
 import { DgiiXsdValidatorService } from './dgii-xsd-validator.service';
+import { TenantConnectionManagerService } from '../../../common/tenancy/tenant-connection-manager.service';
+import { TenantContextService } from '../../../common/tenancy/tenant-context.service';
 
 @Injectable()
 export class DgiiB2bService {
@@ -20,6 +22,8 @@ export class DgiiB2bService {
     private readonly signerService: DgiiSignerService,
     private readonly dgiiClient: DgiiClientService,
     private readonly xsdValidator: DgiiXsdValidatorService,
+    @Optional() private readonly connectionManager?: TenantConnectionManagerService,
+    @Optional() private readonly tenantContext?: TenantContextService,
   ) {}
 
   /**
@@ -67,13 +71,13 @@ export class DgiiB2bService {
 
   /**
    * Procesa la recepción B2B de un e-CF enviado por un proveedor o la DGII
-   * Valida la estructura, persiste en PostgreSQL, firma el ARECF y lo entrega sincrónicamente
+   * Valida la estructura, conmuta dinámicamente al contexto del tenant receptor (RNCComprador),
+   * firma el ARECF con el certificado del tenant correspondiente y persiste en su base de datos.
    */
   async procesarEcfRecibido(xmlRawContent: string): Promise<string> {
-    const config = await this.dgiiClient.getConfig();
     let rncEmisor = '131880681';
     let razonSocialEmisor = 'PROVEEDOR B2B S.R.L.';
-    let rncComprador = config.rncEmisor || '131000000';
+    let rncComprador = '';
     let encf = 'E310000000001';
     let tipoEcf = '31';
     let montoTotal = 0;
@@ -112,65 +116,102 @@ export class DgiiB2bService {
       motivoRechazo = 'Estructura XML de comprobante no válida: ' + err.message;
     }
 
-    // 1. Construir XML ARECF sin firmar
-    const arecfInput: ArecfGenerationInput = {
-      rncEmisor,
-      rncComprador,
-      eNcf: encf,
-      estadoRespuesta,
-      codigoMotivoNoRecibido: estadoRespuesta === 1 ? 1 : undefined,
-      fechaEmision: new Date(),
+    // Fallback con regex por si el XML no pudo ser parseado o tenía estructura atípica
+    if (!rncComprador) {
+      const matchRnc = xmlRawContent.match(/<RNCComprador>([^<]+)<\/RNCComprador>/i);
+      if (matchRnc) {
+        rncComprador = matchRnc[1].trim();
+      }
+    }
+
+    const ejecutarProcesamiento = async (): Promise<string> => {
+      const config = await this.dgiiClient.getConfig();
+      const finalRncComprador = rncComprador || config.rncEmisor || '131000000';
+
+      // 1. Construir XML ARECF sin firmar
+      const arecfInput: ArecfGenerationInput = {
+        rncEmisor,
+        rncComprador: finalRncComprador,
+        eNcf: encf,
+        estadoRespuesta,
+        codigoMotivoNoRecibido: estadoRespuesta === 1 ? 1 : undefined,
+        fechaEmision: new Date(),
+      };
+
+      const xmlArecfUnsigned = this.xmlGenerator.generateArecfXml(arecfInput);
+
+      // 2. Firmar XML ARECF con certificado .p12 del tenant activo
+      let xmlArecfSigned = xmlArecfUnsigned;
+      try {
+        const signResult = this.signerService.signXml(
+          xmlArecfUnsigned,
+          config.certPath,
+          config.certPassword || '',
+        );
+        xmlArecfSigned = signResult.signedXml;
+      } catch (signErr: any) {
+        this.logger.warn(`No se pudo firmar ARECF con certPath (${config.certPath}): ${signErr.message}`);
+      }
+
+      // Validación contra el XSD oficial (arecf.xsd)
+      const arecfValidation = this.xsdValidator.validateArecf(xmlArecfSigned);
+      if (!arecfValidation.valid) {
+        this.logger.error(`ARECF generado para ${encf} NO pasa la validación XSD oficial: ${arecfValidation.errors.join(' | ')}`);
+      }
+
+      // 3. Persistir en la base de datos PostgreSQL del tenant activo
+      try {
+        const invoice = this.receivedInvoiceRepo.create({
+          rncEmisor,
+          razonSocialEmisor,
+          rncComprador: finalRncComprador,
+          eNcf: encf,
+          tipoEcf,
+          montoTotal,
+          montoExento,
+          totalItbis,
+          estadoAcuse: estadoRespuesta,
+          motivoRechazo,
+          estadoAprobacionComercial: 0, // Pendiente
+          xmlOriginal: xmlRawContent,
+          xmlSignedArecf: xmlArecfSigned,
+        });
+
+        await this.receivedInvoiceRepo.save(invoice);
+        const activeSlug = this.tenantContext?.hasContext() ? this.tenantContext.getSlug() : 'ambient';
+        this.logger.log(`Factura B2B ${encf} guardada exitosamente en PostgreSQL (Tenant: ${activeSlug})`);
+      } catch (dbErr: any) {
+        this.logger.error(`Error guardando factura B2B en base de datos: ${dbErr.message}`);
+      }
+
+      return xmlArecfSigned;
     };
 
-    const xmlArecfUnsigned = this.xmlGenerator.generateArecfXml(arecfInput);
-
-    // 2. Firmar XML ARECF con certificado .p12
-    let xmlArecfSigned = xmlArecfUnsigned;
-    try {
-      const signResult = this.signerService.signXml(
-        xmlArecfUnsigned,
-        config.certPath,
-        config.certPassword || '',
-      );
-      xmlArecfSigned = signResult.signedXml;
-    } catch (signErr: any) {
-      this.logger.warn(`No se pudo firmar ARECF con certPath (${config.certPath}): ${signErr.message}`);
+    // Si hay un RNCComprador identificado y servicios de tenancy, conmutar al tenant receptor
+    if (rncComprador && this.connectionManager && this.tenantContext) {
+      try {
+        const targetTenant = await this.connectionManager.resolveTenantByRnc(rncComprador);
+        if (targetTenant) {
+          this.logger.log(`Tenant '${targetTenant.slug}' resuelto para RNCComprador '${rncComprador}'. Conmutando contexto...`);
+          const ds = await this.connectionManager.getDataSourceForTenant(targetTenant);
+          return await this.tenantContext.run(
+            {
+              tenantId: targetTenant.id,
+              slug: targetTenant.slug,
+              dataSource: ds,
+              planFeatures: {},
+            },
+            ejecutarProcesamiento,
+          );
+        } else {
+          this.logger.warn(`No se encontró tenant para RNCComprador '${rncComprador}'. Continuando en contexto actual.`);
+        }
+      } catch (tenancyErr: any) {
+        this.logger.error(`Error conmutando contexto para RNCComprador '${rncComprador}': ${tenancyErr.message}`);
+      }
     }
 
-    // Validación contra el XSD oficial (arecf.xsd) — solo se loguea, nunca
-    // bloquea la respuesta síncrona a la DGII, pero deja evidencia inmediata
-    // en logs si el generador vuelve a desviarse del esquema real (como pasó
-    // con la estructura <Header>/<EstadoRespuesta> previa a esta corrección).
-    const arecfValidation = this.xsdValidator.validateArecf(xmlArecfSigned);
-    if (!arecfValidation.valid) {
-      this.logger.error(`ARECF generado para ${encf} NO pasa la validación XSD oficial: ${arecfValidation.errors.join(' | ')}`);
-    }
-
-    // 3. Persistir en la base de datos PostgreSQL
-    try {
-      const invoice = this.receivedInvoiceRepo.create({
-        rncEmisor,
-        razonSocialEmisor,
-        rncComprador,
-        eNcf: encf,
-        tipoEcf,
-        montoTotal,
-        montoExento,
-        totalItbis,
-        estadoAcuse: estadoRespuesta,
-        motivoRechazo,
-        estadoAprobacionComercial: 0, // Pendiente
-        xmlOriginal: xmlRawContent,
-        xmlSignedArecf: xmlArecfSigned,
-      });
-
-      await this.receivedInvoiceRepo.save(invoice);
-      this.logger.log(`Factura B2B ${encf} guardada exitosamente en PostgreSQL`);
-    } catch (dbErr: any) {
-      this.logger.error(`Error guardando factura B2B en base de datos: ${dbErr.message}`);
-    }
-
-    return xmlArecfSigned;
+    return await ejecutarProcesamiento();
   }
 
   /**
@@ -196,15 +237,53 @@ export class DgiiB2bService {
       estadoAprobacion = parseInt(detalle.EstadoAprobacion || detalle.estadoaprobacion || '1', 10);
 
       this.logger.log(`ACECF recibido para ${encf}: Estado ${estadoAprobacion === 1 ? 'Aprobado' : 'Rechazado'}`);
-
-      // Actualizar estado en base de datos si existe la factura
-      const inv = await this.receivedInvoiceRepo.findOne({ where: { eNcf: encf } });
-      if (inv) {
-        inv.estadoAprobacionComercial = estadoAprobacion;
-        await this.receivedInvoiceRepo.save(inv);
-      }
     } catch (parseErr: any) {
       this.logger.error(`Error parseando ACECF: ${parseErr.message}`);
+    }
+
+    if (!rncComprador) {
+      const matchRnc = xmlRawContent.match(/<RNCComprador>([^<]+)<\/RNCComprador>/i);
+      if (matchRnc) {
+        rncComprador = matchRnc[1].trim();
+      }
+    }
+
+    const ejecutarActualizacion = async () => {
+      // Actualizar estado en base de datos si existe la factura
+      try {
+        const inv = await this.receivedInvoiceRepo.findOne({ where: { eNcf: encf } });
+        if (inv) {
+          inv.estadoAprobacionComercial = estadoAprobacion;
+          await this.receivedInvoiceRepo.save(inv);
+        }
+      } catch (dbErr: any) {
+        this.logger.error(`Error actualizando ACECF en base de datos: ${dbErr.message}`);
+      }
+    };
+
+    if (rncComprador && this.connectionManager && this.tenantContext) {
+      try {
+        const targetTenant = await this.connectionManager.resolveTenantByRnc(rncComprador);
+        if (targetTenant) {
+          const ds = await this.connectionManager.getDataSourceForTenant(targetTenant);
+          await this.tenantContext.run(
+            {
+              tenantId: targetTenant.id,
+              slug: targetTenant.slug,
+              dataSource: ds,
+              planFeatures: {},
+            },
+            ejecutarActualizacion,
+          );
+        } else {
+          await ejecutarActualizacion();
+        }
+      } catch (tenancyErr: any) {
+        this.logger.error(`Error conmutando contexto para ACECF de RNC '${rncComprador}': ${tenancyErr.message}`);
+        await ejecutarActualizacion();
+      }
+    } else {
+      await ejecutarActualizacion();
     }
 
     return `<?xml version="1.0" encoding="utf-8"?>
