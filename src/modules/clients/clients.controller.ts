@@ -37,7 +37,7 @@ export class ClientsController {
   // Debe declararse antes de ':id' — de lo contrario Nest interpretaría
   // "contracts" como el parámetro :id del handler findById.
   @Get('contracts')
-  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.AGENTE_CRM)
+  @Roles(Role.ADMIN, Role.GERENTE, Role.CAJERO, Role.AGENTE_CRM, Role.TECNICO)
   async findAllContracts(@Query() dto: FindContractsDto) {
     return this.clientsService.findAllContracts(dto);
   }
