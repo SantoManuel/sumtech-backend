@@ -653,7 +653,9 @@ export class OnuManagementService {
 
     const onuTarget = this.buildOnuTarget(onu);
 
-    const power = await this.callDriver(() => driver.getOnuOpticalPower(connParams, onuTarget));
+    const power = await this.callDriver(() =>
+      withOltTelnetLock(onu.olt.id, () => driver.getOnuOpticalPower(connParams, onuTarget)),
+    );
 
     if (power.rxDbm !== undefined) {
       onu.rxPowerDbm = power.rxDbm;
@@ -698,11 +700,15 @@ export class OnuManagementService {
       attenuationDb: power.attenuationDb,
       lastSeenAt: onu.lastSeenAt,
       signalStatus:
-        onu.rxPowerDbm && onu.rxPowerDbm < -27
+        onu.rxPowerDbm == null
+          ? 'OFFLINE'
+          : onu.rxPowerDbm < -27
           ? 'CRITICAL_LOW'
-          : onu.rxPowerDbm && onu.rxPowerDbm < -24
+          : onu.rxPowerDbm < -24
           ? 'WARNING'
           : 'OPTIMAL',
+      raw: power.raw,
+      isOnline: power.rxDbm !== undefined,
     };
   }
 

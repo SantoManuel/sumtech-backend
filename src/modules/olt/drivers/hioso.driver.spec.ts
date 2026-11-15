@@ -178,10 +178,15 @@ describe('HiosoDriver', () => {
     ).rejects.toThrow(DriverNotImplementedError);
   });
 
-  it('parsea la potencia óptica real de un ONU online (incluye RxPower, verificado con hardware real)', async () => {
+  it('parsea la potencia óptica real de un ONU online y calcula la atenuación con el SFP OLT', async () => {
     const onlineOut = fixture('show_onu_optical-ddm_online.txt');
+    const sfpOut = fixture('show_epon_optical-ddm.txt');
 
-    const executeCommand = jest.fn().mockResolvedValue(onlineOut);
+    const executeCommand = jest.fn().mockImplementation((cmd: string) => {
+      if (cmd.includes('show onu optical-ddm')) return Promise.resolve(onlineOut);
+      if (cmd.includes('show epon 1/1 optical-ddm')) return Promise.resolve(sfpOut);
+      return Promise.resolve('');
+    });
     jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
       connectAndLogin: jest.fn().mockResolvedValue(undefined),
       executeCommand,
@@ -194,9 +199,11 @@ describe('HiosoDriver', () => {
     );
 
     expect(executeCommand).toHaveBeenCalledWith('show onu optical-ddm epon 1/1 2');
+    expect(executeCommand).toHaveBeenCalledWith('show epon 1/1 optical-ddm');
     expect(result.rxDbm).toBe(-4.43);
     expect(result.txDbm).toBe(2.32);
     expect(result.downRxDbm).toBe(-4.43);
+    expect(result.attenuationDb).toBe(15.45);
   });
 
   it('getOnuOpticalPower() no inventa valores cuando el ONU está offline/invalid', async () => {

@@ -528,10 +528,26 @@ export class HiosoDriver implements IOltDriver {
       const rxDbm = rxMatch ? parseFloat(rxMatch[1]) : undefined;
       const txDbm = txMatch ? parseFloat(txMatch[1]) : undefined;
 
+      let attenuationDb: number | undefined;
+      if (rxDbm !== undefined) {
+        try {
+          const sfpOutput = await session.executeCommand(`show epon ${iface} optical-ddm`);
+          const sfpTxMatch = sfpOutput.match(/TxPower\s*:\s*([-\d.]+)\s*dBm/i);
+          if (sfpTxMatch) {
+            const sfpTx = parseFloat(sfpTxMatch[1]);
+            // Atenuación = OLT TxPower - ONU RxPower
+            attenuationDb = +(sfpTx - rxDbm).toFixed(2);
+          }
+        } catch {
+          // Mejor esfuerzo para la lectura del SFP de la OLT
+        }
+      }
+
       return {
         rxDbm,
         txDbm,
         downRxDbm: rxDbm,
+        attenuationDb,
         raw: output.slice(0, 300),
       };
     } finally {

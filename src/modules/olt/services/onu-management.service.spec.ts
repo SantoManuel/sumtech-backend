@@ -675,6 +675,25 @@ describe('OnuManagementService', () => {
 
       expect(telemetry.signalStatus).toBe('CRITICAL_LOW');
     });
+
+    it('clasifica como OFFLINE y devuelve raw cuando la OLT no reporta lectura óptica (ONU offline)', async () => {
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        rxPowerDbm: null,
+        txPowerDbm: null,
+      });
+      zteDriver.getOnuOpticalPower.mockResolvedValue({
+        rxDbm: undefined,
+        txDbm: undefined,
+        raw: '! Onu 1 is offline!',
+      });
+
+      const telemetry = await service.getOpticalTelemetry('onu-uuid-1');
+
+      expect(telemetry.signalStatus).toBe('OFFLINE');
+      expect(telemetry.isOnline).toBe(false);
+      expect(telemetry.raw).toBe('! Onu 1 is offline!');
+    });
   });
 
   describe('getOnuRunningConfig', () => {
