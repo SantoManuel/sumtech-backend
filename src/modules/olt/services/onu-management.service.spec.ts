@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException, BadRequestException, HttpException } from '@nestjs/common';
+import { NotFoundException, BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
 import { OnuWanProvisioningService } from './onu-wan-provisioning.service';
 import { OnuManagementService } from './onu-management.service';
 import { OltPartialOperationService } from './olt-partial-operation.service';
@@ -725,6 +725,21 @@ describe('OnuManagementService', () => {
       await expect(service.getOnuRunningConfig('onu-uuid-1')).rejects.toThrow(
         BadRequestException,
       );
+    });
+
+    it('traduce DriverNotImplementedError a HttpException(501) en vez de un 500 no controlado', async () => {
+      onuRepo.findOne.mockResolvedValue({
+        ...mockOnu,
+        status: 'ACTIVE',
+        onuIndex: '43',
+        ponInterface: { id: 'iface-14', name: 'gpon-olt_1/2/14' },
+      });
+      const driverWithoutMethod = { ...zteDriver, getOnuRunningConfig: undefined };
+      driverRegistry.resolve.mockReturnValueOnce(driverWithoutMethod as any);
+
+      await expect(service.getOnuRunningConfig('onu-uuid-1')).rejects.toMatchObject({
+        status: HttpStatus.NOT_IMPLEMENTED,
+      });
     });
   });
 
@@ -2641,6 +2656,40 @@ describe('OnuManagementService', () => {
       expect(res.occupiedIds).toEqual([1, 2, 3]);
       expect(res.nextFreeOnuId).toBe(4);
       expect(res.ponInterface).toBe('epon 1/1');
+    });
+
+    it('getOnuRunningConfig() consulta con formato "epon 1/1:2" para ONU EPON', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockEponOnu });
+      zteDriver.getOnuRunningConfig.mockResolvedValue({
+        name: 'zone_Azua_authd_20261115',
+        servicePorts: [{ id: 1, vport: 1, userVlan: 100, vlan: 100 }],
+      });
+
+      const res = await service.getOnuRunningConfig('onu-epon-1');
+
+      expect(zteDriver.getOnuRunningConfig).toHaveBeenCalledWith(
+        expect.anything(),
+        'epon 1/1:2',
+      );
+      expect(res.name).toBe('zone_Azua_authd_20261115');
+      expect(res.onuInterface).toBe('epon 1/1:2');
+    });
+
+    it('updateOnuOltInfo() actualiza con formato "epon 1/1:2" para ONU EPON', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockEponOnu });
+      zteDriver.updateOnuOltInfo.mockResolvedValue({ ok: true });
+      zteDriver.getOnuRunningConfig.mockResolvedValue({
+        name: 'Nuevo_Nombre',
+      });
+
+      const res = await service.updateOnuOltInfo('onu-epon-1', { name: 'Nuevo_Nombre' });
+
+      expect(zteDriver.updateOnuOltInfo).toHaveBeenCalledWith(
+        expect.anything(),
+        'epon 1/1:2',
+        { name: 'Nuevo_Nombre' },
+      );
+      expect(res.name).toBe('Nuevo_Nombre');
     });
   });
 });

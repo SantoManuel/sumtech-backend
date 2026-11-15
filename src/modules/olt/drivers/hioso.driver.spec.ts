@@ -45,7 +45,7 @@ describe('HiosoDriver', () => {
       onuReboot: true,
       onuFactoryReset: true,
       batchTr069AcsUpdate: false,
-      onuInfoUpdate: false,
+      onuInfoUpdate: true,
       onuTypeDiscovery: true,
     });
   });
@@ -730,5 +730,120 @@ describe('HiosoDriver', () => {
 
     const onuLinkup = alarms.find((a) => a.description.includes('linkup') && a.description.includes('04:B0:E7:D3:09:A6'));
     expect(onuLinkup?.target).toBe('ONU 1/1:1');
+  });
+
+  describe('getOnuRunningConfig', () => {
+    it('parsea show onu config con la evidencia real de fixture paginado (puertos LAN y VLANs)', async () => {
+      const configOut = fixture('show_onu_config_paginated.txt');
+      const executeCommand = jest.fn().mockResolvedValue(configOut);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.getOnuRunningConfig(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+        'epon 1/1:1',
+      );
+
+      expect(executeCommand).toHaveBeenCalledWith('show onu config epon 1/1 1');
+      expect(result.raw).toBe(configOut);
+      expect(result.servicePorts).toEqual([
+        { id: 1, vport: 1, userVlan: 400, vlan: 400 },
+        { id: 2, vport: 2, userVlan: 400, vlan: 400 },
+      ]);
+      expect(result.name).toBeUndefined();
+    });
+
+    it('extrae el name de la ONU cuando viene configurado en la salida', async () => {
+      const configWithName = `! Onu 1/1:1 configuration\n   onu 1 name zone_Azua-Centro_authd_20261115\n   onu 1 vlan port 1 vlan-mode tag pvid 100\n`;
+      const executeCommand = jest.fn().mockResolvedValue(configWithName);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.getOnuRunningConfig(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+        'epon 1/1:1',
+      );
+
+      expect(result.name).toBe('zone_Azua-Centro_authd_20261115');
+      expect(result.servicePorts).toEqual([
+        { id: 1, vport: 1, userVlan: 100, vlan: 100 },
+      ]);
+    });
+
+    it('maneja una ONU sin VLANs configuradas (fixture unprovisioned)', async () => {
+      const configOut = fixture('show_onu_config_unprovisioned.txt');
+      const executeCommand = jest.fn().mockResolvedValue(configOut);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.getOnuRunningConfig(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+        'epon 1/1:2',
+      );
+
+      expect(executeCommand).toHaveBeenCalledWith('show onu config epon 1/1 2');
+      expect(result.servicePorts).toBeUndefined();
+      expect(result.name).toBeUndefined();
+    });
+  });
+
+  describe('updateOnuOltInfo', () => {
+    it('ejecuta "onu <id> name <str>" dentro de la interfaz PON correspondiente y guarda con write', async () => {
+      const commandsExecuted: string[] = [];
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand: jest.fn().mockImplementation((cmd: string) => {
+          commandsExecuted.push(cmd);
+          return Promise.resolve('');
+        }),
+        close: jest.fn(),
+      });
+
+      const result = await driver.updateOnuOltInfo(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+        'epon 1/1:1',
+        { name: 'Cliente_Prueba' },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(commandsExecuted).toEqual([
+        'configure terminal',
+        'interface epon 1/1',
+        'onu 1 name Cliente_Prueba',
+        'exit',
+        'exit',
+        'write',
+      ]);
+    });
+
+    it('si no se pasa name, responde ok:true sin enviar comandos al equipo', async () => {
+      const commandsExecuted: string[] = [];
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand: jest.fn().mockImplementation((cmd: string) => {
+          commandsExecuted.push(cmd);
+          return Promise.resolve('');
+        }),
+        close: jest.fn(),
+      });
+
+      const result = await driver.updateOnuOltInfo(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+        'epon 1/1:1',
+        { description: 'solo descripcion sin name' },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(commandsExecuted).toHaveLength(0);
+    });
   });
 });

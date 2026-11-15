@@ -12,6 +12,7 @@ import {
   DiscoveredOnuType,
   OnuOpticalPower,
   AuthorizeOnuParams,
+  OnuRunningConfigResult,
   OltDriverCapabilities,
   NO_DRIVER_CAPABILITIES,
   DriverNotImplementedError,
@@ -785,6 +786,67 @@ export class HiosoDriver implements IOltDriver {
   }
 
   /**
+   * Consulta la configuración activa de la ONU en la OLT ("show onu config epon <iface> <onuId>").
+   * Sintaxis real confirmada en test/fixtures/hioso/cli_command_tree.txt y show_onu_config_paginated.txt.
+   */
+  async getOnuRunningConfig(params: OltConnectionParams, onuInterface: string): Promise<OnuRunningConfigResult> {
+    const { iface, onuId } = this.parseOnuTarget(onuInterface);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const raw = await session.executeCommand(`show onu config epon ${iface} ${onuId}`);
+
+      const servicePorts: Array<{ id: number; vport: number; userVlan: number; vlan: number }> = [];
+      const vlanMatches = raw.matchAll(/onu\s+\d+\s+vlan\s+port\s+(\d+)\s+vlan-mode\s+\w+\s+pvid\s+(\d+)/gi);
+      for (const m of vlanMatches) {
+        const port = parseInt(m[1], 10);
+        const vlan = parseInt(m[2], 10);
+        servicePorts.push({ id: port, vport: port, userVlan: vlan, vlan });
+      }
+
+      const nameMatch = raw.match(/onu\s+\d+\s+name\s+(\S+)/i);
+      const name = nameMatch ? nameMatch[1].trim() : undefined;
+
+      return {
+        name,
+        raw,
+        servicePorts: servicePorts.length > 0 ? servicePorts : undefined,
+      };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * Actualiza el nombre de la ONU en la interfaz EPON ("onu <id> name <str>").
+   * HiOSO no soporta "description" por ONU en CLI (solo name), pero acepta
+   * guardar el name si se envía.
+   */
+  async updateOnuOltInfo(
+    params: OltConnectionParams,
+    onuInterface: string,
+    info: { name?: string; description?: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!info.name) return { ok: true };
+    const { iface, onuId } = this.parseOnuTarget(onuInterface);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await session.executeCommand('configure terminal');
+      await session.executeCommand(`interface epon ${iface}`);
+      await session.executeCommand(`onu ${onuId} name ${info.name.trim()}`);
+      await session.executeCommand('exit');
+      await session.executeCommand('exit');
+      await session.executeCommand('write');
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
    * "add onu <1-128> <MAC> <ONU-TYPE>" + "onu <id> vlan port <1-4> vlan-mode
    * tag pvid <vlan>" — ambos con sintaxis confirmada contra hardware real
    * (ver cli_command_tree.txt notas 12 y la sintaxis de VLAN ya verificada
@@ -933,6 +995,7 @@ export class HiosoDriver implements IOltDriver {
       onuFactoryReset: true,
       interfaceAdminState: true,
       alarms: true,
+      onuInfoUpdate: true,
     };
   }
 

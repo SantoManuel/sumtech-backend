@@ -723,16 +723,17 @@ export class OnuManagementService {
     }
 
     const driver = this.resolveDriver(onu.olt);
-    if (!driver.getOnuRunningConfig) {
-      throw new DriverNotImplementedError(onu.olt.vendor, 'getOnuRunningConfig');
-    }
-
     const connParams = await this.connectionResolver.resolve(onu.olt);
     const onuTarget = this.buildOnuTarget(onu);
 
-    const result = await withOltTelnetLock(onu.olt.id, () =>
-      driver.getOnuRunningConfig!(connParams, onuTarget),
-    );
+    const result = await this.callDriver(async () => {
+      if (!driver.getOnuRunningConfig) {
+        throw new DriverNotImplementedError(onu.olt.vendor, 'getOnuRunningConfig');
+      }
+      return withOltTelnetLock(onu.olt.id, () =>
+        driver.getOnuRunningConfig!(connParams, onuTarget),
+      );
+    });
 
     if ((result.name && result.name !== onu.name) || (result.description && result.description !== onu.description)) {
       await this.onuRepository.update(onu.id, {
@@ -767,16 +768,17 @@ export class OnuManagementService {
     }
 
     const driver = this.resolveDriver(onu.olt);
-    if (!driver.updateOnuOltInfo) {
-      throw new DriverNotImplementedError(onu.olt.vendor, 'updateOnuOltInfo');
-    }
-
     const connParams = await this.connectionResolver.resolve(onu.olt);
     const onuTarget = this.buildOnuTarget(onu);
 
-    const result = await withOltTelnetLock(onu.olt.id, () =>
-      driver.updateOnuOltInfo!(connParams, onuTarget, dto),
-    );
+    const result = await this.callDriver(async () => {
+      if (!driver.updateOnuOltInfo) {
+        throw new DriverNotImplementedError(onu.olt.vendor, 'updateOnuOltInfo');
+      }
+      return withOltTelnetLock(onu.olt.id, () =>
+        driver.updateOnuOltInfo!(connParams, onuTarget, dto),
+      );
+    });
 
     if (!result.ok) {
       throw new BadRequestException(`No se pudo actualizar la ONU en la OLT: ${result.error}`);
