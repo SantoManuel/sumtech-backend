@@ -2549,4 +2549,98 @@ describe('OnuManagementService', () => {
       expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
     });
   });
+
+  describe('EPON ONU support (HiOSO/EPON)', () => {
+    const mockHiosoOlt: Partial<OltEntity> = {
+      id: 'olt-hioso-1',
+      name: 'OLT-Azua_ (HIOSO)',
+      vendor: 'HIOSO',
+      model: 'HAT7304VXD-ADC',
+      host: '10.0.0.20',
+      port: 23,
+      username: 'admin',
+      passwordEnc: 'enc-pass',
+    };
+
+    const mockEponOnu: Partial<OnuEntity> = {
+      id: 'onu-epon-1',
+      oltId: 'olt-hioso-1',
+      onuIndex: 'epon 1/1:2',
+      serialNumber: '04:b0:e7:d3:09:a6',
+      vendor: 'HiOSO',
+      status: 'ACTIVE',
+      olt: mockHiosoOlt as OltEntity,
+      ponInterface: { id: 'iface-epon-1', name: 'epon 1/1' } as any,
+    };
+
+    it('buildOnuTarget() conserva "epon 1/1:2" y no inyecta prefijo ficticio GPON al bloquear/reactivar', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockEponOnu });
+      zteDriver.setOnuAdminState.mockResolvedValue({ ok: true });
+
+      await service.blockOnu('onu-epon-1', 'admin-id');
+
+      expect(zteDriver.setOnuAdminState).toHaveBeenCalledWith(
+        expect.anything(),
+        'epon 1/1:2',
+        'BLOCKED',
+      );
+    });
+
+    it('buildOnuTarget() maneja onuIndex numérico suelto con interfaz EPON generando "epon 1/1:2"', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockEponOnu, onuIndex: '2' });
+      zteDriver.setOnuAdminState.mockResolvedValue({ ok: true });
+
+      await service.unblockOnu('onu-epon-1', 'admin-id');
+
+      expect(zteDriver.setOnuAdminState).toHaveBeenCalledWith(
+        expect.anything(),
+        'epon 1/1:2',
+        'ACTIVE',
+      );
+    });
+
+    it('resolveOnuLocation() acepta interfaz EPON con espacio "epon 1/1" al autorizar/eliminar', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockEponOnu });
+      zteDriver.deleteOnu.mockResolvedValue({ ok: true });
+
+      const res = await service.deleteOnu('onu-epon-1', 'admin-id');
+
+      expect(res.success).toBe(true);
+      expect(zteDriver.deleteOnu).toHaveBeenCalledWith(
+        expect.anything(),
+        'epon 1/1',
+        2,
+      );
+    });
+
+    it('rebootOnu() y factoryResetOnu() delegan al driver con la ubicación PON y ID correctos', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockEponOnu });
+      zteDriver.rebootOnu = jest.fn().mockResolvedValue({ ok: true });
+      zteDriver.factoryResetOnu = jest.fn().mockResolvedValue({ ok: true });
+
+      const rebootRes = await service.rebootOnu('onu-epon-1', 'admin-id');
+      expect(rebootRes.success).toBe(true);
+      expect(zteDriver.rebootOnu).toHaveBeenCalledWith(expect.anything(), 'epon 1/1', 2);
+
+      const resetRes = await service.factoryResetOnu('onu-epon-1', 'admin-id');
+      expect(resetRes.success).toBe(true);
+      expect(zteDriver.factoryResetOnu).toHaveBeenCalledWith(expect.anything(), 'epon 1/1', 2);
+    });
+
+    it('getAvailableOnuId() extrae IDs ocupados con formato EPON "epon 1/1:2" o numérico suelto', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockEponOnu, ponInterface: { name: 'epon 1/1' } });
+      ifaceRepo.findOneBy.mockResolvedValue({ id: 'iface-epon-1', name: 'epon 1/1' });
+      onuRepo.find.mockResolvedValue([
+        { onuIndex: 'epon 1/1:1' },
+        { onuIndex: '2' },
+        { onuIndex: 'epon 1/1:3' },
+      ]);
+
+      const res = await service.getAvailableOnuId('onu-epon-1');
+
+      expect(res.occupiedIds).toEqual([1, 2, 3]);
+      expect(res.nextFreeOnuId).toBe(4);
+      expect(res.ponInterface).toBe('epon 1/1');
+    });
+  });
 });

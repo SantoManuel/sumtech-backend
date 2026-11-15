@@ -9,6 +9,7 @@ import {
   DiscoveredInterface,
   ConfigureVlanParams,
   DiscoveredUncfgOnu,
+  DiscoveredOnuType,
   OnuOpticalPower,
   AuthorizeOnuParams,
   OltDriverCapabilities,
@@ -725,6 +726,65 @@ export class HiosoDriver implements IOltDriver {
   }
 
   /**
+   * "onu <id> reboot" dentro de la interfaz PON correspondiente (ver cli_command_tree.txt).
+   */
+  async rebootOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }> {
+    const slotPort = this.toBareSlotPort(ponInterface);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await session.executeCommand('configure terminal');
+      await session.executeCommand(`interface epon ${slotPort}`);
+      await session.executeCommand(`onu ${onuId} reboot`);
+      await session.executeCommand('exit');
+      await session.executeCommand('exit');
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * "onu <id> factory" dentro de la interfaz PON correspondiente (ver cli_command_tree.txt).
+   */
+  async factoryResetOnu(params: OltConnectionParams, ponInterface: string, onuId: number): Promise<{ ok: boolean; error?: string }> {
+    const slotPort = this.toBareSlotPort(ponInterface);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      await session.executeCommand('configure terminal');
+      await session.executeCommand(`interface epon ${slotPort}`);
+      await session.executeCommand(`onu ${onuId} factory`);
+      await session.executeCommand('exit');
+      await session.executeCommand('exit');
+
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * Catálogo de tipos de ONU confirmados para esta OLT EPON.
+   * HiOSO utiliza el identificador "onu-01g" en su gramática ("add onu <id> <mac> onu-01g")
+   * para ONUs EPON genéricas estándar (1 a 4 puertos LAN).
+   */
+  async getOnuTypes(params: OltConnectionParams): Promise<DiscoveredOnuType[]> {
+    return [
+      {
+        name: 'onu-01g',
+        ponType: 'epon',
+        description: 'ONU EPON Genérica (1-4 puertos LAN)',
+      },
+    ];
+  }
+
+  /**
    * "add onu <1-128> <MAC> <ONU-TYPE>" + "onu <id> vlan port <1-4> vlan-mode
    * tag pvid <vlan>" — ambos con sintaxis confirmada contra hardware real
    * (ver cli_command_tree.txt notas 12 y la sintaxis de VLAN ya verificada
@@ -868,6 +928,9 @@ export class HiosoDriver implements IOltDriver {
       onuAuthorize: true,
       onuAdminState: true,
       onuDelete: true,
+      onuTypeDiscovery: true,
+      onuReboot: true,
+      onuFactoryReset: true,
       interfaceAdminState: true,
       alarms: true,
     };

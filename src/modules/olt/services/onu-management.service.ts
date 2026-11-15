@@ -381,6 +381,10 @@ export class OnuManagementService {
       const match = onu.onuIndex.match(/^gpon-onu_(\d+\/\d+\/\d+)/);
       if (match) ponInterface = `gpon-olt_${match[1]}`;
     }
+    if (!ponInterface && onu.onuIndex && /^epon\s+\d+\/\d+/i.test(onu.onuIndex)) {
+      const match = onu.onuIndex.match(/^(epon\s+\d+\/\d+)/i);
+      if (match) ponInterface = match[1];
+    }
     if (!ponInterface) {
       throw new BadRequestException('No se pudo determinar el puerto PON de la ONU.');
     }
@@ -407,7 +411,7 @@ export class OnuManagementService {
 
     const occupied = new Set<number>();
     for (const o of activeOnus) {
-      const m = String(o.onuIndex).match(/:(\d+)$/);
+      const m = String(o.onuIndex).match(/(?:^|:)(\d+)$/);
       if (m) {
         const num = parseInt(m[1], 10);
         if (Number.isInteger(num)) occupied.add(num);
@@ -1372,7 +1376,7 @@ export class OnuManagementService {
       const assignedOnuId = (result as any)?.assignedOnuId ?? authParams.onuId;
       onu.onuIndex = authParams.ponInterface.startsWith('gpon-olt_')
         ? `${authParams.ponInterface.replace(/^gpon-olt_/, 'gpon-onu_')}:${assignedOnuId}`
-        : String(assignedOnuId);
+        : `${authParams.ponInterface}:${assignedOnuId}`;
     }
     onu.name = authParams.clientName || onu.name;
     onu.description = authParams.description || onu.description;
@@ -2610,16 +2614,28 @@ export class OnuManagementService {
    * driver para el script de autorización).
    */
   private buildOnuTarget(onu: OnuEntity): string {
-    if (onu.onuIndex.startsWith('gpon-onu_')) {
-      return onu.onuIndex;
+    const onuIndex = onu.onuIndex || '';
+    if (onuIndex.startsWith('gpon-onu_') || /^epon\s+\d+\/\d+:\d+$/i.test(onuIndex)) {
+      return onuIndex;
     }
-    const ifaceName = (onu.ponInterface?.name || 'gpon-olt_1/1/1').replace(/^gpon-olt_/, 'gpon-onu_');
-    return `${ifaceName}:${onu.onuIndex}`;
+    const ifaceName = onu.ponInterface?.name;
+    if (ifaceName) {
+      if (ifaceName.toLowerCase().startsWith('epon')) {
+        const idMatch = onuIndex.match(/(?:^|:)(\d+)$/);
+        return `${ifaceName}:${idMatch ? idMatch[1] : onuIndex}`;
+      }
+      return `${ifaceName.replace(/^gpon-olt_/, 'gpon-onu_')}:${onuIndex}`;
+    }
+    return onuIndex;
   }
 
   private resolveOnuLocation(onu: OnuEntity, dto: any = {}) {
-    const ponInterface = onu.ponInterface?.name || dto.ponInterface;
-    if (typeof ponInterface !== 'string' || !/^[a-zA-Z0-9_-]+(?:\/[0-9]+)*$/.test(ponInterface)) {
+    const rawPonInterface = onu.ponInterface?.name || dto.ponInterface;
+    if (typeof rawPonInterface !== 'string') {
+      throw new BadRequestException('Interfaz PON ausente o inválida.');
+    }
+    const ponInterface = rawPonInterface.trim();
+    if (!/^(?:epon\s+\d+\/\d+|[a-zA-Z0-9_ -]+(?:\/[0-9]+)*)$/i.test(ponInterface)) {
       throw new BadRequestException('Interfaz PON ausente o inválida.');
     }
 
@@ -2628,7 +2644,11 @@ export class OnuManagementService {
     if (fullIndex && ponInterface.startsWith('gpon-olt_') && ponInterface !== `gpon-olt_${fullIndex[1]}`) {
       throw new BadRequestException('El índice de ONU no corresponde a la interfaz PON.');
     }
-    const rawId = dto.onuId ?? (fullIndex ? fullIndex[2] : index);
+    const eponFull = index.match(/^(?:epon\s+)?(\d+\/\d+):(\d+)$/i);
+    if (eponFull && ponInterface.toLowerCase().startsWith('epon ') && ponInterface.toLowerCase() !== `epon ${eponFull[1]}`) {
+      throw new BadRequestException('El índice de ONU no corresponde a la interfaz PON.');
+    }
+    const rawId = dto.onuId ?? (fullIndex ? fullIndex[2] : (eponFull ? eponFull[2] : (index.match(/(?:^|:)(\d+)$/)?.[1] ?? index)));
     if (!/^\d+$/.test(String(rawId)) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) < 1 || Number(rawId) > 128) {
       throw new BadRequestException('ID de ONU ausente o inválido (1-128).');
     }

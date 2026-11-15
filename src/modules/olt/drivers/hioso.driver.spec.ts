@@ -42,11 +42,11 @@ describe('HiosoDriver', () => {
       trafficDiscovery: false,
       downstreamTrafficProfile: false,
       onuTypeProfileProvisioning: false,
-      onuReboot: false,
-      onuFactoryReset: false,
+      onuReboot: true,
+      onuFactoryReset: true,
       batchTr069AcsUpdate: false,
       onuInfoUpdate: false,
-      onuTypeDiscovery: false,
+      onuTypeDiscovery: true,
     });
   });
 
@@ -608,6 +608,55 @@ describe('HiosoDriver', () => {
     expect(result.ok).toBe(true);
     expect(executeCommand).toHaveBeenCalledWith('delete onu 5');
     expect(executeCommand).not.toHaveBeenCalledWith(expect.stringContaining('dereg'));
+  });
+
+  it('rebootOnu() usa "onu <id> reboot" dentro de la interfaz PON correspondiente (cli_command_tree.txt)', async () => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.rebootOnu(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 1/1',
+      2,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith('interface epon 1/1');
+    expect(executeCommand).toHaveBeenCalledWith('onu 2 reboot');
+  });
+
+  it('factoryResetOnu() usa "onu <id> factory" dentro de la interfaz PON correspondiente (cli_command_tree.txt)', async () => {
+    const executeCommand = jest.fn().mockResolvedValue('');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+      connectAndLogin: jest.fn().mockResolvedValue(undefined),
+      executeCommand,
+      close: jest.fn(),
+    });
+
+    const result = await driver.factoryResetOnu(
+      { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+      'epon 1/1',
+      2,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith('interface epon 1/1');
+    expect(executeCommand).toHaveBeenCalledWith('onu 2 factory');
+  });
+
+  it('getOnuTypes() retorna el tipo confirmado onu-01g para EPON', async () => {
+    const types = await driver.getOnuTypes({ host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' });
+    expect(types).toEqual([
+      {
+        name: 'onu-01g',
+        ponType: 'epon',
+        description: 'ONU EPON Genérica (1-4 puertos LAN)',
+      },
+    ]);
   });
 
   it('findTcontProfileByName/ensureTcontProfile/configureVlanTranslation siguen sin implementar: este hardware no tiene perfiles DBA guardados ni evidencia de VLAN translation', async () => {
