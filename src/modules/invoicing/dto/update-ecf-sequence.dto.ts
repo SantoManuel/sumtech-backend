@@ -37,5 +37,9 @@ export class UpdateEcfSequenceDto {
   @IsOptional()
   @IsBoolean({ message: 'isActive debe ser un valor booleano' })
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean({ message: 'resolveConflicts debe ser un valor booleano' })
+  resolveConflicts?: boolean;
 }
 

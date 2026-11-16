@@ -51,8 +51,14 @@ describe('InvoicingService', () => {
       orderBy: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([]),
       getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
     };
 
     invoiceRepo = {
@@ -1396,6 +1402,104 @@ describe('InvoicingService', () => {
       expect(res.remaining).toBe(16); // 100 - 85 + 1
       expect(res.isLowRemaining).toBe(true);
       expect(res.nextNcfFormatted).toBe('E310000000085');
+    });
+
+    it('updateSequence lanza ConflictException si el correlativo colisiona con facturas existentes y resolveConflicts no está activo', async () => {
+      const mockSeq = {
+        id: 'seq-1',
+        ncfType: 'E31',
+        currentSequence: 10,
+        startSequence: 1,
+        endSequence: 100,
+        authorizationNumber: '6005450276',
+        expiryDate: '31-12-2026',
+        alertRemaining: 20,
+        isActive: true,
+      };
+      sequenceRepo.findOne.mockResolvedValueOnce(mockSeq);
+
+      // Simular que existe una factura conflictiva con E310000000001
+      const conflictQb: any = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValueOnce([{ id: 'inv-test-1', ncfNumber: 'E310000000001' }]),
+      };
+      invoiceRepo.createQueryBuilder.mockReturnValueOnce(conflictQb);
+
+      await expect(
+        service.updateSequence('seq-1', { currentSequence: 1, resolveConflicts: false }, 'admin'),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('updateSequence archiva las facturas conflictivas con prefijo TEST_ cuando resolveConflicts es true', async () => {
+      const mockSeq = {
+        id: 'seq-1',
+        ncfType: 'E31',
+        currentSequence: 10,
+        startSequence: 1,
+        endSequence: 100,
+        authorizationNumber: '6005450276',
+        expiryDate: '31-12-2026',
+        alertRemaining: 20,
+        isActive: true,
+      };
+      sequenceRepo.findOne.mockResolvedValueOnce(mockSeq);
+      sequenceRepo.save.mockImplementationOnce(async (saved) => ({ ...mockSeq, ...saved }));
+
+      const executeMock = jest.fn().mockResolvedValueOnce({ affected: 1 });
+      const selectQb: any = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValueOnce([{ id: 'inv-test-1', ncfNumber: 'E310000000001' }]),
+      };
+      const updateQb: any = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        execute: executeMock,
+      };
+
+      invoiceRepo.createQueryBuilder
+        .mockReturnValueOnce(selectQb)
+        .mockReturnValueOnce(updateQb);
+
+      const res = await service.updateSequence(
+        'seq-1',
+        { currentSequence: 1, resolveConflicts: true },
+        'admin',
+      );
+
+      expect(res.currentSequence).toBe(1);
+      expect(res.nextNcfFormatted).toBe('E310000000001');
+      expect(res.hasConflict).toBe(false);
+      expect(executeMock).toHaveBeenCalled();
+    });
+
+    it('getNextNcfSequence auto-avanza atómicamente si el correlativo calculado ya existe en pos.invoices', async () => {
+      const mockSeq = {
+        id: 'seq-1',
+        ncfType: 'E31',
+        currentSequence: 1,
+        startSequence: 1,
+        endSequence: 100,
+        authorizationNumber: '6005450276',
+        expiryDate: '31-12-2026',
+        isActive: true,
+      };
+      sequenceRepo.findOne.mockResolvedValueOnce(mockSeq);
+      sequenceRepo.save.mockImplementationOnce(async (saved) => ({ ...mockSeq, ...saved }));
+
+      // Simular que E310000000001 existe, pero E310000000002 está libre
+      invoiceRepo.findOne
+        .mockResolvedValueOnce({ id: 'inv-existing', ncfNumber: 'E310000000001' })
+        .mockResolvedValueOnce(null);
+
+      const res = await service.getNextNcfSequence('E31');
+      expect(res.ncfNumber).toBe('E310000000002');
+      expect(mockSeq.currentSequence).toBe(3); // Incrementó a 3 para la próxima
     });
   });
 });

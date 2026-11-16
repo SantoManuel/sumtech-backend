@@ -137,11 +137,44 @@ export class InvoicingService {
     }
 
     const padLength = ncfType.startsWith('E') ? 10 : 8;
-    const formattedSeq = currentSeqNum.toString().padStart(padLength, '0');
-    const ncfNumber = `${ncfType}${formattedSeq}`;
+    const invoiceRepo = queryRunner
+      ? queryRunner.manager.getRepository(InvoiceEntity)
+      : this.invoiceRepository;
+
+    let targetSeqNum = currentSeqNum;
+    let formattedSeq = targetSeqNum.toString().padStart(padLength, '0');
+    let ncfNumber = `${ncfType}${formattedSeq}`;
+
+    // Blindaje defensivo de última milla: auto-detectar si el número está ocupado
+    // y avanzar automáticamente para evitar 500 duplicate key en el POS
+    if (invoiceRepo?.findOne) {
+      const maxScan = 100;
+      let scanCount = 0;
+      while (scanCount < maxScan) {
+        const existing = await invoiceRepo.findOne({
+          where: { ncfNumber },
+          select: ['id', 'ncfNumber'],
+        });
+        if (!existing || existing.ncfNumber !== ncfNumber) {
+          break;
+        }
+        this.logger.warn(
+          `[Auto-Avance e-CF] El número fiscal ${ncfNumber} ya existe en pos.invoices. Auto-avanzando al siguiente correlativo...`,
+        );
+        targetSeqNum++;
+        if (targetSeqNum > Number(sequenceRecord.endSequence)) {
+          throw new BadRequestException(
+            `El rango de secuencias autorizadas para ${ncfType} se ha agotado al buscar correlativo disponible.`,
+          );
+        }
+        formattedSeq = targetSeqNum.toString().padStart(padLength, '0');
+        ncfNumber = `${ncfType}${formattedSeq}`;
+        scanCount++;
+      }
+    }
 
     // Incrementar secuencia
-    sequenceRecord.currentSequence = currentSeqNum + 1;
+    sequenceRecord.currentSequence = targetSeqNum + 1;
     await seqRepo.save(sequenceRecord);
 
     return { ncfNumber, expiryDate: sequenceRecord.expiryDate };
@@ -990,43 +1023,74 @@ export class InvoicingService {
     const sequences = await this.sequenceRepository.find({ order: { ncfType: 'ASC' } });
     const ecfSequences = sequences.filter((s) => s.ncfType.startsWith('E'));
 
-    return ecfSequences.map((s) => {
-      const current = Number(s.currentSequence);
-      const start = Number(s.startSequence || 1);
-      const end = Number(s.endSequence);
-      const remaining = Math.max(0, end - current + 1);
-      const totalRange = Math.max(1, end - start + 1);
-      const consumed = Math.max(0, current - start);
-      const consumptionPercentage = Math.min(100, Math.max(0, Math.round((consumed / totalRange) * 100)));
-      const isLowRemaining = remaining <= Number(s.alertRemaining || 50);
-      const isCritical = remaining <= 10;
-      const nextNcfFormatted = `${s.ncfType}${current.toString().padStart(10, '0')}`;
-      const meta = ECF_SEQUENCE_METADATA[s.ncfType] || {
-        name: `Comprobante Electrónico ${s.ncfType}`,
-        description: `Secuencia electrónica autorizada por DGII tipo ${s.ncfType}`,
-      };
+    return Promise.all(
+      ecfSequences.map(async (s) => {
+        const current = Number(s.currentSequence);
+        const start = Number(s.startSequence || 1);
+        const end = Number(s.endSequence);
+        const remaining = Math.max(0, end - current + 1);
+        const totalRange = Math.max(1, end - start + 1);
+        const consumed = Math.max(0, current - start);
+        const consumptionPercentage = Math.min(100, Math.max(0, Math.round((consumed / totalRange) * 100)));
+        const isLowRemaining = remaining <= Number(s.alertRemaining || 50);
+        const isCritical = remaining <= 10;
+        const padLength = s.ncfType.startsWith('E') ? 10 : 8;
+        const nextNcfFormatted = `${s.ncfType}${current.toString().padStart(padLength, '0')}`;
 
-      return {
-        id: s.id,
-        ncfType: s.ncfType,
-        name: meta.name,
-        description: meta.description,
-        serie: s.serie,
-        currentSequence: current,
-        startSequence: start,
-        endSequence: end,
-        authorizationNumber: s.authorizationNumber,
-        expiryDate: s.expiryDate,
-        alertRemaining: Number(s.alertRemaining || 50),
-        isActive: s.isActive,
-        remaining,
-        consumptionPercentage,
-        isLowRemaining,
-        isCritical,
-        nextNcfFormatted,
-        updatedAt: s.updatedAt,
-      };
-    });
+        let hasConflict = false;
+        let conflictingNcf: string | undefined = undefined;
+        let conflictingCount = 0;
+
+        try {
+          if (this.invoiceRepository?.createQueryBuilder) {
+            const conflicting = await this.invoiceRepository
+              .createQueryBuilder('i')
+              .where('i.ncf_type = :ncfType', { ncfType: s.ncfType })
+              .andWhere('i.ncf_number NOT LIKE :testPrefix', { testPrefix: 'TEST_%' })
+              .andWhere('(i.ncf_number = :nextNcf OR i.ncf_number >= :nextNcf)', { nextNcf: nextNcfFormatted })
+              .select(['i.id', 'i.ncfNumber'])
+              .getMany();
+
+            if (conflicting && conflicting.length > 0) {
+              hasConflict = true;
+              conflictingNcf = conflicting[0].ncfNumber;
+              conflictingCount = conflicting.length;
+            }
+          }
+        } catch (err: any) {
+          this.logger.warn(`Error comprobando colisiones e-CF para ${s.ncfType}: ${err.message}`);
+        }
+
+        const meta = ECF_SEQUENCE_METADATA[s.ncfType] || {
+          name: `Comprobante Electrónico ${s.ncfType}`,
+          description: `Secuencia electrónica autorizada por DGII tipo ${s.ncfType}`,
+        };
+
+        return {
+          id: s.id,
+          ncfType: s.ncfType,
+          name: meta.name,
+          description: meta.description,
+          serie: s.serie,
+          currentSequence: current,
+          startSequence: start,
+          endSequence: end,
+          authorizationNumber: s.authorizationNumber,
+          expiryDate: s.expiryDate,
+          alertRemaining: Number(s.alertRemaining || 50),
+          isActive: s.isActive,
+          remaining,
+          consumptionPercentage,
+          isLowRemaining,
+          isCritical,
+          nextNcfFormatted,
+          hasConflict,
+          conflictingNcf,
+          conflictingCount,
+          updatedAt: s.updatedAt,
+        };
+      }),
+    );
   }
 
   /**
@@ -1056,6 +1120,48 @@ export class InvoicingService {
       throw new BadRequestException(
         `La secuencia actual (${newCurrent}) debe estar dentro del rango autorizado [${newStart} - ${newEnd}].`
       );
+    }
+
+    const padLength = sequence.ncfType.startsWith('E') ? 10 : 8;
+    const targetNextNcf = `${sequence.ncfType}${newCurrent.toString().padStart(padLength, '0')}`;
+
+    // Validar posibles colisiones con facturas existentes en pos.invoices
+    if (this.invoiceRepository?.createQueryBuilder) {
+      try {
+        const conflictingInvoices = await this.invoiceRepository
+          .createQueryBuilder('i')
+          .where('i.ncf_type = :ncfType', { ncfType: sequence.ncfType })
+          .andWhere('i.ncf_number NOT LIKE :testPrefix', { testPrefix: 'TEST_%' })
+          .andWhere('(i.ncf_number = :targetNextNcf OR i.ncf_number >= :targetNextNcf)', { targetNextNcf })
+          .select(['i.id', 'i.ncfNumber'])
+          .getMany();
+
+        if (conflictingInvoices && conflictingInvoices.length > 0) {
+          if (dto.resolveConflicts) {
+            this.logger.log(
+              `[Resolución de Secuencia DGII] Archivando ${conflictingInvoices.length} factura(s) de prueba conflictiva(s) para ${sequence.ncfType} (iniciando en ${targetNextNcf}) por usuario ${userId || 'SYSTEM'}`,
+            );
+
+            await this.invoiceRepository
+              .createQueryBuilder()
+              .update(InvoiceEntity)
+              .set({
+                ncfNumber: () => `'TEST_' || ncf_number`,
+              })
+              .where('ncf_type = :ncfType', { ncfType: sequence.ncfType })
+              .andWhere('ncf_number NOT LIKE :testPrefix', { testPrefix: 'TEST_%' })
+              .andWhere('(ncf_number = :targetNextNcf OR ncf_number >= :targetNextNcf)', { targetNextNcf })
+              .execute();
+          } else {
+            throw new ConflictException(
+              `Se detectaron ${conflictingInvoices.length} comprobante(s) existente(s) (ej: ${conflictingInvoices[0].ncfNumber}) que colisionan con el correlativo seleccionado (${targetNextNcf}). Active la opción de archivar comprobantes de prueba para liberar la secuencia.`,
+            );
+          }
+        }
+      } catch (err: any) {
+        if (err instanceof ConflictException) throw err;
+        this.logger.warn(`No se pudo verificar colisiones para ${sequence.ncfType}: ${err.message}`);
+      }
     }
 
     if (dto.currentSequence !== undefined) sequence.currentSequence = newCurrent;
@@ -1101,7 +1207,10 @@ export class InvoicingService {
       consumptionPercentage,
       isLowRemaining: remaining <= Number(saved.alertRemaining || 50),
       isCritical: remaining <= 10,
-      nextNcfFormatted: `${saved.ncfType}${current.toString().padStart(10, '0')}`,
+      nextNcfFormatted: `${saved.ncfType}${current.toString().padStart(padLength, '0')}`,
+      hasConflict: false,
+      conflictingNcf: null,
+      conflictingCount: 0,
       updatedAt: saved.updatedAt,
     };
   }
