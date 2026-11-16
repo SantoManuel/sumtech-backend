@@ -1322,10 +1322,26 @@ export class InvoicingService {
 
       // Código QR oficial DGII: Fuente única de verdad a partir del XML firmado
       let qrCodeUrl = invoice.qrCodeContent;
-      if (invoice.signedXmlContent) {
+      const isOfficialQr =
+        qrCodeUrl &&
+        !qrCodeUrl.includes('/consulta?encf=') &&
+        (qrCodeUrl.includes('codigoseguridad') || qrCodeUrl.includes('consultatimbrefc'));
+
+      const config = await this.dgiiClient.getConfig();
+
+      // Deducir ambiente exacto del comprobante: respetar URL original si ya está timbrada, o usar config del tenant
+      let invoiceEnv: 'ecf' | 'certecf' | 'testecf' | 'sandbox' = config.environment || 'testecf';
+      if (invoice.qrCodeContent?.includes('/ecf/')) {
+        invoiceEnv = 'ecf';
+      } else if (invoice.qrCodeContent?.includes('/certecf/')) {
+        invoiceEnv = 'certecf';
+      } else if (invoice.qrCodeContent?.includes('/testecf/')) {
+        invoiceEnv = 'testecf';
+      }
+
+      if (!isOfficialQr && invoice.signedXmlContent) {
         try {
-          const config = await this.dgiiClient.getConfig();
-          qrCodeUrl = this.xmlGenerator.buildQrUrlFromSignedXml(invoice.signedXmlContent, config.environment);
+          qrCodeUrl = this.xmlGenerator.buildQrUrlFromSignedXml(invoice.signedXmlContent, invoiceEnv);
         } catch {
           // Mantener qrCodeUrl actual si falla
         }
@@ -1333,9 +1349,8 @@ export class InvoicingService {
       const isLegacyDummy = !qrCodeUrl || qrCodeUrl.includes('/consulta?encf=') || (!qrCodeUrl.includes('codigoseguridad') && !qrCodeUrl.includes('consultatimbrefc'));
       if (isLegacyDummy && invoice.ncfNumber) {
         try {
-          const config = await this.dgiiClient.getConfig();
           qrCodeUrl = this.dgiiClient.generateQrCodeUrl(
-            config,
+            { ...config, environment: invoiceEnv },
             invoice.ncfNumber,
             Number(invoice.grandTotal || sale?.grandTotal || 0),
             invoice.securityCode || '000000',
@@ -1384,6 +1399,7 @@ export class InvoicingService {
           razonModificacion: invoice.razonModificacion,
           isProforma: false,
           signedXmlContent: invoice.signedXmlContent,
+          environment: invoiceEnv,
         },
         client: {
           name: sale?.client?.name || invoice.client?.name || 'Consumidor Final',

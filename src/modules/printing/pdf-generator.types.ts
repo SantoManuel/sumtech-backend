@@ -37,6 +37,8 @@ export interface InvoiceReceiptMetadata {
     isProforma?: boolean;
     // Contenido del XML firmado original — Fuente Única de Verdad
     signedXmlContent?: string;
+    // Entorno DGII en el que fue emitido o configurado ('ecf' = producción, 'certecf' = certificación, 'testecf' = pruebas)
+    environment?: 'ecf' | 'certecf' | 'testecf' | 'sandbox';
   };
   client: {
     name: string;

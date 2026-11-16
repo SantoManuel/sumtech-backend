@@ -69,16 +69,8 @@ function shouldShowNcfExpiry(ncfType?: string, ncfNumber?: string): boolean {
 }
 
 function buildDgiiQrUrl(metadata: InvoiceReceiptMetadata): string {
-  // 1. Si la factura trae el XML firmado, extraer la URL oficial directamente del XML (Fuente Única de Verdad)
-  if (metadata.invoice.signedXmlContent) {
-    try {
-      return buildQrUrlFromSignedXml(metadata.invoice.signedXmlContent);
-    } catch {
-      // Continuar al siguiente paso si falla parseo
-    }
-  }
-
-  // 2. Si la factura ya trae una URL oficial que contenga codigoseguridad o consultatimbrefc (no la URL dummy corta)
+  // 1. Si la factura ya trae una URL oficial guardada al emitir (con codigoseguridad o consultatimbrefc)
+  // Preservar la URL inmutable de emisión con su entorno original exacto
   if (
     metadata.invoice.qrCodeUrl &&
     !metadata.invoice.qrCodeUrl.includes('/consulta?encf=') &&
@@ -86,13 +78,37 @@ function buildDgiiQrUrl(metadata: InvoiceReceiptMetadata): string {
   ) {
     return metadata.invoice.qrCodeUrl;
   }
+
+  // Resolver el ambiente DGII efectivo: desde invoice.environment, deducido de la URL, o fallback a 'testecf'
+  let targetEnv: 'ecf' | 'certecf' | 'testecf' =
+    metadata.invoice.environment === 'ecf'
+      ? 'ecf'
+      : metadata.invoice.environment === 'certecf'
+        ? 'certecf'
+        : 'testecf';
+
+  if (!metadata.invoice.environment && metadata.invoice.qrCodeUrl) {
+    if (metadata.invoice.qrCodeUrl.includes('/ecf/')) targetEnv = 'ecf';
+    else if (metadata.invoice.qrCodeUrl.includes('/certecf/')) targetEnv = 'certecf';
+    else if (metadata.invoice.qrCodeUrl.includes('/testecf/')) targetEnv = 'testecf';
+  }
+
+  // 2. Si la factura trae el XML firmado, extraer la URL oficial directamente del XML con el ambiente exacto
+  if (metadata.invoice.signedXmlContent) {
+    try {
+      return buildQrUrlFromSignedXml(metadata.invoice.signedXmlContent, targetEnv);
+    } catch {
+      // Continuar al siguiente paso si falla parseo
+    }
+  }
+
   const eNcf = metadata.invoice.ncfNumber || '';
   const rncEmisor = (metadata.company.rnc || '').replace(/\D/g, '');
   const rncComprador = (metadata.client.docNumber || '').replace(/\D/g, '');
   const montoTotal = Number(metadata.sale.grandTotal || 0);
   const securityCode = metadata.invoice.securityCode || '000000';
   const issuedAt = metadata.invoice.issuedAt instanceof Date ? metadata.invoice.issuedAt : new Date(metadata.invoice.issuedAt || Date.now());
-  const env = 'certecf';
+  const env = targetEnv;
   const fechaEmiStr = formatDateDgii(issuedAt);
   const fechaFirStr = formatDateTimeDgii(issuedAt);
   const montoStr = montoTotal.toFixed(2);
