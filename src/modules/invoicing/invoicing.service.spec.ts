@@ -790,6 +790,14 @@ describe('InvoicingService', () => {
       await expect(service.voidInvoice('inv-1')).rejects.toThrow(ConflictException);
     });
 
+    it('sí anula una factura ISSUED si dgiiStatus es REJECTED (regresión: factura colisionada/rechazada)', async () => {
+      invoiceRepo.findOne.mockResolvedValue({ id: 'inv-1', status: 'ISSUED', dgiiStatus: 'REJECTED' });
+
+      const result = await service.voidInvoice('inv-1');
+
+      expect(result.status).toBe('VOIDED');
+    });
+
     it('lanza ConflictException si la factura ya está VOIDED', async () => {
       invoiceRepo.findOne.mockResolvedValue({ id: 'inv-1', status: 'VOIDED' });
 

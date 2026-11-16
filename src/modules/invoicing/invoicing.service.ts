@@ -650,9 +650,10 @@ export class InvoicingService {
     if (!invoice) {
       throw new NotFoundException(`Factura con ID ${invoiceId} no encontrada`);
     }
-    if (!isOpenInvoiceStatus(invoice.status)) {
+    const isRejectedByDgii = invoice.dgiiStatus === 'REJECTED';
+    if (!isOpenInvoiceStatus(invoice.status) && !isRejectedByDgii) {
       throw new ConflictException(
-        `Solo se pueden anular facturas pendientes de pago (PENDING_PAYMENT/EN_GRACIA/VENCIDA) — estado actual: ${invoice.status}. Una factura ISSUED requiere una Nota de Crédito.`,
+        `Solo se pueden anular facturas pendientes de pago (PENDING_PAYMENT/EN_GRACIA/VENCIDA) o comprobantes rechazados por la DGII — estado actual: ${invoice.status}. Una factura ISSUED válida requiere una Nota de Crédito.`,
       );
     }
     invoice.status = 'VOIDED';
