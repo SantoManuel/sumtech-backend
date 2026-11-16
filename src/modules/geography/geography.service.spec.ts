@@ -124,16 +124,17 @@ describe('GeographyService', () => {
   it('debe listar sectores con estadísticas de suscriptores', async () => {
     sectorRepo.createQueryBuilder.mockReturnValue({
       leftJoinAndSelect: jest.fn().mockReturnThis(),
-      leftJoin: jest.fn().mockReturnThis(),
-      addSelect: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
-      groupBy: jest.fn().mockReturnThis(),
-      addGroupBy: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
-      getRawAndEntities: jest.fn().mockResolvedValue({
-        entities: [{ id: 's-1', name: 'Alto de las Flores' }],
-        raw: [{ subscriber_count: '12' }],
-      }),
+      getMany: jest.fn().mockResolvedValue([{ id: 's-1', name: 'Alto de las Flores' }]),
+    });
+
+    addressRepo.createQueryBuilder = jest.fn().mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([{ sectorId: 's-1', count: '12' }]),
     });
 
     const sectorsWithStats = await service.findSectorsWithStats({ municipalityId: 'm-1' });

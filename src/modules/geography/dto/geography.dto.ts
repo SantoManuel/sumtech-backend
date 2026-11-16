@@ -7,6 +7,7 @@ export class FilterProvinceDto {
   countryId?: string;
 
   @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
   @IsBoolean()
   activeOnly?: boolean;
 }
@@ -17,6 +18,7 @@ export class FilterMunicipalityDto {
   provinceId?: string;
 
   @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
   @IsBoolean()
   activeOnly?: boolean;
 }
@@ -35,6 +37,7 @@ export class FilterSectorDto {
   search?: string;
 
   @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
   @IsBoolean()
   activeOnly?: boolean;
 }

@@ -98,9 +98,7 @@ export class GeographyService {
     const qb = this.sectorRepository
       .createQueryBuilder('s')
       .leftJoinAndSelect('s.municipality', 'm')
-      .leftJoinAndSelect('m.province', 'p')
-      .leftJoin('com.addresses', 'a', 'a.sector_id = s.id')
-      .addSelect('COUNT(a.id)', 'subscriber_count');
+      .leftJoinAndSelect('m.province', 'p');
 
     if (filter.municipalityId) {
       qb.andWhere('s.municipalityId = :municipalityId', { municipalityId: filter.municipalityId });
@@ -111,20 +109,33 @@ export class GeographyService {
     if (filter.search) {
       qb.andWhere('(s.name ILIKE :search OR s.postalCode ILIKE :search)', { search: `%${filter.search}%` });
     }
-    if (filter.activeOnly !== false) {
+    if (filter.activeOnly === true || (filter.activeOnly as any) === 'true') {
       qb.andWhere('s.isActive = true');
     }
 
-    qb.groupBy('s.id')
-      .addGroupBy('m.id')
-      .addGroupBy('p.id')
-      .orderBy('s.name', 'ASC');
+    const sectors = await qb.orderBy('s.name', 'ASC').getMany();
 
-    const { entities, raw } = await qb.getRawAndEntities();
+    if (sectors.length === 0) {
+      return [];
+    }
 
-    return entities.map((entity, index) => ({
-      ...entity,
-      subscriberCount: parseInt(raw[index]?.subscriber_count || '0', 10),
+    const sectorIds = sectors.map((s) => s.id);
+    const countResults = await this.addressRepository
+      .createQueryBuilder('a')
+      .select('a.sectorId', 'sectorId')
+      .addSelect('COUNT(a.id)', 'count')
+      .where('a.sectorId IN (:...sectorIds)', { sectorIds })
+      .groupBy('a.sectorId')
+      .getRawMany();
+
+    const countMap = new Map<string, number>();
+    for (const r of countResults) {
+      countMap.set(r.sectorId, parseInt(r.count, 10));
+    }
+
+    return sectors.map((s) => ({
+      ...s,
+      subscriberCount: countMap.get(s.id) || 0,
     }));
   }
 
