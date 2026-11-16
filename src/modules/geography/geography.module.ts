@@ -5,6 +5,7 @@ import { CountryEntity } from './entities/country.entity';
 import { ProvinceEntity } from './entities/province.entity';
 import { MunicipalityEntity } from './entities/municipality.entity';
 import { SectorEntity } from './entities/sector.entity';
+import { AddressEntity } from '../clients/entities/address.entity';
 import { GeographyService } from './geography.service';
 import { GeographyController } from './geography.controller';
 import { UsersModule } from '../users/users.module';
@@ -16,6 +17,7 @@ import { UsersModule } from '../users/users.module';
       ProvinceEntity,
       MunicipalityEntity,
       SectorEntity,
+      AddressEntity,
     ]),
     UsersModule,
     JwtModule.register({}),
