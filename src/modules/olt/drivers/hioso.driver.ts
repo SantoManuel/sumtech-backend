@@ -22,6 +22,7 @@ import {
   VlanTranslationParams,
   OltAlarm,
   OltConsoleStream,
+  OnuDetailInfo,
 } from '../ports/olt-driver.port';
 
 const VENDOR = 'HIOSO';
@@ -860,6 +861,101 @@ export class HiosoDriver implements IOltDriver {
     } finally {
       session.close();
     }
+  }
+
+  /**
+   * Consulta "show onu upgrade-state epon <slotPort>" para extraer el estado físico y
+   * de negociación OAM de la ONU en la OLT HiOSO (paridad con getOnuDetailInfo de ZTE GPON).
+   */
+  async getOnuDetailInfo(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+  ): Promise<OnuDetailInfo> {
+    const slotPort = this.toBareSlotPort(ponInterface);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const raw = await session.executeCommand(`show onu upgrade-state epon ${slotPort}`);
+      return this.parseHiosoOnuDetailInfo(raw, slotPort, onuId);
+    } finally {
+      session.close();
+    }
+  }
+
+  parseHiosoOnuDetailInfo(raw: string, slotPort: string, onuId: number): OnuDetailInfo {
+    const targetPrefix = `${slotPort}:${onuId}`.toLowerCase();
+    const lines = raw.split('\n');
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const tokens = trimmed.split(/\s+/);
+      if (tokens.length >= 8 && tokens[0].toLowerCase() === targetPrefix) {
+        const status = tokens[2] || 'Down';
+        const isUp = /^up$/i.test(status);
+        const ctcStatus = tokens[7] || '--';
+        const isCtcDone = /^CtcNegDone$/i.test(ctcStatus);
+        const uptime = tokens[9] && tokens[9] !== '--' ? tokens[9] : undefined;
+
+        return {
+          type: 'onu-01g',
+          phaseState: isUp ? 'working' : 'LOS',
+          configState: isCtcDone ? 'success' : ctcStatus,
+          onlineDuration: uptime,
+          adminState: isUp ? 'UP' : 'DOWN',
+          raw,
+        };
+      }
+    }
+
+    return {
+      type: 'onu-01g',
+      phaseState: 'LOS',
+      configState: 'offline',
+      raw,
+    };
+  }
+
+  /**
+   * Consulta "show olt mac epon <slotPort>" (o "show olt mac") y extrae las direcciones MAC
+   * aprendidas que pertenezcan a esta sub-interfaz (onu_<slot>/<port>:<onuId>).
+   */
+  async getOnuMacTable(
+    params: OltConnectionParams,
+    ponInterface: string,
+    onuId: number,
+  ): Promise<Array<{ mac: string; vlan: number }>> {
+    const slotPort = this.toBareSlotPort(ponInterface);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      const raw = await session.executeCommand(`show olt mac epon ${slotPort}`);
+      return this.parseHiosoMacTable(raw, slotPort, onuId);
+    } finally {
+      session.close();
+    }
+  }
+
+  parseHiosoMacTable(raw: string, slotPort: string, onuId: number): Array<{ mac: string; vlan: number }> {
+    const targetPortId = `onu_${slotPort}:${onuId}`.toLowerCase();
+    const macs: Array<{ mac: string; vlan: number }> = [];
+    const lines = raw.split('\n');
+
+    for (const line of lines) {
+      const tokens = line.trim().split(/\s+/);
+      if (tokens.length >= 6) {
+        const mac = tokens[1];
+        const portId = tokens[5];
+        if (portId.toLowerCase() === targetPortId && /^([0-9a-f]{2}(?::[0-9a-f]{2}){5})$/i.test(mac)) {
+          macs.push({
+            mac: mac.toLowerCase(),
+            vlan: 0,
+          });
+        }
+      }
+    }
+
+    return macs;
   }
 
   /**

@@ -1006,6 +1006,53 @@ describe('OnuManagementService', () => {
       );
       expect(result.findings.every((f) => f.severity !== 'CRITICAL')).toBe(true);
     });
+
+    it('audita una ONU en OLT HiOSO (EPON) detectando configuración vacía y saturación óptica', async () => {
+      const hiosoOnu = {
+        ...mockOnu,
+        onuIndex: 'epon 1/1:1',
+        ponInterface: { id: 'iface-1', name: 'epon 1/1' },
+        olt: { id: 'olt-hioso-1', vendor: 'HIOSO', ip: '10.0.0.1' },
+        serviceConfig: { serviceVlan: { vlanId: 100 } },
+      };
+      onuRepo.findOne.mockResolvedValue(hiosoOnu);
+
+      const hiosoDriverMock = {
+        getOnuDetailInfo: jest.fn().mockResolvedValue({
+          phaseState: 'working',
+          configState: 'success',
+          type: 'onu-01g',
+          raw: '1/1:1 04:b0:e7:d3:09:a6 Up ...',
+        }),
+        getOnuRunningConfig: jest.fn().mockResolvedValue({
+          servicePorts: [],
+          raw: '! Onu 1/1:1 configuration',
+        }),
+        getOnuOpticalPower: jest.fn().mockResolvedValue({
+          rxDbm: -0.70,
+          raw: 'RxPower: -0.70 dBm',
+        }),
+        getOnuMacTable: jest.fn().mockResolvedValue([]),
+      };
+
+      jest.spyOn<any, any>(service, 'resolveDriver').mockReturnValue(hiosoDriverMock);
+
+      const result = await service.getProvisioningAudit('onu-uuid-1');
+
+      expect(result.vendor).toBe('HIOSO');
+      expect(result.unsupported).toHaveLength(0);
+
+      const unprovisionedFinding = result.findings.find(
+        (f) => f.severity === 'CRITICAL' && f.message.includes('ninguna VLAN de servicio'),
+      );
+      expect(unprovisionedFinding).toBeDefined();
+      expect(unprovisionedFinding?.fixAction).toBe('REAUTHORIZE');
+
+      const opticalSaturationFinding = result.findings.find(
+        (f) => f.severity === 'CRITICAL' && f.message.includes('saturación extrema'),
+      );
+      expect(opticalSaturationFinding).toBeDefined();
+    });
   });
 
   describe('resolveLiveManagementIp -- consulta en vivo a la OLT la IP que la ONU ya obtuvo (usada por OnuWebProxyService para abrir la GUI remota sin depender de GenieACS)', () => {

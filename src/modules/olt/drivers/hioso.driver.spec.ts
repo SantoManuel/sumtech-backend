@@ -853,4 +853,91 @@ describe('HiosoDriver', () => {
       expect(commandsExecuted).toHaveLength(0);
     });
   });
+
+  describe('getOnuDetailInfo', () => {
+    it('parsea show onu upgrade-state para una ONU online con CtcNegDone', async () => {
+      const upgradeStateOut = fixture('show_onu_upgrade-state.txt');
+      const executeCommand = jest.fn().mockResolvedValue(upgradeStateOut);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.getOnuDetailInfo(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+        'epon 1/1',
+        2,
+      );
+
+      expect(executeCommand).toHaveBeenCalledWith('show onu upgrade-state epon 1/1');
+      expect(result.phaseState).toBe('working');
+      expect(result.configState).toBe('success');
+      expect(result.onlineDuration).toBe('0H3M42S');
+      expect(result.adminState).toBe('UP');
+      expect(result.type).toBe('onu-01g');
+    });
+
+    it('identifica phaseState=LOS para una ONU en estado Down', async () => {
+      const upgradeStateOut = fixture('show_onu_upgrade-state.txt');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand: jest.fn().mockResolvedValue(upgradeStateOut),
+        close: jest.fn(),
+      });
+
+      const result = await driver.getOnuDetailInfo(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+        'epon 1/1',
+        1,
+      );
+
+      expect(result.phaseState).toBe('LOS');
+      expect(result.configState).toBe('--');
+      expect(result.adminState).toBe('DOWN');
+    });
+  });
+
+  describe('getOnuMacTable', () => {
+    it('extrae las MACs aprendidas para la ONU especificada desde show olt mac', async () => {
+      const macOut = fixture('show_olt_mac_populated.txt');
+      const executeCommand = jest.fn().mockResolvedValue(macOut);
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand,
+        close: jest.fn(),
+      });
+
+      const result = await driver.getOnuMacTable(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+        'epon 1/1',
+        2,
+      );
+
+      expect(executeCommand).toHaveBeenCalledWith('show olt mac epon 1/1');
+      expect(result).toEqual([
+        {
+          mac: '04:b0:e7:d3:09:a8',
+          vlan: 0,
+        },
+      ]);
+    });
+
+    it('devuelve array vacio si no hay MAC aprendida para esa ONU', async () => {
+      const macOut = fixture('show_olt_mac_populated.txt');
+      jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({
+        connectAndLogin: jest.fn().mockResolvedValue(undefined),
+        executeCommand: jest.fn().mockResolvedValue(macOut),
+        close: jest.fn(),
+      });
+
+      const result = await driver.getOnuMacTable(
+        { host: '172.16.100.5', port: 2324, username: 'admin', password: 'admin' },
+        'epon 1/1',
+        99,
+      );
+
+      expect(result).toEqual([]);
+    });
+  });
 });

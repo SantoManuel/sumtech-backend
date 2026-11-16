@@ -39,6 +39,8 @@ import {
   OnuIpHostInfo,
   OnuWanIpInfo,
   OnuTr069MgmtInfo,
+  OnuOpticalPower,
+  OnuRunningConfigResult,
   BatchTr069AcsItemInput,
   BatchTr069AcsItemOutput,
   BatchTr069AcsResult,
@@ -58,12 +60,15 @@ export interface ProvisioningAuditFinding {
 }
 
 export interface ProvisioningAuditResult {
+  vendor?: string;
   findings: ProvisioningAuditFinding[];
   detailInfo?: OnuDetailInfo;
   ipHost?: OnuIpHostInfo;
   wanIp?: OnuWanIpInfo;
   tr069Mgmt?: OnuTr069MgmtInfo;
   macTable?: Array<{ mac: string; vlan: number }>;
+  opticalPower?: OnuOpticalPower;
+  runningConfig?: OnuRunningConfigResult;
   /** Nombres de los métodos del driver que no están implementados para este fabricante (ej. HiOSO) -- el frontend debe mostrar "no disponible para este fabricante" en vez de un error. */
   unsupported: string[];
 }
@@ -833,6 +838,139 @@ export class OnuManagementService {
   async getProvisioningAudit(id: string): Promise<ProvisioningAuditResult> {
     const { onu, driver, connParams, ponInterface, onuId } = await this.resolveOnuAuditTarget(id);
 
+    if (onu.olt.vendor === 'HIOSO') {
+      const NOT_SUPPORTED = 'NOT_SUPPORTED';
+      const [detailInfoResult, runningConfigResult, opticalPowerResult, macTableResult] = await withOltTelnetLock(onu.olt.id, async () => {
+        const settle = async <T>(fn: () => Promise<T>): Promise<PromiseSettledResult<T>> => {
+          try { return { status: 'fulfilled', value: await fn() }; }
+          catch (reason) { return { status: 'rejected', reason }; }
+        };
+        const onuTarget = `${ponInterface}:${onuId}`;
+        return [
+          await settle(() => driver.getOnuDetailInfo ? driver.getOnuDetailInfo(connParams, ponInterface, onuId) : Promise.reject(new Error(NOT_SUPPORTED))),
+          await settle(() => driver.getOnuRunningConfig ? driver.getOnuRunningConfig(connParams, onuTarget) : Promise.reject(new Error(NOT_SUPPORTED))),
+          await settle(() => driver.getOnuOpticalPower(connParams, onuTarget)),
+          await settle(() => driver.getOnuMacTable ? driver.getOnuMacTable(connParams, ponInterface, onuId) : Promise.reject(new Error(NOT_SUPPORTED))),
+        ] as const;
+      });
+
+      const detailInfo = detailInfoResult.status === 'fulfilled' ? detailInfoResult.value : undefined;
+      const runningConfig = runningConfigResult.status === 'fulfilled' ? runningConfigResult.value : undefined;
+      const opticalPower = opticalPowerResult.status === 'fulfilled' ? opticalPowerResult.value : undefined;
+      const macTable = macTableResult.status === 'fulfilled' ? macTableResult.value : undefined;
+
+      const findings: ProvisioningAuditFinding[] = [];
+      const unsupported: string[] = [];
+
+      // 1. Estado Físico y Negociación OAM en EPON
+      if (detailInfo) {
+        if (detailInfo.phaseState && detailInfo.phaseState.toLowerCase() !== 'working') {
+          findings.push({
+            severity: 'CRITICAL',
+            message:
+              'La OLT reporta que la ONU está desconectada o en pérdida de señal óptica (Status: Down). ' +
+              'Verifica la fibra óptica, conector y splitter antes de reintentar cualquier aprovisionamiento.',
+            command: 'show onu upgrade-state',
+            rawExcerpt: detailInfo.raw,
+          });
+        }
+
+        if (detailInfo.configState && detailInfo.configState.toLowerCase() !== 'success') {
+          findings.push({
+            severity: 'CRITICAL',
+            message:
+              `La negociación CTC/OAM de la ONU está en "${detailInfo.configState}" (no "CtcNegDone"). ` +
+              'El enlace EPON no ha completado el handshake OAM correctamente.',
+            command: 'show onu upgrade-state',
+            rawExcerpt: detailInfo.raw,
+          });
+        }
+      }
+
+      // 2. Telemetría Óptica (DDM)
+      if (opticalPower && opticalPower.rxDbm !== undefined) {
+        if (opticalPower.rxDbm > -6.0) {
+          findings.push({
+            severity: 'CRITICAL',
+            message:
+              `Potencia óptica en saturación extrema (${opticalPower.rxDbm} dBm). Riesgo inminente de dañar o ` +
+              'cegar el receptor óptico de la ONU. El rango óptimo se sitúa entre -15 dBm y -24 dBm. Instala un splitter o atenuador.',
+            command: 'show onu optical-ddm',
+            rawExcerpt: opticalPower.raw,
+          });
+        } else if (opticalPower.rxDbm < -27.0) {
+          findings.push({
+            severity: 'CRITICAL',
+            message:
+              `Potencia óptica degradada excesivamente baja (${opticalPower.rxDbm} dBm). La señal está fuera del umbral ` +
+              'recomendado (-27 dBm). Riesgo de cortes y pérdida de paquetes.',
+            command: 'show onu optical-ddm',
+            rawExcerpt: opticalPower.raw,
+          });
+        }
+      }
+
+      // 3. Configuración de Servicios y VLANs en la OLT
+      const expectedVlan = onu.serviceConfig?.serviceVlan?.vlanId;
+      if (runningConfig) {
+        if (!runningConfig.servicePorts || runningConfig.servicePorts.length === 0) {
+          findings.push({
+            severity: 'CRITICAL',
+            message:
+              'La ONU no tiene ninguna VLAN de servicio asignada en la OLT (show onu config está vacío). ' +
+              'El cliente no puede navegar hasta ser aprovisionado en la OLT.',
+            command: 'show onu config',
+            rawExcerpt: runningConfig.raw,
+            fixAction: 'REAUTHORIZE',
+          });
+        } else if (expectedVlan && !runningConfig.servicePorts.some((p) => p.vlan === expectedVlan)) {
+          const actualVlans = runningConfig.servicePorts.map((p) => p.vlan).join(', ');
+          findings.push({
+            severity: 'CRITICAL',
+            message:
+              `La VLAN configurada en la OLT (${actualVlans}) no coincide con la VLAN de servicio del contrato (${expectedVlan}). ` +
+              'Reautoriza para sincronizar la VLAN en el equipo.',
+            command: 'show onu config',
+            rawExcerpt: runningConfig.raw,
+            fixAction: 'REAUTHORIZE',
+          });
+        }
+      }
+
+      // 4. Tráfico y Aprendizaje de MAC del Cliente
+      if (macTable) {
+        if (macTable.length === 0) {
+          findings.push({
+            severity: 'WARNING',
+            message:
+              'No se ha detectado ninguna dirección MAC aprendida en este puerto ONU (show olt mac no muestra clientes activos). ' +
+              'Verifica que el cable Ethernet o router del cliente esté encendido y conectado a los puertos LAN de la ONU.',
+            command: 'show olt mac',
+          });
+        } else {
+          findings.push({
+            severity: 'INFO',
+            message: `Tráfico activo: se detectaron ${macTable.length} dirección(es) MAC aprendidas (${macTable.map((m) => m.mac).join(', ')}).`,
+            command: 'show olt mac',
+          });
+        }
+      }
+
+      if (findings.length === 0) {
+        findings.push({ severity: 'INFO', message: 'No se detectaron discrepancias conocidas en esta auditoría.' });
+      }
+
+      return {
+        vendor: 'HIOSO',
+        findings,
+        detailInfo,
+        opticalPower,
+        runningConfig,
+        macTable,
+        unsupported,
+      };
+    }
+
     const NOT_SUPPORTED = 'NOT_SUPPORTED';
     const [detailInfoResult, ipHostResult, wanIpResult, tr069MgmtResult, macTableResult] = await withOltTelnetLock(onu.olt.id, async () => {
       const settle = async <T>(fn: () => Promise<T>): Promise<PromiseSettledResult<T>> => {
@@ -1039,7 +1177,7 @@ export class OnuManagementService {
       findings.push({ severity: 'INFO', message: 'No se detectaron discrepancias conocidas en esta auditoría.' });
     }
 
-    return { findings, detailInfo, ipHost, wanIp, tr069Mgmt, macTable, unsupported };
+    return { vendor: onu.olt.vendor, findings, detailInfo, ipHost, wanIp, tr069Mgmt, macTable, unsupported };
   }
 
   /** Resuelve driver/connParams/ponInterface/onuId -- mismo criterio que `getProvisioningAudit()`. */
