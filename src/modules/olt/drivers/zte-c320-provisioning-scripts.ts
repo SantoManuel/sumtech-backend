@@ -113,6 +113,8 @@ export function isPreparatoryTeardownCommand(cmd: string): boolean {
   return (
     cmd.startsWith('no service-port ') ||
     cmd === 'no switchport-bind switch_0/1 veip 1' ||
+    /^no switchport-bind switch_0\/1 iphost \d+$/.test(cmd) ||
+    /^no vlan port eth_0\/\d+$/.test(cmd) ||
     /^no flow \d+ pri \d+ vlan \d+$/.test(cmd) ||
     /^no vlan-filter iphost \d+ pri \d+ vlan \d+$/.test(cmd) ||
     /^no tr069-mgmt \d+ tag pri \d+ vlan \d+$/.test(cmd)
@@ -224,7 +226,26 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
     commands.push('gemport 2 flow 2');
   }
 
-  commands.push('switchport-bind switch_0/1 iphost 1');
+  const isBridge = config.operationMode === 'BRIDGE';
+  const ethPortCount = config.ethPorts && config.ethPorts > 0 ? config.ethPorts : 4;
+  const ethPorts = Array.from({ length: ethPortCount }, (_, i) => i + 1);
+
+  if (isBridge) {
+    // === MODO BRIDGE: puertos LAN mapeados directo a la VLAN de Internet ===
+    // iphost 1 NO se usa — el tráfico WAN pasa directo al switch interno.
+    for (const p of ethPorts) {
+      commands.push(`vlan port eth_0/${p} mode tag vlan ${config.serviceVlan}`);
+    }
+    if (config.ethuniDhcpDelegationSupported === true) {
+      for (const p of ethPorts) {
+        commands.push(`dhcp-ip ethuni eth_0/${p} from-internet`);
+      }
+    }
+  } else {
+    // === MODO ROUTER (default): iphost 1 recibe la VLAN Internet con NAT ===
+    commands.push('switchport-bind switch_0/1 iphost 1');
+  }
+
   if (hasTr069) {
     // switchport-bind iphost 2 + veip 1 (ambos necesarios antes de ip-host 2)
     commands.push(...buildTr069SwitchportBindCommands());
@@ -235,10 +256,18 @@ export function generateAuthorizationScript(config: AuthorizeOnuParams): string[
     commands.push(...buildTr069IpHostEnableCommand());
   }
 
-  commands.push(
-    'vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard',
-    `vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`,
-  );
+  if (!isBridge) {
+    commands.push(
+      'vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard',
+      `vlan-filter iphost 1 pri 0 vlan ${config.serviceVlan}`,
+    );
+    if (config.ethuniDhcpDelegationSupported === true) {
+      for (const p of ethPorts) {
+        commands.push(`dhcp-ip ethuni eth_0/${p} from-onu`);
+      }
+    }
+  }
+
   if (hasTr069) {
     commands.push(...buildTr069IpHostVlanFilterCommands(config));
   }
@@ -387,3 +416,67 @@ export function isTr069ManagementAlreadyApplied(observedRaw: string | undefined,
  * en ese array. Ver `ZteTelnetSession.rebootOnu()`.
  */
 export const REBOOT_ONU_SENTINEL = '__SUMTECH_REBOOT_ONU__';
+
+export interface ModeTransitionParams {
+  ponInterface: string;
+  onuId: number;
+  serviceVlan: number;
+  ethPorts?: number;
+}
+
+/**
+ * Genera el script de transición en caliente de Router a Bridge.
+ * Solo modifica el sub-modo pon-onu-mng sin destruir el registro físico ni tocar transporte.
+ */
+export function generateSwitchToBridgeScript(params: ModeTransitionParams): string[] {
+  const onuInterface = toOnuInterfaceName(params.ponInterface, params.onuId);
+  const ethPortCount = params.ethPorts && params.ethPorts > 0 ? params.ethPorts : 4;
+  const ethPorts = Array.from({ length: ethPortCount }, (_, i) => i + 1);
+
+  const commands: string[] = [
+    'configure terminal',
+    `pon-onu-mng ${onuInterface}`,
+    // 1. Retirar filtro VLAN de la CPU interna (iphost 1)
+    `no vlan-filter iphost 1 pri 0 vlan ${params.serviceVlan}`,
+    // 2. Desvincular iphost 1 del switch virtual
+    'no switchport-bind switch_0/1 iphost 1',
+  ];
+
+  // 3. Mapear puertos físicos Ethernet directamente a la VLAN de Internet
+  for (const p of ethPorts) {
+    commands.push(`vlan port eth_0/${p} mode tag vlan ${params.serviceVlan}`);
+  }
+
+  commands.push('exit', 'exit', 'write');
+  return commands;
+}
+
+/**
+ * Genera el script de transición en caliente de Bridge a Router.
+ * Solo modifica el sub-modo pon-onu-mng sin destruir el registro físico ni tocar transporte.
+ */
+export function generateSwitchToRouterScript(params: ModeTransitionParams): string[] {
+  const onuInterface = toOnuInterfaceName(params.ponInterface, params.onuId);
+  const ethPortCount = params.ethPorts && params.ethPorts > 0 ? params.ethPorts : 4;
+  const ethPorts = Array.from({ length: ethPortCount }, (_, i) => i + 1);
+
+  const commands: string[] = [
+    'configure terminal',
+    `pon-onu-mng ${onuInterface}`,
+  ];
+
+  // 1. Retirar el mapeo VLAN directo de los puertos físicos
+  for (const p of ethPorts) {
+    commands.push(`no vlan port eth_0/${p}`);
+  }
+
+  // 2. Asociar iphost 1 al switch virtual y configurar filtro VLAN
+  commands.push(
+    'switchport-bind switch_0/1 iphost 1',
+    'vlan-filter-mode iphost 1 tag-filter vlan-filter untag-filter discard',
+    `vlan-filter iphost 1 pri 0 vlan ${params.serviceVlan}`,
+  );
+
+  commands.push('exit', 'exit', 'write');
+  return commands;
+}

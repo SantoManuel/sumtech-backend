@@ -14,6 +14,19 @@ describe('ZteC320Driver', () => {
     jest.spyOn<any, any>(driver, 'delay').mockResolvedValue(undefined);
   });
 
+  it('aborts Bridge authorization when a primary LAN VLAN command is rejected', async () => {
+    const executeCommand = jest.fn(async (cmd: string) => cmd.startsWith('vlan port eth_0/') ? '%Error 20202: Invalid input' : 'TEST OLT#');
+    jest.spyOn<any, any>(driver, 'createSession').mockReturnValue({ connectAndLogin: jest.fn(), executeCommand, close: jest.fn() });
+    const result = await driver.authorizeOnu({ host: '192.0.2.1', port: 23, username: 'test', password: 'test' }, {
+      ponInterface: 'gpon-olt_1/1/1', onuId: 1, modelTypeName: 'TEST', serialNumber: 'TEST00000001',
+      serviceVlan: 400, managementMethod: 'OMCI', operationMode: 'BRIDGE', ethPorts: 1,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('vlan port eth_0/1');
+    const rejectedAt = executeCommand.mock.calls.findIndex(([cmd]) => cmd.startsWith('vlan port eth_0/'));
+    expect(executeCommand.mock.calls.slice(rejectedAt + 1).some(([cmd]) => cmd === 'write')).toBe(false);
+  });
+
   it('debe estar definido', () => {
     expect(driver).toBeDefined();
   });
@@ -214,7 +227,7 @@ describe('ZteC320Driver', () => {
     expect(commands.slice(-3)).toEqual(['exit', 'exit', 'write']);
   });
 
-  describe('generateAuthorizationScript: no genera "dhcp-ip ethuni ... from-onu" (eliminado de autorizaciones por incompatibilidad OMCI)', () => {
+  describe('generateAuthorizationScript: delegacion DHCP condicionada por capacidad OMCI', () => {
     const baseConfig = {
       ponInterface: 'gpon-olt_1/1/1',
       onuId: 5,
@@ -234,7 +247,7 @@ describe('ZteC320Driver', () => {
         ...baseConfig,
         ethuniDhcpDelegationSupported: true,
       });
-      expect(commandsWithTrue.some((c) => c.includes('dhcp-ip ethuni'))).toBe(false);
+      expect(commandsWithTrue.filter((c) => c.includes('dhcp-ip ethuni'))).toEqual([1, 2, 3, 4].map(p => `dhcp-ip ethuni eth_0/${p} from-onu`));
       expect(commandsWithTrue).toContain('veip 1 port udp 1232 host 2');
       expect(commandsWithTrue).toContain('tr069-mgmt 1 state unlock');
 

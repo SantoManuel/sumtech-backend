@@ -144,3 +144,31 @@ describe('isTr069TransportAlreadyApplied / isTr069ManagementAlreadyApplied', () 
     });
   });
 });
+
+
+describe('Bridge authorization and hot switch safety', () => {
+  const scripts = require('./zte-c320-provisioning-scripts');
+  const base = { ponInterface: 'gpon-olt_1/1/1', onuId: 1, serviceVlan: 400,
+    operationMode: 'BRIDGE', ethPorts: 1, managementMethod: 'TR069', tr069Url: 'http://acs:7547', tr069Vlan: 46 };
+  it.each([1, 4])('maps exactly %i Ethernet ports and preserves management', ethPorts => {
+    const bridge: string[] = scripts.generateAuthorizationScript({ ...base, ethPorts });
+    const router: string[] = scripts.generateAuthorizationScript({ ...base, ethPorts, operationMode: 'ROUTER' });
+    expect(bridge.filter(c => c.startsWith('vlan port '))).toEqual(Array.from({length: ethPorts}, (_, i) => `vlan port eth_0/${i + 1} mode tag vlan 400`));
+    expect(bridge.some(c => /(?:iphost|ip-host) 1(?: |$)/.test(c))).toBe(false);
+    const management = (cmds: string[]) => cmds.filter(c => scripts.isManagementOrTr069Command(c));
+    expect(management(bridge)).toEqual(management(router));
+  });
+  it.each([false, undefined, true])('gates DHCP on explicit support %s', supported => {
+    for (const operationMode of ['BRIDGE', 'ROUTER']) {
+      const commands = scripts.generateAuthorizationScript({ ...base, operationMode, ethuniDhcpDelegationSupported: supported });
+      expect(commands.filter((c: string) => c.startsWith('dhcp-ip ethuni'))).toEqual(supported === true ? [`dhcp-ip ethuni eth_0/1 ${operationMode === 'BRIDGE' ? 'from-internet' : 'from-onu'}`] : []);
+    }
+  });
+  it('never destroys physical registration or transport in either transition', () => {
+    for (const generate of [scripts.generateSwitchToBridgeScript, scripts.generateSwitchToRouterScript]) {
+      const commands: string[] = generate(base);
+      expect(commands.some(c => /^(?:no )?(?:onu |tcont |gemport |service-port |flow |tr069-mgmt |veip )/.test(c))).toBe(false);
+      expect(commands.some(c => c.includes('eth_0/2'))).toBe(false);
+    }
+  });
+});

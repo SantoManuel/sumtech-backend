@@ -594,6 +594,8 @@ export class UnknownOltVendorError extends Error {
 }
 
 export interface IOltDriver {
+  getOnuOperationMode?(params: OltConnectionParams, target: string): Promise<import('./onu-mode.types').OnuModeDetectionResult>;
+  switchOnuOperationMode?(params: OltConnectionParams, config: import('./onu-mode.types').OnuModeSwitchParams): Promise<import('./onu-mode.types').OnuModeSwitchResult>;
   configureOnuWan?(params: OltConnectionParams, input: import('./onu-wan.types').ConfigureOnuWanParams): Promise<import('./onu-wan.types').OnuWanApplyResult>;
   getOnuWanConfiguration?(params: OltConnectionParams, iface: string, wanIndex: number): Promise<import('./onu-wan.types').OnuWanConfiguration>;
   testConnection(params: OltConnectionParams): Promise<{ ok: boolean; error?: string; latencyMs?: number }>;

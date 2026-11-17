@@ -1,3 +1,4 @@
+import { ChangeOnuModeDto } from './dto/change-onu-mode.dto';
 import {
   Controller,
   Get,
@@ -379,6 +380,22 @@ export class OnuController {
    * una ONU ya autorizada y reintenta el push a GenieACS, sin volver a
    * disparar el CLI de autorización en la OLT.
    */
+  @Get(':id/operation-mode')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('VIEW')
+  @OltIdFrom('ONU_ID_PARAM')
+  async getOperationMode(@Param('id') id: string) {
+    return this.onuService.getOnuOperationMode(id);
+  }
+
+  @Post(':id/operation-mode')
+  @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
+  @RequireOltAction('CONFIGURE')
+  @OltIdFrom('ONU_ID_PARAM')
+  async changeOperationMode(@Param('id') id: string, @Body() dto: ChangeOnuModeDto, @Req() req: any) {
+    return this.onuService.changeOnuOperationMode(id, dto.operationMode, req.user?.id);
+  }
+
   @Post(':id/reprovision')
   @Roles(Role.ADMIN, Role.GERENTE, Role.TECNICO)
   @RequireOltAction('CONFIGURE')

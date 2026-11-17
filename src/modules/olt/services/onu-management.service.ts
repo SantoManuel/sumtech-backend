@@ -2318,6 +2318,63 @@ export class OnuManagementService {
    * ahora el camino recomendado desde la UI (Ficha 360) -- este método se
    * deja intacto por compatibilidad, sin wiring nuevo desde el frontend.
    */
+  async getOnuOperationMode(id: string) {
+    const onu = await this.findById(id);
+    const driver = this.resolveDriver(onu.olt);
+    if (!driver.getOnuOperationMode) throw new BadRequestException('El driver no soporta consulta de modo OMCI.');
+    const params = await this.connectionResolver.resolve(onu.olt);
+    return withOltTelnetLock(onu.olt.id, () => driver.getOnuOperationMode!(params, this.buildOnuTarget(onu)));
+  }
+
+  async changeOnuOperationMode(id: string, mode: 'ROUTER' | 'BRIDGE', actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performChangeOnuOperationMode(id, mode, actorUserId));
+  }
+
+  private async performChangeOnuOperationMode(id: string, mode: 'ROUTER' | 'BRIDGE', actorUserId?: string) {
+    if (!['ROUTER', 'BRIDGE'].includes(mode)) throw new BadRequestException('Modo inv?lido.');
+    const onu = await this.findById(id);
+    if (onu.status !== 'ACTIVE') throw new BadRequestException('La ONU debe estar ACTIVE para cambiar de modo.');
+    const driver = this.resolveDriver(onu.olt);
+    if (!driver.switchOnuOperationMode) throw new BadRequestException('El driver no soporta cambio de modo OMCI.');
+    const config = await this.configRepository.findOneBy({ onuId: id });
+    if (!config) throw new BadRequestException('La ONU no tiene configuraci?n de servicio.');
+    const type = onu.onuType || (onu.onuTypeId ? await this.onuTypeRepository.findOneBy({ id: onu.onuTypeId }) : undefined);
+    const vlan = config.serviceVlanId ? await this.vlanRepository.findOneBy({ id: config.serviceVlanId }) : undefined;
+    if (!type || !Number.isInteger(type.ethPorts) || type.ethPorts < 1 || !vlan) throw new BadRequestException('Faltan los puertos reales del modelo o la VLAN de servicio.');
+    if ((mode === 'BRIDGE' && type.supportsBridge === false) || (mode === 'ROUTER' && type.supportsRouter === false)) throw new BadRequestException('El modelo no soporta el modo solicitado.');
+    const location = this.resolveOnuLocation(onu);
+    const params = await this.connectionResolver.resolve(onu.olt);
+    const previousMode = config.operationMode;
+    config.desiredVersion = Math.max(config.desiredVersion || 0, config.appliedVersion || 0) + 1;
+    config.applyStatus = 'PENDING';
+    await this.configRepository.save(config);
+    let result: import('../ports/onu-mode.types').OnuModeSwitchResult;
+    try {
+      result = await withOltTelnetLock(onu.olt.id, () => driver.switchOnuOperationMode!(params, {
+        ...location, operationMode: mode, ethPorts: type.ethPorts, serviceVlan: vlan.vlanId,
+        ethuniDhcpDelegationSupported: type.supportsEthuniDhcpDelegation,
+      }));
+    } catch {
+      result = { ok: false, changed: false, error: 'No se pudo completar la comunicaci?n con la OLT.' };
+    }
+    // Require actual verification even if a driver incorrectly reports success.
+    const verified = result.ok && result.observed?.mode === mode.toLowerCase() && result.observed.internetVlan === vlan.vlanId;
+    config.applyStatus = verified ? 'APPLIED' : 'ERROR';
+    if (verified) {
+      config.operationMode = mode;
+      config.appliedVersion = config.desiredVersion;
+    }
+    await this.configRepository.save(config);
+    await this.deviceOperationLogger.logEvent({
+      nodeId: onu.olt.viaNodeId || onu.olt.id, eventType: 'PROVISION',
+      status: verified ? 'SUCCESS' : 'FAILURE', actorUserId,
+      message: `Cambio de modo ONU ${onu.serialNumber}: ${previousMode} -> ${mode}: ${verified ? 'verificado' : 'fallido'}.`,
+      rawDetails: { onuId: id, operation: 'changeOnuOperationMode', previousMode, requestedMode: mode, changed: result.changed, observedMode: result.observed?.mode },
+    });
+    if (!verified) throw new BadRequestException({ message: result.error || 'La OLT no confirm? el cambio de modo.', changed: result.changed, observed: result.observed });
+    return result;
+  }
+
   async reprovisionOnu(id: string, dto: any, actorUserId?: string) {
     return this.wanProvisioning.withMutation(id, () => this.performReprovisionOnu(id, dto, actorUserId));
   }
@@ -2336,6 +2393,17 @@ export class OnuManagementService {
       throw new BadRequestException(
         'Esta ONU no tiene configuración de servicio previa -- usa "Autorizar y Aprovisionar" primero.',
       );
+    }
+
+    if (dto.operationMode && dto.operationMode !== config.operationMode) {
+      if (!['ROUTER', 'BRIDGE'].includes(dto.operationMode)) throw new BadRequestException('Modo inv?lido.');
+      const driver = this.resolveDriver(olt);
+      if (driver.switchOnuOperationMode) {
+        await this.performChangeOnuOperationMode(id, dto.operationMode, actorUserId);
+        config = (await this.configRepository.findOneBy({ onuId: onu.id }))!;
+      } else if (olt.vendor === 'ZTE') {
+        throw new BadRequestException('El driver no soporta cambio de modo OMCI.');
+      }
     }
 
     config.mgmtVlanId = dto.mgmtVlanId || undefined;

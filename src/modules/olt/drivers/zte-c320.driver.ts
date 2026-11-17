@@ -18,6 +18,8 @@ import {
   generateTr069ManagementScript as generateTr069ManagementScriptImpl,
   generateTr069ProfileScript as generateTr069ProfileScriptImpl,
   generateTr069TransportScript as generateTr069TransportScriptImpl,
+  generateSwitchToBridgeScript,
+  generateSwitchToRouterScript,
   isTr069TransportAlreadyApplied,
   isTr069ManagementAlreadyApplied,
   hasTr069Channel,
@@ -26,6 +28,7 @@ import {
   getHumanPacingDelay,
   SWITCHPORT_BIND_RE,
 } from './zte-c320-provisioning-scripts';
+import { detectOnuMode, OnuModeDetectionResult } from './zte-c320-mode-detector';
 import {
   verifyOnuProvisioningWithSession,
   getOnuIpHostWithSession,
@@ -463,6 +466,87 @@ export class ZteC320Driver implements IOltDriver {
    * Ejecuta el aprovisionamiento de la ONU en la OLT respetando los tiempos de
    * convergencia OMCI, simulación de operador humano y el orden jerárquico estricto.
    */
+  private validateModeTarget(target: string): void {
+    if (!/^gpon-onu_\d+\/\d+\/\d+:[1-9]\d*$/.test(target)) {
+      throw new Error('Interfaz ONU GPON inv?lida.');
+    }
+  }
+
+  private async readOperationMode(session: { executeCommand(cmd: string): Promise<string> }, target: string) {
+    this.validateModeTarget(target);
+    const raw = await session.executeCommand(`show onu running config ${target}`);
+    if (!raw?.trim() || isOltErrorResponse(raw)) throw new Error('No se pudo leer la configuraci?n OMCI de la ONU.');
+    return { raw, observed: detectOnuMode(raw) };
+  }
+
+  async getOnuOperationMode(params: OltConnectionParams, target: string): Promise<OnuModeDetectionResult> {
+    this.validateModeTarget(target);
+    const session = this.createSession(params);
+    try {
+      await session.connectAndLogin();
+      return (await this.readOperationMode(session, target)).observed;
+    } finally { await session.close(); }
+  }
+
+  async switchOnuOperationMode(
+    params: OltConnectionParams,
+    config: import('../ports/onu-mode.types').OnuModeSwitchParams,
+  ): Promise<import('../ports/onu-mode.types').OnuModeSwitchResult> {
+    let changed = false;
+    let observed: OnuModeDetectionResult | undefined;
+    const session = this.createSession(params);
+    try {
+      if (!['BRIDGE', 'ROUTER'].includes(config.operationMode) ||
+          !Number.isInteger(config.serviceVlan) || config.serviceVlan < 1 || config.serviceVlan > 4094 ||
+          !Number.isInteger(config.ethPorts) || config.ethPorts < 1 || config.ethPorts > 64 ||
+          !Number.isInteger(config.onuId) || config.onuId < 1 || config.onuId > 128 ||
+          !/^gpon-olt_\d+\/\d+\/\d+$/.test(config.ponInterface)) {
+        throw new Error('Modo, VLAN, puertos Ethernet o ubicaci?n ONU inv?lidos.');
+      }
+      const target = toOnuInterfaceName(config.ponInterface, config.onuId);
+      await session.connectAndLogin();
+      const before = await this.readOperationMode(session, target);
+      observed = before.observed;
+      if (observed.mode === 'mixed' || observed.mode === 'unknown') throw new Error('Modo real mixto o desconocido; se requiere diagn?stico antes de cambiarlo.');
+      if (observed.internetVlan !== config.serviceVlan) throw new Error('La VLAN observada no coincide con la VLAN de servicio.');
+      if (observed.ethPortsDetected.some(p => p > config.ethPorts)) throw new Error('Los puertos observados exceden los declarados para el modelo.');
+      if (observed.mode === config.operationMode.toLowerCase()) return { ok: true, changed: false, observed };
+      // Preserve every existing management command and compare after execution.
+      const managementLines = (raw: string) => raw.split(/\r?\n/).map(l => l.trim())
+        .filter(l => /^(?:flow (?:2 |mode 2 )|gemport 2 |switchport-bind switch_0\/1 (?:iphost 2|veip )|ip-host 2 |vlan-filter(?:-mode)? iphost 2 |veip |tr069-mgmt |security-mgmt )/.test(l)).sort();
+      const script = config.operationMode === 'BRIDGE' ? generateSwitchToBridgeScript(config) : generateSwitchToRouterScript(config);
+      // Preserve DHCP omission unless support is explicitly enabled.
+      const dhcpPorts = [...before.raw.matchAll(/^\s*dhcp-ip ethuni eth_0\/(\d+) from-(?:onu|internet)\s*$/gm)]
+        .map(m => Number(m[1]));
+      if (dhcpPorts.length && config.ethuniDhcpDelegationSupported !== true) throw new Error('Hay delegaciones DHCP existentes; confirma la capacidad del modelo antes de cambiar el modo.');
+      const dhcpCommands = [...new Set(dhcpPorts)].map(p => `dhcp-ip ethuni eth_0/${p} ${config.operationMode === 'BRIDGE' ? 'from-internet' : 'from-onu'}`);
+      script.splice(script.length - 3, 0, ...dhcpCommands);
+      for (const cmd of script) {
+        if (cmd !== 'configure terminal' && !cmd.startsWith('pon-onu-mng ') && cmd !== 'exit' && cmd !== 'write') changed = true;
+        const output = await session.executeCommand(cmd);
+        await this.delay(getHumanPacingDelay(cmd));
+        // Only tolerate an explicitly absent teardown entry, never arbitrary errors.
+        if (isOltErrorResponse(output) && !(cmd.startsWith('no ') && /(?:does not exist|not exist|not found)/i.test(output))) {
+          throw new Error(`La OLT rechaz? el cambio de modo en "${cmd}".`);
+        }
+      }
+      const after = await this.readOperationMode(session, target);
+      observed = after.observed;
+      if (observed.mode !== config.operationMode.toLowerCase() || observed.internetVlan !== config.serviceVlan ||
+          (config.operationMode === 'BRIDGE' && !Array.from({length: config.ethPorts}, (_, i) => i + 1).every(p => after.raw.split(/\r?\n/).some(l => l.trim() === `vlan port eth_0/${p} mode tag vlan ${config.serviceVlan}`)))) {
+        throw new Error('La verificaci?n final no confirma el modo solicitado.');
+      }
+      if (JSON.stringify(managementLines(before.raw)) !== JSON.stringify(managementLines(after.raw))) throw new Error('La configuraci?n de gesti?n cambi? durante la transici?n.');
+      return { ok: true, changed, observed };
+    } catch (err: any) {
+      return { ok: false, changed, observed, error: err.message };
+    } finally {
+      // Leave configuration mode after partial failures; no automatic rollback or reboot.
+      if (changed) { try { await session.executeCommand('end'); } catch {} }
+      await session.close();
+    }
+  }
+
   async authorizeOnu(
     params: OltConnectionParams,
     config: import('../ports/olt-driver.port').AuthorizeOnuParams,

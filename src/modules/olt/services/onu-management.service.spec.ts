@@ -2076,6 +2076,47 @@ describe('OnuManagementService', () => {
       expect(cpeConfiguratorService.configureCpe).not.toHaveBeenCalled();
     });
   });
+  describe('verified operation mode changes', () => {
+    let config: any;
+    beforeEach(() => {
+      config = { onuId: mockOnu.id, serviceVlanId: 'vlan-1', operationMode: 'ROUTER', appliedVersion: 1, desiredVersion: 1 };
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', onuType: { ethPorts: 1 } });
+      configRepo.findOneBy.mockResolvedValue(config);
+      vlanRepo.findOneBy.mockResolvedValue({ vlanId: 400 });
+      zteDriver.switchOnuOperationMode = jest.fn().mockResolvedValue({ ok: true, changed: true, observed: { mode: 'bridge', internetVlan: 400 } });
+    });
+    it('persists the mode only after verification', async () => {
+      zteDriver.switchOnuOperationMode.mockImplementation(async () => {
+        expect(config.operationMode).toBe('ROUTER');
+        expect(config.applyStatus).toBe('PENDING');
+        return { ok: true, changed: true, observed: { mode: 'bridge', internetVlan: 400 } };
+      });
+      await service.changeOnuOperationMode(mockOnu.id!, 'BRIDGE', 'admin');
+      expect(config).toMatchObject({ operationMode: 'BRIDGE', applyStatus: 'APPLIED', desiredVersion: 2, appliedVersion: 2 });
+    });
+    it.each([
+      { ok: false, changed: true, error: 'fallo parcial' },
+      { ok: true, changed: true, observed: { mode: 'router', internetVlan: 400 } },
+      { ok: true, changed: true, observed: { mode: 'bridge', internetVlan: 401 } },
+    ])('does not mark failed or discrepant results as applied', async result => {
+      zteDriver.switchOnuOperationMode.mockResolvedValue(result);
+      await expect(service.changeOnuOperationMode(mockOnu.id!, 'BRIDGE')).rejects.toThrow(BadRequestException);
+      expect(config).toMatchObject({ operationMode: 'ROUTER', applyStatus: 'ERROR', appliedVersion: 1, desiredVersion: 2 });
+    });
+    it('records communication failure without updating the applied mode', async () => {
+      zteDriver.switchOnuOperationMode.mockRejectedValue(new Error('timeout'));
+      await expect(service.changeOnuOperationMode(mockOnu.id!, 'BRIDGE')).rejects.toThrow(BadRequestException);
+      expect(config.applyStatus).toBe('ERROR');
+      expect(config.operationMode).toBe('ROUTER');
+    });
+    it('rejects unknown physical ports before saving or invoking the driver', async () => {
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', onuType: { ethPorts: 0 } });
+      await expect(service.changeOnuOperationMode(mockOnu.id!, 'BRIDGE')).rejects.toThrow(BadRequestException);
+      expect(configRepo.save).not.toHaveBeenCalled();
+      expect(zteDriver.switchOnuOperationMode).not.toHaveBeenCalled();
+    });
+  });
+
   describe('reprovisionOnu', () => {
     const mockConfig = {
       onuId: 'onu-uuid-1',
@@ -2108,6 +2149,9 @@ describe('OnuManagementService', () => {
     it('actualiza onu_service_config SIN llamar al driver.authorizeOnu (no re-dispara el CLI de la OLT)', async () => {
       onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', contractId: 'contract-1', onuTypeId: 'type-1' });
       configRepo.findOneBy.mockResolvedValue({ ...mockConfig });
+      onuTypeRepo.findOneBy.mockResolvedValue({ ethPorts: 1 });
+      vlanRepo.findOneBy.mockResolvedValue({ vlanId: 400 });
+      zteDriver.switchOnuOperationMode = jest.fn().mockResolvedValue({ ok: true, changed: true, observed: { mode: 'bridge', internetVlan: 400 } });
 
       await service.reprovisionOnu('onu-uuid-1', {
         managementMethod: 'TR069',
@@ -2116,13 +2160,14 @@ describe('OnuManagementService', () => {
       }, 'admin-id');
 
       expect(zteDriver.authorizeOnu).not.toHaveBeenCalled();
+      expect(zteDriver.switchOnuOperationMode).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ operationMode: 'BRIDGE', ethPorts: 1, serviceVlan: 400 }));
       expect(configRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           managementMethod: 'TR069',
           tr069NetworkId: 'tr069-1',
           operationMode: 'BRIDGE',
-          appliedVersion: 2,
-          desiredVersion: 2,
+          appliedVersion: 3,
+          desiredVersion: 3,
         }),
       );
       expect(deviceOperationLogger.logEvent).toHaveBeenCalledWith(
