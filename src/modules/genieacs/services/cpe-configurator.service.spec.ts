@@ -52,6 +52,22 @@ describe('CpeConfiguratorService', () => {
     parameterMapper = module.get<CpeParameterMapper>(CpeParameterMapper);
   });
 
+  it('writes PPPoE to the device verified by management MAC even with a different GPON serial', async () => {
+    const linked = '2CB272-F660-ZTEGC687ABB0234';
+    (service as any).identity = { resolveSerial: jest.fn().mockResolvedValue({ deviceId: linked, method: 'MAC' }) };
+    mockClient.getDeviceStatus.mockResolvedValue({ deviceId: linked, isTR181: false, tags: [] });
+    mockClient.getParameterValues.mockResolvedValue({});
+    const result = await service.configureCpe({ serialNumber: 'ZTEGC288E7C5', vendor: 'ZTE', wanMode: 'PPPOE', pppoeUsername: 'test', pppoePassword: 'test', serviceVlan: 700 });
+    expect(result.deviceId).toBe(linked);
+    expect(mockClient.findDeviceBySerial).not.toHaveBeenCalled();
+    expect(mockClient.setParameterValues).toHaveBeenCalledWith(linked, expect.any(Array));
+  });
+  it('does not write WAN parameters when identity verification fails', async () => {
+    (service as any).identity = { resolveSerial: jest.fn().mockRejectedValue(new Error('Identity conflict')) };
+    await expect(service.configureCpe({ serialNumber: 'ZTEGC288E7C5', wanMode: 'PPPOE' })).rejects.toThrow('Identity conflict');
+    expect(mockClient.setParameterValues).not.toHaveBeenCalled();
+  });
+
   it('debe lanzar NotFoundException si el dispositivo no existe en GenieACS', async () => {
     mockClient.findDeviceBySerial.mockResolvedValue(null);
 

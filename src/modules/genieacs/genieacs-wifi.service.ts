@@ -1,3 +1,5 @@
+import { Optional } from '@nestjs/common';
+import { OnuGenieacsIdentityService } from './services/onu-genieacs-identity.service';
 import {
   BadGatewayException,
   ConflictException,
@@ -43,6 +45,7 @@ export class GenieAcsWifiService {
     private readonly resolver: GenieAcsDeviceResolverService,
     @Inject(GENIEACS_CLIENT)
     private readonly client: GenieAcsClient | null,
+    @Optional() private readonly identity?: OnuGenieacsIdentityService,
   ) {}
 
   /** Estado actual (cacheado) del WiFi de un contrato — no golpea la NBI si ya está resuelto. */
@@ -90,6 +93,7 @@ export class GenieAcsWifiService {
     const resolvedContractId = isValidContractUuid(rawContractId) ? rawContractId : null;
 
     try {
+      await this.identity?.verifyDeviceForWrite(genieacsDeviceId, resolvedContractId || undefined);
       const status = await this.client.getDeviceStatus(genieacsDeviceId);
       await this.client.setWifiCredentials(genieacsDeviceId, status.isTR181, credentials);
 

@@ -1,4 +1,5 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { OnuGenieacsIdentityService } from './services/onu-genieacs-identity.service';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { GenieAcsDeviceEntity } from './entities/genieacs-device.entity';
@@ -30,6 +31,7 @@ export class GenieAcsDeviceResolverService {
     private readonly serialRepository: Repository<SerialNumberEntity>,
     @Inject(GENIEACS_CLIENT)
     private readonly client: GenieAcsClient | null,
+    @Optional() private readonly identity?: OnuGenieacsIdentityService,
   ) {}
 
   /** Devuelve el registro ya guardado sin intentar resolverlo de nuevo — útil para lecturas rápidas (ej. listados). */
@@ -42,6 +44,7 @@ export class GenieAcsDeviceResolverService {
    * por su número de serie (o candidatos GPON), útil para ONUs sin contrato vinculado.
    */
   async resolveBySerialNumber(serialNumber: string): Promise<string | null> {
+    if (this.identity) return (await this.identity.resolveSerial(serialNumber))?.deviceId || null;
     if (!this.client || !serialNumber) {
       return null;
     }
@@ -117,6 +120,17 @@ export class GenieAcsDeviceResolverService {
    */
   async resolveForContract(contractId: string): Promise<GenieAcsDeviceEntity | null> {
     const existing = await this.deviceRepository.findOneBy({ contractId });
+    if (this.identity) {
+      const linked = await this.identity.resolveContract(contractId);
+      if (linked) {
+        const record = existing || this.deviceRepository.create({ contractId });
+        record.genieacsDeviceId = linked.deviceId;
+        record.lastSyncAt = new Date();
+        record.lastSyncError = null;
+        return this.deviceRepository.save(record);
+      }
+    }
+
     if (existing?.genieacsDeviceId) {
       return existing;
     }

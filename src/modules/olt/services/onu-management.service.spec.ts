@@ -2385,6 +2385,32 @@ describe('OnuManagementService', () => {
     });
   });
 
+  describe('MAC identity integration', () => {
+    const linked = '2CB272-F660-ZTEGC687ABB0234';
+    let identity: any;
+    beforeEach(() => {
+      identity = { resolveOnu: jest.fn().mockResolvedValue({ deviceId: linked, method: 'MAC', tr069SerialNumber: 'ZTEGC687ABB0234' }), recordManagementMac: jest.fn() };
+      (service as any).identity = identity;
+      onuRepo.findOne.mockResolvedValue({ ...mockOnu, status: 'ACTIVE', serviceConfig: { cpeConfigStatus: 'PENDING' } });
+      zteDriver.getOnuIpHost = jest.fn().mockResolvedValue({ ipHostFound: true, managementMac: '2CB2726623EB', mgmtIp: '192.168.44.10' });
+      genieAcsDeviceResolver.refreshDevice = jest.fn();
+    });
+    it('captures IP-host 2 management MAC and synchronizes the mismatched device', async () => {
+      await service.syncCpe(mockOnu.id!);
+      expect(identity.recordManagementMac).toHaveBeenCalledWith(mockOnu.id, '2CB2726623EB');
+      expect(genieAcsDeviceResolver.refreshDevice).toHaveBeenCalledWith(linked);
+    });
+    it('uses the same verified MAC identity for WiFi', async () => {
+      await service.changeWifi(mockOnu.id!, { ssid: 'Test', password: 'Test12345' });
+      expect(genieAcsWifiService.changeWifiForDevice).toHaveBeenCalledWith(linked, expect.objectContaining({ ssid: 'Test' }), 'STAFF', undefined);
+    });
+    it('does not send WiFi writes after an identity conflict', async () => {
+      identity.resolveOnu.mockRejectedValue(new BadRequestException('Identity conflict'));
+      await expect(service.changeWifi(mockOnu.id!, { ssid: 'Test', password: 'Test12345' })).rejects.toThrow('Identity conflict');
+      expect(genieAcsWifiService.changeWifiForDevice).not.toHaveBeenCalled();
+    });
+  });
+
   describe('syncCpe', () => {
     it('sincroniza tags y marca cpeConfigStatus a APPLIED en GenieACS y Sumtech', async () => {
       const mockServiceConfig = { id: 'cfg-1', onuId: 'onu-uuid-1', cpeConfigStatus: 'PENDING' };

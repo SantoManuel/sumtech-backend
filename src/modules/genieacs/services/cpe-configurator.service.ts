@@ -1,3 +1,4 @@
+import { OnuGenieacsIdentityService } from './onu-genieacs-identity.service';
 import {
   Injectable,
   Logger,
@@ -37,6 +38,7 @@ export class CpeConfiguratorService {
     private readonly client: GenieAcsClient | null,
     private readonly parameterMapper: CpeParameterMapper,
     @Optional() private readonly wanPolicy?: CpeWanPolicyService,
+    @Optional() private readonly identity?: OnuGenieacsIdentityService,
   ) {}
 
   private getClient(): GenieAcsClient {
@@ -63,10 +65,10 @@ export class CpeConfiguratorService {
     const client = this.getClient();
 
     // 1. Localizar dispositivo en GenieACS por serial
-    const deviceId = await client.findDeviceBySerial(input.serialNumber, input.wanMode ? { exactOnly: true } : undefined);
+    const deviceId = this.identity ? (await this.identity.resolveSerial(input.serialNumber))?.deviceId : await client.findDeviceBySerial(input.serialNumber, { exactOnly: true });
     if (!deviceId) {
       throw new NotFoundException(
-        `El CPE con serial "${input.serialNumber}" no ha sido detectado por GenieACS (aún no ha enviado Inform).`,
+        `No se encontró un dispositivo GenieACS asociado al serial "${input.serialNumber}" ni a su MAC de gestión.`,
       );
     }
 

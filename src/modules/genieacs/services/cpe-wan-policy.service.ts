@@ -10,7 +10,12 @@ export function isWanParameter(path: string): boolean {
 @Injectable()
 export class CpeWanPolicyService {
   private readonly held = new AsyncLocalStorage<Set<string>>();
+  private identityVerifier?: (deviceId: string) => Promise<void>;
   constructor(private readonly tenant: TenantContextService) {}
+
+  setIdentityVerifier(verifier: (deviceId: string) => Promise<void>): void {
+    this.identityVerifier = verifier;
+  }
 
   bindResolvedDevice(deviceId: string): void {
     // Called only after findDeviceBySerial, inside the serial-bound writer lock.
@@ -57,6 +62,7 @@ export class CpeWanPolicyService {
   }
 
   async withDeviceWrite<T>(deviceId: string, paths: string[], action: () => Promise<T>): Promise<T> {
+    await this.identityVerifier?.(deviceId);
     if (!paths.some(isWanParameter)) return action();
     if (this.held.getStore()?.has(`device:${this.tenant.getTenantId()}:${deviceId}`)) return action();
     const rows = await this.tenant.getDataSource().query(

@@ -1,3 +1,4 @@
+import { OnuGenieacsIdentityService } from './services/onu-genieacs-identity.service';
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { TenantTypeOrmModule } from '../../common/tenancy/tenant-typeorm.module';
@@ -63,6 +64,7 @@ import { TicketsModule } from '../tickets/tickets.module';
     GenieAcsFirmwareController,
   ],
   providers: [
+    OnuGenieacsIdentityService,
     GenieAcsDeviceResolverService,
     GenieAcsWifiService,
     GenieAcsMonitoringService,
@@ -84,6 +86,7 @@ import { TicketsModule } from '../tickets/tickets.module';
     genieAcsClientFactoryProvider,
   ],
   exports: [
+    OnuGenieacsIdentityService,
     GenieAcsDeviceResolverService,
     GenieAcsWifiService,
     GenieAcsMonitoringService,

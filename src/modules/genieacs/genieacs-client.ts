@@ -1,3 +1,4 @@
+import { normalizeDeviceMac } from './utils/device-mac';
 import axios, { AxiosInstance } from 'axios';
 import * as https from 'https';
 import * as crypto from 'crypto';
@@ -63,6 +64,19 @@ export class SetParameterValuesFaultError extends Error {
  *   no un mapa plano de claves con puntos.
  */
 export class GenieAcsClient {
+  /** Exact, unique MAC match for identity and writes; never uses nearby MACs. */
+  async findDeviceByExactMac(value: string): Promise<string | null> {
+    const mac = normalizeDeviceMac(value);
+    if (!mac) throw new Error('MAC de gestion invalida.');
+    return this.findDeviceByMacHexCandidates([mac], true);
+  }
+
+  static documentHasExactMac(doc: any, mac: string): boolean {
+    return this.MAC_ADDRESS_PATHS.some(path => {
+      const node = path.split('.').reduce((value, key) => value?.[key], doc);
+      return normalizeDeviceMac(node?._value) === mac;
+    });
+  }
   // Certificado autofirmado del servidor GenieACS de Sumtech (ver Fase 00) —
   // no es una recomendación general, es la realidad operativa de este stack.
   private static readonly insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -317,6 +331,13 @@ export class GenieAcsClient {
    * quien llama debe resolverlo antes (ver GenieAcsDeviceResolverService).
    */
   async setWifiCredentials(deviceId: string, isTR181: boolean, credentials: WifiCredentialsInput): Promise<void> {
+    if (this.config.wanWriteGuard) return this.config.wanWriteGuard(deviceId,
+      this.buildWifiParameterValues(isTR181, credentials, true).map(p => p[0]),
+      () => this.setWifiCredentialsVerified(deviceId, isTR181, credentials));
+    return this.setWifiCredentialsVerified(deviceId, isTR181, credentials);
+  }
+
+  private async setWifiCredentialsVerified(deviceId: string, isTR181: boolean, credentials: WifiCredentialsInput): Promise<void> {
     // En TR-098, los Huawei EchoLife/EPON de este tenant (BeaconType
     // "WPAand11i", modo mixto WPA/WPA2) rechazan con fault 9007 cualquier
     // escritura directa a WLANConfiguration.{i}.KeyPassphrase -- verificado

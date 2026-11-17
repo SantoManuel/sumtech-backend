@@ -50,6 +50,21 @@ describe('GenieAcsWifiService', () => {
     service = module.get<GenieAcsWifiService>(GenieAcsWifiService);
   });
 
+  it('writes WiFi after verifying an ONU linked by exact MAC', async () => {
+    const identity = { verifyDeviceForWrite: jest.fn().mockResolvedValue(undefined) };
+    (service as any).identity = identity;
+    client.getDeviceStatus.mockResolvedValue({ isTR181: true });
+    const linked = '2CB272-F660-ZTEGC687ABB0234';
+    await service.changeWifiForDevice(linked, credentials, 'STAFF', undefined, null);
+    expect(identity.verifyDeviceForWrite).toHaveBeenCalledWith(linked, undefined);
+    expect(client.setWifiCredentials).toHaveBeenCalledWith(linked, true, credentials);
+  });
+  it('does not write WiFi on identity conflict', async () => {
+    (service as any).identity = { verifyDeviceForWrite: jest.fn().mockRejectedValue(new ConflictException('Identity conflict')) };
+    await expect(service.changeWifiForDevice('device-1', credentials, 'STAFF', undefined, null)).rejects.toThrow(ConflictException);
+    expect(client.setWifiCredentials).not.toHaveBeenCalled();
+  });
+
   describe('getWifiStatus', () => {
     it('devuelve linked:false si el contrato no tiene ningún equipo vinculado', async () => {
       resolver.resolveForContract.mockResolvedValue(null);

@@ -14,6 +14,15 @@ describe('GenieAcsClient', () => {
     client = new GenieAcsClient({ baseUrl: 'https://acs.sumtech.local', apiKey: 'test-key' }, http);
   });
 
+  it('resolves an exact management MAC uniquely without trying nearby addresses', async () => {
+    http.get.mockResolvedValue({ data: [{ _id: '2CB272-F660-ZTEGC687ABB0234' }] });
+    expect(await client.findDeviceByExactMac('2cb2.7266.23eb')).toBe('2CB272-F660-ZTEGC687ABB0234');
+    expect(http.get).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(http.get.mock.calls[0])).not.toContain('6623ec');
+    http.get.mockResolvedValue({ data: [{ _id: 'one' }, { _id: 'two' }] });
+    await expect(client.findDeviceByExactMac('2cb2.7266.23eb')).rejects.toThrow('ambigua');
+  });
+
   describe('findDeviceBySerial', () => {
     it('busca por _deviceId._SerialNumber y devuelve el primer _id encontrado', async () => {
       http.get.mockResolvedValue({ data: [{ _id: '00259E-ONT-16' }] });

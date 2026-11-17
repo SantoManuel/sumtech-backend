@@ -316,6 +316,8 @@ export interface OnuDetailInfo {
  * Plan_Implementacion_WanIp_VlanProfile_HGU.md.
  */
 export interface OnuIpHostInfo {
+  managementMac?: string;
+  hosts?: Array<{ hostId: number; mac?: string; currentIp?: string; dhcpEnabled?: boolean }>;
   /** IP del Host ID: 2 (canal de gestión/TR-069, vía VEIP). */
   mgmtIp?: string;
   /**

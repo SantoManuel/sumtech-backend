@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { OnuGenieacsIdentityService } from '../../genieacs/services/onu-genieacs-identity.service';
+import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException, ServiceUnavailableException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { isIP } from 'net';
@@ -37,6 +38,7 @@ export class OnuWanProvisioningService {
     private readonly connections: OltConnectionResolverService,
     private readonly cpe: CpeConfiguratorService,
     @Inject(GENIEACS_CLIENT) private readonly acs: GenieAcsClient | null,
+    @Optional() private readonly identity?: OnuGenieacsIdentityService,
   ) {}
 
   withMutation<T>(onuId: string, action: () => Promise<T>): Promise<T> {
@@ -174,6 +176,7 @@ export class OnuWanProvisioningService {
           observed.configState?.toLowerCase() === 'success';
         status = ['UNKNOWN','APPLYING'].includes(op.status) ? 'UNKNOWN' : matches ? 'APPLIED' : 'VERIFYING';
       } else if (this.acs && typeof op.evidence?.deviceId === 'string') {
+        await this.identity?.verifyDeviceForWrite(op.evidence.deviceId, onu.contractId);
         const tasks = await this.acs.getPendingDeviceTasks(op.evidence.deviceId);
         const blocking = tasks.filter(affectsWanProvisioning);
         const ownTaskPending = typeof op.evidence.taskId === 'string' && tasks.some(task => task && typeof task === 'object' && (task as any)._id === op.evidence?.taskId);
@@ -210,7 +213,7 @@ export class OnuWanProvisioningService {
         throw new ConflictException('Esta operación no admite reintento manual.');
       }
       if (this.acs) {
-        const id = await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
+        const id = await this.resolveAcsDevice(onu);
         if (id) {
           const tasks = await this.acs.getPendingDeviceTasks(id);
           if (op.method === 'OMCI' && tasks.length) {
@@ -361,7 +364,7 @@ export class OnuWanProvisioningService {
       // Drain prior ACS writers before handing the same connection to OMCI.
       const acsDeviceForHandover = method === 'OMCI' ? await this.ensureAcsDrained(onu) : undefined;
       if (method === 'TR069' && this.acs) {
-        const id = await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
+        const id = await this.resolveAcsDevice(onu);
         if (id) this.assertTr069QueueAvailable(await this.acs.getPendingDeviceTasks(id));
       }
       const resumeSafeAttempt = !actor && prior?.version === config.wanDesiredVersion && prior.status === 'ERROR' &&
@@ -400,7 +403,7 @@ export class OnuWanProvisioningService {
           let acsDeviceId: string | undefined;
           let acsManufacturer: string | undefined;
           if (this.acs) {
-            acsDeviceId = (await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true })) || undefined;
+            acsDeviceId = (await this.resolveAcsDevice(onu)) || undefined;
             if (acsDeviceId) {
               await this.acs.deleteDeviceTag(acsDeviceId, 'WAN_OMCI');
               try {
@@ -453,6 +456,21 @@ export class OnuWanProvisioningService {
     });
   }
 
+  private async resolveAcsDevice(onu: OnuEntity): Promise<string | null> {
+    if (!this.identity) return this.acs!.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
+    if (onu.olt.vendor === 'ZTE') {
+      const driver = this.registry.resolve(onu.olt.vendor);
+      if (driver.getOnuIpHost) {
+        const target = this.onuInterface(onu).match(/^gpon-onu_(\d+\/\d+\/\d+):(\d+)$/);
+        if (!target) throw new BadRequestException('Ubicacion GPON invalida.');
+        const conn = await this.connections.resolve(onu.olt);
+        const host = await withOltTelnetLock(onu.oltId, () => driver.getOnuIpHost!(conn, `gpon-olt_${target[1]}`, Number(target[2])));
+        if (host.ipHostFound) await this.identity.recordManagementMac(onu.id, host.managementMac);
+      }
+    }
+    return (await this.identity.resolveOnu(onu.id))?.deviceId || null;
+  }
+
   private assertTr069QueueAvailable(tasks: unknown[]): void {
     const blocking = tasks.filter(affectsWanProvisioning);
     if (!blocking.length) return;
@@ -468,7 +486,7 @@ export class OnuWanProvisioningService {
   private async ensureAcsDrained(onu: OnuEntity): Promise<string | undefined> {
     if (!this.acs) return undefined;
     try {
-      const deviceId = await this.acs.findDeviceBySerial(onu.serialNumber, { exactOnly: true });
+      const deviceId = await this.resolveAcsDevice(onu);
       if (!deviceId) return undefined;
       const tasks = await this.acs.getPendingDeviceTasks(deviceId);
       if (tasks.length) {
@@ -477,6 +495,7 @@ export class OnuWanProvisioningService {
       }
       return deviceId;
     } catch (err: any) {
+      if (err instanceof ConflictException) throw err;
       this.logger.warn(`No se pudo purgar la cola ACS de ${onu.serialNumber}: ${err?.message}. Continuando con provisión OMCI.`);
       return undefined;
     }

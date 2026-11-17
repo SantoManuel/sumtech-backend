@@ -1,4 +1,5 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
+import { OnuGenieacsIdentityService } from '../../genieacs/services/onu-genieacs-identity.service';
+import { Injectable, Logger, NotFoundException, BadRequestException, HttpException, HttpStatus, Optional } from '@nestjs/common';
 import { Tr069Result, initialTr069Result, evidence } from '../ports/tr069-provisioning.types';
 import { validateTr069Input } from '../drivers/zte-c320-tr069-state';
 import { redactOltCli } from '../utils/redact-olt-cli';
@@ -111,6 +112,7 @@ export class OnuManagementService {
     private readonly tenantContext: TenantContextService,
     private readonly partialOperations: OltPartialOperationService,
     private readonly wanProvisioning: OnuWanProvisioningService,
+    @Optional() private readonly identity?: OnuGenieacsIdentityService,
   ) {}
 
   private async recordPartialOperation(oltId: string, onuId: string, operation: string) {
@@ -302,21 +304,38 @@ export class OnuManagementService {
 
     // Resolución de dispositivo GenieACS:
     // 1. Si la ONU tiene contrato vinculado, consultar por contractId en net.genieacs_devices
-    if (onu.contract?.id) {
-      const genieAcsDevice = await this.genieAcsDeviceResolver.findByContractId(onu.contract.id);
-      if (genieAcsDevice?.genieacsDeviceId) {
-        onu.genieacsDeviceId = genieAcsDevice.genieacsDeviceId;
+    if (this.identity) {
+      try {
+        const linked = await this.identity.resolveOnu(onu.id);
+        onu.genieacsDeviceId = linked?.deviceId;
+        if (!linked) (onu as any).genieacsIdentityWarning = onu.managementMac ? 'No se encontro coincidencia por serial ni MAC de gestion.' : 'No se encontro coincidencia por serial. Falta obtener la MAC de gestion: usa Sincronizar via TR-069.';
+        if (linked) {
+          onu.genieacsLinkMethod = linked.method;
+          onu.tr069SerialNumber = linked.tr069SerialNumber;
+          onu.genieacsIdentityVerifiedAt = new Date();
+        }
+      } catch (error: any) {
+        (onu as any).genieacsIdentityWarning = error.message;
+        onu.genieacsDeviceId = undefined;
       }
-    }
+    } else {
+      if (onu.contract?.id) {
+        const genieAcsDevice = await this.genieAcsDeviceResolver.findByContractId(onu.contract.id);
+        if (genieAcsDevice?.genieacsDeviceId) {
+          onu.genieacsDeviceId = genieAcsDevice.genieacsDeviceId;
+        }
+      }
 
-    // 2. Si no tiene contrato (ej. brownfield/en despliegue) o la tabla de contratos aún no lo tiene,
-    // buscar directamente en GenieACS por el número de serie de la ONU física.
-    if (!onu.genieacsDeviceId && onu.serialNumber) {
-      const directDeviceId = await this.genieAcsDeviceResolver.resolveBySerialNumber(onu.serialNumber);
-      if (directDeviceId) {
-        onu.genieacsDeviceId = directDeviceId;
-        await this.onuRepository.update(onu.id, { genieacsDeviceId: directDeviceId });
+      // 2. Si no tiene contrato (ej. brownfield/en despliegue) o la tabla de contratos aún no lo tiene,
+      // buscar directamente en GenieACS por el número de serie de la ONU física.
+      if (!onu.genieacsDeviceId && onu.serialNumber) {
+        const directDeviceId = await this.genieAcsDeviceResolver.resolveBySerialNumber(onu.serialNumber);
+        if (directDeviceId) {
+          onu.genieacsDeviceId = directDeviceId;
+          await this.onuRepository.update(onu.id, { genieacsDeviceId: directDeviceId });
+        }
       }
+
     }
 
     // 3. Telemetría viva y auto-reconciliación de tags y confirmación en GenieACS:
@@ -991,6 +1010,7 @@ export class OnuManagementService {
     const wanIp = wanIpResult.status === 'fulfilled' ? wanIpResult.value : undefined;
     const tr069Mgmt = tr069MgmtResult.status === 'fulfilled' ? tr069MgmtResult.value : undefined;
     const macTable = macTableResult.status === 'fulfilled' ? macTableResult.value : undefined;
+    if (ipHost && this.identity) await this.identity.recordManagementMac(onu.id, ipHost.managementMac);
 
     const findings: ProvisioningAuditFinding[] = [];
     const unsupported: string[] = [];
@@ -1601,7 +1621,11 @@ export class OnuManagementService {
     if (config.wanProvisioningMethod === 'OMCI' || config.managementMethod !== 'TR069' || !config.tr069NetworkId) return {};
     return this.wanProvisioning.withMutation(onu.id, async () => {
       const current = await this.findById(onu.id);
-      if (current.serviceConfig?.operationMode === 'BRIDGE') return {};
+      if (current.serviceConfig?.operationMode === 'BRIDGE') {
+        if (!this.identity) return {};
+        try { await this.syncCpe(current.id, options.actorUserId); return { cpeConfigured: true }; }
+        catch (error: any) { return { cpeConfigured: false, cpeConfigWarning: error.message }; }
+      }
       let result: { cpeConfigured?: boolean; cpeConfigWarning?: string };
       try {
         const pending = ['APPLYING', 'QUEUED', 'VERIFYING', 'UNKNOWN'].includes(current.serviceConfig?.wanApplyStatus || '');
@@ -1769,6 +1793,7 @@ export class OnuManagementService {
       if (driver.getOnuIpHost) {
         try {
           const host = await driver.getOnuIpHost(conn, ponInterface, onuId);
+          if (this.identity) await this.identity.recordManagementMac(onu.id, host.managementMac);
           result.evidence.ip = evidence(host.mgmtIp ? 'confirmed' : 'unknown', 'ip-host', host.mgmtIp ? 'IP de gestión: ' + host.mgmtIp : 'Sin IP de gestión confirmada.');
         } catch { result.evidence.ip = evidence('unknown', 'ip-host', 'Consulta posterior no disponible.'); }
       }
@@ -2236,10 +2261,25 @@ export class OnuManagementService {
    * 4. Actualiza cpeConfigStatus a APPLIED en la base de datos si el equipo responde/está en GenieACS.
    * 5. Registra la auditoría de operación.
    */
+  private async refreshManagementIdentity(onu: OnuEntity): Promise<void> {
+    if (!this.identity || onu.olt?.vendor !== 'ZTE') return;
+    const driver = this.resolveDriver(onu.olt);
+    if (!driver.getOnuIpHost) return;
+    const { ponInterface, onuId } = this.resolveOnuLocation(onu);
+    const conn = await this.connectionResolver.resolve(onu.olt);
+    const host = await withOltTelnetLock(onu.olt.id, () => driver.getOnuIpHost!(conn, ponInterface, onuId));
+    await this.identity.recordManagementMac(onu.id, host.managementMac);
+  }
+
   async syncCpe(id: string, actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performSyncCpe(id, actorUserId));
+  }
+
+  private async performSyncCpe(id: string, actorUserId?: string) {
     const onu = await this.findById(id);
-    let deviceId = onu.genieacsDeviceId;
-    if (!deviceId && onu.serialNumber) {
+    if (this.identity) await this.refreshManagementIdentity(onu);
+    let deviceId = this.identity ? (await this.identity.resolveOnu(onu.id))?.deviceId : onu.genieacsDeviceId;
+    if (!this.identity && !deviceId && onu.serialNumber) {
       deviceId = (await this.genieAcsDeviceResolver.resolveBySerialNumber(onu.serialNumber)) || undefined;
       if (deviceId) {
         await this.onuRepository.update(onu.id, { genieacsDeviceId: deviceId });
@@ -2247,11 +2287,7 @@ export class OnuManagementService {
       }
     }
 
-    if (!deviceId) {
-      throw new BadRequestException(
-        `El CPE con serial "${onu.serialNumber}" no ha sido detectado por GenieACS (aún no ha enviado su primer Inform TR-069).`,
-      );
-    }
+    if (!deviceId) throw new BadRequestException('No se encontro un dispositivo GenieACS asociado por serial ni MAC de gestion.');
 
     const tenantSlug = this.tenantContext.getSlug()?.toLowerCase().trim();
     const expectedTags: string[] = [];
@@ -2609,6 +2645,7 @@ export class OnuManagementService {
     // onu_service_config tiene onDelete: 'CASCADE' hacia esta fila — no hace
     // falta borrarlo aparte.
     await this.onuRepository.delete({ id: onu.id });
+    await this.identity?.releaseDeletedOnu(onu.id);
 
     return {
       success: true,
@@ -3071,6 +3108,10 @@ export class OnuManagementService {
    * empujando la configuración vía GenieACS (TR-069).
    */
   async changeWifi(id: string, dto: StaffChangeWifiCredentialsDto, actorUserId?: string) {
+    return this.wanProvisioning.withMutation(id, () => this.performChangeWifi(id, dto, actorUserId));
+  }
+
+  private async performChangeWifi(id: string, dto: StaffChangeWifiCredentialsDto, actorUserId?: string) {
     const onu = await this.onuRepository.findOne({
       where: { id },
       relations: ['contract'],
@@ -3079,28 +3120,36 @@ export class OnuManagementService {
       throw new NotFoundException(`ONU no encontrada: ${id}`);
     }
 
-    let deviceId = onu.genieacsDeviceId;
+    let deviceId: string | undefined;
+    if (this.identity) {
+      const fullOnu = await this.findById(id);
+      await this.refreshManagementIdentity(fullOnu);
+      deviceId = (await this.identity.resolveOnu(id))?.deviceId;
+    } else {
+      deviceId = onu.genieacsDeviceId;
 
-    // 1. Si la ONU tiene contrato vinculado, intentar resolver por contractId si aún no tiene deviceId
-    if (!deviceId && (onu.contractId || onu.contract?.id)) {
-      const contractId = onu.contractId || onu.contract?.id;
-      if (contractId) {
-        const genieAcsDevice = await this.genieAcsDeviceResolver.findByContractId(contractId);
-        if (genieAcsDevice?.genieacsDeviceId) {
-          deviceId = genieAcsDevice.genieacsDeviceId;
+      // 1. Si la ONU tiene contrato vinculado, intentar resolver por contractId si aún no tiene deviceId
+      if (!deviceId && (onu.contractId || onu.contract?.id)) {
+        const contractId = onu.contractId || onu.contract?.id;
+        if (contractId) {
+          const genieAcsDevice = await this.genieAcsDeviceResolver.findByContractId(contractId);
+          if (genieAcsDevice?.genieacsDeviceId) {
+            deviceId = genieAcsDevice.genieacsDeviceId;
+            onu.genieacsDeviceId = deviceId;
+            await this.onuRepository.update(onu.id, { genieacsDeviceId: deviceId });
+          }
+        }
+      }
+
+      // 2. Si aún no tiene deviceId, buscar directamente en GenieACS por número de serie
+      if (!this.identity && !deviceId && onu.serialNumber) {
+        deviceId = (await this.genieAcsDeviceResolver.resolveBySerialNumber(onu.serialNumber)) || undefined;
+        if (deviceId) {
           onu.genieacsDeviceId = deviceId;
           await this.onuRepository.update(onu.id, { genieacsDeviceId: deviceId });
         }
       }
-    }
 
-    // 2. Si aún no tiene deviceId, buscar directamente en GenieACS por número de serie
-    if (!deviceId && onu.serialNumber) {
-      deviceId = (await this.genieAcsDeviceResolver.resolveBySerialNumber(onu.serialNumber)) || undefined;
-      if (deviceId) {
-        onu.genieacsDeviceId = deviceId;
-        await this.onuRepository.update(onu.id, { genieacsDeviceId: deviceId });
-      }
     }
 
     if (!deviceId) {

@@ -1,3 +1,4 @@
+import { normalizeDeviceMac } from '../../genieacs/utils/device-mac';
 import { DiscoveredCard, DiscoveredOnuType, DiscoveredTcontProfile, DiscoveredTrafficProfile, DiscoveredVlanProfile, OnuDetailInfo, OnuRunningConfigResult } from '../ports/olt-driver.port';
 
 /**
@@ -263,7 +264,7 @@ function extractHostIp(hostBlock: string): string | undefined {
   return parsedIp !== '0.0.0.0' ? parsedIp : undefined;
 }
 
-export function parseIpHost(raw: string): { mgmtIp?: string; serviceIp?: string; ipHostFound: boolean } {
+export function parseIpHost(raw: string): Omit<import('../ports/olt-driver.port').OnuIpHostInfo, 'raw'> {
   // Buscar Host ID: 1 (servicio/internet) y Host ID: 2 (gestión TR-069) por separado.
   const host1Match = raw.match(/Host\s*(?:ID)?\s*:\s*1\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
   const host2Match = raw.match(/Host\s*(?:ID)?\s*:\s*2\b([\s\S]*?)(?:Host\s*(?:ID)?\s*:\s*\d+|$)/i);
@@ -271,7 +272,15 @@ export function parseIpHost(raw: string): { mgmtIp?: string; serviceIp?: string;
   const serviceIp = host1Match ? extractHostIp(host1Match[1]) : undefined;
   const mgmtIp = host2Match ? extractHostIp(host2Match[1]) : undefined;
 
-  return { mgmtIp, serviceIp, ipHostFound: Boolean(host2Match) };
+  const hosts = [...raw.matchAll(/Host\s*(?:ID)?\s*:\s*(\d+)\b([\s\S]*?)(?=Host\s*(?:ID)?\s*:\s*\d+|$)/gi)].map(m => ({
+    hostId: Number(m[1]),
+    mac: normalizeDeviceMac(m[2].match(/^\s*MAC address:\s*(\S+)/im)?.[1]),
+    currentIp: m[2].match(/Current IP address:\s*(\S+)/i)?.[1],
+    dhcpEnabled: /DHCP enable:\s*enable\b/i.test(m[2]),
+  }));
+  const managementHosts = hosts.filter(h => h.hostId === 2);
+  const managementMac = managementHosts.length === 1 ? managementHosts[0].mac : undefined;
+  return { mgmtIp, serviceIp, ipHostFound: Boolean(host2Match), ...(managementMac ? { managementMac } : {}), ...(hosts.some(h => h.mac) ? { hosts } : {}) };
 }
 
 /** Parser de "show mac gpon onu <interfaz>". */

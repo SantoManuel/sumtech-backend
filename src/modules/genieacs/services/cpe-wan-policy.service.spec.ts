@@ -11,6 +11,13 @@ describe('CpeWanPolicyService', () => {
     policy = new CpeWanPolicyService({ getTenantId: () => 'tenant-1', getDataSource: () => ({ query, createQueryRunner: () => runner }) } as any);
   });
 
+  it('blocks parameter writes when the shared identity verifier rejects ownership', async () => {
+    policy.setIdentityVerifier(async () => { throw new Error('Identity conflict'); });
+    const action = jest.fn();
+    await expect(policy.withDeviceWrite('device-1', ['Device.WiFi.SSID.1.SSID'], action)).rejects.toThrow('Identity conflict');
+    expect(action).not.toHaveBeenCalled();
+  });
+
   it.each(['InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Password', 'Device.PPP.Interface.1.Username', 'Device.IP.Interface.1.Enable'])('recognizes a WAN writer: %s', path => {
     expect(isWanParameter(path)).toBe(true);
   });

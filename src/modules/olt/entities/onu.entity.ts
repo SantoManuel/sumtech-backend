@@ -103,8 +103,26 @@ export class OnuEntity {
   @Column({ name: 'serial_number_id', type: 'uuid', nullable: true })
   serialNumberId?: string;
 
-  @Column({ name: 'genieacs_device_id', type: 'varchar', length: 100, nullable: true })
+  @Column({ name: 'genieacs_device_id', type: 'varchar', length: 255, nullable: true })
   genieacsDeviceId?: string;
+
+  @Column({ name: 'management_mac', type: 'varchar', length: 12, nullable: true })
+  managementMac?: string;
+
+  @Column({ name: 'management_mac_source', type: 'varchar', length: 40, nullable: true })
+  managementMacSource?: string;
+
+  @Column({ name: 'management_mac_observed_at', type: 'timestamptz', nullable: true })
+  managementMacObservedAt?: Date;
+
+  @Column({ name: 'tr069_serial_number', type: 'varchar', length: 100, nullable: true })
+  tr069SerialNumber?: string;
+
+  @Column({ name: 'genieacs_link_method', type: 'varchar', length: 10, nullable: true })
+  genieacsLinkMethod?: 'SERIAL' | 'MAC';
+
+  @Column({ name: 'genieacs_identity_verified_at', type: 'timestamptz', nullable: true })
+  genieacsIdentityVerifiedAt?: Date;
 
   @Column({ name: 'contract_id', type: 'uuid', nullable: true })
   contractId?: string;
